@@ -1,0 +1,14 @@
+/Users/johnmichaelplatter/mnx_tab_cli/target/debug/deps/serde-e1ca25987c018a31.d: /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/johnmichaelplatter/mnx_tab_cli/target/debug/build/serde-6159df7da5e0f775/out/private.rs
+
+/Users/johnmichaelplatter/mnx_tab_cli/target/debug/deps/libserde-e1ca25987c018a31.rlib: /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/johnmichaelplatter/mnx_tab_cli/target/debug/build/serde-6159df7da5e0f775/out/private.rs
+
+/Users/johnmichaelplatter/mnx_tab_cli/target/debug/deps/libserde-e1ca25987c018a31.rmeta: /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/johnmichaelplatter/mnx_tab_cli/target/debug/build/serde-6159df7da5e0f775/out/private.rs
+
+/Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/johnmichaelplatter/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/johnmichaelplatter/mnx_tab_cli/target/debug/build/serde-6159df7da5e0f775/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/johnmichaelplatter/mnx_tab_cli/target/debug/build/serde-6159df7da5e0f775/out
