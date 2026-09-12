@@ -11,18 +11,21 @@ parts:
     measures:
       - sequences:
           - content:
-              # VALID: String 1 (E4 = MIDI 64.0). 
-              # Fret 1 in 19-EDO = 12/19 = 0.63157... semitones. 
-              # Semantic pitch matches E4 + 0.632 alter.
+              # VALID: Fractional string parsed dynamically
               - duration: { base: quarter }
                 notes:
-                  - pitch: { step: E, alter: 0.632, octave: 4 }
+                  - pitch: { step: E, alter: '1\19', octave: 4 }
                     string: 1
                     fret: 1
                     
-              # ERROR: Geometry mismatch. 
-              # Fret 2 in 19-EDO should be exactly 2 * (12/19) = 1.263 semitones.
-              # The data claims alter: 1.0 (a standard 12-TET semitone), which is a physical impossibility.
+              # VALID: Negative fractional strings are supported natively
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: F, alter: '-1\19', octave: 4 }
+                    string: 1
+                    fret: 1
+                    
+              # ERROR: Decimal mismatch against EDO geometry
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, alter: 1.0, octave: 4 }

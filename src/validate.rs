@@ -64,9 +64,9 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                 let physical_midi = base_midi + capo_offset + ((fret as f64) * step_size);
                                 let semantic_midi = note.pitch.to_midi_note();
 
-                                // Allow a margin of error of 0.002 for 3-decimal precision rounding in YAML
                                 if (physical_midi - semantic_midi).abs() > 0.002 {
-                                    let alter_str = note.pitch.alter.map(|a| format!(" alter {}", a)).unwrap_or_default();
+                                    // Updated to use .as_ref() because alter is now an Enum rather than a primitive float
+                                    let alter_str = note.pitch.alter.as_ref().map(|a| format!(" alter {}", a)).unwrap_or_default();
                                     
                                     errors.push(ValidationError {
                                         measure_idx: m_idx + 1,
