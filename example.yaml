@@ -5,27 +5,26 @@ global:
     - time: { count: 4, unit: 4 }
 parts:
   - instrument:
-      name: "Guitar"
-      capo: 2
+      name: "19-EDO Microtonal Guitar"
+      microFretDivisions: 19
+      capo: 0
     measures:
       - sequences:
           - content:
-              # ERROR 1: Geometry mismatch. 
-              # With capo 2, String 6 Fret 3 physically produces an A2 (MIDI 45).
-              # The MNX data incorrectly claims it is a G2 (MIDI 43).
+              # VALID: String 1 (E4 = MIDI 64.0). 
+              # Fret 1 in 19-EDO = 12/19 = 0.63157... semitones. 
+              # Semantic pitch matches E4 + 0.632 alter.
               - duration: { base: quarter }
                 notes:
-                  - pitch: { step: G, octave: 2 }
-                    string: 6
-                    fret: 3
-                    
-              # ERROR 2: Concurrency violation.
-              # Attempting to play two different frets on String 1 at the same time.
-              - duration: { base: quarter }
-                notes:
-                  - pitch: { step: F, alter: 1, octave: 4 }
+                  - pitch: { step: E, alter: 0.632, octave: 4 }
                     string: 1
-                    fret: 0
-                  - pitch: { step: G, alter: 1, octave: 4 }
+                    fret: 1
+                    
+              # ERROR: Geometry mismatch. 
+              # Fret 2 in 19-EDO should be exactly 2 * (12/19) = 1.263 semitones.
+              # The data claims alter: 1.0 (a standard 12-TET semitone), which is a physical impossibility.
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, alter: 1.0, octave: 4 }
                     string: 1
                     fret: 2
