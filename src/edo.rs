@@ -38,6 +38,50 @@ impl EdoTuning {
 }
 
 pub fn generate_edo_scale(edo: u32) -> Vec<(i32, String, f64, f64)> {
-    // ... (Paste the generate_edo_scale function from the previous response here) ...
-    todo!()
+    let tuning = EdoTuning::new(edo);
+    let e = edo as i32;
+    let mut scale = Vec::new();
+    
+    let nominals = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+    
+    for step in 0..e {
+        let mut best_name = String::new();
+        let mut best_score = i32::MAX;
+        let mut best_alter = 0.0;
+        
+        for nom_char in &nominals {
+            let base_step = tuning.nominal_step(*nom_char);
+            
+            let mut dist = (step - base_step).rem_euclid(e);
+            if dist > e / 2 { dist -= e; }
+            
+            for sharps in -2..=2 {
+                let ups = dist - sharps * tuning.sharp_steps;
+                let score = sharps.abs() * 2 + ups.abs() * 3;
+                
+                if score < best_score {
+                    best_score = score;
+                    
+                    let mut name = String::new();
+                    if ups > 0 { name.push_str(&"^".repeat(ups as usize)); }
+                    if ups < 0 { name.push_str(&"v".repeat((-ups) as usize)); }
+                    
+                    name.push(*nom_char);
+                    
+                    if sharps > 0 { name.push_str(&"#".repeat(sharps as usize)); }
+                    if sharps < 0 { name.push_str(&"b".repeat((-sharps) as usize)); }
+                    
+                    best_name = name;
+                    
+                    let alter_steps = sharps * tuning.sharp_steps + ups;
+                    best_alter = (alter_steps as f64) * tuning.step_semitones;
+                }
+            }
+        }
+        
+        let midi_note = 60.0 + (step as f64) * tuning.step_semitones;
+        scale.push((step, best_name, best_alter, midi_note));
+    }
+    
+    scale
 }

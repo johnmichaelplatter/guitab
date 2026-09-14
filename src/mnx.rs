@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-// ... (Keep MnxDocument, MnxMeta, Global, GlobalMeasure, TimeSignature, Part, Instrument, StringTuning, Measure, Sequence, Event, Duration, Note as they were) ...
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MnxDocument {
     pub mnx: MnxMeta,
@@ -98,23 +96,20 @@ impl Alteration {
         match self {
             Alteration::Value(v) => *v,
             Alteration::Fraction(s) => {
-                // Split at either \ or / to be flexible with user input
                 let parts: Vec<&str> = s.split(|c| c == '\\' || c == '/').collect();
                 if parts.len() == 2 {
                     let steps = parts[0].trim().parse::<f64>().unwrap_or(0.0);
                     let edo = parts[1].trim().parse::<f64>().unwrap_or(12.0);
                     if edo != 0.0 {
-                        // Math: steps * (12 semitones / EDO divisions)
                         return steps * (12.0 / edo);
                     }
                 }
-                0.0 // Fallback if string is malformed
+                0.0
             }
         }
     }
 }
 
-// Allows the validator to seamlessly print the enum whether it's a float or string
 impl fmt::Display for Alteration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -132,12 +127,12 @@ pub struct Pitch {
 }
 
 impl Pitch {
+    #[allow(dead_code)]
     pub fn to_midi_note(&self) -> f64 {
         let step_val = match self.step.as_str() {
             "C" => 0.0, "D" => 2.0, "E" => 4.0, "F" => 5.0, "G" => 7.0, "A" => 9.0, "B" => 11.0,
             _ => 0.0, 
         };
-        // Safely unwrap and evaluate the alteration
         let alter_val = self.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
         
         ((self.octave + 1) as f64) * 12.0 + step_val + alter_val
