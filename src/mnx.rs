@@ -44,6 +44,8 @@ pub struct Instrument {
     pub capo: Option<u8>,
     #[serde(rename = "microFretDivisions")]
     pub micro_fret_divisions: Option<u8>, 
+    #[serde(rename = "fretStepMultiplier")]
+    pub fret_step_multiplier: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

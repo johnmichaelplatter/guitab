@@ -1,4 +1,5 @@
 use crate::mnx::{MnxDocument, Pitch};
+use crate::edo::EdoTuning;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
@@ -59,27 +60,52 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                 });
                             }
 
-                            // Rule 1 & 3: Microtonal Pitch math check
-                            if let Some(&base_midi) = tuning_map.get(&string) {
-                                let physical_midi = base_midi + capo_offset + ((fret as f64) * step_size);
-                                let semantic_midi = note.pitch.to_midi_note();
+                            // Extract the tuning details for the current string from your MNX Instrument mapping
+                            // (Assuming string_tune is a reference to the StringTuning struct for this string)
+                            let string_step = string_tune.pitch.step.chars().next().unwrap_or('C');
+                            let string_octave = string_tune.pitch.octave;
 
-                                if (physical_midi - semantic_midi).abs() > 0.002 {
-                                    // Updated to use .as_ref() because alter is now an Enum rather than a primitive float
-                                    let alter_str = note.pitch.alter.as_ref().map(|a| format!(" alter {}", a)).unwrap_or_default();
-                                    
-                                    errors.push(ValidationError {
-                                        measure_idx: m_idx + 1,
-                                        message: format!(
-                                            "Geometry mismatch on String {} Fret {}. \
-                                            Physically produces MIDI {:.3} (Base {:.3} + capo {} + fret {} at {:.3} semitones/fret). \
-                                            MNX data expects {}{}{} (MIDI {:.3}).",
-                                            string, fret, 
-                                            physical_midi, base_midi, capo_fret, fret, step_size,
-                                            note.pitch.step, note.pitch.octave, alter_str, semantic_midi
-                                        ),
-                                    });
-                                }
+                            let note_step = note.pitch.step.chars().next().unwrap_or('C');
+                            let note_octave = note.pitch.octave;
+                            let note_alter_semitones = note.pitch.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
+
+                            let edo = instrument.micro_fret_divisions.unwrap_or(12) as u32;
+
+                            // Default to 1 step per fret if the property is missing
+                            let step_multiplier = instrument.fret_step_multiplier.unwrap_or(1) as i32; 
+
+                            let tuning = EdoTuning::new(edo);
+                            let e = edo as i32;
+
+                            // 1. Calculate physical steps
+                            let string_base = tuning.nominal_step(string_step) + string_octave * e;
+
+                            // Multiply both the capo position and the played fret by the multiplier
+                            let physical_capo_steps = (capo_fret as i32) * step_multiplier;
+                            let physical_fret_steps = (fret as i32) * step_multiplier;
+
+                            let played_steps = string_base + physical_capo_steps + physical_fret_steps;
+
+                            // 2. Calculate semantic steps 
+                            let expected_base = tuning.nominal_step(note_step) + (note_octave * e);
+                            let alter_steps = (note_alter_semitones / tuning.step_semitones).round() as i32;
+                            let expected_steps = expected_base + alter_steps;
+
+                            // 3. Strict Integer Check 
+                            if played_steps != expected_steps {
+                                let alter_str = note.pitch.alter.as_ref().map(|a| format!(" alter {}", a)).unwrap_or_default();
+                                
+                                errors.push(ValidationError {
+                                    measure_idx: m_idx + 1,
+                                    message: format!(
+                                        "Geometry mismatch on String {} Fret {}. \
+                                        Physically produces step {} in {}-EDO. \
+                                        MNX data expects {}{}{} (step {}).",
+                                        string, fret, 
+                                        played_steps, edo,
+                                        note.pitch.step, note.pitch.octave, alter_str, expected_steps
+                                    ),
+                                });
                             }
                         }
                     }

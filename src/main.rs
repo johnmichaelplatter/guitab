@@ -1,6 +1,7 @@
 mod mnx;
 mod render;
 mod validate;
+pub mod edo;
 
 use std::fs;
 use std::error::Error;
