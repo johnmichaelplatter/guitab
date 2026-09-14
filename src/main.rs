@@ -16,6 +16,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "MNX Tablature Editor",
         options,
-        Box::new(|_cc| Ok(Box::new(gui::MnxEditorApp::default()))),
+        Box::new(|_cc| Box::new(gui::MnxEditorApp::default())),
     )
 }
