@@ -35,6 +35,15 @@ impl EdoTuning {
             _ => 0,
         }
     }
+
+    pub fn pitch_to_steps(&self, pitch: &crate::mnx::Pitch) -> i32 {
+        let step = pitch.step.chars().next().unwrap_or('C');
+        let octave = pitch.octave;
+        let alter_semitones = pitch.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
+        
+        let alter_steps = (alter_semitones / self.step_semitones).round() as i32;
+        self.nominal_step(step) + (octave * (self.edo as i32)) + alter_steps
+    }
 }
 
 pub fn generate_edo_scale(edo: u32) -> Vec<(i32, String, f64, f64)> {

@@ -28,13 +28,7 @@ pub fn render_part_to_tab(part: &Part, errors: &[ValidationError]) -> LayoutJob 
     let default_fmt = TextFormat::simple(font.clone(), Color32::LIGHT_GRAY);
     let error_fmt = TextFormat::simple(font.clone(), Color32::RED);
 
-    let num_strings = part
-        .instrument
-        .as_ref()
-        .and_then(|inst| inst.tuning.as_ref())
-        .map(|tuning| tuning.iter().map(|t| t.string).max().unwrap_or(6))
-        .unwrap_or(6)
-        .max(1) as usize;
+    let num_strings = part.num_strings();
 
     let mut prefixes: Vec<String> = (1..=num_strings).map(|i| i.to_string()).collect();
 
@@ -58,6 +52,11 @@ pub fn render_part_to_tab(part: &Part, errors: &[ValidationError]) -> LayoutJob 
         string_spans[i].push((padded, default_fmt.clone()));
     }
 
+    let error_coords: std::collections::HashSet<_> = errors
+        .iter()
+        .map(|err| (err.measure_idx, err.event_idx, err.string, err.fret))
+        .collect();
+
     for (m_idx, measure) in part.measures.iter().enumerate() {
         if let Some(seq) = measure.sequences.first() {
             for (e_idx, event) in seq.content.iter().enumerate() {
@@ -78,13 +77,7 @@ pub fn render_part_to_tab(part: &Part, errors: &[ValidationError]) -> LayoutJob 
                     let string_num = (i + 1) as u8;
                     if let Some(fret) = step_frets[i] {
                         
-                        // Check if this specific coordinate exists in our errors list
-                        let is_err = errors.iter().any(|err| {
-                            err.measure_idx == m_idx + 1 &&
-                            err.event_idx == e_idx &&
-                            err.string == string_num &&
-                            err.fret == fret
-                        });
+                        let is_err = error_coords.contains(&(m_idx + 1, e_idx, string_num, fret));
 
                         let fmt = if is_err { &error_fmt } else { &default_fmt };
                         let fret_str = fret.to_string();

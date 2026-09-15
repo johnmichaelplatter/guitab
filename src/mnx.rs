@@ -96,10 +96,9 @@ impl Alteration {
         match self {
             Alteration::Value(v) => *v,
             Alteration::Fraction(s) => {
-                let parts: Vec<&str> = s.split(|c| c == '\\' || c == '/').collect();
-                if parts.len() == 2 {
-                    let steps = parts[0].trim().parse::<f64>().unwrap_or(0.0);
-                    let edo = parts[1].trim().parse::<f64>().unwrap_or(12.0);
+                if let Some((num, den)) = s.split_once(|c| c == '\\' || c == '/') {
+                    let steps = num.trim().parse::<f64>().unwrap_or(0.0);
+                    let edo = den.trim().parse::<f64>().unwrap_or(12.0);
                     if edo != 0.0 {
                         return steps * (12.0 / edo);
                     }
@@ -136,5 +135,53 @@ impl Pitch {
         let alter_val = self.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
         
         ((self.octave + 1) as f64) * 12.0 + step_val + alter_val
+    }
+}
+impl Part {
+    pub fn get_string_tuning(&self, string: u8) -> Option<Pitch> {
+        if let Some(inst) = &self.instrument {
+            if let Some(tunings) = &inst.tuning {
+                if let Some(t) = tunings.iter().find(|t| t.string == string) {
+                    return Some(t.pitch.clone());
+                }
+            }
+        }
+        
+        let (step, octave) = match string {
+            1 => ("E", 4),
+            2 => ("B", 3),
+            3 => ("G", 3),
+            4 => ("D", 3),
+            5 => ("A", 2),
+            6 => ("E", 2),
+            _ => return None,
+        };
+        
+        Some(Pitch {
+            step: step.to_string(),
+            alter: None,
+            octave,
+        })
+    }
+
+    pub fn capo_fret(&self) -> u8 {
+        self.instrument.as_ref().and_then(|i| i.capo).unwrap_or(0)
+    }
+
+    pub fn edo(&self) -> u32 {
+        self.instrument.as_ref().and_then(|i| i.micro_fret_divisions).unwrap_or(12) as u32
+    }
+
+    pub fn step_multiplier(&self) -> i32 {
+        self.instrument.as_ref().and_then(|i| i.fret_step_multiplier).unwrap_or(1) as i32
+    }
+    
+    pub fn num_strings(&self) -> usize {
+        self.instrument
+            .as_ref()
+            .and_then(|inst| inst.tuning.as_ref())
+            .and_then(|tuning| tuning.iter().map(|t| t.string).max())
+            .unwrap_or(6)
+            .max(1) as usize
     }
 }
