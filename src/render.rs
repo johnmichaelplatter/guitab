@@ -1,29 +1,33 @@
 use crate::mnx::{Part, Pitch};
+use crate::validate::ValidationError;
+use eframe::egui::text::{LayoutJob, TextFormat};
+use eframe::egui::{Color32, FontId, FontFamily};
 
-/// Translates the Pitch and Alteration enum into a tablature-friendly string
 fn format_pitch(pitch: &Pitch) -> String {
+    // ... (Keep your existing format_pitch exactly as it is)
     let mut prefix = String::new();
     let mut suffix = String::new();
-    
     if let Some(alter) = &pitch.alter {
         let alter_str = alter.to_string();
-        
-        // Map fractional notation to Kite arrows
         if alter_str.starts_with("-1\\") || alter_str.starts_with("-1/") {
             prefix.push('v');
         } else if alter_str.starts_with("1\\") || alter_str.starts_with("1/") {
             prefix.push('^');
         } else {
-            // Fallback for custom floats or other unmapped fractional steps
             suffix = format!("({})", alter_str);
         }
     }
-    
     format!("{}{}{}", prefix, pitch.step, suffix)
 }
 
-pub fn render_part_to_tab(part: &Part) -> String {
-    // 1. Determine number of strings (default 6, or max string defined in the tuning array)
+pub fn render_part_to_tab(part: &Part, errors: &[ValidationError]) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    let font = FontId::new(16.0, FontFamily::Monospace);
+    
+    // Define our styling
+    let default_fmt = TextFormat::simple(font.clone(), Color32::LIGHT_GRAY);
+    let error_fmt = TextFormat::simple(font.clone(), Color32::RED);
+
     let num_strings = part
         .instrument
         .as_ref()
@@ -32,34 +36,32 @@ pub fn render_part_to_tab(part: &Part) -> String {
         .unwrap_or(6)
         .max(1) as usize;
 
-    // 2. Build tuning prefixes
     let mut prefixes: Vec<String> = (1..=num_strings).map(|i| i.to_string()).collect();
 
     if let Some(inst) = &part.instrument {
         if let Some(tuning) = &inst.tuning {
             for t in tuning {
                 if t.string >= 1 && (t.string as usize) <= num_strings {
-                    let idx = (t.string - 1) as usize;
-                    prefixes[idx] = format_pitch(&t.pitch);
+                    prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch);
                 }
             }
         }
     }
 
-    // Align the vertical bar by finding the longest prefix character count
     let max_prefix_len = prefixes.iter().map(|p| p.len()).max().unwrap_or(1);
     
-    let mut lines: Vec<String> = prefixes
-        .iter()
-        .map(|p| format!("{:>width$}|", p, width = max_prefix_len))
-        .collect();
+    // Create a 2D grid holding (String, TextFormat)
+    let mut string_spans: Vec<Vec<(String, TextFormat)>> = vec![Vec::new(); num_strings];
 
-    // 3. Render measures
-    for measure in &part.measures {
+    for (i, p) in prefixes.iter().enumerate() {
+        let padded = format!("{:>width$}|", p, width = max_prefix_len);
+        string_spans[i].push((padded, default_fmt.clone()));
+    }
+
+    for (m_idx, measure) in part.measures.iter().enumerate() {
         if let Some(seq) = measure.sequences.first() {
-            for event in &seq.content {
+            for (e_idx, event) in seq.content.iter().enumerate() {
                 
-                // Collect frets to play at this timestep
                 let mut step_frets: Vec<Option<u8>> = vec![None; num_strings];
                 for note in &event.notes {
                     if let (Some(s), Some(f)) = (note.string, note.fret) {
@@ -69,32 +71,50 @@ pub fn render_part_to_tab(part: &Part) -> String {
                     }
                 }
 
-                // Find the max character width for proper vertical alignment padding
-                let max_width = step_frets
-                    .iter()
-                    .flatten()
-                    .map(|f| f.to_string().len())
-                    .max()
-                    .unwrap_or(1);
+                let max_width = step_frets.iter().flatten()
+                    .map(|f| f.to_string().len()).max().unwrap_or(1);
 
-                // Append the step to the grid
                 for i in 0..num_strings {
+                    let string_num = (i + 1) as u8;
                     if let Some(fret) = step_frets[i] {
+                        
+                        // Check if this specific coordinate exists in our errors list
+                        let is_err = errors.iter().any(|err| {
+                            err.measure_idx == m_idx + 1 &&
+                            err.event_idx == e_idx &&
+                            err.string == string_num &&
+                            err.fret == fret
+                        });
+
+                        let fmt = if is_err { &error_fmt } else { &default_fmt };
                         let fret_str = fret.to_string();
                         let padding = "-".repeat(max_width - fret_str.len());
-                        lines[i].push_str(&format!("-{}{}-", fret_str, padding));
+
+                        // Append the segments with individual coloring
+                        string_spans[i].push(("-".to_string(), default_fmt.clone()));
+                        string_spans[i].push((fret_str, fmt.clone()));
+                        string_spans[i].push((format!("{}-", padding), default_fmt.clone()));
+                        
                     } else {
-                        lines[i].push_str(&"-".repeat(max_width + 2));
+                        string_spans[i].push(("-".repeat(max_width + 2), default_fmt.clone()));
                     }
                 }
             }
         }
-        
-        // Cap the measure
         for i in 0..num_strings {
-            lines[i].push('|');
+            string_spans[i].push(("|".to_string(), default_fmt.clone()));
         }
     }
 
-    lines.join("\n")
+    // Assemble the grid row by row into the LayoutJob
+    for (i, spans) in string_spans.iter().enumerate() {
+        for (text, format) in spans {
+            job.append(text, 0.0, format.clone());
+        }
+        if i < num_strings - 1 {
+            job.append("\n", 0.0, default_fmt.clone());
+        }
+    }
+
+    job
 }
