@@ -5,6 +5,6 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
 eframe = "0.36"
 rfd = "0.14" # Native file dialogs
+serde-saphyr = "1.2.0"

@@ -31,7 +31,7 @@ impl Default for MnxEditorApp {
 
 impl MnxEditorApp {
     fn process_and_render(&mut self) {
-        match serde_yaml::from_str::<MnxDocument>(&self.yaml_text) {
+        match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(doc) => {
                 let errors = validate::validate_mnx(&doc);
                 
