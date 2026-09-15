@@ -1,5 +1,5 @@
 use eframe::egui;
-use eframe::egui::text::LayoutJob;
+
 use std::fs;
 use crate::mnx::MnxDocument;
 use crate::validate;
@@ -7,7 +7,8 @@ use crate::render;
 
 pub struct MnxEditorApp {
     yaml_text: String,
-    rendered_tab: eframe::egui::text::LayoutJob,
+    parsed_mnx: Option<MnxDocument>,
+    parsed_errors: Vec<validate::ValidationError>,
     validation_errors: Vec<String>,
     current_file_path: Option<std::path::PathBuf>, // Tracks the active file
 }
@@ -19,7 +20,8 @@ impl Default for MnxEditorApp {
         
         let mut app = Self {
             yaml_text: initial_yaml,
-            rendered_tab: LayoutJob::default(),
+            parsed_mnx: None,
+            parsed_errors: Vec::new(),
             validation_errors: Vec::new(),
             current_file_path: None,
         };
@@ -40,16 +42,12 @@ impl MnxEditorApp {
                     .map(|err| format!("Measure {}, Event {}: {}", err.measure_idx, err.event_idx + 1, err.message))
                     .collect();
 
-                if let Some(part) = doc.parts.first() {
-                    // Always render the tab, pass errors for red coordinate highlighting
-                    self.rendered_tab = render::render_part_to_tab(part, &errors);
-                } else {
-                    let mut job = LayoutJob::default();
-                    job.append("No parts found in document.", 0.0, egui::TextFormat::default());
-                    self.rendered_tab = job;
-                }
+                self.parsed_errors = errors;
+                self.parsed_mnx = Some(doc);
             }
             Err(e) => {
+                self.parsed_mnx = None;
+                self.parsed_errors = Vec::new();
                 self.validation_errors = vec![format!("YAML PARSE ERROR:\n{}", e)];
             }
         }
@@ -170,7 +168,15 @@ impl eframe::App for MnxEditorApp {
             ui.heading("Tablature Render");
             ui.separator();
             egui::ScrollArea::both().show(ui, |ui| {
-                ui.label(self.rendered_tab.clone());
+                if let Some(doc) = &self.parsed_mnx {
+                    if let Some(part) = doc.parts.first() {
+                        render::draw_tablature(ui, part, &self.parsed_errors);
+                    } else {
+                        ui.label("No parts found in document.");
+                    }
+                } else {
+                    ui.label("Could not parse document.");
+                }
             });
         });
     }
