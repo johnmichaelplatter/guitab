@@ -53,9 +53,8 @@ impl MnxEditorApp {
 }
 
 impl eframe::App for MnxEditorApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Top Menu Bar
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("top_panel").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Process / Refresh").clicked() {
                     self.process_and_render();
@@ -64,10 +63,10 @@ impl eframe::App for MnxEditorApp {
         });
 
         // Right Pane: YAML Text Editor
-        egui::SidePanel::right("yaml_panel")
+        egui::Panel::right("yaml_panel")
             .resizable(true)
-            .min_width(350.0)
-            .show(ctx, |ui| {
+            .min_size(350.0)
+            .show(ui, |ui| {
                 ui.heading("MNX Source (YAML)");
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -81,7 +80,7 @@ impl eframe::App for MnxEditorApp {
             });
 
         // Left Pane: ASCII Render Output
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Tablature Render");
             ui.separator();
             egui::ScrollArea::both().show(ui, |ui| {
