@@ -7,8 +7,9 @@ use crate::render;
 
 pub struct MnxEditorApp {
     yaml_text: String,
-    rendered_tab: LayoutJob,
+    rendered_tab: eframe::egui::text::LayoutJob,
     validation_errors: Vec<String>,
+    current_file_path: Option<std::path::PathBuf>, // Tracks the active file
 }
 
 impl Default for MnxEditorApp {
@@ -20,6 +21,7 @@ impl Default for MnxEditorApp {
             yaml_text: initial_yaml,
             rendered_tab: LayoutJob::default(),
             validation_errors: Vec::new(),
+            current_file_path: None,
         };
         
         app.process_and_render();
@@ -52,12 +54,80 @@ impl MnxEditorApp {
             }
         }
     }
+    fn open_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("YAML Documents", &["yaml", "yml"])
+            .pick_file()
+        {
+            match fs::read_to_string(&path) {
+                Ok(content) => {
+                    self.yaml_text = content;
+                    self.current_file_path = Some(path);
+                    self.process_and_render();
+                }
+                Err(e) => {
+                    self.validation_errors = vec![format!("Failed to read file: {}", e)];
+                }
+            }
+        }
+    }
+
+    fn save_file(&mut self) {
+        // If we have a known file path, save to it. Otherwise, trigger "Save As".
+        if let Some(path) = &self.current_file_path {
+            if let Err(e) = fs::write(path, &self.yaml_text) {
+                self.validation_errors = vec![format!("Failed to save file: {}", e)];
+            }
+        } else {
+            self.save_as_file();
+        }
+    }
+
+    fn save_as_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("YAML Documents", &["yaml", "yml"])
+            .set_file_name("untitled.yaml")
+            .save_file()
+        {
+            if let Err(e) = fs::write(&path, &self.yaml_text) {
+                self.validation_errors = vec![format!("Failed to save file: {}", e)];
+            } else {
+                // Update the current path so subsequent "Saves" go here
+                self.current_file_path = Some(path);
+            }
+        }
+    }
 }
 
 impl eframe::App for MnxEditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        
-        // 1. Bottom Panel for Errors (only shown if errors exist)
+        // 1. Top Menu Bar (Updated with file operations)
+        egui::Panel::top("top_panel").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Open").clicked() {
+                    self.open_file();
+                }
+                if ui.button("Save").clicked() {
+                    self.save_file();
+                }
+                if ui.button("Save As...").clicked() {
+                    self.save_as_file();
+                }
+
+                ui.separator();
+
+                // Display the current filename or "Untitled"
+                let file_name = self.current_file_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Untitled");
+                
+                ui.label(egui::RichText::new(format!("Editing: {}", file_name)).italics());
+            });
+        });
+
+        // 2. Bottom Panel for Errors (only shown if errors exist)
         if !self.validation_errors.is_empty() {
             egui::Panel::bottom("error_panel")
                 .resizable(true)
@@ -73,7 +143,7 @@ impl eframe::App for MnxEditorApp {
                 });
         }
 
-        // 2. Right Pane: YAML Text Editor
+        // 3. Right Pane: YAML Text Editor
         egui::Panel::right("yaml_panel")
             .resizable(true)
             .min_size(350.0)
@@ -95,7 +165,7 @@ impl eframe::App for MnxEditorApp {
                 });
             });
 
-        // 3. Left Pane: Render Output
+        // 4. Left Pane: Render Output
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Tablature Render");
             ui.separator();
