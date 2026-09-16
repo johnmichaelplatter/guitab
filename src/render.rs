@@ -86,7 +86,10 @@ pub fn draw_tablature(
     part: &Part,
     errors: &[ValidationError],
     selected_event: Option<usize>,
-) -> (egui::Response, Option<usize>) {
+    selected_note_in_event: Option<usize>,
+    is_editing_fret: bool,
+    editing_fret_text: &str,
+) -> (egui::Response, Option<(usize, Option<usize>)>) {
     let num_strings = part.num_strings();
     if num_strings == 0 {
         return (ui.label("No strings found."), None);
@@ -213,11 +216,12 @@ pub fn draw_tablature(
     let bg_color        = ui.visuals().panel_fill;
     let note_color      = ui.visuals().text_color();
     let highlight_color = Color32::from_rgb(100, 180, 255); // Light blue
+    let edit_color      = Color32::from_rgb(255, 175, 75);  // Light orange
 
     // Collect rhythm notes so we can do beam-grouping after the main loop.
     let mut rhythm_notes: Vec<RhythmNote> = Vec::new();
-    // Hit boxes for each event: (fret_rects, stem_rect, col_rect)
-    let mut event_hit_boxes: Vec<(Vec<Rect>, Rect, Rect)> = Vec::new();
+    // Hit boxes for each event: (fret_rects: Vec<(Rect, usize)>, stem_rect, col_rect)
+    let mut event_hit_boxes: Vec<(Vec<(Rect, usize)>, Rect, Rect)> = Vec::new();
 
     let mut flat_event_idx = 0;
 
@@ -234,19 +238,20 @@ pub fn draw_tablature(
                 );
 
                 if is_selected {
-                    painter.rect_filled(
-                        col_rect,
-                        4.0,
-                        Color32::from_rgba_unmultiplied(100, 180, 255, 35),
-                    );
+                    let col_color = if is_editing_fret {
+                        Color32::from_rgba_unmultiplied(255, 175, 75, 35)
+                    } else {
+                        Color32::from_rgba_unmultiplied(100, 180, 255, 35)
+                    };
+                    painter.rect_filled(col_rect, 4.0, col_color);
                 }
 
-                // Fret numbers on strings
-                let mut step_frets: Vec<Option<u8>> = vec![None; num_strings];
-                for note in &event.notes {
+                // Fret numbers on strings: store (fret, note_idx)
+                let mut step_frets: Vec<Option<(u8, usize)>> = vec![None; num_strings];
+                for (n_idx, note) in event.notes.iter().enumerate() {
                     if let (Some(s), Some(f)) = (note.string, note.fret) {
                         if s >= 1 && (s as usize) <= num_strings {
-                            step_frets[(s - 1) as usize] = Some(f);
+                            step_frets[(s - 1) as usize] = Some((f, n_idx));
                         }
                     }
                 }
@@ -254,33 +259,54 @@ pub fn draw_tablature(
                 let mut current_fret_rects = Vec::new();
 
                 for i in 0..num_strings {
-                    if let Some(fret) = step_frets[i] {
+                    if let Some((fret, n_idx)) = step_frets[i] {
                         let string_num = (i + 1) as u8;
                         let is_err =
                             error_coords.contains(&(m_idx + 1, e_idx, string_num, fret));
+                        let is_this_note_selected = is_selected
+                            && (selected_note_in_event.is_none()
+                                || selected_note_in_event == Some(n_idx));
+
                         let text_color = if is_err {
                             Color32::RED
-                        } else if is_selected {
+                        } else if is_this_note_selected {
                             Color32::BLACK
                         } else {
                             note_color
                         };
                         let y = string_y_coords[i];
 
-                        let text   = fret.to_string();
-                        let galley = painter.layout_no_wrap(text, font_id.clone(), text_color);
+                        let display_text = if is_this_note_selected && is_editing_fret {
+                            if editing_fret_text.is_empty() {
+                                "_".to_string()
+                            } else {
+                                editing_fret_text.to_string()
+                            }
+                        } else {
+                            fret.to_string()
+                        };
+
+                        let galley = painter.layout_no_wrap(display_text, font_id.clone(), text_color);
                         let text_rect = Rect::from_center_size(
                             Pos2::new(current_x, y),
                             galley.size(),
                         );
 
-                        if is_selected {
-                            painter.rect_filled(text_rect.expand(3.5), 3.0, highlight_color);
+                        if is_this_note_selected {
+                            let pill_color = if is_editing_fret { edit_color } else { highlight_color };
+                            painter.rect_filled(text_rect.expand(3.5), 3.0, pill_color);
+                        } else if is_selected {
+                            // Subtly frame other notes in the selected chord
+                            painter.rect_filled(
+                                text_rect.expand(2.5),
+                                2.0,
+                                Color32::from_rgba_unmultiplied(100, 180, 255, 60),
+                            );
                         } else {
                             painter.rect_filled(text_rect.expand(2.0), 0.0, bg_color);
                         }
                         painter.galley(text_rect.min, galley, text_color);
-                        current_fret_rects.push(text_rect);
+                        current_fret_rects.push((text_rect, n_idx));
                     }
                 }
 
@@ -434,20 +460,29 @@ pub fn draw_tablature(
     }
 
     // ── Click interaction ─────────────────────────────────────────────────────
-    let mut clicked_event = None;
+    let mut clicked_selection = None;
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             for (idx, (fret_rects, stem_rect, col_rect)) in event_hit_boxes.iter().enumerate() {
-                let hit_fret = fret_rects.iter().any(|r| r.expand(4.0).contains(pos));
-                let hit_stem = stem_rect.contains(pos);
-                let hit_col = col_rect.contains(pos);
-                if hit_fret || hit_stem || hit_col {
-                    clicked_event = Some(idx);
+                // Check if directly clicked on a specific fret number
+                let mut clicked_note = None;
+                for (r, n_idx) in fret_rects {
+                    if r.expand(4.0).contains(pos) {
+                        clicked_note = Some(*n_idx);
+                        break;
+                    }
+                }
+
+                if let Some(n_idx) = clicked_note {
+                    clicked_selection = Some((idx, Some(n_idx)));
+                    break;
+                } else if stem_rect.contains(pos) || col_rect.contains(pos) {
+                    clicked_selection = Some((idx, None));
                     break;
                 }
             }
         }
     }
 
-    (response, clicked_event)
+    (response, clicked_selection)
 }
