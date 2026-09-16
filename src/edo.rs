@@ -90,6 +90,7 @@ impl EdoTuning {
     }
 }
 
+#[allow(dead_code)]
 pub fn generate_edo_scale(edo: u32) -> Vec<(i32, String, f64, f64)> {
     let tuning = EdoTuning::new(edo);
     let e = edo as i32;

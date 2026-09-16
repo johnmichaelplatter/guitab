@@ -34,6 +34,7 @@ enum Rhythm {
 
 impl Rhythm {
     /// Duration in quarter-note beats (used for beam-grouping decisions).
+    #[allow(dead_code)]
     fn beats(self) -> f64 {
         match self {
             Rhythm::Whole        => 4.0,
@@ -89,6 +90,7 @@ pub fn draw_tablature(
     selected_note_in_event: Option<usize>,
     is_editing_fret: bool,
     editing_fret_text: &str,
+    editing_string: Option<u8>,
 ) -> (egui::Response, Option<(usize, Option<usize>)>) {
     let num_strings = part.num_strings();
     if num_strings == 0 {
@@ -199,6 +201,7 @@ pub fn draw_tablature(
 
     let error_coords: std::collections::HashSet<_> = errors
         .iter()
+        .filter(|e| e.string > 0)
         .map(|e| (e.measure_idx, e.event_idx, e.string, e.fret))
         .collect();
 
@@ -259,26 +262,30 @@ pub fn draw_tablature(
                 let mut current_fret_rects = Vec::new();
 
                 for i in 0..num_strings {
+                    let string_num = (i + 1) as u8;
+                    let y = string_y_coords[i];
+
                     if let Some((fret, n_idx)) = step_frets[i] {
-                        let string_num = (i + 1) as u8;
                         let is_err =
                             error_coords.contains(&(m_idx + 1, e_idx, string_num, fret));
-                        let is_this_note_selected = is_selected
+                        let is_this_string_editing =
+                            is_selected && is_editing_fret && editing_string == Some(string_num);
+                        let is_this_note_selected = !is_editing_fret
+                            && is_selected
                             && (selected_note_in_event.is_none()
                                 || selected_note_in_event == Some(n_idx));
 
                         let text_color = if is_err {
                             Color32::RED
-                        } else if is_this_note_selected {
+                        } else if is_this_string_editing || is_this_note_selected {
                             Color32::BLACK
                         } else {
                             note_color
                         };
-                        let y = string_y_coords[i];
 
-                        let display_text = if is_this_note_selected && is_editing_fret {
+                        let display_text = if is_this_string_editing {
                             if editing_fret_text.is_empty() {
-                                "_".to_string()
+                                fret.to_string()
                             } else {
                                 editing_fret_text.to_string()
                             }
@@ -292,9 +299,10 @@ pub fn draw_tablature(
                             galley.size(),
                         );
 
-                        if is_this_note_selected {
-                            let pill_color = if is_editing_fret { edit_color } else { highlight_color };
-                            painter.rect_filled(text_rect.expand(3.5), 3.0, pill_color);
+                        if is_this_string_editing {
+                            painter.rect_filled(text_rect.expand(3.5), 3.0, edit_color);
+                        } else if is_this_note_selected {
+                            painter.rect_filled(text_rect.expand(3.5), 3.0, highlight_color);
                         } else if is_selected {
                             // Subtly frame other notes in the selected chord
                             painter.rect_filled(
@@ -307,6 +315,20 @@ pub fn draw_tablature(
                         }
                         painter.galley(text_rect.min, galley, text_color);
                         current_fret_rects.push((text_rect, n_idx));
+                    } else if is_selected && is_editing_fret && editing_string == Some(string_num) {
+                        // Empty string currently focused for placement in edit mode
+                        let display_text = if editing_fret_text.is_empty() {
+                            "_".to_string()
+                        } else {
+                            editing_fret_text.to_string()
+                        };
+                        let galley = painter.layout_no_wrap(display_text, font_id.clone(), Color32::BLACK);
+                        let text_rect = Rect::from_center_size(
+                            Pos2::new(current_x, y),
+                            galley.size(),
+                        );
+                        painter.rect_filled(text_rect.expand(3.5), 3.0, edit_color);
+                        painter.galley(text_rect.min, galley, Color32::BLACK);
                     }
                 }
 
@@ -317,7 +339,10 @@ pub fn draw_tablature(
                 event_hit_boxes.push((current_fret_rects, stem_rect, col_rect));
 
                 // Collect rhythm info for drawing after loop
-                let (rhythm, is_dotted) = parse_rhythm(&event.duration.base);
+                let (rhythm, mut is_dotted) = parse_rhythm(&event.duration.base);
+                if event.duration.dots.unwrap_or(0) > 0 {
+                    is_dotted = true;
+                }
                 rhythm_notes.push(RhythmNote {
                     x: current_x,
                     rhythm,

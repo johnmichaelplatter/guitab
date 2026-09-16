@@ -13,17 +13,19 @@ pub struct MnxMeta {
     pub version: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct Global {
+    #[serde(default)]
     pub measures: Vec<GlobalMeasure>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GlobalMeasure {
-    pub time: TimeSignature,
+    #[serde(default)]
+    pub time: Option<TimeSignature>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSignature {
     pub count: u32,
     pub unit: u32,
@@ -68,9 +70,11 @@ pub struct Event {
     pub notes: Vec<Note>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Duration {
     pub base: String,
+    #[serde(default)]
+    pub dots: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
