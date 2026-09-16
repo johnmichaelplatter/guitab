@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, Color32};
 
 use std::fs;
 use crate::mnx::MnxDocument;
@@ -11,6 +11,7 @@ pub struct MnxEditorApp {
     parsed_errors: Vec<validate::ValidationError>,
     validation_errors: Vec<String>,
     current_file_path: Option<std::path::PathBuf>, // Tracks the active file
+    selected_event_idx: Option<usize>,             // Selected note/beat index
 }
 
 impl Default for MnxEditorApp {
@@ -24,11 +25,105 @@ impl Default for MnxEditorApp {
             parsed_errors: Vec::new(),
             validation_errors: Vec::new(),
             current_file_path: None,
+            selected_event_idx: None,
         };
         
         app.process_and_render();
         app
     }
+}
+
+/// Locates character byte ranges `start..end` for all events under `content:` blocks in the YAML text.
+pub fn find_all_event_ranges(yaml: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let lines: Vec<&str> = yaml.lines().collect();
+    if lines.is_empty() {
+        return ranges;
+    }
+
+    let mut line_starts = Vec::with_capacity(lines.len());
+    let mut offset = 0;
+    for line in yaml.split_inclusive('\n') {
+        line_starts.push(offset);
+        offset += line.len();
+    }
+    while line_starts.len() < lines.len() {
+        let last_start = *line_starts.last().unwrap_or(&0);
+        let prev_len = lines[line_starts.len() - 1].len();
+        line_starts.push(last_start + prev_len);
+    }
+
+    let mut in_content = false;
+    let mut content_indent = 0;
+    let mut current_event_start_line: Option<usize> = None;
+    let mut event_indent = 0;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with("content:") || trimmed.ends_with("content:") {
+            if let Some(start_line) = current_event_start_line {
+                let end_line = i.saturating_sub(1);
+                let start = line_starts[start_line];
+                let end = line_starts[end_line] + lines[end_line].len();
+                ranges.push(start..end);
+                current_event_start_line = None;
+            }
+            in_content = true;
+            content_indent = indent;
+            continue;
+        }
+
+        if in_content {
+            if indent <= content_indent
+                && (trimmed.starts_with("measures:")
+                    || trimmed.starts_with("sequences:")
+                    || trimmed.starts_with("parts:")
+                    || trimmed.starts_with("- sequences:")
+                    || trimmed.starts_with("- measures:"))
+            {
+                if let Some(start_line) = current_event_start_line {
+                    let end_line = i.saturating_sub(1);
+                    let start = line_starts[start_line];
+                    let end = line_starts[end_line] + lines[end_line].len();
+                    ranges.push(start..end);
+                    current_event_start_line = None;
+                }
+                in_content = false;
+                continue;
+            }
+
+            if trimmed.starts_with('-') {
+                if let Some(start_line) = current_event_start_line {
+                    if indent <= event_indent {
+                        let end_line = i.saturating_sub(1);
+                        let start = line_starts[start_line];
+                        let end = line_starts[end_line] + lines[end_line].len();
+                        ranges.push(start..end);
+                        current_event_start_line = Some(i);
+                        event_indent = indent;
+                    }
+                } else {
+                    current_event_start_line = Some(i);
+                    event_indent = indent;
+                }
+            }
+        }
+    }
+
+    if let Some(start_line) = current_event_start_line {
+        let end_line = lines.len().saturating_sub(1);
+        let start = line_starts[start_line];
+        let end = line_starts[end_line] + lines[end_line].len();
+        ranges.push(start..end);
+    }
+
+    ranges
 }
 
 impl MnxEditorApp {
@@ -61,6 +156,7 @@ impl MnxEditorApp {
                 Ok(content) => {
                     self.yaml_text = content;
                     self.current_file_path = Some(path);
+                    self.selected_event_idx = None;
                     self.process_and_render();
                 }
                 Err(e) => {
@@ -99,6 +195,43 @@ impl MnxEditorApp {
 
 impl eframe::App for MnxEditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let event_ranges = find_all_event_ranges(&self.yaml_text);
+        let total_events = event_ranges.len();
+        let text_edit_id = egui::Id::new("yaml_source_editor");
+
+        // Clamp selection if document changed
+        if let Some(idx) = self.selected_event_idx {
+            if total_events == 0 {
+                self.selected_event_idx = None;
+            } else if idx >= total_events {
+                self.selected_event_idx = Some(total_events - 1);
+            }
+        }
+
+        // Handle Arrow Left / Right navigation between notes when editor is not actively focused
+        if total_events > 0 {
+            let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
+            let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
+
+            if left_pressed || right_pressed {
+                let editor_focused = ui.memory(|m| m.has_focus(text_edit_id));
+                if !editor_focused {
+                    if left_pressed {
+                        self.selected_event_idx = match self.selected_event_idx {
+                            Some(idx) => Some(idx.saturating_sub(1)),
+                            None => Some(total_events.saturating_sub(1)),
+                        };
+                    }
+                    if right_pressed {
+                        self.selected_event_idx = match self.selected_event_idx {
+                            Some(idx) => Some((idx + 1).min(total_events - 1)),
+                            None => Some(0),
+                        };
+                    }
+                }
+            }
+        }
+
         // 1. Top Menu Bar (Updated with file operations)
         egui::Panel::top("top_panel").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -122,6 +255,15 @@ impl eframe::App for MnxEditorApp {
                     .unwrap_or("Untitled");
                 
                 ui.label(egui::RichText::new(format!("Editing: {}", file_name)).italics());
+
+                if let Some(sel) = self.selected_event_idx {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!("Note {} of {}", sel + 1, total_events))
+                            .color(Color32::from_rgb(100, 180, 255))
+                            .strong(),
+                    );
+                }
             });
         });
 
@@ -149,11 +291,78 @@ impl eframe::App for MnxEditorApp {
                 ui.heading("MNX Source (YAML)");
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let selected_range = self.selected_event_idx
+                        .and_then(|idx| event_ranges.get(idx).cloned());
+
+                    let mut layouter = |ui: &egui::Ui, text_buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let text = text_buf.as_str();
+                        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+                        let text_color = ui.visuals().text_color();
+                        let mut job = egui::text::LayoutJob::default();
+                        job.wrap.max_width = wrap_width;
+
+                        if let Some(sel) = &selected_range {
+                            let sel_start = sel.start.min(text.len());
+                            let sel_end = sel.end.min(text.len());
+
+                            if sel_start > 0 {
+                                job.append(
+                                    &text[..sel_start],
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: font_id.clone(),
+                                        color: text_color,
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+
+                            if sel_end > sel_start {
+                                job.append(
+                                    &text[sel_start..sel_end],
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: font_id.clone(),
+                                        color: Color32::from_rgb(220, 240, 255),
+                                        background: Color32::from_rgba_unmultiplied(60, 130, 210, 120),
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+
+                            if sel_end < text.len() {
+                                job.append(
+                                    &text[sel_end..],
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: font_id.clone(),
+                                        color: text_color,
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                        } else {
+                            job.append(
+                                text,
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: font_id.clone(),
+                                    color: text_color,
+                                    ..Default::default()
+                                },
+                            );
+                        }
+
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
+
                     let response = ui.add(
                         egui::TextEdit::multiline(&mut self.yaml_text)
+                            .id(text_edit_id)
                             .font(egui::TextStyle::Monospace)
                             .desired_width(f32::INFINITY)
-                            .code_editor(), 
+                            .code_editor()
+                            .layouter(&mut layouter),
                     );
                     
                     // Trigger real-time re-render on any keystroke
@@ -170,7 +379,15 @@ impl eframe::App for MnxEditorApp {
             egui::ScrollArea::both().show(ui, |ui| {
                 if let Some(doc) = &self.parsed_mnx {
                     if let Some(part) = doc.parts.first() {
-                        render::draw_tablature(ui, part, &self.parsed_errors);
+                        let (_resp, clicked) = render::draw_tablature(
+                            ui,
+                            part,
+                            &self.parsed_errors,
+                            self.selected_event_idx,
+                        );
+                        if let Some(clicked_idx) = clicked {
+                            self.selected_event_idx = Some(clicked_idx);
+                        }
                     } else {
                         ui.label("No parts found in document.");
                     }
@@ -179,5 +396,22 @@ impl eframe::App for MnxEditorApp {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_all_event_ranges_example_yaml() {
+        let yaml = include_str!("../example.yaml");
+        let ranges = find_all_event_ranges(yaml);
+        assert_eq!(ranges.len(), 15);
+        for range in &ranges {
+            let snippet = &yaml[range.clone()];
+            assert!(snippet.contains("duration"));
+            assert!(snippet.contains("notes"));
+        }
     }
 }

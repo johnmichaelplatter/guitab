@@ -85,10 +85,11 @@ pub fn draw_tablature(
     ui: &mut egui::Ui,
     part: &Part,
     errors: &[ValidationError],
-) -> egui::Response {
+    selected_event: Option<usize>,
+) -> (egui::Response, Option<usize>) {
     let num_strings = part.num_strings();
     if num_strings == 0 {
-        return ui.label("No strings found.");
+        return (ui.label("No strings found."), None);
     }
 
     // ── Layout constants ─────────────────────────────────────────────────────
@@ -158,7 +159,7 @@ pub fn draw_tablature(
 
     let (response, painter) = ui.allocate_painter(
         Vec2::new(total_width, total_height),
-        egui::Sense::hover(),
+        egui::Sense::click(),
     );
     let rect = response.rect;
 
@@ -211,15 +212,34 @@ pub fn draw_tablature(
     let mut current_x   = rect.min.x + start_offset_x;
     let bg_color        = ui.visuals().panel_fill;
     let note_color      = ui.visuals().text_color();
+    let highlight_color = Color32::from_rgb(100, 180, 255); // Light blue
 
     // Collect rhythm notes so we can do beam-grouping after the main loop.
     let mut rhythm_notes: Vec<RhythmNote> = Vec::new();
+    // Hit boxes for each event: (fret_rects, stem_rect, col_rect)
+    let mut event_hit_boxes: Vec<(Vec<Rect>, Rect, Rect)> = Vec::new();
+
+    let mut flat_event_idx = 0;
 
     // ── Main event loop ───────────────────────────────────────────────────────
 
     for (m_idx, measure) in part.measures.iter().enumerate() {
         if let Some(seq) = measure.sequences.first() {
             for (e_idx, event) in seq.content.iter().enumerate() {
+                let is_selected = selected_event == Some(flat_event_idx);
+
+                let col_rect = Rect::from_min_max(
+                    Pos2::new(current_x - 12.0, string_y_coords[0] - 6.0),
+                    Pos2::new(current_x + 12.0, stem_bot_y + 6.0),
+                );
+
+                if is_selected {
+                    painter.rect_filled(
+                        col_rect,
+                        4.0,
+                        Color32::from_rgba_unmultiplied(100, 180, 255, 35),
+                    );
+                }
 
                 // Fret numbers on strings
                 let mut step_frets: Vec<Option<u8>> = vec![None; num_strings];
@@ -231,12 +251,20 @@ pub fn draw_tablature(
                     }
                 }
 
+                let mut current_fret_rects = Vec::new();
+
                 for i in 0..num_strings {
                     if let Some(fret) = step_frets[i] {
                         let string_num = (i + 1) as u8;
                         let is_err =
                             error_coords.contains(&(m_idx + 1, e_idx, string_num, fret));
-                        let text_color = if is_err { Color32::RED } else { note_color };
+                        let text_color = if is_err {
+                            Color32::RED
+                        } else if is_selected {
+                            Color32::BLACK
+                        } else {
+                            note_color
+                        };
                         let y = string_y_coords[i];
 
                         let text   = fret.to_string();
@@ -246,10 +274,21 @@ pub fn draw_tablature(
                             galley.size(),
                         );
 
-                        painter.rect_filled(text_rect.expand(2.0), 0.0, bg_color);
+                        if is_selected {
+                            painter.rect_filled(text_rect.expand(3.5), 3.0, highlight_color);
+                        } else {
+                            painter.rect_filled(text_rect.expand(2.0), 0.0, bg_color);
+                        }
                         painter.galley(text_rect.min, galley, text_color);
+                        current_fret_rects.push(text_rect);
                     }
                 }
+
+                let stem_rect = Rect::from_min_max(
+                    Pos2::new(current_x - 10.0, stem_top_y - 2.0),
+                    Pos2::new(current_x + 10.0, stem_bot_y + 6.0),
+                );
+                event_hit_boxes.push((current_fret_rects, stem_rect, col_rect));
 
                 // Collect rhythm info for drawing after loop
                 let (rhythm, is_dotted) = parse_rhythm(&event.duration.base);
@@ -260,6 +299,7 @@ pub fn draw_tablature(
                     measure_idx: m_idx,
                 });
 
+                flat_event_idx += 1;
                 current_x += event_spacing;
             }
         }
@@ -276,12 +316,6 @@ pub fn draw_tablature(
     }
 
     // ── Rhythm notation ───────────────────────────────────────────────────────
-    // Strategy:
-    //  • Every note gets a vertical stem at event center `cx` (whole notes get none)
-    //  • No circle noteheads are drawn
-    //  • Beams/flags are drawn at the bottom of the stem (`stem_bot_y`), stacking upward
-    //  • Beam groups connect up to 4 consecutive 8th/16th/32nd notes within the same measure
-
     let n = rhythm_notes.len();
     let mut beam_right = vec![false; n];
     let mut current_group_count = 0;
@@ -312,12 +346,15 @@ pub fn draw_tablature(
     for (i, note) in rhythm_notes.iter().enumerate() {
         let cx = note.x;
         let flags = note.rhythm.flag_count();
+        let is_selected = selected_event == Some(i);
+        let this_stem_color = if is_selected { highlight_color } else { note_color };
+        let stem_thickness = if is_selected { 2.5 } else { 1.5 };
 
         // ── Stem ──────────────────────────────────────────────────────────────
         if note.rhythm != Rhythm::Whole {
             painter.line_segment(
                 [Pos2::new(cx, stem_top_y), Pos2::new(cx, stem_bot_y)],
-                Stroke::new(1.5, note_color),
+                Stroke::new(stem_thickness, this_stem_color),
             );
         }
 
@@ -326,7 +363,7 @@ pub fn draw_tablature(
             painter.circle_filled(
                 Pos2::new(cx + 5.0, stem_bot_y - 2.0),
                 1.5,
-                note_color,
+                this_stem_color,
             );
         }
 
@@ -356,7 +393,7 @@ pub fn draw_tablature(
                     let stub_w = event_spacing * 0.35;
                     painter.line_segment(
                         [Pos2::new(sx, by), Pos2::new(sx + stub_w, by)],
-                        Stroke::new(3.0, note_color),
+                        Stroke::new(3.0, this_stem_color),
                     );
                 }
             }
@@ -372,7 +409,7 @@ pub fn draw_tablature(
                         let stub_w = event_spacing * 0.35;
                         painter.line_segment(
                             [Pos2::new(sx - stub_w, by), Pos2::new(sx, by)],
-                            Stroke::new(3.0, note_color),
+                            Stroke::new(3.0, this_stem_color),
                         );
                     }
                 }
@@ -386,15 +423,31 @@ pub fn draw_tablature(
                 let flag_w     = event_spacing * 0.45;
                 painter.line_segment(
                     [Pos2::new(sx, flag_y_bot), Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5)],
-                    Stroke::new(1.5, note_color),
+                    Stroke::new(if is_selected { 2.0 } else { 1.5 }, this_stem_color),
                 );
                 painter.line_segment(
                     [Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5), Pos2::new(sx + flag_w * 0.4, flag_y_top)],
-                    Stroke::new(1.5, note_color),
+                    Stroke::new(if is_selected { 2.0 } else { 1.5 }, this_stem_color),
                 );
             }
         }
     }
 
-    response
+    // ── Click interaction ─────────────────────────────────────────────────────
+    let mut clicked_event = None;
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            for (idx, (fret_rects, stem_rect, col_rect)) in event_hit_boxes.iter().enumerate() {
+                let hit_fret = fret_rects.iter().any(|r| r.expand(4.0).contains(pos));
+                let hit_stem = stem_rect.contains(pos);
+                let hit_col = col_rect.contains(pos);
+                if hit_fret || hit_stem || hit_col {
+                    clicked_event = Some(idx);
+                    break;
+                }
+            }
+        }
+    }
+
+    (response, clicked_event)
 }
