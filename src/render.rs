@@ -54,11 +54,6 @@ impl Rhythm {
             Rhythm::ThirtySecond => 3,
         }
     }
-
-    /// Does this value have a filled note-head?
-    fn is_filled(self) -> bool {
-        !matches!(self, Rhythm::Whole | Rhythm::Half)
-    }
 }
 
 fn parse_rhythm(base: &str) -> (Rhythm, bool) {
@@ -81,6 +76,7 @@ struct RhythmNote {
     x: f32,
     rhythm: Rhythm,
     is_dotted: bool,
+    measure_idx: usize,
 }
 
 // ── Main draw function ────────────────────────────────────────────────────────
@@ -107,8 +103,6 @@ pub fn draw_tablature(
     // Rhythm row sits below the staff
     let rhythm_gap     = 14.0_f32;  // gap between last string line and stem top
     let stem_height    = 22.0_f32;
-    let head_rx        =  4.5_f32;  // half-width of note head ellipse
-    let head_ry        =  3.0_f32;  // half-height
     let flag_spacing   =  4.5_f32;  // vertical distance between flags
 
     // ── Font ─────────────────────────────────────────────────────────────────
@@ -153,7 +147,7 @@ pub fn draw_tablature(
     let start_offset_x       = first_barline_offset + first_bar_pad;
 
     let staff_height   = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
-    let rhythm_row_h   = rhythm_gap + stem_height + head_ry * 2.0 + 6.0; // stem + head + dot
+    let rhythm_row_h   = rhythm_gap + stem_height + 10.0;                 // stem + flags/dots + pad
     let total_height   = 20.0 + staff_height + rhythm_row_h + 10.0;       // top pad + staff + rhythm + bottom pad
     let total_width    = start_offset_x
         + (total_events as f32) * event_spacing
@@ -196,7 +190,6 @@ pub fn draw_tablature(
     let last_string_y = *string_y_coords.last().unwrap();
     let stem_top_y    = last_string_y + rhythm_gap;
     let stem_bot_y    = stem_top_y + stem_height;
-    let head_center_y = stem_bot_y + head_ry;
 
     // ── Error coordinate set ──────────────────────────────────────────────────
 
@@ -260,7 +253,12 @@ pub fn draw_tablature(
 
                 // Collect rhythm info for drawing after loop
                 let (rhythm, is_dotted) = parse_rhythm(&event.duration.base);
-                rhythm_notes.push(RhythmNote { x: current_x, rhythm, is_dotted });
+                rhythm_notes.push(RhythmNote {
+                    x: current_x,
+                    rhythm,
+                    is_dotted,
+                    measure_idx: m_idx,
+                });
 
                 current_x += event_spacing;
             }
@@ -279,26 +277,35 @@ pub fn draw_tablature(
 
     // ── Rhythm notation ───────────────────────────────────────────────────────
     // Strategy:
-    //  • Every note gets a vertical stem (whole notes get none)
-    //  • Whole = open oval, no stem
-    //  • Half  = open oval + stem
-    //  • Quarter+ = filled oval + stem
-    //  • Flags / beams: eighth gets 1, 16th gets 2, 32nd gets 3.
-    //    We beam consecutive sub-quarter notes together (replace individual
-    //    flags with a shared thick horizontal beam between them).
+    //  • Every note gets a vertical stem at event center `cx` (whole notes get none)
+    //  • No circle noteheads are drawn
+    //  • Beams/flags are drawn at the bottom of the stem (`stem_bot_y`), stacking upward
+    //  • Beam groups connect up to 4 consecutive 8th/16th/32nd notes within the same measure
 
-    // First identify beam groups: runs of notes with flag_count >= 1.
-    // A beam group shares a single thick line per flag level.
     let n = rhythm_notes.len();
-
-    // For each note, record whether it is beamed to its right neighbour.
-    // Simple rule: beam if both notes have flags and are adjacent in the slice.
     let mut beam_right = vec![false; n];
-    for i in 0..n.saturating_sub(1) {
-        let a = &rhythm_notes[i];
-        let b = &rhythm_notes[i + 1];
-        if a.rhythm.flag_count() >= 1 && b.rhythm.flag_count() >= 1 {
-            beam_right[i] = true;
+    let mut current_group_count = 0;
+
+    for i in 0..n {
+        let flags = rhythm_notes[i].rhythm.flag_count();
+        if flags == 0 {
+            current_group_count = 0;
+            continue;
+        }
+
+        current_group_count += 1;
+
+        if current_group_count < 4 && i + 1 < n {
+            let next_note = &rhythm_notes[i + 1];
+            if next_note.measure_idx == rhythm_notes[i].measure_idx
+                && next_note.rhythm.flag_count() >= 1
+            {
+                beam_right[i] = true;
+            } else {
+                current_group_count = 0;
+            }
+        } else {
+            current_group_count = 0;
         }
     }
 
@@ -309,24 +316,7 @@ pub fn draw_tablature(
         // ── Stem ──────────────────────────────────────────────────────────────
         if note.rhythm != Rhythm::Whole {
             painter.line_segment(
-                [Pos2::new(cx + head_rx, stem_top_y), Pos2::new(cx + head_rx, stem_bot_y)],
-                Stroke::new(1.5, note_color),
-            );
-        }
-
-        // ── Note head ─────────────────────────────────────────────────────────
-        if note.rhythm.is_filled() {
-            // Filled ellipse
-            painter.circle_filled(
-                Pos2::new(cx, head_center_y),
-                head_rx,  // approximate with circle; looks fine at this size
-                note_color,
-            );
-        } else {
-            // Open ellipse — draw outline circle
-            painter.circle_stroke(
-                Pos2::new(cx, head_center_y),
-                head_rx,
+                [Pos2::new(cx, stem_top_y), Pos2::new(cx, stem_bot_y)],
                 Stroke::new(1.5, note_color),
             );
         }
@@ -334,38 +324,35 @@ pub fn draw_tablature(
         // ── Dot (augmentation) ────────────────────────────────────────────────
         if note.is_dotted {
             painter.circle_filled(
-                Pos2::new(cx + head_rx + 4.0, head_center_y - 2.0),
+                Pos2::new(cx + 5.0, stem_bot_y - 2.0),
                 1.5,
                 note_color,
             );
         }
 
-        // ── Flags or beams ────────────────────────────────────────────────────
+        // ── Flags or beams (at bottom of stems) ────────────────────────────────
         if flags == 0 {
-            // nothing more
+            // Whole / Half / Quarter — no beams or flags needed
         } else if beam_right[i] || (i > 0 && beam_right[i - 1]) {
-            // Part of a beam group — draw beams as thick horizontal lines
-            // between this note and the next (only when beam_right[i] is true,
-            // i.e., we are the left side of a beam).
+            // Part of a beam group — draw beams as thick horizontal lines at stem_bot_y
             if beam_right[i] {
-                let nx = rhythm_notes[i + 1].x + head_rx; // right note's stem x
-                let sx = cx + head_rx;                     // this note's stem x
+                let nx = rhythm_notes[i + 1].x; // right note stem x
+                let sx = cx;                     // this note stem x
 
-                // How many beam lines to draw = min of the two notes' flag counts
+                // How many beam lines to draw between this note and the right note
                 let shared_flags = flags.min(rhythm_notes[i + 1].rhythm.flag_count());
                 for f in 0..shared_flags {
-                    let by = stem_top_y + (f as f32) * flag_spacing;
+                    let by = stem_bot_y - (f as f32) * flag_spacing;
                     painter.line_segment(
                         [Pos2::new(sx, by), Pos2::new(nx, by)],
                         Stroke::new(3.0, note_color),
                     );
                 }
 
-                // If this note has *more* flags than its right neighbour it also
-                // gets a partial stub flag on the right side of its own stem.
+                // If this note has more flags than its right neighbour (e.g. 16th to 8th):
                 let extra = flags.saturating_sub(rhythm_notes[i + 1].rhythm.flag_count());
                 for f in shared_flags..shared_flags + extra {
-                    let by = stem_top_y + (f as f32) * flag_spacing;
+                    let by = stem_bot_y - (f as f32) * flag_spacing;
                     let stub_w = event_spacing * 0.35;
                     painter.line_segment(
                         [Pos2::new(sx, by), Pos2::new(sx + stub_w, by)],
@@ -373,21 +360,36 @@ pub fn draw_tablature(
                     );
                 }
             }
-            // Left-neighbour was already handled by beam_right[i-1] pass.
+
+            // If this note is the end of a beam group and has extra flags compared to its left neighbour:
+            if i > 0 && beam_right[i - 1] && !beam_right[i] {
+                let prev_flags = rhythm_notes[i - 1].rhythm.flag_count();
+                if flags > prev_flags {
+                    let extra = flags - prev_flags;
+                    let sx = cx;
+                    for f in prev_flags..prev_flags + extra {
+                        let by = stem_bot_y - (f as f32) * flag_spacing;
+                        let stub_w = event_spacing * 0.35;
+                        painter.line_segment(
+                            [Pos2::new(sx - stub_w, by), Pos2::new(sx, by)],
+                            Stroke::new(3.0, note_color),
+                        );
+                    }
+                }
+            }
         } else {
-            // Isolated note — draw curly flag(s) as angled lines from stem tip.
-            let sx = cx + head_rx;
+            // Isolated note — draw flag(s) attached at stem_bot_y angling up towards staff
+            let sx = cx;
             for f in 0..flags {
-                let flag_y_top = stem_top_y + (f as f32) * flag_spacing;
-                let flag_y_bot = flag_y_top + flag_spacing + 4.0;
+                let flag_y_bot = stem_bot_y - (f as f32) * flag_spacing;
+                let flag_y_top = flag_y_bot - flag_spacing - 2.0;
                 let flag_w     = event_spacing * 0.45;
-                // Two-segment flag curve approximation: straight then hooking down
                 painter.line_segment(
-                    [Pos2::new(sx, flag_y_top), Pos2::new(sx + flag_w, flag_y_top + flag_spacing * 0.6)],
+                    [Pos2::new(sx, flag_y_bot), Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5)],
                     Stroke::new(1.5, note_color),
                 );
                 painter.line_segment(
-                    [Pos2::new(sx + flag_w, flag_y_top + flag_spacing * 0.6), Pos2::new(sx + flag_w * 0.4, flag_y_bot)],
+                    [Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5), Pos2::new(sx + flag_w * 0.4, flag_y_top)],
                     Stroke::new(1.5, note_color),
                 );
             }
