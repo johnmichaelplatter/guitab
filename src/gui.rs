@@ -528,8 +528,8 @@ pub fn add_blank_note_to_last_measure(yaml: &str, duration: &crate::mnx::Duratio
     let event_ranges = find_all_event_ranges(yaml);
     let last_er = event_ranges.last()?;
 
-    let line_start = yaml[..last_er.total_range.start].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let indent_len = last_er.total_range.start - line_start;
+    let event_first_line = &yaml[last_er.total_range.start..];
+    let indent_len = event_first_line.len() - event_first_line.trim_start().len();
     let indent = " ".repeat(indent_len);
     let sub_indent = " ".repeat(indent_len + 2);
 
@@ -932,20 +932,94 @@ impl eframe::App for MnxEditorApp {
             } else if left_pressed || right_pressed || up_pressed || down_pressed {
                 // Left / Right arrow navigation: moves between events, always selecting all notes in target event
                 if left_pressed {
-                    self.selected_event_idx = match self.selected_event_idx {
-                        Some(idx) => Some(idx.saturating_sub(1)),
-                        None => Some(total_events.saturating_sub(1)),
-                    };
-                    self.selected_note_idx_in_event = None;
-                    self.editing_string = None;
+                    let at_final_event = self.selected_event_idx == Some(total_events.saturating_sub(1));
+                    let is_final_blank = at_final_event && self.parsed_mnx.as_ref()
+                        .and_then(|d| d.parts.first())
+                        .and_then(|p| p.measures.last())
+                        .and_then(|m| m.sequences.first())
+                        .and_then(|s| s.content.last())
+                        .map(|e| e.notes.is_empty())
+                        .unwrap_or(false);
+
+                    if is_final_blank {
+                        // If nothing is entered into this blank note, shifting focus back to the left removes it
+                        if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
+                            self.yaml_text = new_yaml;
+                            self.process_and_render();
+                            let new_total = find_all_event_ranges(&self.yaml_text).len();
+                            if new_total > 0 {
+                                self.selected_event_idx = Some(new_total.saturating_sub(1));
+                            } else {
+                                self.selected_event_idx = None;
+                            }
+                            self.selected_note_idx_in_event = None;
+                            self.editing_string = None;
+                        }
+                    } else {
+                        self.selected_event_idx = match self.selected_event_idx {
+                            Some(idx) => Some(idx.saturating_sub(1)),
+                            None => Some(total_events.saturating_sub(1)),
+                        };
+                        self.selected_note_idx_in_event = None;
+                        self.editing_string = None;
+                    }
                 }
                 if right_pressed {
-                    self.selected_event_idx = match self.selected_event_idx {
-                        Some(idx) => Some((idx + 1).min(total_events - 1)),
-                        None => Some(0),
-                    };
-                    self.selected_note_idx_in_event = None;
-                    self.editing_string = None;
+                    let at_final_event = self.selected_event_idx == Some(total_events.saturating_sub(1));
+
+                    if at_final_event {
+                        let is_final_blank = self.parsed_mnx.as_ref()
+                            .and_then(|d| d.parts.first())
+                            .and_then(|p| p.measures.last())
+                            .and_then(|m| m.sequences.first())
+                            .and_then(|s| s.content.last())
+                            .map(|e| e.notes.is_empty())
+                            .unwrap_or(false);
+
+                        if is_final_blank {
+                            // Rule 3: Moving further to the right of a final blank note has no effect.
+                        } else if let Some(doc) = &self.parsed_mnx {
+                            if let Some(part) = doc.parts.first() {
+                                if let Some(last_measure) = part.measures.last() {
+                                    if let Some(last_seq) = last_measure.sequences.first() {
+                                        if let Some(last_event) = last_seq.content.last() {
+                                            let m_idx = part.measures.len() - 1;
+                                            let final_dur = &last_event.duration;
+                                            let dur_beats = validate::duration_to_quarter_beats(final_dur);
+                                            let time_sig = validate::get_time_signature_for_measure(doc, m_idx);
+                                            let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+                                            let curr_beats: f64 = last_seq.content.iter().map(|e| validate::duration_to_quarter_beats(&e.duration)).sum();
+
+                                            if curr_beats + dur_beats <= max_beats + 1e-4 {
+                                                // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
+                                                if let Some(new_yaml) = add_blank_note_to_last_measure(&self.yaml_text, final_dur) {
+                                                    self.yaml_text = new_yaml;
+                                                    self.process_and_render();
+                                                    let new_total = find_all_event_ranges(&self.yaml_text).len();
+                                                    if new_total > 0 {
+                                                        self.selected_event_idx = Some(new_total - 1);
+                                                    }
+                                                    self.selected_note_idx_in_event = None;
+                                                    self.editing_string = None;
+                                                }
+                                            } else {
+                                                // Rule 2: Bar has been filled up -> add new measure with blank note
+                                                self.add_measure_to_end();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Standard Right Arrow navigation
+                        self.selected_event_idx = match self.selected_event_idx {
+                            Some(idx) => Some((idx + 1).min(total_events - 1)),
+                            None => Some(0),
+                        };
+                        self.selected_note_idx_in_event = None;
+                        self.editing_string = None;
+                    }
                 }
 
                 // Up / Down arrow navigation: selects individual notes in a chord
@@ -1204,6 +1278,23 @@ impl eframe::App for MnxEditorApp {
                         if add_bar_clicked {
                             self.add_measure_to_end();
                         } else if let Some((clicked_event, clicked_note)) = clicked {
+                            let total_events = find_all_event_ranges(&self.yaml_text).len();
+                            let was_at_final = self.selected_event_idx == Some(total_events.saturating_sub(1));
+                            let is_final_blank = was_at_final && self.parsed_mnx.as_ref()
+                                .and_then(|d| d.parts.first())
+                                .and_then(|p| p.measures.last())
+                                .and_then(|m| m.sequences.first())
+                                .and_then(|s| s.content.last())
+                                .map(|e| e.notes.is_empty())
+                                .unwrap_or(false);
+
+                            if is_final_blank && clicked_event < total_events.saturating_sub(1) {
+                                if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
+                                    self.yaml_text = new_yaml;
+                                    self.process_and_render();
+                                }
+                            }
+
                             self.selected_event_idx = Some(clicked_event);
                             self.selected_note_idx_in_event = clicked_note;
                             self.is_editing_fret = false;
@@ -1390,5 +1481,97 @@ parts:
         // Validation should pass with 0 errors
         let errors = crate::validate::validate_mnx(&updated_doc);
         assert_eq!(errors.len(), 0, "Validation should have 0 errors: {:?}", errors);
+    }
+
+    #[test]
+    fn test_add_blank_note_to_last_measure_and_remove() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: C, octave: 3 }
+                    string: 5
+                    fret: 3
+"#;
+        let dur = crate::mnx::Duration { base: "quarter".to_string(), dots: None };
+        let with_blank = add_blank_note_to_last_measure(yaml, &dur).expect("Should add blank note");
+        let doc_with_blank = serde_saphyr::from_str::<MnxDocument>(&with_blank).expect("Should parse");
+        assert_eq!(doc_with_blank.parts[0].measures[0].sequences[0].content.len(), 2);
+        assert_eq!(doc_with_blank.parts[0].measures[0].sequences[0].content[1].notes.len(), 0);
+
+        // Now remove the blank note (since nothing was entered into it)
+        let cleaned = remove_last_blank_event(&with_blank).expect("Should remove blank note");
+        let cleaned_doc = serde_saphyr::from_str::<MnxDocument>(&cleaned).expect("Should parse");
+        assert_eq!(cleaned_doc.parts[0].measures[0].sequences[0].content.len(), 1);
+        assert_eq!(cleaned_doc.parts[0].measures[0].sequences[0].content[0].notes.len(), 1);
+    }
+
+    #[test]
+    fn test_add_measure_and_remove_blank_measure() {
+        let yaml = include_str!("../example.yaml");
+        let dur = crate::mnx::Duration { base: "quarter".to_string(), dots: None };
+        let with_new_measure = add_measure_to_yaml(yaml, &dur).expect("Should add measure");
+        let doc1 = serde_saphyr::from_str::<MnxDocument>(&with_new_measure).expect("Should parse");
+        assert_eq!(doc1.parts[0].measures.len(), 3);
+        assert_eq!(doc1.global.measures.len(), 3);
+
+        // When shifting focus back to the left without entering anything, the empty measure is removed
+        let cleaned = remove_last_blank_event(&with_new_measure).expect("Should remove empty measure");
+        let doc2 = serde_saphyr::from_str::<MnxDocument>(&cleaned).expect("Should parse");
+        assert_eq!(doc2.parts[0].measures.len(), 2);
+        assert_eq!(doc2.global.measures.len(), 2);
+    }
+
+    #[test]
+    fn test_right_arrow_rules_and_lifecycle() {
+        let mut app = MnxEditorApp::default();
+        // App starts with example.yaml (15 events across 2 measures)
+        let total_initial = find_all_event_ranges(&app.yaml_text).len();
+        assert_eq!(total_initial, 15);
+
+        // Select the final event (event 14, in Measure 2 which is full)
+        app.selected_event_idx = Some(14);
+
+        // Right arrow on full final bar -> Rule 2: creates Measure 3 with a blank note
+        // (Simulate right arrow logic)
+        let final_dur = app.parsed_mnx.as_ref()
+            .and_then(|d| d.parts.first())
+            .and_then(|p| p.measures.last())
+            .and_then(|m| m.sequences.first())
+            .and_then(|s| s.content.last())
+            .map(|e| e.duration.clone()).unwrap();
+
+        let updated = add_measure_to_yaml(&app.yaml_text, &final_dur).unwrap();
+        app.yaml_text = updated;
+        app.process_and_render();
+        let total_after_r2 = find_all_event_ranges(&app.yaml_text).len();
+        assert_eq!(total_after_r2, 16);
+        app.selected_event_idx = Some(15);
+
+        // Rule 3: Moving further to the right of a final blank note has no effect
+        let is_final_blank = app.parsed_mnx.as_ref()
+            .and_then(|d| d.parts.first())
+            .and_then(|p| p.measures.last())
+            .and_then(|m| m.sequences.first())
+            .and_then(|s| s.content.last())
+            .map(|e| e.notes.is_empty()).unwrap();
+        assert!(is_final_blank);
+
+        // Shifting focus back to the left -> blank note and measure disappear
+        let cleaned = remove_last_blank_event(&app.yaml_text).unwrap();
+        app.yaml_text = cleaned;
+        app.process_and_render();
+        let total_after_left = find_all_event_ranges(&app.yaml_text).len();
+        assert_eq!(total_after_left, 15);
     }
 }
