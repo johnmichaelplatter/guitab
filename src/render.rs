@@ -91,10 +91,10 @@ pub fn draw_tablature(
     is_editing_fret: bool,
     editing_fret_text: &str,
     editing_string: Option<u8>,
-) -> (egui::Response, Option<(usize, Option<usize>)>) {
+) -> (egui::Response, Option<(usize, Option<usize>)>, bool) {
     let num_strings = part.num_strings();
     if num_strings == 0 {
-        return (ui.label("No strings found."), None);
+        return (ui.label("No strings found."), None, false);
     }
 
     // ── Layout constants ─────────────────────────────────────────────────────
@@ -158,7 +158,7 @@ pub fn draw_tablature(
     let total_width    = start_offset_x
         + (total_events as f32) * event_spacing
         + (part.measures.len() as f32) * measure_spacing
-        + 20.0;
+        + 80.0;
 
     // ── Allocate painter ──────────────────────────────────────────────────────
 
@@ -484,30 +484,83 @@ pub fn draw_tablature(
         }
     }
 
+    // ── Floating "Add Bar" Button (| + |) after final barline ──────────────────
+    let btn_x = current_x + 6.0;
+    let btn_w = 32.0;
+    let btn_top_y = string_y_coords[0];
+    let btn_bot_y = last_string_y;
+    let btn_rect = Rect::from_min_max(Pos2::new(btn_x, btn_top_y), Pos2::new(btn_x + btn_w, btn_bot_y));
+
+    let hover_pos = ui.input(|i| i.pointer.hover_pos());
+    let is_btn_hovered = hover_pos.map_or(false, |pos| btn_rect.expand(5.0).contains(pos));
+
+    if is_btn_hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        egui::Area::new(egui::Id::new("add_bar_tooltip"))
+            .fixed_pos(Pos2::new(btn_x + btn_w / 2.0 - 50.0, btn_top_y - 28.0))
+            .order(egui::Order::Tooltip)
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Add measure (Shift+B)").small());
+                });
+            });
+    }
+
+    let (btn_stroke, btn_bg) = if is_btn_hovered {
+        (
+            Stroke::new(1.8, ui.visuals().strong_text_color()),
+            Color32::from_rgba_unmultiplied(100, 180, 255, 35),
+        )
+    } else {
+        (
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(140, 140, 140, 75)),
+            Color32::from_rgba_unmultiplied(150, 150, 150, 10),
+        )
+    };
+
+    // Draw subtle button background
+    painter.rect_filled(btn_rect.expand(2.0), 3.0, btn_bg);
+
+    // Draw left and right vertical lines | and |
+    painter.line_segment([Pos2::new(btn_x, btn_top_y), Pos2::new(btn_x, btn_bot_y)], btn_stroke);
+    painter.line_segment([Pos2::new(btn_x + btn_w, btn_top_y), Pos2::new(btn_x + btn_w, btn_bot_y)], btn_stroke);
+
+    // Draw + sign in center
+    let center = btn_rect.center();
+    let plus_size = 5.0;
+    painter.line_segment([Pos2::new(center.x - plus_size, center.y), Pos2::new(center.x + plus_size, center.y)], btn_stroke);
+    painter.line_segment([Pos2::new(center.x, center.y - plus_size), Pos2::new(center.x, center.y + plus_size)], btn_stroke);
+
     // ── Click interaction ─────────────────────────────────────────────────────
     let mut clicked_selection = None;
+    let mut add_bar_clicked = false;
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
-            for (idx, (fret_rects, stem_rect, col_rect)) in event_hit_boxes.iter().enumerate() {
-                // Check if directly clicked on a specific fret number
-                let mut clicked_note = None;
-                for (r, n_idx) in fret_rects {
-                    if r.expand(4.0).contains(pos) {
-                        clicked_note = Some(*n_idx);
+            if btn_rect.expand(5.0).contains(pos) {
+                add_bar_clicked = true;
+            } else {
+                for (idx, (fret_rects, stem_rect, col_rect)) in event_hit_boxes.iter().enumerate() {
+                    // Check if directly clicked on a specific fret number
+                    let mut clicked_note = None;
+                    for (r, n_idx) in fret_rects {
+                        if r.expand(4.0).contains(pos) {
+                            clicked_note = Some(*n_idx);
+                            break;
+                        }
+                    }
+
+                    if let Some(n_idx) = clicked_note {
+                        clicked_selection = Some((idx, Some(n_idx)));
+                        break;
+                    } else if stem_rect.contains(pos) || col_rect.contains(pos) {
+                        clicked_selection = Some((idx, None));
                         break;
                     }
-                }
-
-                if let Some(n_idx) = clicked_note {
-                    clicked_selection = Some((idx, Some(n_idx)));
-                    break;
-                } else if stem_rect.contains(pos) || col_rect.contains(pos) {
-                    clicked_selection = Some((idx, None));
-                    break;
                 }
             }
         }
     }
 
-    (response, clicked_selection)
+    (response, clicked_selection, add_bar_clicked)
 }

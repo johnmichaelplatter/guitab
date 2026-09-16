@@ -47,7 +47,6 @@ impl EdoTuning {
 
     pub fn steps_to_pitch(&self, played_steps: i32) -> crate::mnx::Pitch {
         let e = self.edo as i32;
-        let octave = played_steps.div_euclid(e);
         let step_in_octave = played_steps.rem_euclid(e);
 
         let nominals = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
@@ -74,6 +73,8 @@ impl EdoTuning {
             }
         }
 
+        let octave = (played_steps - self.nominal_step(best_nom) - best_alter_steps).div_euclid(e);
+
         let alter = if best_alter_steps == 0 {
             None
         } else if self.edo == 12 {
@@ -87,6 +88,43 @@ impl EdoTuning {
             alter,
             octave,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_steps_to_pitch_roundtrip() {
+        for edo in [12, 19, 22, 31, 41, 53] {
+            let tuning = EdoTuning::new(edo);
+            for steps in -200..=500 {
+                let pitch = tuning.steps_to_pitch(steps);
+                let recovered = tuning.pitch_to_steps(&pitch);
+                assert_eq!(
+                    steps, recovered,
+                    "Roundtrip failed for {}-EDO at step {}: pitch={:?}",
+                    edo, steps, pitch
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_kite_guitar_string4_fret12() {
+        // String 4 on Kite Guitar is vE3 (alter -1\41).
+        // In 41-EDO: nominal E = 14, octave 3 = 123, alter = -1 -> base step 136.
+        // Fret 12 with multiplier 2 produces 136 + 24 = step 160.
+        let tuning = EdoTuning::new(41);
+        let pitch = tuning.steps_to_pitch(160);
+        assert_eq!(pitch.step, "C");
+        assert_eq!(pitch.octave, 4);
+        assert_eq!(
+            pitch.alter.as_ref().map(|a| a.to_string()),
+            Some("-4\\41".to_string())
+        );
+        assert_eq!(tuning.pitch_to_steps(&pitch), 160);
     }
 }
 

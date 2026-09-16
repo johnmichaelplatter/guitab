@@ -417,7 +417,253 @@ pub fn remove_note_on_string(
     Some(res)
 }
 
+/// Appends a new measure to `global/measures` and to the first part in `yaml_text`, containing a single blank note with `duration`.
+pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    // 1. Find global/measures section to add a global measure entry
+    let mut in_global = false;
+    let mut global_measures_idx = None;
+    let mut global_measure_item_idx = None;
+    let mut global_item_indent = 4;
+    let mut last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
+
+    // 2. Find parts/measures section
+    let mut in_parts = false;
+    let mut parts_measures_idx = None;
+    let mut seq_indent = 6;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+
+        if trimmed.starts_with("global:") {
+            in_global = true;
+            in_parts = false;
+            continue;
+        }
+
+        if in_global {
+            if trimmed.starts_with("measures:") {
+                global_measures_idx = Some(i);
+                continue;
+            }
+
+            if global_measures_idx.is_some() {
+                if trimmed.starts_with('-') {
+                    global_measure_item_idx = Some(i);
+                    global_item_indent = indent;
+                    if let Some(pos) = trimmed.find("time:") {
+                        last_time_sig_str = trimmed[pos..].to_string();
+                    }
+                } else if trimmed.starts_with("parts:") || (indent == 0 && !trimmed.is_empty()) {
+                    in_global = false;
+                }
+            }
+        }
+
+        if trimmed.starts_with("parts:") {
+            in_parts = true;
+            in_global = false;
+            continue;
+        }
+
+        if in_parts {
+            if trimmed.starts_with("measures:") {
+                parts_measures_idx = Some(i);
+                continue;
+            }
+
+            if parts_measures_idx.is_some() && (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:")) {
+                seq_indent = indent;
+            }
+        }
+    }
+
+    let _ = parts_measures_idx?;
+
+    // Format new measure in global/measures if global/measures exists
+    let mut result_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+
+    if let Some(last_gm_idx) = global_measure_item_idx {
+        // Insert after the last item in global/measures
+        let new_gm_line = format!("{}- {}", " ".repeat(global_item_indent), last_time_sig_str);
+        result_lines.insert(last_gm_idx + 1, new_gm_line);
+    } else if let Some(gm_header_idx) = global_measures_idx {
+        let new_gm_line = format!("{}- {}", " ".repeat(4), last_time_sig_str);
+        result_lines.insert(gm_header_idx + 1, new_gm_line);
+    }
+
+    let intermediate_yaml = result_lines.join("\n");
+
+    let dur_str = if let Some(dots) = duration.dots {
+        if dots > 0 {
+            format!("{{ base: {}, dots: {} }}", duration.base, dots)
+        } else {
+            format!("{{ base: {} }}", duration.base)
+        }
+    } else {
+        format!("{{ base: {} }}", duration.base)
+    };
+
+    let seq_spaces = " ".repeat(seq_indent);
+    let content_spaces = " ".repeat(seq_indent + 4);
+    let event_spaces = " ".repeat(seq_indent + 8);
+    let notes_spaces = " ".repeat(seq_indent + 10);
+
+    let new_measure_block = format!(
+        "{}- sequences:\n{}- content:\n{}- duration: {}\n{}notes: []",
+        seq_spaces, content_spaces, event_spaces, dur_str, notes_spaces
+    );
+
+    let trimmed_yaml = intermediate_yaml.trim_end();
+    Some(format!("{}\n{}\n", trimmed_yaml, new_measure_block))
+}
+
+/// Appends a new blank note (notes: []) to the last measure of the first part.
+pub fn add_blank_note_to_last_measure(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
+    let event_ranges = find_all_event_ranges(yaml);
+    let last_er = event_ranges.last()?;
+
+    let line_start = yaml[..last_er.total_range.start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let indent_len = last_er.total_range.start - line_start;
+    let indent = " ".repeat(indent_len);
+    let sub_indent = " ".repeat(indent_len + 2);
+
+    let dur_str = if let Some(dots) = duration.dots {
+        if dots > 0 {
+            format!("{{ base: {}, dots: {} }}", duration.base, dots)
+        } else {
+            format!("{{ base: {} }}", duration.base)
+        }
+    } else {
+        format!("{{ base: {} }}", duration.base)
+    };
+
+    let new_event_str = format!(
+        "\n{}- duration: {}\n{}notes: []",
+        indent, dur_str, sub_indent
+    );
+
+    let mut result = yaml.to_string();
+    result.insert_str(last_er.total_range.end, &new_event_str);
+    Some(result)
+}
+
+/// If the final event in the last measure is blank (notes: []), removes it from the YAML.
+/// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
+pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
+    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    let part = doc.parts.first()?;
+    let last_measure = part.measures.last()?;
+    let last_seq = last_measure.sequences.first()?;
+    let last_event = last_seq.content.last()?;
+
+    if !last_event.notes.is_empty() {
+        return None;
+    }
+
+    if last_seq.content.len() > 1 {
+        let event_ranges = find_all_event_ranges(yaml);
+        let last_er = event_ranges.last()?;
+        let mut start = last_er.total_range.start;
+        let end = last_er.total_range.end;
+        if start > 0 && yaml.as_bytes()[start - 1] == b'\n' {
+            start -= 1;
+        }
+        let mut result = yaml.to_string();
+        result.replace_range(start..end, "");
+        return Some(result);
+    }
+
+    // Only 1 event in the measure -> remove the last measure entirely
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut last_seq_line_idx = None;
+    let mut in_parts = false;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("parts:") {
+            in_parts = true;
+            continue;
+        }
+        if in_parts && (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:")) {
+            last_seq_line_idx = Some(i);
+        }
+    }
+
+    let seq_line_idx = last_seq_line_idx?;
+
+    // Also identify the corresponding global measure entry if it exists
+    let mut in_global = false;
+    let mut global_measure_item_idx = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+
+        if trimmed.starts_with("global:") {
+            in_global = true;
+            continue;
+        }
+        if in_global {
+            if trimmed.starts_with('-') {
+                global_measure_item_idx = Some(i);
+            } else if trimmed.starts_with("parts:") || (indent == 0 && !trimmed.is_empty()) {
+                in_global = false;
+            }
+        }
+    }
+
+    let mut result_lines = Vec::new();
+    for (i, &line) in lines.iter().enumerate() {
+        if let Some(gm_idx) = global_measure_item_idx {
+            if doc.global.measures.len() == part.measures.len() && i == gm_idx {
+                continue;
+            }
+        }
+        if i >= seq_line_idx {
+            continue;
+        }
+        result_lines.push(line);
+    }
+
+    let trimmed = result_lines.join("\n");
+    Some(format!("{}\n", trimmed.trim_end()))
+}
+
 impl MnxEditorApp {
+    pub fn add_measure_to_end(&mut self) {
+        let last_duration = self.parsed_mnx
+            .as_ref()
+            .and_then(|d| d.parts.first())
+            .and_then(|p| p.measures.last())
+            .and_then(|m| m.sequences.first())
+            .and_then(|s| s.content.last())
+            .map(|e| e.duration.clone())
+            .unwrap_or_else(|| crate::mnx::Duration {
+                base: "quarter".to_string(),
+                dots: None,
+            });
+
+        if let Some(new_yaml) = add_measure_to_yaml(&self.yaml_text, &last_duration) {
+            self.yaml_text = new_yaml;
+            self.process_and_render();
+
+            let total_events = find_all_event_ranges(&self.yaml_text).len();
+            if total_events > 0 {
+                self.selected_event_idx = Some(total_events - 1);
+            }
+            self.selected_note_idx_in_event = None;
+            self.is_editing_fret = false;
+            self.editing_fret_buf.clear();
+            self.editing_string = None;
+        }
+    }
+
     fn process_and_render(&mut self) {
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(doc) => {
@@ -639,7 +885,12 @@ impl eframe::App for MnxEditorApp {
                     }
                 }
             }
-        } else if !editor_focused && total_events > 0 {
+        } else if !editor_focused {
+            let shift_b_pressed = ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::B));
+            if shift_b_pressed {
+                self.add_measure_to_end();
+            }
+
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
@@ -940,7 +1191,7 @@ impl eframe::App for MnxEditorApp {
             egui::ScrollArea::both().show(ui, |ui| {
                 if let Some(doc) = &self.parsed_mnx {
                     if let Some(part) = doc.parts.first() {
-                        let (_resp, clicked) = render::draw_tablature(
+                        let (_resp, clicked, add_bar_clicked) = render::draw_tablature(
                             ui,
                             part,
                             &self.parsed_errors,
@@ -950,7 +1201,9 @@ impl eframe::App for MnxEditorApp {
                             &self.editing_fret_buf,
                             self.editing_string,
                         );
-                        if let Some((clicked_event, clicked_note)) = clicked {
+                        if add_bar_clicked {
+                            self.add_measure_to_end();
+                        } else if let Some((clicked_event, clicked_note)) = clicked {
                             self.selected_event_idx = Some(clicked_event);
                             self.selected_note_idx_in_event = clicked_note;
                             self.is_editing_fret = false;
@@ -1034,6 +1287,21 @@ parts:
     }
 
     #[test]
+    fn test_edit_string4_fret12() {
+        let yaml = include_str!("../example.yaml");
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let part = &doc.parts[0];
+
+        // Edit Event 1 to put String 4 Fret 12
+        let new_pitch = calculate_pitch_for_string_fret(part, 4, 12);
+        let updated = set_or_add_note_on_string(yaml, 1, 4, 12, new_pitch.as_ref()).expect("Should update note");
+
+        let updated_doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
+        let errors = crate::validate::validate_mnx(&updated_doc);
+        assert_eq!(errors.len(), 0, "Validation should pass with 0 errors for String 4 Fret 12: {:?}", errors);
+    }
+
+    #[test]
     fn test_set_or_add_note_on_string_creates_chord() {
         let yaml = include_str!("../example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
@@ -1090,5 +1358,37 @@ parts:
         let updated2_doc = serde_saphyr::from_str::<MnxDocument>(&updated2).expect("Updated doc should parse");
         let notes2 = &updated2_doc.parts[0].measures[0].sequences[0].content[0].notes;
         assert_eq!(notes2.len(), 0);
+    }
+
+    #[test]
+    fn test_add_measure_to_yaml() {
+        let yaml = include_str!("../example.yaml");
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let initial_measures = doc.parts[0].measures.len();
+        assert_eq!(initial_measures, 2);
+
+        let final_dur = doc.parts[0].measures.last()
+            .unwrap().sequences.first()
+            .unwrap().content.last()
+            .unwrap().duration.clone();
+        assert_eq!(final_dur.base, "quarter");
+
+        let updated = add_measure_to_yaml(yaml, &final_dur).expect("Should add measure");
+        let updated_doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
+        assert_eq!(updated_doc.global.measures.len(), 3);
+        let part = &updated_doc.parts[0];
+        assert_eq!(part.measures.len(), 3);
+
+        // Check the newly added measure
+        let new_measure = &part.measures[2];
+        let new_seq = &new_measure.sequences[0];
+        assert_eq!(new_seq.content.len(), 1);
+        let new_event = &new_seq.content[0];
+        assert_eq!(new_event.duration.base, "quarter");
+        assert_eq!(new_event.notes.len(), 0);
+
+        // Validation should pass with 0 errors
+        let errors = crate::validate::validate_mnx(&updated_doc);
+        assert_eq!(errors.len(), 0, "Validation should have 0 errors: {:?}", errors);
     }
 }
