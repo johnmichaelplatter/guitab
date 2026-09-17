@@ -5,6 +5,61 @@ use crate::mnx::MnxDocument;
 use crate::validate;
 use crate::render;
 
+const WHOLE_PNG: &[u8] = include_bytes!("../assets/whole.png");
+const HALF_PNG: &[u8] = include_bytes!("../assets/half.png");
+const QUARTER_PNG: &[u8] = include_bytes!("../assets/quarter.png");
+const EIGHTH_PNG: &[u8] = include_bytes!("../assets/eighth.png");
+const SIXTEENTH_PNG: &[u8] = include_bytes!("../assets/16th.png");
+const THIRTYSECOND_PNG: &[u8] = include_bytes!("../assets/32nd.png");
+const DOT_PNG: &[u8] = include_bytes!("../assets/dot.png");
+
+pub struct DurationTextures {
+    pub whole: egui::TextureHandle,
+    pub half: egui::TextureHandle,
+    pub quarter: egui::TextureHandle,
+    pub eighth: egui::TextureHandle,
+    pub sixteenth: egui::TextureHandle,
+    pub thirty_second: egui::TextureHandle,
+    pub dot: egui::TextureHandle,
+}
+
+fn load_texture_from_bytes(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
+    let img = image::load_from_memory(bytes).expect("Failed to decode embedded png icon");
+    let rgba = img.to_rgba8();
+    let (orig_w, orig_h) = (rgba.width(), rgba.height());
+    let max_dim = orig_w.max(orig_h).max(200);
+
+    let mut square_img = image::RgbaImage::new(max_dim, max_dim);
+    let offset_x = (max_dim - orig_w) / 2;
+    let offset_y = (max_dim - orig_h) / 2;
+
+    for y in 0..orig_h {
+        for x in 0..orig_w {
+            let pixel = rgba.get_pixel(x, y);
+            square_img.put_pixel(offset_x + x, offset_y + y, *pixel);
+        }
+    }
+
+    let size = [max_dim as usize, max_dim as usize];
+    let pixels = square_img.into_raw();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR)
+}
+
+impl DurationTextures {
+    pub fn load(ctx: &egui::Context) -> Self {
+        Self {
+            whole: load_texture_from_bytes(ctx, "icon_whole", WHOLE_PNG),
+            half: load_texture_from_bytes(ctx, "icon_half", HALF_PNG),
+            quarter: load_texture_from_bytes(ctx, "icon_quarter", QUARTER_PNG),
+            eighth: load_texture_from_bytes(ctx, "icon_eighth", EIGHTH_PNG),
+            sixteenth: load_texture_from_bytes(ctx, "icon_sixteenth", SIXTEENTH_PNG),
+            thirty_second: load_texture_from_bytes(ctx, "icon_thirty_second", THIRTYSECOND_PNG),
+            dot: load_texture_from_bytes(ctx, "icon_dot", DOT_PNG),
+        }
+    }
+}
+
 pub struct MnxEditorApp {
     yaml_text: String,
     parsed_mnx: Option<MnxDocument>,
@@ -16,6 +71,7 @@ pub struct MnxEditorApp {
     is_editing_fret: bool,                         // In-place fret number editing mode
     editing_fret_buf: String,                      // Text buffer for the new fret number
     editing_string: Option<u8>,                    // Currently focused string row in edit mode
+    duration_textures: Option<DurationTextures>,   // Note duration icons
 }
 
 impl Default for MnxEditorApp {
@@ -34,6 +90,7 @@ impl Default for MnxEditorApp {
             is_editing_fret: false,
             editing_fret_buf: String::new(),
             editing_string: None,
+            duration_textures: None,
         };
         
         app.process_and_render();
@@ -417,6 +474,60 @@ pub fn remove_note_on_string(
     Some(res)
 }
 
+/// Replaces the duration of the specified event inside yaml_text and returns the updated YAML string.
+pub fn update_event_duration_in_yaml(
+    yaml: &str,
+    event_idx: usize,
+    new_duration: &crate::mnx::Duration,
+) -> Option<String> {
+    let event_ranges = find_all_event_ranges(yaml);
+    let er = event_ranges.get(event_idx)?;
+    let event_text = yaml.get(er.total_range.clone())?;
+
+    let dur_rel = event_text.find("duration:")?;
+    let abs_dur_start = er.total_range.start + dur_rel;
+    let after_dur = &yaml[abs_dur_start + 9..];
+
+    let dur_str = if let Some(dots) = new_duration.dots {
+        if dots > 0 {
+            format!("{{ base: {}, dots: {} }}", new_duration.base, dots)
+        } else {
+            format!("{{ base: {} }}", new_duration.base)
+        }
+    } else {
+        format!("{{ base: {} }}", new_duration.base)
+    };
+
+    let replacement = format!("duration: {}", dur_str);
+
+    let abs_dur_end = if let Some(brace_start) = after_dur.find('{') {
+        let before_brace = &after_dur[..brace_start];
+        if !before_brace.contains("notes:") && !before_brace.contains('\n') {
+            if let Some(brace_end) = after_dur.find('}') {
+                abs_dur_start + 9 + brace_end + 1
+            } else {
+                abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
+            }
+        } else if let Some(notes_rel) = event_text.find("notes:") {
+            let notes_abs = er.total_range.start + notes_rel;
+            let before_notes = &yaml[..notes_abs];
+            before_notes.rfind('\n').map(|p| p + 1).unwrap_or(notes_abs)
+        } else {
+            abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
+        }
+    } else if let Some(notes_rel) = event_text.find("notes:") {
+        let notes_abs = er.total_range.start + notes_rel;
+        let before_notes = &yaml[..notes_abs];
+        before_notes.rfind('\n').map(|p| p + 1).unwrap_or(notes_abs)
+    } else {
+        abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
+    };
+
+    let mut result = yaml.to_string();
+    result.replace_range(abs_dur_start..abs_dur_end, &replacement);
+    Some(result)
+}
+
 /// Appends a new measure to `global/measures` and to the first part in `yaml_text`, containing a single blank note with `duration`.
 pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
     let lines: Vec<&str> = yaml.lines().collect();
@@ -636,6 +747,64 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
 }
 
 impl MnxEditorApp {
+    pub fn get_selected_event_duration(&self) -> Option<crate::mnx::Duration> {
+        let e_idx = self.selected_event_idx?;
+        let doc = self.parsed_mnx.as_ref()?;
+        let part = doc.parts.first()?;
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in &seq.content {
+                    if cur_e == e_idx {
+                        return Some(ev.duration.clone());
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+        None
+    }
+
+    pub fn change_selected_duration_base(&mut self, new_base: &str) {
+        if let Some(e_idx) = self.selected_event_idx {
+            let cur_dur = self.get_selected_event_duration().unwrap_or_else(|| crate::mnx::Duration {
+                base: "quarter".to_string(),
+                dots: None,
+            });
+            let new_duration = crate::mnx::Duration {
+                base: new_base.to_string(),
+                dots: cur_dur.dots,
+            };
+            if let Some(new_yaml) = update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration) {
+                self.yaml_text = new_yaml;
+                self.process_and_render();
+            }
+        }
+    }
+
+    pub fn toggle_selected_duration_dot(&mut self) {
+        if let Some(e_idx) = self.selected_event_idx {
+            let cur_dur = self.get_selected_event_duration().unwrap_or_else(|| crate::mnx::Duration {
+                base: "quarter".to_string(),
+                dots: None,
+            });
+            let is_dotted = cur_dur.dots.unwrap_or(0) > 0 || cur_dur.base.contains("dotted") || cur_dur.base.contains('.');
+            let clean_base = cur_dur.base
+                .replace("dotted-", "")
+                .replace("-dotted", "")
+                .replace("dotted", "")
+                .replace('.', "");
+            let new_duration = crate::mnx::Duration {
+                base: if clean_base.is_empty() { "quarter".to_string() } else { clean_base },
+                dots: if is_dotted { None } else { Some(1) },
+            };
+            if let Some(new_yaml) = update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration) {
+                self.yaml_text = new_yaml;
+                self.process_and_render();
+            }
+        }
+    }
+
     pub fn add_measure_to_end(&mut self) {
         let last_duration = self.parsed_mnx
             .as_ref()
@@ -741,6 +910,10 @@ impl MnxEditorApp {
 
 impl eframe::App for MnxEditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.duration_textures.is_none() {
+            self.duration_textures = Some(DurationTextures::load(ui.ctx()));
+        }
+
         let event_ranges = find_all_event_ranges(&self.yaml_text);
         let total_events = event_ranges.len();
         let text_edit_id = egui::Id::new("yaml_source_editor");
@@ -889,6 +1062,31 @@ impl eframe::App for MnxEditorApp {
             let shift_b_pressed = ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::B));
             if shift_b_pressed {
                 self.add_measure_to_end();
+            }
+
+            // Duration keyboard shortcuts: 8 (whole), 7 (half), 6 (quarter), 5 (eighth), 4 (16th), 3 (32nd), . (dot)
+            let key_8 = ui.input(|i| i.key_pressed(egui::Key::Num8));
+            let key_7 = ui.input(|i| i.key_pressed(egui::Key::Num7));
+            let key_6 = ui.input(|i| i.key_pressed(egui::Key::Num6));
+            let key_5 = ui.input(|i| i.key_pressed(egui::Key::Num5));
+            let key_4 = ui.input(|i| i.key_pressed(egui::Key::Num4));
+            let key_3 = ui.input(|i| i.key_pressed(egui::Key::Num3));
+            let key_dot = ui.input(|i| i.key_pressed(egui::Key::Period));
+
+            if key_8 {
+                self.change_selected_duration_base("whole");
+            } else if key_7 {
+                self.change_selected_duration_base("half");
+            } else if key_6 {
+                self.change_selected_duration_base("quarter");
+            } else if key_5 {
+                self.change_selected_duration_base("eighth");
+            } else if key_4 {
+                self.change_selected_duration_base("16th");
+            } else if key_3 {
+                self.change_selected_duration_base("32nd");
+            } else if key_dot {
+                self.toggle_selected_duration_dot();
             }
 
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1082,7 +1280,7 @@ impl eframe::App for MnxEditorApp {
             }
         }
 
-        // 1. Top Menu Bar (Updated with file operations)
+        // 1. Top Menu Bar (Updated with file operations & Duration Toolbar)
         egui::Panel::top("top_panel").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Open").clicked() {
@@ -1131,6 +1329,73 @@ impl eframe::App for MnxEditorApp {
                                 .color(Color32::from_rgb(100, 180, 255))
                                 .strong(),
                         );
+                    }
+                }
+            });
+
+            ui.separator();
+
+            // Horizontal Duration Toolbar
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Duration:").strong());
+
+                let current_dur = self.get_selected_event_duration();
+                let current_base = current_dur.as_ref().map(|d| d.base.to_lowercase()).unwrap_or_default();
+                let is_dotted = current_dur.as_ref().map(|d| d.dots.unwrap_or(0) > 0 || d.base.contains("dotted") || d.base.contains('.')).unwrap_or(false);
+
+                let is_whole = current_base.contains("whole") || current_base == "1";
+                let is_half = current_base.contains("half") || current_base == "1/2";
+                let is_quarter = current_base.contains("quarter") || current_base == "4th" || current_base == "1/4";
+                let is_eighth = current_base.contains("eighth") || current_base == "8th" || current_base == "1/8";
+                let is_16th = current_base.contains("16th") || current_base.contains("sixteenth") || current_base == "1/16";
+                let is_32nd = current_base.contains("32nd") || current_base.contains("thirtysecond") || current_base == "1/32";
+
+                enum DurationAction {
+                    Base(&'static str),
+                    ToggleDot,
+                }
+                let mut clicked_action: Option<DurationAction> = None;
+
+                if let Some(textures) = &self.duration_textures {
+                    let icon_size = egui::vec2(22.0, 22.0);
+                    let btn_size = egui::vec2(28.0, 28.0);
+
+                    let make_icon_btn = |ui: &mut egui::Ui, texture: &egui::TextureHandle, is_active: bool, tooltip: &str| -> bool {
+                        let img = egui::Image::new(texture).fit_to_exact_size(icon_size);
+                        let btn = egui::Button::image(img).selected(is_active);
+                        ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
+                    };
+
+                    if make_icon_btn(ui, &textures.whole, is_whole, "Whole Note (8)") {
+                        clicked_action = Some(DurationAction::Base("whole"));
+                    }
+                    if make_icon_btn(ui, &textures.half, is_half, "Half Note (7)") {
+                        clicked_action = Some(DurationAction::Base("half"));
+                    }
+                    if make_icon_btn(ui, &textures.quarter, is_quarter, "Quarter Note (6)") {
+                        clicked_action = Some(DurationAction::Base("quarter"));
+                    }
+                    if make_icon_btn(ui, &textures.eighth, is_eighth, "Eighth Note (5)") {
+                        clicked_action = Some(DurationAction::Base("eighth"));
+                    }
+                    if make_icon_btn(ui, &textures.sixteenth, is_16th, "16th Note (4)") {
+                        clicked_action = Some(DurationAction::Base("16th"));
+                    }
+                    if make_icon_btn(ui, &textures.thirty_second, is_32nd, "32nd Note (3)") {
+                        clicked_action = Some(DurationAction::Base("32nd"));
+                    }
+
+                    ui.separator();
+
+                    if make_icon_btn(ui, &textures.dot, is_dotted, "Augmentation Dot (.)") {
+                        clicked_action = Some(DurationAction::ToggleDot);
+                    }
+                }
+
+                if let Some(action) = clicked_action {
+                    match action {
+                        DurationAction::Base(b) => self.change_selected_duration_base(b),
+                        DurationAction::ToggleDot => self.toggle_selected_duration_dot(),
                     }
                 }
             });
@@ -1573,5 +1838,48 @@ parts:
         app.process_and_render();
         let total_after_left = find_all_event_ranges(&app.yaml_text).len();
         assert_eq!(total_after_left, 15);
+    }
+
+    #[test]
+    fn test_update_event_duration_in_yaml() {
+        let yaml = include_str!("../example.yaml");
+        let dur_quarter = crate::mnx::Duration { base: "quarter".to_string(), dots: None };
+        let updated = update_event_duration_in_yaml(yaml, 0, &dur_quarter).expect("Should update duration");
+        let doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Should parse");
+        assert_eq!(doc.parts[0].measures[0].sequences[0].content[0].duration.base, "quarter");
+        assert_eq!(doc.parts[0].measures[0].sequences[0].content[0].duration.dots, None);
+
+        // Test dotted
+        let dur_dotted_half = crate::mnx::Duration { base: "half".to_string(), dots: Some(1) };
+        let updated_dot = update_event_duration_in_yaml(&updated, 0, &dur_dotted_half).expect("Should update to dotted");
+        let doc_dot = serde_saphyr::from_str::<MnxDocument>(&updated_dot).expect("Should parse");
+        assert_eq!(doc_dot.parts[0].measures[0].sequences[0].content[0].duration.base, "half");
+        assert_eq!(doc_dot.parts[0].measures[0].sequences[0].content[0].duration.dots, Some(1));
+    }
+
+    #[test]
+    fn test_change_and_toggle_duration() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+
+        // Change base to whole
+        app.change_selected_duration_base("whole");
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "whole");
+
+        // Toggle dot on
+        app.toggle_selected_duration_dot();
+        let dur = app.get_selected_event_duration().unwrap();
+        assert_eq!(dur.base, "whole");
+        assert_eq!(dur.dots, Some(1));
+
+        // Toggle dot off
+        app.toggle_selected_duration_dot();
+        let dur2 = app.get_selected_event_duration().unwrap();
+        assert_eq!(dur2.base, "whole");
+        assert_eq!(dur2.dots, None);
+
+        // Change base to 16th
+        app.change_selected_duration_base("16th");
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "16th");
     }
 }
