@@ -2,7 +2,9 @@ mod edo;
 mod mnx;
 mod render;
 mod validate;
-mod gui; 
+mod gui;
+pub mod tuning_table;
+pub mod midi;
 
 use eframe::egui;
 

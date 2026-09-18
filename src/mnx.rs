@@ -23,6 +23,19 @@ pub struct Global {
 pub struct GlobalMeasure {
     #[serde(default)]
     pub time: Option<TimeSignature>,
+    #[serde(default)]
+    pub directions: Vec<Direction>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Direction {
+    pub tempo: Option<Tempo>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Tempo {
+    pub bpm: f64,
+    pub value: Option<String>, // e.g. "quarter"
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +100,7 @@ pub struct Note {
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632) 
 /// or an EDO fraction string ('1\19').
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum Alteration {
     Value(f64),
@@ -122,7 +135,7 @@ impl fmt::Display for Alteration {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Pitch {
     pub step: String,
     pub alter: Option<Alteration>, 
