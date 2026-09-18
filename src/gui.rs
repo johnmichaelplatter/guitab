@@ -72,6 +72,7 @@ pub struct MnxEditorApp {
     editing_fret_buf: String,                      // Text buffer for the new fret number
     editing_string: Option<u8>,                    // Currently focused string row in edit mode
     duration_textures: Option<DurationTextures>,   // Note duration icons
+    bpm_buf: String,                               // Text buffer for BPM input
 }
 
 impl Default for MnxEditorApp {
@@ -91,6 +92,7 @@ impl Default for MnxEditorApp {
             editing_fret_buf: String::new(),
             editing_string: None,
             duration_textures: None,
+            bpm_buf: String::from("120"),
         };
         
         app.process_and_render();
@@ -528,6 +530,147 @@ pub fn update_event_duration_in_yaml(
     Some(result)
 }
 
+/// Sets or updates the BPM tempo directive in the first global measure's directions block.
+///
+/// If `global/measures[0]/directions:` with a `tempo:` entry already exists, it updates the
+/// `bpm:` field in-place.  Otherwise it inserts the `directions:` block under the first
+/// global measure entry (after the `time:` line if present, otherwise right after the `- ` list
+/// marker of the first measure entry).
+pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
+    let bpm_str = if bpm.fract() == 0.0 {
+        format!("{:.0}", bpm)
+    } else {
+        format!("{}", bpm)
+    };
+
+    let lines: Vec<&str> = yaml.lines().collect();
+
+    // 1. Try to find an existing `bpm:` line inside a tempo directive and update it in-place.
+    {
+        let mut in_global_measures = false;
+        let mut first_measure_seen = false;
+        let mut in_directions = false;
+        let mut in_tempo = false;
+        let mut base_indent = 0usize;
+
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            let indent = line.len() - line.trim_start().len();
+
+            if trimmed == "global:" {
+                in_global_measures = false;
+                first_measure_seen = false;
+            }
+            if trimmed == "measures:" && !in_global_measures {
+                in_global_measures = true;
+                continue;
+            }
+            if in_global_measures && !first_measure_seen && trimmed.starts_with("- ") {
+                first_measure_seen = true;
+                base_indent = indent;
+                in_directions = false;
+                in_tempo = false;
+            }
+            if first_measure_seen && indent <= base_indent && trimmed.starts_with("- ") && !trimmed.starts_with("- time") && !trimmed.starts_with("- directions") {
+                // We've moved past the first measure entry without finding BPM.
+                break;
+            }
+            if first_measure_seen && trimmed.starts_with("directions:") {
+                in_directions = true;
+            }
+            if in_directions && trimmed.starts_with("- tempo:") || (in_directions && trimmed.starts_with("tempo:")) {
+                in_tempo = true;
+            }
+            if in_tempo && trimmed.starts_with("bpm:") {
+                // Found existing bpm line – replace it.
+                let leading = &line[..indent];
+                let mut result = lines[..i].join("\n");
+                if !result.is_empty() { result.push('\n'); }
+                result.push_str(&format!("{}bpm: {}", leading, bpm_str));
+                result.push('\n');
+                for later in &lines[i + 1..] {
+                    result.push_str(later);
+                    result.push('\n');
+                }
+                // Trim trailing newline added if original didn't have one
+                if !yaml.ends_with('\n') {
+                    result = result.trim_end_matches('\n').to_string();
+                }
+                return result;
+            }
+        }
+    }
+
+    // 2. No existing bpm: found. Find the first global measure list item and append directions block.
+    let mut in_global_section = false;
+    let mut in_global_measures = false;
+    let mut first_measure_line: Option<usize> = None;
+    let mut first_measure_indent = 0usize;
+    // We'll insert after the `time:` line within that entry, or after the `- ` marker itself.
+    let mut insert_after_line: Option<usize> = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+
+        if trimmed == "global:" {
+            in_global_section = true;
+            in_global_measures = false;
+        } else if in_global_section && trimmed == "measures:" {
+            in_global_measures = true;
+        } else if in_global_measures && first_measure_line.is_none() && trimmed.starts_with("- ") {
+            first_measure_line = Some(i);
+            first_measure_indent = indent;
+            insert_after_line = Some(i); // default: right after the `- …` line
+        } else if first_measure_line.is_some() {
+            // Track the last line belonging to the first measure (i.e. before the indent drops or next - item appears)
+            if indent > first_measure_indent || (indent == first_measure_indent && !trimmed.starts_with("- ")) {
+                insert_after_line = Some(i); // extend insertion point
+            } else {
+                break;
+            }
+        } else if in_global_measures && first_measure_line.is_some() {
+            break;
+        } else if !in_global_section && !in_global_measures {
+            // Left global section
+            if in_global_section {
+                break;
+            }
+        }
+    }
+
+    if let Some(insert_after) = insert_after_line {
+        // Determine indentation of child fields within the first measure (2 extra spaces past its `- ` indent).
+        let child_indent = " ".repeat(first_measure_indent + 2);
+        let grandchild_indent = " ".repeat(first_measure_indent + 4);
+        let ggchild_indent = " ".repeat(first_measure_indent + 6);
+
+        let directions_block = format!(
+            "{}directions:\n{}  - tempo:\n{}bpm: {}",
+            child_indent,
+            child_indent,
+            ggchild_indent,
+            bpm_str
+        );
+
+        let mut result = lines[..=insert_after].join("\n");
+        result.push('\n');
+        result.push_str(&directions_block);
+        result.push('\n');
+        for later in &lines[insert_after + 1..] {
+            result.push_str(later);
+            result.push('\n');
+        }
+        if !yaml.ends_with('\n') {
+            result = result.trim_end_matches('\n').to_string();
+        }
+        return result;
+    }
+
+    // Fallback: return unchanged
+    yaml.to_string()
+}
+
 /// Appends a new measure to `global/measures` and to the first part in `yaml_text`, containing a single blank note with `duration`.
 pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
     let lines: Vec<&str> = yaml.lines().collect();
@@ -848,6 +991,22 @@ impl MnxEditorApp {
                         }
                     })
                     .collect();
+
+                // Sync BPM from YAML if a tempo directive is present
+                let yaml_bpm = doc.global.measures.iter()
+                    .flat_map(|m| m.directions.iter())
+                    .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
+                if let Some(bpm) = yaml_bpm {
+                    let formatted = if bpm.fract() == 0.0 {
+                        format!("{:.0}", bpm)
+                    } else {
+                        format!("{}", bpm)
+                    };
+                    // Only update the text buf when it differs in value, to avoid overwriting while user types
+                    if self.bpm_buf.trim().parse::<f64>().ok() != Some(bpm) {
+                        self.bpm_buf = formatted;
+                    }
+                }
 
                 self.parsed_errors = errors;
                 self.parsed_mnx = Some(doc);
@@ -1398,6 +1557,36 @@ impl eframe::App for MnxEditorApp {
                         DurationAction::ToggleDot => self.toggle_selected_duration_dot(),
                     }
                 }
+
+                // ── BPM Input ─────────────────────────────────────────────────
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("♩ =").strong());
+
+                let bpm_id = egui::Id::new("bpm_input");
+                let bpm_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.bpm_buf)
+                        .id(bpm_id)
+                        .desired_width(48.0)
+                        .hint_text("120"),
+                );
+
+                // Commit when user presses Enter or loses focus after typing
+                let commit_bpm = bpm_resp.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let commit_bpm = commit_bpm || (bpm_resp.lost_focus() && !bpm_resp.has_focus());
+
+                if commit_bpm {
+                    if let Ok(new_bpm) = self.bpm_buf.trim().parse::<f64>() {
+                        if new_bpm > 0.0 {
+                            self.yaml_text = set_bpm_in_yaml(&self.yaml_text, new_bpm);
+                            self.process_and_render();
+                        }
+                    }
+                }
+
+                ui.label("BPM").on_hover_text("Beats per minute (written into global/measures[0]/directions)");
             });
         });
 
@@ -1881,5 +2070,32 @@ parts:
         // Change base to 16th
         app.change_selected_duration_base("16th");
         assert_eq!(app.get_selected_event_duration().unwrap().base, "16th");
+    }
+    #[test]
+    fn test_set_bpm_in_yaml_insert() {
+        let yaml = include_str!("../example.yaml");
+        let result = set_bpm_in_yaml(yaml, 140.0);
+        let doc = serde_saphyr::from_str::<MnxDocument>(&result).expect("Should parse after BPM insert");
+        let bpm = doc.global.measures.iter()
+            .flat_map(|m| m.directions.iter())
+            .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
+        assert_eq!(bpm, Some(140.0), "BPM should be 140 after insert");
+    }
+
+    #[test]
+    fn test_set_bpm_in_yaml_update() {
+        let yaml = include_str!("../example.yaml");
+        let with_bpm = set_bpm_in_yaml(yaml, 140.0);
+        let updated = set_bpm_in_yaml(&with_bpm, 200.0);
+        let doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Should parse after BPM update");
+        let bpm = doc.global.measures.iter()
+            .flat_map(|m| m.directions.iter())
+            .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
+        assert_eq!(bpm, Some(200.0), "BPM should be updated to 200");
+        let tempo_count = doc.global.measures.iter()
+            .flat_map(|m| m.directions.iter())
+            .filter(|d| d.tempo.is_some())
+            .count();
+        assert_eq!(tempo_count, 1, "Should only have one tempo directive");
     }
 }
