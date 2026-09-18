@@ -73,6 +73,13 @@ pub struct MnxEditorApp {
     editing_string: Option<u8>,                    // Currently focused string row in edit mode
     duration_textures: Option<DurationTextures>,   // Note duration icons
     bpm_buf: String,                               // Text buffer for BPM input
+    midi_ports: Vec<crate::midi::MidiPortInfo>,    // Available MIDI output devices
+    selected_midi_port: Option<usize>,             // Selected MIDI port id
+    pitch_bend_range: u8,                          // Pitchbend range (1-48, default 2)
+    string_channel_map: std::collections::HashMap<u8, u8>, // String (1..n) -> MIDI channel (1..16)
+    is_mpe_mode: bool,                             // Toggle button for multi-timbral vs MPE output
+    midi_player: crate::midi::MidiPlayer,          // Real-time MIDI sequencer playback engine
+    midi_status_msg: Option<String>,               // Status or error message from MIDI playback
 }
 
 impl Default for MnxEditorApp {
@@ -80,6 +87,9 @@ impl Default for MnxEditorApp {
         let initial_yaml = fs::read_to_string("example.yaml")
             .unwrap_or_else(|_| String::from("# Could not load example.yaml"));
         
+        let ports = crate::midi::get_midi_output_ports();
+        let selected_port = ports.first().map(|p| p.id);
+
         let mut app = Self {
             yaml_text: initial_yaml,
             parsed_mnx: None,
@@ -93,6 +103,13 @@ impl Default for MnxEditorApp {
             editing_string: None,
             duration_textures: None,
             bpm_buf: String::from("120"),
+            midi_ports: ports,
+            selected_midi_port: selected_port,
+            pitch_bend_range: 2,
+            string_channel_map: std::collections::HashMap::new(),
+            is_mpe_mode: false,
+            midi_player: crate::midi::MidiPlayer::new(),
+            midi_status_msg: None,
         };
         
         app.process_and_render();
@@ -578,7 +595,25 @@ pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
             if first_measure_seen && trimmed.starts_with("directions:") {
                 in_directions = true;
             }
-            if in_directions && trimmed.starts_with("- tempo:") || (in_directions && trimmed.starts_with("tempo:")) {
+            if in_directions && (trimmed.starts_with("- tempo:") || trimmed.starts_with("tempo:")) {
+                if trimmed.contains("bpm:") {
+                    // Inline format like `- tempo: { bpm: 140 }` or `tempo: { bpm: 140 }`
+                    let leading = &line[..indent];
+                    let mut result = lines[..i].join("\n");
+                    if !result.is_empty() { result.push('\n'); }
+                    // Recreate inline tempo entry preserving '-' if present
+                    let prefix = if trimmed.starts_with("- ") { "- " } else { "" };
+                    result.push_str(&format!("{}{}{}tempo: {{ bpm: {} }}", leading, prefix, if prefix.is_empty() { "" } else { "" }, bpm_str));
+                    result.push('\n');
+                    for later in &lines[i + 1..] {
+                        result.push_str(later);
+                        result.push('\n');
+                    }
+                    if !yaml.ends_with('\n') {
+                        result = result.trim_end_matches('\n').to_string();
+                    }
+                    return result;
+                }
                 in_tempo = true;
             }
             if in_tempo && trimmed.starts_with("bpm:") {
@@ -642,14 +677,11 @@ pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
     if let Some(insert_after) = insert_after_line {
         // Determine indentation of child fields within the first measure (2 extra spaces past its `- ` indent).
         let child_indent = " ".repeat(first_measure_indent + 2);
-        let grandchild_indent = " ".repeat(first_measure_indent + 4);
-        let ggchild_indent = " ".repeat(first_measure_indent + 6);
 
         let directions_block = format!(
-            "{}directions:\n{}  - tempo:\n{}bpm: {}",
+            "{}directions:\n{}  - tempo: {{ bpm: {} }}",
             child_indent,
             child_indent,
-            ggchild_indent,
             bpm_str
         );
 
@@ -1588,6 +1620,154 @@ impl eframe::App for MnxEditorApp {
 
                 ui.label("BPM").on_hover_text("Beats per minute (written into global/measures[0]/directions)");
             });
+
+            ui.separator();
+
+            // ── MIDI Settings & Playback Toolbar ───────────────────────────
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("MIDI:").strong());
+
+                // 1. Play / Stop buttons
+                let is_playing = self.midi_player.is_playing();
+                if is_playing {
+                    let stop_btn = egui::Button::new(
+                        egui::RichText::new("⏹ Stop").color(Color32::from_rgb(255, 100, 100)).strong()
+                    );
+                    if ui.add(stop_btn).on_hover_text("Stop MIDI playback").clicked() {
+                        self.midi_player.stop();
+                        self.midi_status_msg = Some("Playback stopped.".to_string());
+                    }
+                } else {
+                    let play_btn = egui::Button::new(
+                        egui::RichText::new("▶ Play").color(Color32::from_rgb(100, 255, 130)).strong()
+                    );
+                    if ui.add(play_btn).on_hover_text("Play tablature via MIDI").clicked() {
+                        if let Some(doc) = &self.parsed_mnx {
+                            if let Some(port_idx) = self.selected_midi_port {
+                                // Build MidiOptions
+                                let mut string_to_channel = std::collections::HashMap::new();
+                                let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6) as u8;
+                                for s in 1..=num_strings {
+                                    let ch_1_based = self.string_channel_map.get(&s).copied().unwrap_or(s);
+                                    let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
+                                    string_to_channel.insert(s, midly::num::u4::from(ch_0_based));
+                                }
+
+                                let options = crate::midi::MidiOptions {
+                                    pitch_bend_range: self.pitch_bend_range,
+                                    string_to_channel,
+                                    default_bpm: 120.0,
+                                    ppq: midly::num::u15::from(480),
+                                };
+
+                                match self.midi_player.play(doc, options, port_idx) {
+                                    Ok(_) => {
+                                        let port_name = self.midi_ports.iter().find(|p| p.id == port_idx)
+                                            .map(|p| p.name.as_str()).unwrap_or("MIDI device");
+                                        self.midi_status_msg = Some(format!("Playing on {}", port_name));
+                                    }
+                                    Err(e) => {
+                                        self.midi_status_msg = Some(format!("Playback error: {}", e));
+                                    }
+                                }
+                            } else {
+                                self.midi_status_msg = Some("No MIDI output device selected.".to_string());
+                            }
+                        } else {
+                            self.midi_status_msg = Some("No valid document parsed to play.".to_string());
+                        }
+                    }
+                }
+
+                ui.separator();
+
+                // 2. Dropdown of available MIDI output devices + refresh button
+                let selected_port_name = self.selected_midi_port
+                    .and_then(|id| self.midi_ports.iter().find(|p| p.id == id).map(|p| p.name.clone()))
+                    .unwrap_or_else(|| {
+                        if self.midi_ports.is_empty() {
+                            "No MIDI Out Found".to_string()
+                        } else {
+                            "Select Device...".to_string()
+                        }
+                    });
+
+                egui::ComboBox::from_id_salt("midi_out_device_select")
+                    .selected_text(selected_port_name)
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        if self.midi_ports.is_empty() {
+                            ui.label("No devices detected");
+                        } else {
+                            for port in &self.midi_ports {
+                                ui.selectable_value(&mut self.selected_midi_port, Some(port.id), &port.name);
+                            }
+                        }
+                    });
+
+                if ui.small_button("⟳").on_hover_text("Refresh MIDI devices").clicked() {
+                    self.midi_ports = crate::midi::get_midi_output_ports();
+                    if self.selected_midi_port.is_none() || !self.midi_ports.iter().any(|p| Some(p.id) == self.selected_midi_port) {
+                        self.selected_midi_port = self.midi_ports.first().map(|p| p.id);
+                    }
+                }
+
+                ui.separator();
+
+                // 3. Pitchbend Range (int 1-48, default 2)
+                ui.label("PB Range: ±");
+                let mut pb_range_val = self.pitch_bend_range as i32;
+                if ui.add(egui::DragValue::new(&mut pb_range_val).range(1..=48).speed(0.2)).on_hover_text("Pitch bend range in semitones (1 - 48)").changed() {
+                    self.pitch_bend_range = pb_range_val.clamp(1, 48) as u8;
+                }
+                ui.label("st");
+
+                ui.separator();
+
+                // 4. Mode toggle: Multi-timbral vs MPE
+                let mode_label = if self.is_mpe_mode { "Mode: MPE" } else { "Mode: Multi-Timbral" };
+                if ui.selectable_label(self.is_mpe_mode, mode_label)
+                    .on_hover_text("Toggle between Multi-Timbral (channel per string) and MPE mode")
+                    .clicked()
+                {
+                    self.is_mpe_mode = !self.is_mpe_mode;
+                }
+
+                ui.separator();
+
+                // 5. String-to-Channel Mappings button with Popup
+                let num_strings = self.parsed_mnx.as_ref()
+                    .and_then(|d| d.parts.first())
+                    .map(|p| p.num_strings())
+                    .unwrap_or(6) as u8;
+
+                ui.menu_button("String Channels ▾", |ui| {
+                    ui.label(egui::RichText::new("String to MIDI Channel Mapping").strong());
+                    ui.separator();
+                    for s in 1..=num_strings {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("String {}:", s));
+                            let current_ch = self.string_channel_map.entry(s).or_insert(s);
+                            let mut ch_val = *current_ch as i32;
+                            if ui.add(egui::DragValue::new(&mut ch_val).range(1..=16).speed(0.1)).changed() {
+                                *current_ch = ch_val.clamp(1, 16) as u8;
+                            }
+                            ui.label(format!("(Ch {})", ch_val));
+                        });
+                    }
+                    if ui.button("Reset to Default (1..n)").clicked() {
+                        for s in 1..=num_strings {
+                            self.string_channel_map.insert(s, s);
+                        }
+                    }
+                });
+
+                // Status message tooltip / indicator
+                if let Some(msg) = &self.midi_status_msg {
+                    ui.separator();
+                    ui.label(egui::RichText::new(msg).italics().color(Color32::from_rgb(180, 210, 255)));
+                }
+            });
         });
 
         // 2. Bottom Panel for Errors (only shown if errors exist)
@@ -2075,7 +2255,9 @@ parts:
     fn test_set_bpm_in_yaml_insert() {
         let yaml = include_str!("../example.yaml");
         let result = set_bpm_in_yaml(yaml, 140.0);
+        println!("RESULT YAML:\n{}", &result[..result.len().min(400)]);
         let doc = serde_saphyr::from_str::<MnxDocument>(&result).expect("Should parse after BPM insert");
+        println!("DOC GLOBAL: {:?}", doc.global);
         let bpm = doc.global.measures.iter()
             .flat_map(|m| m.directions.iter())
             .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
