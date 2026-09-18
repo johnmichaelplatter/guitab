@@ -980,6 +980,143 @@ impl MnxEditorApp {
         }
     }
 
+    pub fn start_midi_playback(&mut self, start_from_selected: bool) {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(port_idx) = self.selected_midi_port {
+                let mut string_to_channel = std::collections::HashMap::new();
+                let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6) as u8;
+                for s in 1..=num_strings {
+                    let ch_1_based = self.string_channel_map.get(&s).copied().unwrap_or(s);
+                    let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
+                    string_to_channel.insert(s, midly::num::u4::from(ch_0_based));
+                }
+
+                let start_event = if start_from_selected {
+                    self.selected_event_idx
+                } else {
+                    Some(0)
+                };
+
+                let options = crate::midi::MidiOptions {
+                    pitch_bend_range: self.pitch_bend_range,
+                    string_to_channel,
+                    default_bpm: 120.0,
+                    ppq: midly::num::u15::from(480),
+                    start_event_idx: start_event,
+                };
+
+                match self.midi_player.play(doc, options, port_idx) {
+                    Ok(_) => {
+                        let port_name = self.midi_ports.iter().find(|p| p.id == port_idx)
+                            .map(|p| p.name.as_str()).unwrap_or("MIDI device");
+                        if let Some(start_idx) = start_event {
+                            if start_idx > 0 {
+                                self.midi_status_msg = Some(format!("Playing from note {} on {}", start_idx + 1, port_name));
+                            } else {
+                                self.midi_status_msg = Some(format!("Playing from start on {}", port_name));
+                            }
+                        } else {
+                            self.midi_status_msg = Some(format!("Playing on {}", port_name));
+                        }
+                    }
+                    Err(e) => {
+                        self.midi_status_msg = Some(format!("Playback error: {}", e));
+                    }
+                }
+            } else {
+                self.midi_status_msg = Some("No MIDI output device selected.".to_string());
+            }
+        } else {
+            self.midi_status_msg = Some("No valid document parsed to play.".to_string());
+        }
+    }
+
+    pub fn preview_selected_sound(&mut self) {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return,
+        };
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return,
+        };
+        let port_idx = match self.selected_midi_port {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Find the event
+        let mut cur_e = 0;
+        let mut target_event = None;
+        'find_ev: for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in &seq.content {
+                    if cur_e == e_idx {
+                        target_event = Some(ev);
+                        break 'find_ev;
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+
+        let event = match target_event {
+            Some(ev) => ev,
+            None => return,
+        };
+
+        if event.notes.is_empty() {
+            self.midi_player.stop();
+            return;
+        }
+
+        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
+        let mut notes_to_play = Vec::new();
+
+        let target_notes: Vec<&crate::mnx::Note> = if let Some(n_idx) = self.selected_note_idx_in_event {
+            if let Some(n) = event.notes.get(n_idx) {
+                vec![n]
+            } else {
+                event.notes.iter().collect()
+            }
+        } else {
+            event.notes.iter().collect()
+        };
+
+        for note in target_notes {
+            if let (Some(string), Some(fret)) = (note.string, note.fret) {
+                let ch_1_based = self.string_channel_map.get(&string).copied().unwrap_or(string);
+                let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
+                let channel = midly::num::u4::from(ch_0_based);
+
+                if let Some(pos_state) = freq_table.get(string, fret) {
+                    let midi_note_frac = pos_state.midi_note_number;
+                    let base_note = midi_note_frac.round() as u8;
+                    let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+
+                    let pitch_bend_val = (8192.0 + (semitone_diff / self.pitch_bend_range as f32) * 8192.0)
+                        .round()
+                        .clamp(0.0, 16383.0) as u16;
+
+                    notes_to_play.push(crate::midi::NotePreview {
+                        channel,
+                        key: midly::num::u7::from(base_note.min(127)),
+                        pitch_bend: Some(pitch_bend_val),
+                        velocity: midly::num::u7::from(100),
+                    });
+                }
+            }
+        }
+
+        if !notes_to_play.is_empty() {
+            let _ = self.midi_player.play_preview(notes_to_play, port_idx, 400);
+        }
+    }
+
     pub fn add_measure_to_end(&mut self) {
         let last_duration = self.parsed_mnx
             .as_ref()
@@ -1280,6 +1417,16 @@ impl eframe::App for MnxEditorApp {
                 self.toggle_selected_duration_dot();
             }
 
+            let p_pressed = ui.input(|i| i.key_pressed(egui::Key::P));
+            let shift_down = ui.input(|i| i.modifiers.shift);
+            if p_pressed {
+                if shift_down {
+                    self.start_midi_playback(false);
+                } else {
+                    self.start_midi_playback(true);
+                }
+            }
+
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
@@ -1343,6 +1490,7 @@ impl eframe::App for MnxEditorApp {
                             }
                             self.selected_note_idx_in_event = None;
                             self.editing_string = None;
+                            self.preview_selected_sound();
                         }
                     } else {
                         self.selected_event_idx = match self.selected_event_idx {
@@ -1351,6 +1499,7 @@ impl eframe::App for MnxEditorApp {
                         };
                         self.selected_note_idx_in_event = None;
                         self.editing_string = None;
+                        self.preview_selected_sound();
                     }
                 }
                 if right_pressed {
@@ -1390,10 +1539,12 @@ impl eframe::App for MnxEditorApp {
                                                     }
                                                     self.selected_note_idx_in_event = None;
                                                     self.editing_string = None;
+                                                    self.preview_selected_sound();
                                                 }
                                             } else {
                                                 // Rule 2: Bar has been filled up -> add new measure with blank note
                                                 self.add_measure_to_end();
+                                                self.preview_selected_sound();
                                             }
                                         }
                                     }
@@ -1408,6 +1559,7 @@ impl eframe::App for MnxEditorApp {
                         };
                         self.selected_note_idx_in_event = None;
                         self.editing_string = None;
+                        self.preview_selected_sound();
                     }
                 }
 
@@ -1464,6 +1616,8 @@ impl eframe::App for MnxEditorApp {
                                         }
                                     };
                                 }
+
+                                self.preview_selected_sound();
                             }
                         }
                     }
@@ -1638,44 +1792,16 @@ impl eframe::App for MnxEditorApp {
                         self.midi_status_msg = Some("Playback stopped.".to_string());
                     }
                 } else {
+                    let play_label = if let Some(sel) = self.selected_event_idx {
+                        format!("▶ Play (from note {})", sel + 1)
+                    } else {
+                        "▶ Play".to_string()
+                    };
                     let play_btn = egui::Button::new(
-                        egui::RichText::new("▶ Play").color(Color32::from_rgb(100, 255, 130)).strong()
+                        egui::RichText::new(play_label).color(Color32::from_rgb(100, 255, 130)).strong()
                     );
-                    if ui.add(play_btn).on_hover_text("Play tablature via MIDI").clicked() {
-                        if let Some(doc) = &self.parsed_mnx {
-                            if let Some(port_idx) = self.selected_midi_port {
-                                // Build MidiOptions
-                                let mut string_to_channel = std::collections::HashMap::new();
-                                let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6) as u8;
-                                for s in 1..=num_strings {
-                                    let ch_1_based = self.string_channel_map.get(&s).copied().unwrap_or(s);
-                                    let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
-                                    string_to_channel.insert(s, midly::num::u4::from(ch_0_based));
-                                }
-
-                                let options = crate::midi::MidiOptions {
-                                    pitch_bend_range: self.pitch_bend_range,
-                                    string_to_channel,
-                                    default_bpm: 120.0,
-                                    ppq: midly::num::u15::from(480),
-                                };
-
-                                match self.midi_player.play(doc, options, port_idx) {
-                                    Ok(_) => {
-                                        let port_name = self.midi_ports.iter().find(|p| p.id == port_idx)
-                                            .map(|p| p.name.as_str()).unwrap_or("MIDI device");
-                                        self.midi_status_msg = Some(format!("Playing on {}", port_name));
-                                    }
-                                    Err(e) => {
-                                        self.midi_status_msg = Some(format!("Playback error: {}", e));
-                                    }
-                                }
-                            } else {
-                                self.midi_status_msg = Some("No MIDI output device selected.".to_string());
-                            }
-                        } else {
-                            self.midi_status_msg = Some("No valid document parsed to play.".to_string());
-                        }
+                    if ui.add(play_btn).on_hover_text("Play tablature via MIDI (Hotkey 'P' to play from selected note, 'Shift+P' from start)").clicked() {
+                        self.start_midi_playback(self.selected_event_idx.is_some());
                     }
                 }
 

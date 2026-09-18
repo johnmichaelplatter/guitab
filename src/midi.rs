@@ -13,6 +13,7 @@ pub struct MidiOptions {
     pub string_to_channel: HashMap<u8, u4>,
     pub default_bpm: f64,
     pub ppq: u15,
+    pub start_event_idx: Option<usize>,
 }
 
 impl Default for MidiOptions {
@@ -22,6 +23,7 @@ impl Default for MidiOptions {
             string_to_channel: HashMap::new(), // Populated dynamically if empty
             default_bpm: 120.0,
             ppq: u15::from(480),
+            start_event_idx: None,
         }
     }
 }
@@ -91,6 +93,8 @@ pub fn generate_midi<'a>(doc: &MnxDocument, mut options: MidiOptions) -> Smf<'a>
 
         let freq_table = FretboardFrequencyTable::from_part_default(part);
         let mut current_time_ticks = 0;
+        let mut current_event_idx = 0;
+        let start_event = options.start_event_idx.unwrap_or(0);
 
         for measure in &part.measures {
             for seq in &measure.sequences {
@@ -100,59 +104,63 @@ pub fn generate_midi<'a>(doc: &MnxDocument, mut options: MidiOptions) -> Smf<'a>
                     let beats = duration_to_quarter_beats(&event.duration);
                     let duration_ticks = (beats * (u16::from(options.ppq) as f64)).round() as u32;
 
-                    for note in &event.notes {
-                        if let (Some(string), Some(fret)) = (note.string, note.fret) {
-                            let channel = options.string_to_channel.get(&string).copied().unwrap_or(u4::from(0));
-                            
-                            if let Some(pos_state) = freq_table.get(string, fret) {
-                                let midi_note_frac = pos_state.midi_note_number;
-                                let base_note = midi_note_frac.round() as u8;
-                                let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+                    if current_event_idx >= start_event {
+                        for note in &event.notes {
+                            if let (Some(string), Some(fret)) = (note.string, note.fret) {
+                                let channel = options.string_to_channel.get(&string).copied().unwrap_or(u4::from(0));
                                 
-                                // Pitch bend range calculation
-                                let pitch_bend_val = (8192.0 + (semitone_diff / options.pitch_bend_range as f32) * 8192.0)
-                                    .round()
-                                    .clamp(0.0, 16383.0) as u16;
+                                if let Some(pos_state) = freq_table.get(string, fret) {
+                                    let midi_note_frac = pos_state.midi_note_number;
+                                    let base_note = midi_note_frac.round() as u8;
+                                    let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+                                    
+                                    // Pitch bend range calculation
+                                    let pitch_bend_val = (8192.0 + (semitone_diff / options.pitch_bend_range as f32) * 8192.0)
+                                        .round()
+                                        .clamp(0.0, 16383.0) as u16;
 
-                                // Send Pitch Bend right before Note On
-                                abs_events.push(AbsoluteEvent {
-                                    time_ticks: seq_time_ticks,
-                                    kind: TrackEventKind::Midi {
-                                        channel,
-                                        message: MidiMessage::PitchBend {
-                                            bend: midly::PitchBend(midly::num::u14::from(pitch_bend_val)),
+                                    // Send Pitch Bend right before Note On
+                                    abs_events.push(AbsoluteEvent {
+                                        time_ticks: seq_time_ticks,
+                                        kind: TrackEventKind::Midi {
+                                            channel,
+                                            message: MidiMessage::PitchBend {
+                                                bend: midly::PitchBend(midly::num::u14::from(pitch_bend_val)),
+                                            },
                                         },
-                                    },
-                                });
+                                    });
 
-                                // Note On
-                                abs_events.push(AbsoluteEvent {
-                                    time_ticks: seq_time_ticks,
-                                    kind: TrackEventKind::Midi {
-                                        channel,
-                                        message: MidiMessage::NoteOn {
-                                            key: u7::from(base_note.min(127)),
-                                            vel: u7::from(100), // Default velocity
+                                    // Note On
+                                    abs_events.push(AbsoluteEvent {
+                                        time_ticks: seq_time_ticks,
+                                        kind: TrackEventKind::Midi {
+                                            channel,
+                                            message: MidiMessage::NoteOn {
+                                                key: u7::from(base_note.min(127)),
+                                                vel: u7::from(100), // Default velocity
+                                            },
                                         },
-                                    },
-                                });
+                                    });
 
-                                // Note Off
-                                abs_events.push(AbsoluteEvent {
-                                    time_ticks: seq_time_ticks + duration_ticks,
-                                    kind: TrackEventKind::Midi {
-                                        channel,
-                                        message: MidiMessage::NoteOff {
-                                            key: u7::from(base_note.min(127)),
-                                            vel: u7::from(64),
+                                    // Note Off
+                                    abs_events.push(AbsoluteEvent {
+                                        time_ticks: seq_time_ticks + duration_ticks,
+                                        kind: TrackEventKind::Midi {
+                                            channel,
+                                            message: MidiMessage::NoteOff {
+                                                key: u7::from(base_note.min(127)),
+                                                vel: u7::from(64),
+                                            },
                                         },
-                                    },
-                                });
+                                    });
+                                }
                             }
                         }
+                        
+                        seq_time_ticks += duration_ticks;
                     }
-                    
-                    seq_time_ticks += duration_ticks;
+
+                    current_event_idx += 1;
                 }
                 current_time_ticks = seq_time_ticks; // Advance measure time (assumes 1 sequence per measure for simple monophonic/polyphonic tab)
             }
@@ -239,6 +247,14 @@ pub fn get_midi_output_ports() -> Vec<MidiPortInfo> {
         }
         Err(_) => Vec::new(),
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct NotePreview {
+    pub channel: midly::num::u4,
+    pub key: midly::num::u7,
+    pub pitch_bend: Option<u16>,
+    pub velocity: midly::num::u7,
 }
 
 pub struct MidiPlayer {
@@ -356,6 +372,78 @@ impl MidiPlayer {
         self.handle = Some(handle);
         Ok(())
     }
+
+    pub fn play_preview(
+        &mut self,
+        notes: Vec<NotePreview>,
+        port_index: usize,
+        duration_ms: u64,
+    ) -> Result<(), String> {
+        self.stop();
+
+        if notes.is_empty() {
+            return Ok(());
+        }
+
+        let midi_out = midir::MidiOutput::new("mnx_tab_cli_preview")
+            .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
+        let ports = midi_out.ports();
+        let port = ports.get(port_index).ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
+
+        let mut conn_out = midi_out.connect(port, "mnx_preview")
+            .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
+
+        // Send Pitch Bend and Note On messages immediately
+        for n in &notes {
+            if let Some(pb_val) = n.pitch_bend {
+                let pb_msg = midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::from(pb_val)),
+                };
+                let bytes = serialize_midi_message(n.channel, &pb_msg);
+                if !bytes.is_empty() {
+                    let _ = conn_out.send(&bytes);
+                }
+            }
+            let note_on = midly::MidiMessage::NoteOn {
+                key: n.key,
+                vel: n.velocity,
+            };
+            let bytes = serialize_midi_message(n.channel, &note_on);
+            if !bytes.is_empty() {
+                let _ = conn_out.send(&bytes);
+            }
+        }
+
+        let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.stop_signal = stop_flag.clone();
+
+        let handle = std::thread::spawn(move || {
+            let sleep_dur = std::time::Duration::from_millis(duration_ms);
+            let start_sleep = std::time::Instant::now();
+            while start_sleep.elapsed() < sleep_dur {
+                if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let rem = sleep_dur.saturating_sub(start_sleep.elapsed());
+                std::thread::sleep(rem.min(std::time::Duration::from_millis(10)));
+            }
+
+            // Send Note Off for all notes
+            for n in &notes {
+                let note_off = midly::MidiMessage::NoteOff {
+                    key: n.key,
+                    vel: midly::num::u7::from(64),
+                };
+                let bytes = serialize_midi_message(n.channel, &note_off);
+                if !bytes.is_empty() {
+                    let _ = conn_out.send(&bytes);
+                }
+            }
+        });
+
+        self.handle = Some(handle);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -394,5 +482,23 @@ mod tests {
     fn test_midi_player_initial_state() {
         let player = MidiPlayer::new();
         assert!(!player.is_playing());
+    }
+
+    #[test]
+    fn test_generate_midi_start_event_idx() {
+        let yaml = include_str!("../example.yaml");
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let full_smf = generate_midi(&doc, MidiOptions::default());
+        let full_note_ons = full_smf.tracks[0].iter().filter(|ev| matches!(ev.kind, TrackEventKind::Midi { message: MidiMessage::NoteOn { .. }, .. })).count();
+
+        let partial_options = MidiOptions {
+            start_event_idx: Some(1),
+            ..Default::default()
+        };
+        let partial_smf = generate_midi(&doc, partial_options);
+        let partial_note_ons = partial_smf.tracks[0].iter().filter(|ev| matches!(ev.kind, TrackEventKind::Midi { message: MidiMessage::NoteOn { .. }, .. })).count();
+
+        assert!(partial_note_ons < full_note_ons, "Partial playback should have fewer NoteOn events");
+        assert!(partial_note_ons > 0, "Partial playback should have remaining NoteOn events");
     }
 }
