@@ -986,7 +986,8 @@ impl MnxEditorApp {
                 let mut string_to_channel = std::collections::HashMap::new();
                 let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6) as u8;
                 for s in 1..=num_strings {
-                    let ch_1_based = self.string_channel_map.get(&s).copied().unwrap_or(s);
+                    let default_ch = if self.is_mpe_mode { s + 1 } else { s };
+                    let ch_1_based = self.string_channel_map.get(&s).copied().unwrap_or(default_ch);
                     let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
                     string_to_channel.insert(s, midly::num::u4::from(ch_0_based));
                 }
@@ -1003,20 +1004,22 @@ impl MnxEditorApp {
                     default_bpm: 120.0,
                     ppq: midly::num::u15::from(480),
                     start_event_idx: start_event,
+                    is_mpe: self.is_mpe_mode,
                 };
 
                 match self.midi_player.play(doc, options, port_idx) {
                     Ok(_) => {
                         let port_name = self.midi_ports.iter().find(|p| p.id == port_idx)
                             .map(|p| p.name.as_str()).unwrap_or("MIDI device");
+                        let mode_str = if self.is_mpe_mode { " (MPE)" } else { "" };
                         if let Some(start_idx) = start_event {
                             if start_idx > 0 {
-                                self.midi_status_msg = Some(format!("Playing from note {} on {}", start_idx + 1, port_name));
+                                self.midi_status_msg = Some(format!("Playing from note {}{} on {}", start_idx + 1, mode_str, port_name));
                             } else {
-                                self.midi_status_msg = Some(format!("Playing from start on {}", port_name));
+                                self.midi_status_msg = Some(format!("Playing from start{} on {}", mode_str, port_name));
                             }
                         } else {
-                            self.midi_status_msg = Some(format!("Playing on {}", port_name));
+                            self.midi_status_msg = Some(format!("Playing{} on {}", mode_str, port_name));
                         }
                     }
                     Err(e) => {
@@ -1089,7 +1092,8 @@ impl MnxEditorApp {
 
         for note in target_notes {
             if let (Some(string), Some(fret)) = (note.string, note.fret) {
-                let ch_1_based = self.string_channel_map.get(&string).copied().unwrap_or(string);
+                let default_ch = if self.is_mpe_mode { string + 1 } else { string };
+                let ch_1_based = self.string_channel_map.get(&string).copied().unwrap_or(default_ch);
                 let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
                 let channel = midly::num::u4::from(ch_0_based);
 
@@ -1098,9 +1102,7 @@ impl MnxEditorApp {
                     let base_note = midi_note_frac.round() as u8;
                     let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
 
-                    let pitch_bend_val = (8192.0 + (semitone_diff / self.pitch_bend_range as f32) * 8192.0)
-                        .round()
-                        .clamp(0.0, 16383.0) as u16;
+                    let pitch_bend_val = crate::midi::calculate_pitch_bend(semitone_diff, self.pitch_bend_range);
 
                     notes_to_play.push(crate::midi::NotePreview {
                         channel,
@@ -1113,7 +1115,15 @@ impl MnxEditorApp {
         }
 
         if !notes_to_play.is_empty() {
-            let _ = self.midi_player.play_preview(notes_to_play, port_idx, 400);
+            let num_strings = part.num_strings() as u8;
+            let _ = self.midi_player.play_preview(
+                notes_to_play,
+                port_idx,
+                400,
+                self.is_mpe_mode,
+                num_strings,
+                self.pitch_bend_range,
+            );
         }
     }
 
@@ -1853,10 +1863,27 @@ impl eframe::App for MnxEditorApp {
                 // 4. Mode toggle: Multi-timbral vs MPE
                 let mode_label = if self.is_mpe_mode { "Mode: MPE" } else { "Mode: Multi-Timbral" };
                 if ui.selectable_label(self.is_mpe_mode, mode_label)
-                    .on_hover_text("Toggle between Multi-Timbral (channel per string) and MPE mode")
+                    .on_hover_text("Toggle between Multi-Timbral (channel per string) and MPE mode (Ch 1 Master, Ch 2..n+1 Member channels, default ±48 semitones)")
                     .clicked()
                 {
                     self.is_mpe_mode = !self.is_mpe_mode;
+                    let num_strings = self.parsed_mnx.as_ref()
+                        .and_then(|d| d.parts.first())
+                        .map(|p| p.num_strings())
+                        .unwrap_or(6) as u8;
+                    if self.is_mpe_mode {
+                        self.pitch_bend_range = 48;
+                        self.string_channel_map.clear();
+                        for s in 1..=num_strings {
+                            self.string_channel_map.insert(s, s + 1);
+                        }
+                    } else {
+                        self.pitch_bend_range = 2;
+                        self.string_channel_map.clear();
+                        for s in 1..=num_strings {
+                            self.string_channel_map.insert(s, s);
+                        }
+                    }
                 }
 
                 ui.separator();
@@ -1868,22 +1895,29 @@ impl eframe::App for MnxEditorApp {
                     .unwrap_or(6) as u8;
 
                 ui.menu_button("String Channels ▾", |ui| {
-                    ui.label(egui::RichText::new("String to MIDI Channel Mapping").strong());
+                    ui.label(egui::RichText::new(if self.is_mpe_mode {
+                        "String to MPE Member Channel Mapping (Ch 2-16, Ch 1 is Master)"
+                    } else {
+                        "String to MIDI Channel Mapping (Ch 1-16)"
+                    }).strong());
                     ui.separator();
                     for s in 1..=num_strings {
                         ui.horizontal(|ui| {
                             ui.label(format!("String {}:", s));
-                            let current_ch = self.string_channel_map.entry(s).or_insert(s);
+                            let default_ch = if self.is_mpe_mode { s + 1 } else { s };
+                            let current_ch = self.string_channel_map.entry(s).or_insert(default_ch);
                             let mut ch_val = *current_ch as i32;
-                            if ui.add(egui::DragValue::new(&mut ch_val).range(1..=16).speed(0.1)).changed() {
-                                *current_ch = ch_val.clamp(1, 16) as u8;
+                            let (min_ch, max_ch) = if self.is_mpe_mode { (2, 16) } else { (1, 16) };
+                            if ui.add(egui::DragValue::new(&mut ch_val).range(min_ch..=max_ch).speed(0.1)).changed() {
+                                *current_ch = ch_val.clamp(min_ch, max_ch) as u8;
                             }
                             ui.label(format!("(Ch {})", ch_val));
                         });
                     }
-                    if ui.button("Reset to Default (1..n)").clicked() {
+                    if ui.button(if self.is_mpe_mode { "Reset to MPE Default (2..n+1)" } else { "Reset to Default (1..n)" }).clicked() {
                         for s in 1..=num_strings {
-                            self.string_channel_map.insert(s, s);
+                            let def_ch = if self.is_mpe_mode { s + 1 } else { s };
+                            self.string_channel_map.insert(s, def_ch);
                         }
                     }
                 });

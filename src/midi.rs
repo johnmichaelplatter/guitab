@@ -14,6 +14,7 @@ pub struct MidiOptions {
     pub default_bpm: f64,
     pub ppq: u15,
     pub start_event_idx: Option<usize>,
+    pub is_mpe: bool,
 }
 
 impl Default for MidiOptions {
@@ -24,7 +25,44 @@ impl Default for MidiOptions {
             default_bpm: 120.0,
             ppq: u15::from(480),
             start_event_idx: None,
+            is_mpe: false,
         }
+    }
+}
+
+impl MidiOptions {
+    pub fn mpe_default() -> Self {
+        Self {
+            pitch_bend_range: 48,
+            string_to_channel: HashMap::new(),
+            default_bpm: 120.0,
+            ppq: u15::from(480),
+            start_event_idx: None,
+            is_mpe: true,
+        }
+    }
+}
+
+/// Helper to calculate 14-bit MIDI pitch bend value from semitone difference and pitch bend range
+pub fn calculate_pitch_bend(semitone_diff: f32, pb_range: u8) -> u16 {
+    let range = pb_range.max(1) as f32;
+    (8192.0 + (semitone_diff / range) * 8192.0)
+        .round()
+        .clamp(0.0, 16383.0) as u16
+}
+
+/// Send MPE Configuration Message (MCM) on Master Channel 1 (0-indexed channel 0)
+pub fn send_mpe_configuration(out_conn: &mut midir::MidiOutputConnection, member_channels: u8) {
+    let messages = [
+        [0xB0, 101, 0],               // RPN MSB: 0
+        [0xB0, 100, 6],               // RPN LSB: 6 (MPE Configuration)
+        [0xB0, 6, member_channels],   // Data Entry MSB: number of member channels
+        [0xB0, 38, 0],                // Data Entry LSB: 0
+        [0xB0, 101, 127],             // Null RPN MSB
+        [0xB0, 100, 127],             // Null RPN LSB
+    ];
+    for msg in messages.iter() {
+        let _ = out_conn.send(msg);
     }
 }
 
@@ -62,18 +100,73 @@ pub fn generate_midi<'a>(doc: &MnxDocument, mut options: MidiOptions) -> Smf<'a>
     });
 
     if let Some(part) = doc.parts.first() {
-        // Setup channel mappings for strings
         let num_strings = part.num_strings() as u8;
+
+        // Setup channel mappings for strings if not explicitly provided
         if options.string_to_channel.is_empty() {
             for s in 1..=num_strings {
-                // Modulo 16 for safety, though string index is typically 1-8. Note: ch 9 is drums.
-                let ch = (s - 1) % 16;
-                let ch = if ch == 9 { (ch + 1) % 16 } else { ch };
-                options.string_to_channel.insert(s, u4::from(ch));
+                if options.is_mpe {
+                    // MPE Lower Zone: Master channel is 0 (MIDI Ch 1). Member channels start at 1 (MIDI Ch 2).
+                    // String 1 -> Channel 2 (0-indexed 1), String 2 -> Channel 3 (0-indexed 2), etc.
+                    let ch = ((s - 1) % 15 + 1) as u8;
+                    options.string_to_channel.insert(s, u4::from(ch));
+                } else {
+                    // Multi-Timbral mode: String 1 -> Channel 1 (0-indexed 0), etc.
+                    let ch = (s - 1) % 16;
+                    let ch = if ch == 9 { (ch + 1) % 16 } else { ch };
+                    options.string_to_channel.insert(s, u4::from(ch));
+                }
             }
         }
 
-        // Setup pitch bend ranges for used channels
+        // If MPE mode is enabled, emit MPE Configuration Message on Master Channel 1 (0-indexed 0)
+        if options.is_mpe {
+            let member_channels = num_strings.min(15);
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi {
+                    channel: u4::from(0),
+                    message: MidiMessage::Controller { controller: u7::from(101), value: u7::from(0) },
+                },
+            });
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi {
+                    channel: u4::from(0),
+                    message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(6) },
+                },
+            });
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi {
+                    channel: u4::from(0),
+                    message: MidiMessage::Controller { controller: u7::from(6), value: u7::from(member_channels) },
+                },
+            });
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi {
+                    channel: u4::from(0),
+                    message: MidiMessage::Controller { controller: u7::from(38), value: u7::from(0) },
+                },
+            });
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi {
+                    channel: u4::from(0),
+                    message: MidiMessage::Controller { controller: u7::from(101), value: u7::from(127) },
+                },
+            });
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi {
+                    channel: u4::from(0),
+                    message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(127) },
+                },
+            });
+        }
+
+        // Setup pitch bend ranges (RPN 0) for all used string member channels
         for &ch in options.string_to_channel.values() {
             // RPN Pitch Bend Sensitivity (MSB = 0, LSB = 0)
             abs_events.push(AbsoluteEvent {
@@ -84,10 +177,23 @@ pub fn generate_midi<'a>(doc: &MnxDocument, mut options: MidiOptions) -> Smf<'a>
                 time_ticks: 0,
                 kind: TrackEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(0) } }
             });
-            // Set value
+            // Set Pitch Bend Range in semitones
             abs_events.push(AbsoluteEvent {
                 time_ticks: 0,
                 kind: TrackEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(6), value: u7::from(options.pitch_bend_range.min(127)) } }
+            });
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(38), value: u7::from(0) } }
+            });
+            // Reset RPN to Null
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(101), value: u7::from(127) } }
+            });
+            abs_events.push(AbsoluteEvent {
+                time_ticks: 0,
+                kind: TrackEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(127) } }
             });
         }
 
@@ -107,17 +213,20 @@ pub fn generate_midi<'a>(doc: &MnxDocument, mut options: MidiOptions) -> Smf<'a>
                     if current_event_idx >= start_event {
                         for note in &event.notes {
                             if let (Some(string), Some(fret)) = (note.string, note.fret) {
-                                let channel = options.string_to_channel.get(&string).copied().unwrap_or(u4::from(0));
+                                let default_ch = if options.is_mpe {
+                                    u4::from(((string - 1) % 15 + 1) as u8)
+                                } else {
+                                    u4::from((string - 1) % 16)
+                                };
+                                let channel = options.string_to_channel.get(&string).copied().unwrap_or(default_ch);
                                 
                                 if let Some(pos_state) = freq_table.get(string, fret) {
                                     let midi_note_frac = pos_state.midi_note_number;
                                     let base_note = midi_note_frac.round() as u8;
                                     let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
                                     
-                                    // Pitch bend range calculation
-                                    let pitch_bend_val = (8192.0 + (semitone_diff / options.pitch_bend_range as f32) * 8192.0)
-                                        .round()
-                                        .clamp(0.0, 16383.0) as u16;
+                                    // Calculate 14-bit pitch bend
+                                    let pitch_bend_val = calculate_pitch_bend(semitone_diff, options.pitch_bend_range);
 
                                     // Send Pitch Bend right before Note On
                                     abs_events.push(AbsoluteEvent {
@@ -378,6 +487,9 @@ impl MidiPlayer {
         notes: Vec<NotePreview>,
         port_index: usize,
         duration_ms: u64,
+        is_mpe: bool,
+        member_channels: u8,
+        pb_range: u8,
     ) -> Result<(), String> {
         self.stop();
 
@@ -392,6 +504,19 @@ impl MidiPlayer {
 
         let mut conn_out = midi_out.connect(port, "mnx_preview")
             .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
+
+        if is_mpe {
+            send_mpe_configuration(&mut conn_out, member_channels.min(15));
+        }
+
+        // Send pitch bend sensitivity RPN to channels involved
+        for n in &notes {
+            let ch = n.channel.as_int();
+            let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
+            let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
+        }
 
         // Send Pitch Bend and Note On messages immediately
         for n in &notes {
@@ -428,7 +553,7 @@ impl MidiPlayer {
                 std::thread::sleep(rem.min(std::time::Duration::from_millis(10)));
             }
 
-            // Send Note Off for all notes
+            // Send Note Off for all notes and reset pitch bend
             for n in &notes {
                 let note_off = midly::MidiMessage::NoteOff {
                     key: n.key,
@@ -437,6 +562,14 @@ impl MidiPlayer {
                 let bytes = serialize_midi_message(n.channel, &note_off);
                 if !bytes.is_empty() {
                     let _ = conn_out.send(&bytes);
+                }
+                // Reset pitch bend to center (8192)
+                let reset_pb = midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::from(8192)),
+                };
+                let bytes_pb = serialize_midi_message(n.channel, &reset_pb);
+                if !bytes_pb.is_empty() {
+                    let _ = conn_out.send(&bytes_pb);
                 }
             }
         });
@@ -461,6 +594,72 @@ mod tests {
         
         let has_pitch_bend = track.iter().any(|ev| matches!(ev.kind, TrackEventKind::Midi { message: MidiMessage::PitchBend { .. }, .. }));
         assert!(has_pitch_bend, "Should generate pitch bend events for microtonal tuning");
+    }
+
+    #[test]
+    fn test_calculate_pitch_bend() {
+        // Neutral (0 semitone diff) -> 8192
+        assert_eq!(calculate_pitch_bend(0.0, 48), 8192);
+        assert_eq!(calculate_pitch_bend(0.0, 2), 8192);
+
+        // Max upward (+48 semitones on +/-48 range) -> 16383 (clamped)
+        assert_eq!(calculate_pitch_bend(48.0, 48), 16383);
+
+        // Max downward (-48 semitones on +/-48 range) -> 0
+        assert_eq!(calculate_pitch_bend(-48.0, 48), 0);
+
+        // Half semitone on +/- 48 range -> 8192 + (0.5 / 48) * 8192 = 8192 + 85 = 8277
+        assert_eq!(calculate_pitch_bend(0.5, 48), 8277);
+    }
+
+    #[test]
+    fn test_generate_midi_mpe_output() {
+        let yaml = include_str!("../example.yaml");
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let mpe_opts = MidiOptions::mpe_default();
+        assert_eq!(mpe_opts.pitch_bend_range, 48);
+        assert!(mpe_opts.is_mpe);
+
+        let smf = generate_midi(&doc, mpe_opts);
+        assert_eq!(smf.tracks.len(), 1);
+        let track = &smf.tracks[0];
+
+        // Verify MPE Configuration message is sent on channel 0 (Master channel): CC 100 = 6, CC 6 = 8 (for 8-string Kite Guitar)
+        let has_mpe_config = track.iter().any(|ev| {
+            if let TrackEventKind::Midi { channel, message } = &ev.kind {
+                if channel.as_int() == 0 {
+                    if let MidiMessage::Controller { controller, value } = message {
+                        return controller.as_int() == 100 && value.as_int() == 6;
+                    }
+                }
+            }
+            false
+        });
+        assert!(has_mpe_config, "MPE track must include MPE Configuration Message (RPN 6) on Master Channel 1");
+
+        // Verify member channels use pitch bend sensitivity of 48: CC 6 = 48
+        let has_pb_range_48 = track.iter().any(|ev| {
+            if let TrackEventKind::Midi { channel, message } = &ev.kind {
+                if channel.as_int() > 0 {
+                    if let MidiMessage::Controller { controller, value } = message {
+                        return controller.as_int() == 6 && value.as_int() == 48;
+                    }
+                }
+            }
+            false
+        });
+        assert!(has_pb_range_48, "MPE member channels must have pitch bend range set to 48");
+
+        // Verify notes are assigned to MPE member channels (Channels 1..8, i.e. MIDI channels 2..9)
+        let member_note_on_found = track.iter().any(|ev| {
+            if let TrackEventKind::Midi { channel, message } = &ev.kind {
+                if channel.as_int() >= 1 && channel.as_int() <= 8 {
+                    return matches!(message, MidiMessage::NoteOn { .. });
+                }
+            }
+            false
+        });
+        assert!(member_note_on_found, "NoteOn events must be sent on MPE member channels (>= 1)");
     }
 
     #[test]
@@ -502,3 +701,4 @@ mod tests {
         assert!(partial_note_ons > 0, "Partial playback should have remaining NoteOn events");
     }
 }
+
