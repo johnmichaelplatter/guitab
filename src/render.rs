@@ -154,7 +154,8 @@ pub fn draw_tablature(
 
     let staff_height   = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
     let rhythm_row_h   = rhythm_gap + stem_height + 10.0;                 // stem + flags/dots + pad
-    let total_height   = 20.0 + staff_height + rhythm_row_h + 10.0;       // top pad + staff + rhythm + bottom pad
+    let top_pad        = 48.0_f32;                                         // room for name + EDO label
+    let total_height   = top_pad + staff_height + rhythm_row_h + 1000.0;    // top pad + staff + rhythm + bottom pad
     let total_width    = start_offset_x
         + (total_events as f32) * event_spacing
         + (part.measures.len() as f32) * measure_spacing
@@ -171,11 +172,39 @@ pub fn draw_tablature(
     let first_barline_x = rect.min.x + first_barline_offset;
     let label_x         = first_barline_x - label_gap;
 
+    // ── Instrument name + EDO header ──────────────────────────────────────────
+
+    if let Some(inst) = &part.instrument {
+        let header_x = rect.min.x + margin_left;
+        let name_y   = rect.min.y + 14.0;
+        let edo_y    = rect.min.y + 32.0;
+
+        // Bold instrument name
+        painter.text(
+            Pos2::new(header_x, name_y),
+            egui::Align2::LEFT_CENTER,
+            &inst.name,
+            FontId::new(20.0, egui::FontFamily::Proportional),
+            ui.visuals().strong_text_color(),
+        );
+
+        // Plain "N EDO" subtitle
+        if let Some(divisions) = inst.micro_fret_divisions {
+            painter.text(
+                Pos2::new(header_x, edo_y),
+                egui::Align2::LEFT_CENTER,
+                &format!("{} EDO", divisions),
+                FontId::new(15.0, egui::FontFamily::Proportional),
+                Color32::from_gray(160),
+            );
+        }
+    }
+
     // ── Draw string lines and labels ──────────────────────────────────────────
 
     let mut string_y_coords = Vec::with_capacity(num_strings);
     for i in 0..num_strings {
-        let y = rect.min.y + 20.0 + (i as f32) * line_spacing;
+        let y = rect.min.y + top_pad + (i as f32) * line_spacing;
         string_y_coords.push(y);
 
         painter.line_segment(

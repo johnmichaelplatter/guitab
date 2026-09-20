@@ -2075,8 +2075,6 @@ impl eframe::App for MnxEditorApp {
 
         // 4. Left Pane: Render Output
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Tablature Render");
-            ui.separator();
             egui::ScrollArea::both().show(ui, |ui| {
                 if let Some(doc) = &self.parsed_mnx {
                     if let Some(part) = doc.parts.first() {
