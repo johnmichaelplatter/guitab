@@ -247,6 +247,7 @@ pub fn draw_tablature(
                         Color32::from_rgba_unmultiplied(100, 180, 255, 35)
                     };
                     painter.rect_filled(col_rect, 4.0, col_color);
+                    ui.scroll_to_rect(col_rect, None);
                 }
 
                 // Fret numbers on strings: store (fret, note_idx)

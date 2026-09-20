@@ -1252,6 +1252,21 @@ impl eframe::App for MnxEditorApp {
             self.duration_textures = Some(DurationTextures::load(ui.ctx()));
         }
 
+        // Synchronize MIDI playback progress with the score selection bar
+        let is_midi_playing = self.midi_player.is_playing();
+        if is_midi_playing {
+            ui.ctx().request_repaint();
+            if let Some(playing_idx) = self.midi_player.current_event_idx() {
+                if self.selected_event_idx != Some(playing_idx) {
+                    self.selected_event_idx = Some(playing_idx);
+                    self.selected_note_idx_in_event = None;
+                    self.is_editing_fret = false;
+                    self.editing_fret_buf.clear();
+                    self.editing_string = None;
+                }
+            }
+        }
+
         let event_ranges = find_all_event_ranges(&self.yaml_text);
         let total_events = event_ranges.len();
         let text_edit_id = egui::Id::new("yaml_source_editor");
@@ -1429,7 +1444,13 @@ impl eframe::App for MnxEditorApp {
 
             let p_pressed = ui.input(|i| i.key_pressed(egui::Key::P));
             let shift_down = ui.input(|i| i.modifiers.shift);
-            if p_pressed {
+            let space_pressed = ui.input(|i| i.key_pressed(egui::Key::Space));
+            let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+            if self.midi_player.is_playing() && (space_pressed || esc_pressed) {
+                self.midi_player.stop();
+                self.midi_status_msg = Some("Playback stopped.".to_string());
+            } else if p_pressed {
                 if shift_down {
                     self.start_midi_playback(false);
                 } else {
