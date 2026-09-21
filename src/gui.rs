@@ -2081,6 +2081,7 @@ impl eframe::App for MnxEditorApp {
                         let (_resp, clicked, add_bar_clicked) = render::draw_tablature(
                             ui,
                             part,
+                            Some(&doc.global),
                             &self.parsed_errors,
                             self.selected_event_idx,
                             self.selected_note_idx_in_event,

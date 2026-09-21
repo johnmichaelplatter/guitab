@@ -1,4 +1,4 @@
-use crate::mnx::{Part, Pitch};
+use crate::mnx::{Global, Part, Pitch, TimeSignature};
 use crate::validate::ValidationError;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
@@ -18,6 +18,72 @@ fn format_pitch(pitch: &Pitch) -> String {
         }
     }
     format!("{}{}{}", prefix, pitch.step, suffix)
+}
+
+// ── SMuFL Time Signature helpers ─────────────────────────────────────────────
+
+fn smufl_time_sig_digits(num: u32) -> String {
+    num.to_string()
+        .chars()
+        .map(|c| match c {
+            '0' => '\u{E080}',
+            '1' => '\u{E081}',
+            '2' => '\u{E082}',
+            '3' => '\u{E083}',
+            '4' => '\u{E084}',
+            '5' => '\u{E085}',
+            '6' => '\u{E086}',
+            '7' => '\u{E087}',
+            '8' => '\u{E088}',
+            '9' => '\u{E089}',
+            _ => c,
+        })
+        .collect()
+}
+
+fn draw_time_signature(
+    painter: &egui::Painter,
+    time_sig: &TimeSignature,
+    center_x: f32,
+    top_string_y: f32,
+    bottom_string_y: f32,
+    color: Color32,
+) -> f32 {
+    let staff_center_y = (top_string_y + bottom_string_y) / 2.0;
+
+    // In SMuFL Bravura, time signature numerals are 2 staff-spaces tall.
+    let font_size = 46.0_f32;
+    let bravura_font = FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
+
+    let num_text = smufl_time_sig_digits(time_sig.count);
+    let den_text = smufl_time_sig_digits(time_sig.unit);
+
+    let num_galley = painter.layout_no_wrap(num_text.clone(), bravura_font.clone(), color);
+    let den_galley = painter.layout_no_wrap(den_text.clone(), bravura_font.clone(), color);
+
+    let width = num_galley.size().x.max(den_galley.size().x);
+    // offset from the true center by a small pad
+    let center_pad = font_size/4.0+0.25;
+
+    // Numerator: bottom sits at center minus small pad
+    painter.text(
+        Pos2::new(center_x, staff_center_y - center_pad),
+        egui::Align2::CENTER_CENTER,
+        &num_text,
+        bravura_font.clone(),
+        color,
+    );
+
+    // Denominator: top sits at center plus small pad
+    painter.text(
+        Pos2::new(center_x, staff_center_y + center_pad),
+        egui::Align2::CENTER_CENTER,
+        &den_text,
+        bravura_font,
+        color,
+    );
+
+    width
 }
 
 // ── Rhythm types ─────────────────────────────────────────────────────────────
@@ -85,6 +151,7 @@ struct RhythmNote {
 pub fn draw_tablature(
     ui: &mut egui::Ui,
     part: &Part,
+    global: Option<&Global>,
     errors: &[ValidationError],
     selected_event: Option<usize>,
     selected_note_in_event: Option<usize>,
@@ -147,6 +214,25 @@ pub fn draw_tablature(
         .map(|s| s.content.len())
         .sum();
 
+    // ── Time signatures to render ─────────────────────────────────────────────
+
+    let mut num_rendered_time_sigs = 0;
+    let mut current_ts_check: Option<TimeSignature> = None;
+    for m_idx in 0..part.measures.len() {
+        let m_ts = global.and_then(|g| g.measures.get(m_idx)).and_then(|m| m.time);
+        if m_idx == 0 {
+            if let Some(ts) = m_ts {
+                num_rendered_time_sigs += 1;
+                current_ts_check = Some(ts);
+            }
+        } else if let Some(ts) = m_ts {
+            if current_ts_check != Some(ts) {
+                num_rendered_time_sigs += 1;
+                current_ts_check = Some(ts);
+            }
+        }
+    }
+
     // ── Canvas size ───────────────────────────────────────────────────────────
 
     let first_barline_offset = margin_left + max_prefix_width + label_gap;
@@ -155,10 +241,11 @@ pub fn draw_tablature(
     let staff_height   = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
     let rhythm_row_h   = rhythm_gap + stem_height + 10.0;                 // stem + flags/dots + pad
     let top_pad        = 48.0_f32;                                         // room for name + EDO label
-    let total_height   = top_pad + staff_height + rhythm_row_h + 1000.0;    // top pad + staff + rhythm + bottom pad
+    let total_height   = top_pad + staff_height + rhythm_row_h + 10.0;     // top pad + staff + rhythm + bottom pad
     let total_width    = start_offset_x
         + (total_events as f32) * event_spacing
         + (part.measures.len() as f32) * measure_spacing
+        + (num_rendered_time_sigs as f32) * 45.0
         + 80.0;
 
     // ── Allocate painter ──────────────────────────────────────────────────────
@@ -244,11 +331,31 @@ pub fn draw_tablature(
         Stroke::new(2.0, Color32::from_gray(150)),
     );
 
-    let mut current_x   = rect.min.x + start_offset_x;
     let bg_color        = ui.visuals().panel_fill;
     let note_color      = ui.visuals().text_color();
     let highlight_color = Color32::from_rgb(100, 180, 255); // Light blue
     let edit_color      = Color32::from_rgb(255, 175, 75);  // Light orange
+
+    let mut current_x = first_barline_x;
+    let mut current_time_sig: Option<TimeSignature> = None;
+
+    // Render time signature at start of measure 0 if specified
+    let m0_ts = global.and_then(|g| g.measures.first()).and_then(|m| m.time);
+    if let Some(ts) = m0_ts {
+        current_time_sig = Some(ts);
+        let ts_center_x = current_x + 16.0;
+        let ts_w = draw_time_signature(
+            &painter,
+            &ts,
+            ts_center_x,
+            string_y_coords[0],
+            last_string_y,
+            note_color,
+        );
+        current_x = ts_center_x + (ts_w / 2.0) + 16.0;
+    } else {
+        current_x += first_bar_pad;
+    }
 
     // Collect rhythm notes so we can do beam-grouping after the main loop.
     let mut rhythm_notes: Vec<RhythmNote> = Vec::new();
@@ -393,7 +500,29 @@ pub fn draw_tablature(
             ],
             Stroke::new(1.0, Color32::from_gray(150)),
         );
-        current_x += measure_spacing;
+
+        if m_idx + 1 < part.measures.len() {
+            let next_ts = global.and_then(|g| g.measures.get(m_idx + 1)).and_then(|m| m.time);
+            if let Some(ts) = next_ts {
+                if current_time_sig != Some(ts) {
+                    current_time_sig = Some(ts);
+                    let ts_center_x = current_x + 14.0;
+                    let ts_w = draw_time_signature(
+                        &painter,
+                        &ts,
+                        ts_center_x,
+                        string_y_coords[0],
+                        last_string_y,
+                        note_color,
+                    );
+                    current_x = ts_center_x + (ts_w / 2.0) + 16.0;
+                } else {
+                    current_x += measure_spacing;
+                }
+            } else {
+                current_x += measure_spacing;
+            }
+        }
     }
 
     // ── Rhythm notation ───────────────────────────────────────────────────────
@@ -593,4 +722,18 @@ pub fn draw_tablature(
     }
 
     (response, clicked_selection, add_bar_clicked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smufl_time_sig_digits() {
+        assert_eq!(smufl_time_sig_digits(4), "\u{E084}");
+        assert_eq!(smufl_time_sig_digits(3), "\u{E083}");
+        assert_eq!(smufl_time_sig_digits(12), "\u{E081}\u{E082}");
+        assert_eq!(smufl_time_sig_digits(8), "\u{E088}");
+        assert_eq!(smufl_time_sig_digits(16), "\u{E081}\u{E086}");
+    }
 }
