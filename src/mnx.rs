@@ -107,8 +107,14 @@ fn default_multiple() -> u32 {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Event {
     pub duration: Duration,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest: Option<Rest>,
 }
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Rest {}
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Duration {

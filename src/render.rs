@@ -151,6 +151,7 @@ struct RhythmNote {
     rhythm: Rhythm,
     is_dotted: bool,
     measure_idx: usize,
+    is_rest: bool,
 }
 
 // ── Main draw function ────────────────────────────────────────────────────────
@@ -439,6 +440,37 @@ pub fn draw_tablature(
                     ui.scroll_to_rect(col_rect, None);
                 }
 
+                if event.rest.is_some() {
+                    let rest_char = match event.duration.base.as_str() {
+                        "whole" => '\u{E4E3}',
+                        "half" => '\u{E4E4}',
+                        "quarter" => '\u{E4E5}',
+                        "eighth" => '\u{E4E6}',
+                        "16th" => '\u{E4E7}',
+                        "32nd" => '\u{E4E8}',
+                        "64th" => '\u{E4E9}',
+                        _ => '\u{E4E5}',
+                    };
+                    
+                    let center_y = (string_y_coords.first().unwrap() + string_y_coords.last().unwrap()) / 2.0;
+                    let text = rest_char.to_string();
+                    let font_id = FontId::new(32.0, egui::FontFamily::Name("Bravura".into()));
+                    let galley = painter.layout_no_wrap(text, font_id, note_color);
+                    let text_rect = Rect::from_center_size(Pos2::new(current_x, center_y), galley.size());
+                    painter.galley(text_rect.min, galley, note_color);
+                    
+                    if let Some(dots) = event.duration.dots {
+                        if dots > 0 {
+                            let dot_char = '\u{E4CD}';
+                            let dot_text = dot_char.to_string();
+                            let dot_font_id = FontId::new(32.0, egui::FontFamily::Name("Bravura".into()));
+                            let dot_galley = painter.layout_no_wrap(dot_text, dot_font_id, note_color);
+                            let dot_rect = Rect::from_center_size(Pos2::new(current_x + text_rect.width() / 2.0 + 4.0, center_y), dot_galley.size());
+                            painter.galley(dot_rect.min, dot_galley, note_color);
+                        }
+                    }
+                }
+
                 // Fret numbers on strings: store (fret, note_idx)
                 let mut step_frets: Vec<Option<(u8, usize)>> = vec![None; num_strings];
                 for (n_idx, note) in event.notes.iter().enumerate() {
@@ -535,6 +567,7 @@ pub fn draw_tablature(
                     rhythm,
                     is_dotted,
                     measure_idx: m_idx,
+                    is_rest: event.rest.is_some(),
                 });
 
                 flat_event_idx += 1;
@@ -587,7 +620,7 @@ pub fn draw_tablature(
 
     for i in 0..n {
         let flags = rhythm_notes[i].rhythm.flag_count();
-        if flags == 0 {
+        if flags == 0 || rhythm_notes[i].is_rest {
             current_group_count = 0;
             continue;
         }
@@ -597,7 +630,7 @@ pub fn draw_tablature(
         if current_group_count < 4 && i + 1 < n {
             let next_note = &rhythm_notes[i + 1];
             if next_note.measure_idx == rhythm_notes[i].measure_idx
-                && next_note.rhythm.flag_count() >= 1
+                && next_note.rhythm.flag_count() >= 1 && !next_note.is_rest
             {
                 beam_right[i] = true;
             } else {
@@ -609,6 +642,7 @@ pub fn draw_tablature(
     }
 
     for (i, note) in rhythm_notes.iter().enumerate() {
+        if note.is_rest { continue; }
         let cx = note.x;
         let flags = note.rhythm.flag_count();
         let is_selected = selected_event == Some(i);

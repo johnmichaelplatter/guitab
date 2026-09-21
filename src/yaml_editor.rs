@@ -342,8 +342,44 @@ pub fn set_or_add_note_on_string(
             let mut res = yaml.to_string();
             res.replace_range(abs_notes_pos..abs_replace_end, &new_notes_block);
             Some(res)
+        } else if let Some(rest_pos) = event_text.find("rest:") {
+            let abs_rest_pos = er.total_range.start + rest_pos;
+            let after_rest = &yaml[abs_rest_pos..];
+            let line_end_rel = after_rest.find('\n').unwrap_or(after_rest.len());
+            
+            let line_start = yaml[..abs_rest_pos]
+                .rfind('\n')
+                .map(|p| p + 1)
+                .unwrap_or(0);
+            let notes_indent_len = abs_rest_pos - line_start;
+            let indent = " ".repeat(notes_indent_len + 2);
+            let sub_indent = " ".repeat(notes_indent_len + 4);
+            
+            let new_notes_block = format!(
+                "notes:\n{}- {}\n{}string: {}\n{}fret: {}",
+                indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
+            );
+            
+            let abs_replace_end = abs_rest_pos + line_end_rel;
+            let mut res = yaml.to_string();
+            res.replace_range(abs_rest_pos..abs_replace_end, &new_notes_block);
+            Some(res)
         } else {
-            None
+            // Append notes block
+            let first_line_start = event_text.find('-').unwrap_or(0);
+            let before_dash = &event_text[..first_line_start];
+            let indent_len = before_dash.rfind('\n').map(|p| before_dash.len() - p - 1).unwrap_or(before_dash.len());
+            let indent = " ".repeat(indent_len + 2);
+            let sub_indent = " ".repeat(indent_len + 4);
+            
+            let new_notes_block = format!(
+                "\n{}notes:\n{}- {}\n{}string: {}\n{}fret: {}",
+                indent, indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
+            );
+            
+            let mut res = yaml.to_string();
+            res.insert_str(er.total_range.end, &new_notes_block);
+            Some(res)
         }
     }
 }
@@ -834,4 +870,62 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
 
     let trimmed = result_lines.join("\n");
     Some(format!("{}\n", trimmed.trim_end()))
+}
+
+pub fn convert_event_to_rest(yaml: &str, event_idx: usize) -> Option<String> {
+    let event_ranges = find_all_event_ranges(yaml);
+    let er = event_ranges.get(event_idx)?;
+    let event_text = yaml.get(er.total_range.clone())?;
+    
+    // Find where notes: block starts, or if we have notes at all
+    let mut result = yaml.to_string();
+    
+    // Find the indent of the event's first line
+    let first_line_start = event_text.find('-').unwrap_or(0);
+    let before_dash = &event_text[..first_line_start];
+    let indent_len = before_dash.rfind('\n').map(|p| before_dash.len() - p - 1).unwrap_or(before_dash.len());
+    let indent = " ".repeat(indent_len + 2); // properties are usually indented 2 spaces from the dash
+    
+    let mut to_replace_start = None;
+    let mut to_replace_end = None;
+    
+    if let Some(notes_pos) = event_text.find("notes:") {
+        let abs_start = er.total_range.start + notes_pos;
+        to_replace_start = Some(abs_start);
+        
+        // Find end of notes block
+        let mut block_end = er.total_range.end;
+        if !er.note_ranges.is_empty() {
+            let last_note_range = er.note_ranges.last().unwrap();
+            let after_last_note = &yaml[last_note_range.end..er.total_range.end];
+            // Find the end of the line
+            if let Some(nl) = after_last_note.find('\n') {
+                block_end = last_note_range.end + nl;
+            } else {
+                block_end = er.total_range.end;
+            }
+        } else {
+            let after_notes = &event_text[notes_pos..];
+            if let Some(nl) = after_notes.find('\n') {
+                block_end = abs_start + nl;
+            } else {
+                block_end = er.total_range.end;
+            }
+        }
+        to_replace_end = Some(block_end);
+    } else if event_text.contains("rest:") {
+        // Already a rest
+        return None;
+    }
+    
+    let rest_line = format!("rest: {{}}");
+    
+    if let (Some(start), Some(end)) = (to_replace_start, to_replace_end) {
+        result.replace_range(start..end, &rest_line);
+    } else {
+        // Just append rest: {} to the end of the event
+        result.insert_str(er.total_range.end, &format!("\n{}{}", indent, rest_line));
+    }
+    
+    Some(result)
 }

@@ -1201,6 +1201,7 @@ impl MnxEditorApp {
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
             let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
+            let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
             let num_strings = self
                 .parsed_mnx
@@ -1209,7 +1210,15 @@ impl MnxEditorApp {
                 .map(|p| p.num_strings())
                 .unwrap_or(6) as u8;
 
-            if esc_pressed {
+            if r_pressed && self.selected_event_idx.is_some() {
+                let e_idx = self.selected_event_idx.unwrap();
+                if let Some(new_yaml) = crate::yaml_editor::convert_event_to_rest(&self.yaml_text, e_idx) {
+                    self.yaml_text = new_yaml;
+                    self.process_and_render();
+                }
+                self.is_editing_fret = false;
+                self.editing_fret_buf.clear();
+            } else if esc_pressed {
                 self.is_editing_fret = false;
                 self.editing_fret_buf.clear();
             } else if enter_pressed {
@@ -1403,8 +1412,15 @@ impl MnxEditorApp {
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
             let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+            let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
-            if backspace_pressed && self.selected_event_idx.is_some() {
+            if r_pressed && self.selected_event_idx.is_some() {
+                let e_idx = self.selected_event_idx.unwrap();
+                if let Some(new_yaml) = crate::yaml_editor::convert_event_to_rest(&self.yaml_text, e_idx) {
+                    self.yaml_text = new_yaml;
+                    self.process_and_render();
+                }
+            } else if backspace_pressed && self.selected_event_idx.is_some() {
                 let e_idx = self.selected_event_idx.unwrap();
                 let at_final_event = e_idx == total_events.saturating_sub(1);
                 let is_final_blank = at_final_event
@@ -2399,5 +2415,44 @@ parts:
         assert_eq!(app.selected_event_idx, Some(1));
         assert!(app.is_editing_fret);
         assert_eq!(app.editing_string, Some(1));
+    }
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_event_to_rest_and_back() {
+        let mut app = MnxEditorApp::default();
+        let total_initial = crate::yaml_editor::find_all_event_ranges(&app.yaml_text).len();
+        
+        // Select event 0 (which has notes)
+        app.selected_event_idx = Some(0);
+        
+        // Convert to rest
+        if let Some(new_yaml) = crate::yaml_editor::convert_event_to_rest(&app.yaml_text, 0) {
+            app.yaml_text = new_yaml;
+            app.process_and_render();
+        }
+        
+        let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&app.yaml_text).unwrap();
+        let ev = &doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev.rest.is_some());
+        assert!(ev.notes.is_empty());
+        
+        // Convert back to note by typing a number
+        app.is_editing_fret = true;
+        app.editing_string = Some(3); // String 3
+        app.editing_fret_buf = "5".to_string();
+        app.commit_fret_edit();
+        app.process_and_render();
+        
+        let doc2 = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&app.yaml_text).unwrap();
+        let ev2 = &doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev2.rest.is_none());
+        assert_eq!(ev2.notes.len(), 1);
+        assert_eq!(ev2.notes[0].string, Some(3));
+        assert_eq!(ev2.notes[0].fret, Some(5));
     }
 }
