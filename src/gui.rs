@@ -1,9 +1,10 @@
+use crate::yaml_editor::*;
 use eframe::egui::{self, Color32};
 
-use std::fs;
 use crate::mnx::MnxDocument;
-use crate::validate;
 use crate::render;
+use crate::validate;
+use std::fs;
 
 const WHOLE_PNG: &[u8] = include_bytes!("../assets/whole.png");
 const HALF_PNG: &[u8] = include_bytes!("../assets/half.png");
@@ -67,26 +68,26 @@ pub struct MnxEditorApp {
     validation_errors: Vec<String>,
     current_file_path: Option<std::path::PathBuf>, // Tracks the active file
     selected_event_idx: Option<usize>,             // Selected note/beat index
-    selected_note_idx_in_event: Option<usize>,     // Selected sub-note within chord/event (None = all)
-    is_editing_fret: bool,                         // In-place fret number editing mode
-    editing_fret_buf: String,                      // Text buffer for the new fret number
-    editing_string: Option<u8>,                    // Currently focused string row in edit mode
-    duration_textures: Option<DurationTextures>,   // Note duration icons
-    bpm_buf: String,                               // Text buffer for BPM input
-    midi_ports: Vec<crate::midi::MidiPortInfo>,    // Available MIDI output devices
-    selected_midi_port: Option<usize>,             // Selected MIDI port id
-    pitch_bend_range: u8,                          // Pitchbend range (1-48, default 2)
+    selected_note_idx_in_event: Option<usize>, // Selected sub-note within chord/event (None = all)
+    is_editing_fret: bool,                     // In-place fret number editing mode
+    editing_fret_buf: String,                  // Text buffer for the new fret number
+    editing_string: Option<u8>,                // Currently focused string row in edit mode
+    duration_textures: Option<DurationTextures>, // Note duration icons
+    bpm_buf: String,                           // Text buffer for BPM input
+    midi_ports: Vec<crate::midi::MidiPortInfo>, // Available MIDI output devices
+    selected_midi_port: Option<usize>,         // Selected MIDI port id
+    pitch_bend_range: u8,                      // Pitchbend range (1-48, default 2)
     string_channel_map: std::collections::HashMap<u8, u8>, // String (1..n) -> MIDI channel (1..16)
-    is_mpe_mode: bool,                             // Toggle button for multi-timbral vs MPE output
-    midi_player: crate::midi::MidiPlayer,          // Real-time MIDI sequencer playback engine
-    midi_status_msg: Option<String>,               // Status or error message from MIDI playback
+    is_mpe_mode: bool,                         // Toggle button for multi-timbral vs MPE output
+    midi_player: crate::midi::MidiPlayer,      // Real-time MIDI sequencer playback engine
+    midi_status_msg: Option<String>,           // Status or error message from MIDI playback
 }
 
 impl Default for MnxEditorApp {
     fn default() -> Self {
         let initial_yaml = fs::read_to_string("example.yaml")
             .unwrap_or_else(|_| String::from("# Could not load example.yaml"));
-        
+
         let ports = crate::midi::get_midi_output_ports();
         let selected_port = ports.first().map(|p| p.id);
 
@@ -111,814 +112,10 @@ impl Default for MnxEditorApp {
             midi_player: crate::midi::MidiPlayer::new(),
             midi_status_msg: None,
         };
-        
+
         app.process_and_render();
         app
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct EventRange {
-    pub total_range: std::ops::Range<usize>,
-    pub note_ranges: Vec<std::ops::Range<usize>>,
-}
-
-/// Locates character byte ranges for all events (and their individual sub-notes) under `content:` blocks in the YAML text.
-pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
-    let mut results = Vec::new();
-    let lines: Vec<&str> = yaml.lines().collect();
-    if lines.is_empty() {
-        return results;
-    }
-
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0;
-    for line in yaml.split_inclusive('\n') {
-        line_starts.push(offset);
-        offset += line.len();
-    }
-    while line_starts.len() < lines.len() {
-        let last_start = *line_starts.last().unwrap_or(&0);
-        let prev_len = lines[line_starts.len() - 1].len();
-        line_starts.push(last_start + prev_len);
-    }
-
-    let mut in_content = false;
-    let mut content_indent = 0;
-    let mut current_event_start_line: Option<usize> = None;
-    let mut event_indent = 0;
-
-    let finish_event = |start_line: usize, end_line: usize, results: &mut Vec<EventRange>| {
-        let total_start = line_starts[start_line];
-        let total_end = line_starts[end_line] + lines[end_line].len();
-
-        let mut note_ranges = Vec::new();
-        let mut in_notes = false;
-        let mut notes_indent = 0;
-        let mut current_note_start: Option<usize> = None;
-        let mut note_indent = 0;
-
-        for line_num in start_line..=end_line {
-            let line = lines[line_num];
-            let trimmed = line.trim();
-            let indent = line.len() - line.trim_start().len();
-
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            if trimmed.starts_with("notes:") || trimmed.ends_with("notes:") {
-                in_notes = true;
-                notes_indent = indent;
-                continue;
-            }
-
-            if in_notes {
-                if indent <= notes_indent && !trimmed.starts_with('-') {
-                    if let Some(n_start) = current_note_start {
-                        let prev = line_num.saturating_sub(1);
-                        let n_end = line_starts[prev] + lines[prev].len();
-                        note_ranges.push(n_start..n_end);
-                        current_note_start = None;
-                    }
-                    in_notes = false;
-                    continue;
-                }
-
-                if trimmed.starts_with('-') {
-                    if let Some(n_start) = current_note_start {
-                        if indent <= note_indent {
-                            let prev = line_num.saturating_sub(1);
-                            let n_end = line_starts[prev] + lines[prev].len();
-                            note_ranges.push(n_start..n_end);
-                            current_note_start = Some(line_starts[line_num]);
-                            note_indent = indent;
-                        }
-                    } else {
-                        current_note_start = Some(line_starts[line_num]);
-                        note_indent = indent;
-                    }
-                }
-            }
-        }
-
-        if let Some(n_start) = current_note_start {
-            let n_end = line_starts[end_line] + lines[end_line].len();
-            note_ranges.push(n_start..n_end);
-        }
-
-        results.push(EventRange {
-            total_range: total_start..total_end,
-            note_ranges,
-        });
-    };
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        if trimmed.starts_with("content:") || trimmed.ends_with("content:") {
-            if let Some(start_line) = current_event_start_line {
-                let end_line = i.saturating_sub(1);
-                finish_event(start_line, end_line, &mut results);
-                current_event_start_line = None;
-            }
-            in_content = true;
-            content_indent = indent;
-            continue;
-        }
-
-        if in_content {
-            if indent <= content_indent
-                && (trimmed.starts_with("measures:")
-                    || trimmed.starts_with("sequences:")
-                    || trimmed.starts_with("parts:")
-                    || trimmed.starts_with("- sequences:")
-                    || trimmed.starts_with("- measures:"))
-            {
-                if let Some(start_line) = current_event_start_line {
-                    let end_line = i.saturating_sub(1);
-                    finish_event(start_line, end_line, &mut results);
-                    current_event_start_line = None;
-                }
-                in_content = false;
-                continue;
-            }
-
-            if trimmed.starts_with('-') {
-                if let Some(start_line) = current_event_start_line {
-                    if indent <= event_indent {
-                        let end_line = i.saturating_sub(1);
-                        finish_event(start_line, end_line, &mut results);
-                        current_event_start_line = Some(i);
-                        event_indent = indent;
-                    }
-                } else {
-                    current_event_start_line = Some(i);
-                    event_indent = indent;
-                }
-            }
-        }
-    }
-
-    if let Some(start_line) = current_event_start_line {
-        let end_line = lines.len().saturating_sub(1);
-        finish_event(start_line, end_line, &mut results);
-    }
-
-    results
-}
-
-fn format_pitch_yaml(pitch: &crate::mnx::Pitch) -> String {
-    if let Some(alter) = &pitch.alter {
-        let alter_str = match alter {
-            crate::mnx::Alteration::Fraction(s) => format!("'{}'", s),
-            crate::mnx::Alteration::Value(v) => format!("{}", v),
-        };
-        format!("pitch: {{ step: {}, alter: {}, octave: {} }}", pitch.step, alter_str, pitch.octave)
-    } else {
-        format!("pitch: {{ step: {}, octave: {} }}", pitch.step, pitch.octave)
-    }
-}
-
-/// Calculates the exact microtonal Pitch for a given string and fret.
-pub fn calculate_pitch_for_string_fret(
-    part: &crate::mnx::Part,
-    string: u8,
-    fret: u8,
-) -> Option<crate::mnx::Pitch> {
-    let capo_fret = part.capo_fret();
-    let edo = part.edo();
-    let step_multiplier = part.step_multiplier();
-    let tuning_calc = crate::edo::EdoTuning::new(edo);
-    let string_pitch = part.get_string_tuning(string)?;
-    let string_base = tuning_calc.pitch_to_steps(&string_pitch);
-    let physical_capo_steps = (capo_fret as i32) * step_multiplier;
-    let physical_fret_steps = (fret as i32) * step_multiplier;
-    let played_steps = string_base + physical_capo_steps + physical_fret_steps;
-    Some(tuning_calc.steps_to_pitch(played_steps))
-}
-
-/// Helper to parse the `string: <n>` value out of an individual note YAML block text.
-pub fn get_note_string_from_text(note_text: &str) -> Option<u8> {
-    for line in note_text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("string:") {
-            let num_str = rest.trim();
-            let digits: String = num_str.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(s) = digits.parse::<u8>() {
-                return Some(s);
-            }
-        }
-    }
-    None
-}
-
-/// Replaces the fret number and pitch of the given note inside yaml_text and returns the updated YAML string.
-pub fn update_note_in_yaml(
-    yaml: &str,
-    event_idx: usize,
-    note_idx: usize,
-    new_fret: u8,
-    new_pitch: Option<&crate::mnx::Pitch>,
-) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let target_range = er.note_ranges.get(note_idx).unwrap_or(&er.total_range);
-    let note_text = yaml.get(target_range.clone())?;
-
-    let mut result = yaml.to_string();
-
-    // 1. Update fret
-    if let Some(pos) = note_text.find("fret:") {
-        let after_fret = &note_text[pos + 5..];
-        let num_start_rel = after_fret.find(|c: char| c.is_ascii_digit())?;
-        let num_end_rel = after_fret[num_start_rel..]
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(after_fret[num_start_rel..].len());
-
-        let abs_start = target_range.start + pos + 5 + num_start_rel;
-        let abs_end = abs_start + num_end_rel;
-
-        result = format!("{}{}{}", &yaml[..abs_start], new_fret, &yaml[abs_end..]);
-    }
-
-    // 2. Update pitch if provided
-    if let Some(pitch) = new_pitch {
-        let event_ranges = find_all_event_ranges(&result);
-        if let Some(er) = event_ranges.get(event_idx) {
-            let target_range = er.note_ranges.get(note_idx).unwrap_or(&er.total_range);
-            if let Some(cur_note_text) = result.get(target_range.clone()) {
-                if let Some(p_start_rel) = cur_note_text.find("pitch:") {
-                    let after_p = &cur_note_text[p_start_rel..];
-                    let p_len = if let Some(brace_end) = after_p.find('}') {
-                        brace_end + 1
-                    } else if let Some(nl) = after_p.find('\n') {
-                        nl
-                    } else {
-                        after_p.len()
-                    };
-
-                    let abs_p_start = target_range.start + p_start_rel;
-                    let abs_p_end = abs_p_start + p_len;
-
-                    let pitch_yaml_str = format_pitch_yaml(pitch);
-                    result = format!("{}{}{}", &result[..abs_p_start], pitch_yaml_str, &result[abs_p_end..]);
-                }
-            }
-        }
-    }
-
-    Some(result)
-}
-
-/// Sets or adds a note on `target_string` in the specified event with `new_fret` and `new_pitch`.
-pub fn set_or_add_note_on_string(
-    yaml: &str,
-    event_idx: usize,
-    target_string: u8,
-    new_fret: u8,
-    new_pitch: Option<&crate::mnx::Pitch>,
-) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-
-    // 1. Check if a note already exists on target_string
-    for (note_idx, nr) in er.note_ranges.iter().enumerate() {
-        if let Some(note_text) = yaml.get(nr.clone()) {
-            if get_note_string_from_text(note_text) == Some(target_string) {
-                return update_note_in_yaml(yaml, event_idx, note_idx, new_fret, new_pitch);
-            }
-        }
-    }
-
-    // 2. No note on target_string: Add a new note to this event
-    let pitch_str = if let Some(p) = new_pitch {
-        format_pitch_yaml(p)
-    } else {
-        "pitch: { step: C, octave: 4 }".to_string()
-    };
-
-    if !er.note_ranges.is_empty() {
-        // Append after the last existing note in this event
-        let last_range = er.note_ranges.last().unwrap();
-        let first_note_text = &yaml[er.note_ranges[0].clone()];
-        let leading_spaces = first_note_text.len() - first_note_text.trim_start().len();
-        let indent = " ".repeat(leading_spaces);
-        let sub_indent = " ".repeat(leading_spaces + 2);
-
-        let insert_text = format!(
-            "\n{}- {}\n{}string: {}\n{}fret: {}",
-            indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
-        );
-
-        let insert_pos = last_range.end;
-        let mut res = yaml.to_string();
-        res.insert_str(insert_pos, &insert_text);
-        Some(res)
-    } else {
-        // notes: list is empty or notes: []
-        let event_text = yaml.get(er.total_range.clone())?;
-        if let Some(notes_pos) = event_text.find("notes:") {
-            let abs_notes_pos = er.total_range.start + notes_pos;
-            let after_notes = &yaml[abs_notes_pos + 6..];
-            let line_end_rel = after_notes.find('\n').unwrap_or(after_notes.len());
-
-            // Find indent of notes: line
-            let line_start = yaml[..abs_notes_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            let notes_indent_len = abs_notes_pos - line_start;
-            let indent = " ".repeat(notes_indent_len + 2);
-            let sub_indent = " ".repeat(notes_indent_len + 4);
-
-            let new_notes_block = format!(
-                "notes:\n{}- {}\n{}string: {}\n{}fret: {}",
-                indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
-            );
-
-            let abs_replace_end = abs_notes_pos + 6 + line_end_rel;
-            let mut res = yaml.to_string();
-            res.replace_range(abs_notes_pos..abs_replace_end, &new_notes_block);
-            Some(res)
-        } else {
-            None
-        }
-    }
-}
-
-/// Removes the note on `target_string` from the specified event in YAML.
-pub fn remove_note_on_string(
-    yaml: &str,
-    event_idx: usize,
-    target_string: u8,
-) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-
-    let mut target_range: Option<std::ops::Range<usize>> = None;
-    for nr in &er.note_ranges {
-        if let Some(note_text) = yaml.get(nr.clone()) {
-            if get_note_string_from_text(note_text) == Some(target_string) {
-                target_range = Some(nr.clone());
-                break;
-            }
-        }
-    }
-
-    let nr = target_range?;
-    let mut res = yaml.to_string();
-
-    if er.note_ranges.len() == 1 {
-        // Only note in the event: replace entire notes block with notes: []
-        let event_text = yaml.get(er.total_range.clone())?;
-        if let Some(notes_pos) = event_text.find("notes:") {
-            let abs_notes_pos = er.total_range.start + notes_pos;
-            let replace_end = nr.end;
-            res.replace_range(abs_notes_pos..replace_end, "notes: []");
-        }
-    } else {
-        // Chord with multiple notes: remove this specific note range
-        let mut start = nr.start;
-        let mut end = nr.end;
-        if start > 0 && res.as_bytes()[start - 1] == b'\n' {
-            start -= 1;
-        } else if end < res.len() && res.as_bytes()[end] == b'\n' {
-            end += 1;
-        }
-        res.replace_range(start..end, "");
-    }
-    Some(res)
-}
-
-/// Replaces the duration of the specified event inside yaml_text and returns the updated YAML string.
-pub fn update_event_duration_in_yaml(
-    yaml: &str,
-    event_idx: usize,
-    new_duration: &crate::mnx::Duration,
-) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let event_text = yaml.get(er.total_range.clone())?;
-
-    let dur_rel = event_text.find("duration:")?;
-    let abs_dur_start = er.total_range.start + dur_rel;
-    let after_dur = &yaml[abs_dur_start + 9..];
-
-    let dur_str = if let Some(dots) = new_duration.dots {
-        if dots > 0 {
-            format!("{{ base: {}, dots: {} }}", new_duration.base, dots)
-        } else {
-            format!("{{ base: {} }}", new_duration.base)
-        }
-    } else {
-        format!("{{ base: {} }}", new_duration.base)
-    };
-
-    let replacement = format!("duration: {}", dur_str);
-
-    let abs_dur_end = if let Some(brace_start) = after_dur.find('{') {
-        let before_brace = &after_dur[..brace_start];
-        if !before_brace.contains("notes:") && !before_brace.contains('\n') {
-            if let Some(brace_end) = after_dur.find('}') {
-                abs_dur_start + 9 + brace_end + 1
-            } else {
-                abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
-            }
-        } else if let Some(notes_rel) = event_text.find("notes:") {
-            let notes_abs = er.total_range.start + notes_rel;
-            let before_notes = &yaml[..notes_abs];
-            before_notes.rfind('\n').map(|p| p + 1).unwrap_or(notes_abs)
-        } else {
-            abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
-        }
-    } else if let Some(notes_rel) = event_text.find("notes:") {
-        let notes_abs = er.total_range.start + notes_rel;
-        let before_notes = &yaml[..notes_abs];
-        before_notes.rfind('\n').map(|p| p + 1).unwrap_or(notes_abs)
-    } else {
-        abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
-    };
-
-    let mut result = yaml.to_string();
-    result.replace_range(abs_dur_start..abs_dur_end, &replacement);
-    Some(result)
-}
-
-/// Sets or updates the BPM tempo directive in the first global measure's directions block.
-///
-/// If `global/measures[0]/directions:` with a `tempo:` entry already exists, it updates the
-/// `bpm:` field in-place.  Otherwise it inserts the `directions:` block under the first
-/// global measure entry (after the `time:` line if present, otherwise right after the `- ` list
-/// marker of the first measure entry).
-pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
-    let bpm_str = if bpm.fract() == 0.0 {
-        format!("{:.0}", bpm)
-    } else {
-        format!("{}", bpm)
-    };
-
-    let lines: Vec<&str> = yaml.lines().collect();
-
-    // 1. Try to find an existing `bpm:` line inside a tempo directive and update it in-place.
-    {
-        let mut in_global_measures = false;
-        let mut first_measure_seen = false;
-        let mut in_directions = false;
-        let mut in_tempo = false;
-        let mut base_indent = 0usize;
-
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            let indent = line.len() - line.trim_start().len();
-
-            if trimmed == "global:" {
-                in_global_measures = false;
-                first_measure_seen = false;
-            }
-            if trimmed == "measures:" && !in_global_measures {
-                in_global_measures = true;
-                continue;
-            }
-            if in_global_measures && !first_measure_seen && trimmed.starts_with("- ") {
-                first_measure_seen = true;
-                base_indent = indent;
-                in_directions = false;
-                in_tempo = false;
-            }
-            if first_measure_seen && indent <= base_indent && trimmed.starts_with("- ") && !trimmed.starts_with("- time") && !trimmed.starts_with("- directions") {
-                // We've moved past the first measure entry without finding BPM.
-                break;
-            }
-            if first_measure_seen && trimmed.starts_with("directions:") {
-                in_directions = true;
-            }
-            if in_directions && (trimmed.starts_with("- tempo:") || trimmed.starts_with("tempo:")) {
-                if trimmed.contains("bpm:") {
-                    // Inline format like `- tempo: { bpm: 140 }` or `tempo: { bpm: 140 }`
-                    let leading = &line[..indent];
-                    let mut result = lines[..i].join("\n");
-                    if !result.is_empty() { result.push('\n'); }
-                    // Recreate inline tempo entry preserving '-' if present
-                    let prefix = if trimmed.starts_with("- ") { "- " } else { "" };
-                    result.push_str(&format!("{}{}{}tempo: {{ bpm: {} }}", leading, prefix, if prefix.is_empty() { "" } else { "" }, bpm_str));
-                    result.push('\n');
-                    for later in &lines[i + 1..] {
-                        result.push_str(later);
-                        result.push('\n');
-                    }
-                    if !yaml.ends_with('\n') {
-                        result = result.trim_end_matches('\n').to_string();
-                    }
-                    return result;
-                }
-                in_tempo = true;
-            }
-            if in_tempo && trimmed.starts_with("bpm:") {
-                // Found existing bpm line – replace it.
-                let leading = &line[..indent];
-                let mut result = lines[..i].join("\n");
-                if !result.is_empty() { result.push('\n'); }
-                result.push_str(&format!("{}bpm: {}", leading, bpm_str));
-                result.push('\n');
-                for later in &lines[i + 1..] {
-                    result.push_str(later);
-                    result.push('\n');
-                }
-                // Trim trailing newline added if original didn't have one
-                if !yaml.ends_with('\n') {
-                    result = result.trim_end_matches('\n').to_string();
-                }
-                return result;
-            }
-        }
-    }
-
-    // 2. No existing bpm: found. Find the first global measure list item and append directions block.
-    let mut in_global_section = false;
-    let mut in_global_measures = false;
-    let mut first_measure_line: Option<usize> = None;
-    let mut first_measure_indent = 0usize;
-    // We'll insert after the `time:` line within that entry, or after the `- ` marker itself.
-    let mut insert_after_line: Option<usize> = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed == "global:" {
-            in_global_section = true;
-            in_global_measures = false;
-        } else if in_global_section && trimmed == "measures:" {
-            in_global_measures = true;
-        } else if in_global_measures && first_measure_line.is_none() && trimmed.starts_with("- ") {
-            first_measure_line = Some(i);
-            first_measure_indent = indent;
-            insert_after_line = Some(i); // default: right after the `- …` line
-        } else if first_measure_line.is_some() {
-            // Track the last line belonging to the first measure (i.e. before the indent drops or next - item appears)
-            if indent > first_measure_indent || (indent == first_measure_indent && !trimmed.starts_with("- ")) {
-                insert_after_line = Some(i); // extend insertion point
-            } else {
-                break;
-            }
-        } else if in_global_measures && first_measure_line.is_some() {
-            break;
-        } else if !in_global_section && !in_global_measures {
-            // Left global section
-            if in_global_section {
-                break;
-            }
-        }
-    }
-
-    if let Some(insert_after) = insert_after_line {
-        // Determine indentation of child fields within the first measure (2 extra spaces past its `- ` indent).
-        let child_indent = " ".repeat(first_measure_indent + 2);
-
-        let directions_block = format!(
-            "{}directions:\n{}  - tempo: {{ bpm: {} }}",
-            child_indent,
-            child_indent,
-            bpm_str
-        );
-
-        let mut result = lines[..=insert_after].join("\n");
-        result.push('\n');
-        result.push_str(&directions_block);
-        result.push('\n');
-        for later in &lines[insert_after + 1..] {
-            result.push_str(later);
-            result.push('\n');
-        }
-        if !yaml.ends_with('\n') {
-            result = result.trim_end_matches('\n').to_string();
-        }
-        return result;
-    }
-
-    // Fallback: return unchanged
-    yaml.to_string()
-}
-
-/// Appends a new measure to `global/measures` and to the first part in `yaml_text`, containing a single blank note with `duration`.
-pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
-    let lines: Vec<&str> = yaml.lines().collect();
-    if lines.is_empty() {
-        return None;
-    }
-
-    // 1. Find global/measures section to add a global measure entry
-    let mut in_global = false;
-    let mut global_measures_idx = None;
-    let mut global_measure_item_idx = None;
-    let mut global_item_indent = 4;
-    let mut last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
-
-    // 2. Find parts/measures section
-    let mut in_parts = false;
-    let mut parts_measures_idx = None;
-    let mut seq_indent = 6;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed.starts_with("global:") {
-            in_global = true;
-            in_parts = false;
-            continue;
-        }
-
-        if in_global {
-            if trimmed.starts_with("measures:") {
-                global_measures_idx = Some(i);
-                continue;
-            }
-
-            if global_measures_idx.is_some() {
-                if trimmed.starts_with('-') {
-                    global_measure_item_idx = Some(i);
-                    global_item_indent = indent;
-                    if let Some(pos) = trimmed.find("time:") {
-                        last_time_sig_str = trimmed[pos..].to_string();
-                    }
-                } else if trimmed.starts_with("parts:") || (indent == 0 && !trimmed.is_empty()) {
-                    in_global = false;
-                }
-            }
-        }
-
-        if trimmed.starts_with("parts:") {
-            in_parts = true;
-            in_global = false;
-            continue;
-        }
-
-        if in_parts {
-            if trimmed.starts_with("measures:") {
-                parts_measures_idx = Some(i);
-                continue;
-            }
-
-            if parts_measures_idx.is_some() && (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:")) {
-                seq_indent = indent;
-            }
-        }
-    }
-
-    let _ = parts_measures_idx?;
-
-    // Format new measure in global/measures if global/measures exists
-    let mut result_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-
-    if let Some(last_gm_idx) = global_measure_item_idx {
-        // Insert after the last item in global/measures
-        let new_gm_line = format!("{}- {}", " ".repeat(global_item_indent), last_time_sig_str);
-        result_lines.insert(last_gm_idx + 1, new_gm_line);
-    } else if let Some(gm_header_idx) = global_measures_idx {
-        let new_gm_line = format!("{}- {}", " ".repeat(4), last_time_sig_str);
-        result_lines.insert(gm_header_idx + 1, new_gm_line);
-    }
-
-    let intermediate_yaml = result_lines.join("\n");
-
-    let dur_str = if let Some(dots) = duration.dots {
-        if dots > 0 {
-            format!("{{ base: {}, dots: {} }}", duration.base, dots)
-        } else {
-            format!("{{ base: {} }}", duration.base)
-        }
-    } else {
-        format!("{{ base: {} }}", duration.base)
-    };
-
-    let seq_spaces = " ".repeat(seq_indent);
-    let content_spaces = " ".repeat(seq_indent + 4);
-    let event_spaces = " ".repeat(seq_indent + 8);
-    let notes_spaces = " ".repeat(seq_indent + 10);
-
-    let new_measure_block = format!(
-        "{}- sequences:\n{}- content:\n{}- duration: {}\n{}notes: []",
-        seq_spaces, content_spaces, event_spaces, dur_str, notes_spaces
-    );
-
-    let trimmed_yaml = intermediate_yaml.trim_end();
-    Some(format!("{}\n{}\n", trimmed_yaml, new_measure_block))
-}
-
-/// Appends a new blank note (notes: []) to the last measure of the first part.
-pub fn add_blank_note_to_last_measure(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let last_er = event_ranges.last()?;
-
-    let event_first_line = &yaml[last_er.total_range.start..];
-    let indent_len = event_first_line.len() - event_first_line.trim_start().len();
-    let indent = " ".repeat(indent_len);
-    let sub_indent = " ".repeat(indent_len + 2);
-
-    let dur_str = if let Some(dots) = duration.dots {
-        if dots > 0 {
-            format!("{{ base: {}, dots: {} }}", duration.base, dots)
-        } else {
-            format!("{{ base: {} }}", duration.base)
-        }
-    } else {
-        format!("{{ base: {} }}", duration.base)
-    };
-
-    let new_event_str = format!(
-        "\n{}- duration: {}\n{}notes: []",
-        indent, dur_str, sub_indent
-    );
-
-    let mut result = yaml.to_string();
-    result.insert_str(last_er.total_range.end, &new_event_str);
-    Some(result)
-}
-
-/// If the final event in the last measure is blank (notes: []), removes it from the YAML.
-/// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
-pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
-    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
-    let part = doc.parts.first()?;
-    let last_measure = part.measures.last()?;
-    let last_seq = last_measure.sequences.first()?;
-    let last_event = last_seq.content.last()?;
-
-    if !last_event.notes.is_empty() {
-        return None;
-    }
-
-    if last_seq.content.len() > 1 {
-        let event_ranges = find_all_event_ranges(yaml);
-        let last_er = event_ranges.last()?;
-        let mut start = last_er.total_range.start;
-        let end = last_er.total_range.end;
-        if start > 0 && yaml.as_bytes()[start - 1] == b'\n' {
-            start -= 1;
-        }
-        let mut result = yaml.to_string();
-        result.replace_range(start..end, "");
-        return Some(result);
-    }
-
-    // Only 1 event in the measure -> remove the last measure entirely
-    let lines: Vec<&str> = yaml.lines().collect();
-    let mut last_seq_line_idx = None;
-    let mut in_parts = false;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("parts:") {
-            in_parts = true;
-            continue;
-        }
-        if in_parts && (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:")) {
-            last_seq_line_idx = Some(i);
-        }
-    }
-
-    let seq_line_idx = last_seq_line_idx?;
-
-    // Also identify the corresponding global measure entry if it exists
-    let mut in_global = false;
-    let mut global_measure_item_idx = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed.starts_with("global:") {
-            in_global = true;
-            continue;
-        }
-        if in_global {
-            if trimmed.starts_with('-') {
-                global_measure_item_idx = Some(i);
-            } else if trimmed.starts_with("parts:") || (indent == 0 && !trimmed.is_empty()) {
-                in_global = false;
-            }
-        }
-    }
-
-    let mut result_lines = Vec::new();
-    for (i, &line) in lines.iter().enumerate() {
-        if let Some(gm_idx) = global_measure_item_idx {
-            if doc.global.measures.len() == part.measures.len() && i == gm_idx {
-                continue;
-            }
-        }
-        if i >= seq_line_idx {
-            continue;
-        }
-        result_lines.push(line);
-    }
-
-    let trimmed = result_lines.join("\n");
-    Some(format!("{}\n", trimmed.trim_end()))
 }
 
 impl MnxEditorApp {
@@ -942,15 +139,19 @@ impl MnxEditorApp {
 
     pub fn change_selected_duration_base(&mut self, new_base: &str) {
         if let Some(e_idx) = self.selected_event_idx {
-            let cur_dur = self.get_selected_event_duration().unwrap_or_else(|| crate::mnx::Duration {
-                base: "quarter".to_string(),
-                dots: None,
-            });
+            let cur_dur =
+                self.get_selected_event_duration()
+                    .unwrap_or_else(|| crate::mnx::Duration {
+                        base: "quarter".to_string(),
+                        dots: None,
+                    });
             let new_duration = crate::mnx::Duration {
                 base: new_base.to_string(),
                 dots: cur_dur.dots,
             };
-            if let Some(new_yaml) = update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration) {
+            if let Some(new_yaml) =
+                update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration)
+            {
                 self.yaml_text = new_yaml;
                 self.process_and_render();
             }
@@ -959,21 +160,32 @@ impl MnxEditorApp {
 
     pub fn toggle_selected_duration_dot(&mut self) {
         if let Some(e_idx) = self.selected_event_idx {
-            let cur_dur = self.get_selected_event_duration().unwrap_or_else(|| crate::mnx::Duration {
-                base: "quarter".to_string(),
-                dots: None,
-            });
-            let is_dotted = cur_dur.dots.unwrap_or(0) > 0 || cur_dur.base.contains("dotted") || cur_dur.base.contains('.');
-            let clean_base = cur_dur.base
+            let cur_dur =
+                self.get_selected_event_duration()
+                    .unwrap_or_else(|| crate::mnx::Duration {
+                        base: "quarter".to_string(),
+                        dots: None,
+                    });
+            let is_dotted = cur_dur.dots.unwrap_or(0) > 0
+                || cur_dur.base.contains("dotted")
+                || cur_dur.base.contains('.');
+            let clean_base = cur_dur
+                .base
                 .replace("dotted-", "")
                 .replace("-dotted", "")
                 .replace("dotted", "")
                 .replace('.', "");
             let new_duration = crate::mnx::Duration {
-                base: if clean_base.is_empty() { "quarter".to_string() } else { clean_base },
+                base: if clean_base.is_empty() {
+                    "quarter".to_string()
+                } else {
+                    clean_base
+                },
                 dots: if is_dotted { None } else { Some(1) },
             };
-            if let Some(new_yaml) = update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration) {
+            if let Some(new_yaml) =
+                update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration)
+            {
                 self.yaml_text = new_yaml;
                 self.process_and_render();
             }
@@ -987,7 +199,11 @@ impl MnxEditorApp {
                 let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6) as u8;
                 for s in 1..=num_strings {
                     let default_ch = if self.is_mpe_mode { s + 1 } else { s };
-                    let ch_1_based = self.string_channel_map.get(&s).copied().unwrap_or(default_ch);
+                    let ch_1_based = self
+                        .string_channel_map
+                        .get(&s)
+                        .copied()
+                        .unwrap_or(default_ch);
                     let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
                     string_to_channel.insert(s, midly::num::u4::from(ch_0_based));
                 }
@@ -1009,17 +225,30 @@ impl MnxEditorApp {
 
                 match self.midi_player.play(doc, options, port_idx) {
                     Ok(_) => {
-                        let port_name = self.midi_ports.iter().find(|p| p.id == port_idx)
-                            .map(|p| p.name.as_str()).unwrap_or("MIDI device");
+                        let port_name = self
+                            .midi_ports
+                            .iter()
+                            .find(|p| p.id == port_idx)
+                            .map(|p| p.name.as_str())
+                            .unwrap_or("MIDI device");
                         let mode_str = if self.is_mpe_mode { " (MPE)" } else { "" };
                         if let Some(start_idx) = start_event {
                             if start_idx > 0 {
-                                self.midi_status_msg = Some(format!("Playing from note {}{} on {}", start_idx + 1, mode_str, port_name));
+                                self.midi_status_msg = Some(format!(
+                                    "Playing from note {}{} on {}",
+                                    start_idx + 1,
+                                    mode_str,
+                                    port_name
+                                ));
                             } else {
-                                self.midi_status_msg = Some(format!("Playing from start{} on {}", mode_str, port_name));
+                                self.midi_status_msg = Some(format!(
+                                    "Playing from start{} on {}",
+                                    mode_str, port_name
+                                ));
                             }
                         } else {
-                            self.midi_status_msg = Some(format!("Playing{} on {}", mode_str, port_name));
+                            self.midi_status_msg =
+                                Some(format!("Playing{} on {}", mode_str, port_name));
                         }
                     }
                     Err(e) => {
@@ -1080,20 +309,25 @@ impl MnxEditorApp {
         let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
         let mut notes_to_play = Vec::new();
 
-        let target_notes: Vec<&crate::mnx::Note> = if let Some(n_idx) = self.selected_note_idx_in_event {
-            if let Some(n) = event.notes.get(n_idx) {
-                vec![n]
+        let target_notes: Vec<&crate::mnx::Note> =
+            if let Some(n_idx) = self.selected_note_idx_in_event {
+                if let Some(n) = event.notes.get(n_idx) {
+                    vec![n]
+                } else {
+                    event.notes.iter().collect()
+                }
             } else {
                 event.notes.iter().collect()
-            }
-        } else {
-            event.notes.iter().collect()
-        };
+            };
 
         for note in target_notes {
             if let (Some(string), Some(fret)) = (note.string, note.fret) {
                 let default_ch = if self.is_mpe_mode { string + 1 } else { string };
-                let ch_1_based = self.string_channel_map.get(&string).copied().unwrap_or(default_ch);
+                let ch_1_based = self
+                    .string_channel_map
+                    .get(&string)
+                    .copied()
+                    .unwrap_or(default_ch);
                 let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
                 let channel = midly::num::u4::from(ch_0_based);
 
@@ -1102,7 +336,8 @@ impl MnxEditorApp {
                     let base_note = midi_note_frac.round() as u8;
                     let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
 
-                    let pitch_bend_val = crate::midi::calculate_pitch_bend(semitone_diff, self.pitch_bend_range);
+                    let pitch_bend_val =
+                        crate::midi::calculate_pitch_bend(semitone_diff, self.pitch_bend_range);
 
                     notes_to_play.push(crate::midi::NotePreview {
                         channel,
@@ -1128,7 +363,8 @@ impl MnxEditorApp {
     }
 
     pub fn add_measure_to_end(&mut self) {
-        let last_duration = self.parsed_mnx
+        let last_duration = self
+            .parsed_mnx
             .as_ref()
             .and_then(|d| d.parts.first())
             .and_then(|p| p.measures.last())
@@ -1159,12 +395,18 @@ impl MnxEditorApp {
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(doc) => {
                 let errors = validate::validate_mnx(&doc);
-                
+
                 // Store formatted error strings for the bottom panel UI
-                self.validation_errors = errors.iter()
+                self.validation_errors = errors
+                    .iter()
                     .map(|err| {
                         if err.string > 0 {
-                            format!("Measure {}, Event {}: {}", err.measure_idx, err.event_idx + 1, err.message)
+                            format!(
+                                "Measure {}, Event {}: {}",
+                                err.measure_idx,
+                                err.event_idx + 1,
+                                err.message
+                            )
                         } else {
                             format!("Measure {}: {}", err.measure_idx, err.message)
                         }
@@ -1172,7 +414,10 @@ impl MnxEditorApp {
                     .collect();
 
                 // Sync BPM from YAML if a tempo directive is present
-                let yaml_bpm = doc.global.measures.iter()
+                let yaml_bpm = doc
+                    .global
+                    .measures
+                    .iter()
                     .flat_map(|m| m.directions.iter())
                     .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
                 if let Some(bpm) = yaml_bpm {
@@ -1295,7 +540,9 @@ impl eframe::App for MnxEditorApp {
             let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
 
-            let num_strings = self.parsed_mnx.as_ref()
+            let num_strings = self
+                .parsed_mnx
+                .as_ref()
                 .and_then(|d| d.parts.first())
                 .map(|p| p.num_strings())
                 .unwrap_or(6) as u8;
@@ -1307,12 +554,20 @@ impl eframe::App for MnxEditorApp {
                 if let Some(e_idx) = self.selected_event_idx {
                     if let Some(cur_str) = self.editing_string {
                         if let Ok(new_fret) = self.editing_fret_buf.trim().parse::<u8>() {
-                            let new_pitch = self.parsed_mnx.as_ref()
+                            let new_pitch = self
+                                .parsed_mnx
+                                .as_ref()
                                 .and_then(|d| d.parts.first())
-                                .and_then(|part| calculate_pitch_for_string_fret(part, cur_str, new_fret));
+                                .and_then(|part| {
+                                    calculate_pitch_for_string_fret(part, cur_str, new_fret)
+                                });
 
                             if let Some(new_yaml) = set_or_add_note_on_string(
-                                &self.yaml_text, e_idx, cur_str, new_fret, new_pitch.as_ref()
+                                &self.yaml_text,
+                                e_idx,
+                                cur_str,
+                                new_fret,
+                                new_pitch.as_ref(),
                             ) {
                                 self.yaml_text = new_yaml;
                                 self.process_and_render();
@@ -1327,12 +582,20 @@ impl eframe::App for MnxEditorApp {
                 if let Some(e_idx) = self.selected_event_idx {
                     if let Some(cur_str) = self.editing_string {
                         if let Ok(new_fret) = self.editing_fret_buf.trim().parse::<u8>() {
-                            let new_pitch = self.parsed_mnx.as_ref()
+                            let new_pitch = self
+                                .parsed_mnx
+                                .as_ref()
                                 .and_then(|d| d.parts.first())
-                                .and_then(|part| calculate_pitch_for_string_fret(part, cur_str, new_fret));
+                                .and_then(|part| {
+                                    calculate_pitch_for_string_fret(part, cur_str, new_fret)
+                                });
 
                             if let Some(new_yaml) = set_or_add_note_on_string(
-                                &self.yaml_text, e_idx, cur_str, new_fret, new_pitch.as_ref()
+                                &self.yaml_text,
+                                e_idx,
+                                cur_str,
+                                new_fret,
+                                new_pitch.as_ref(),
                             ) {
                                 self.yaml_text = new_yaml;
                                 self.process_and_render();
@@ -1383,7 +646,9 @@ impl eframe::App for MnxEditorApp {
             } else if backspace_pressed {
                 if !self.editing_fret_buf.is_empty() {
                     self.editing_fret_buf.pop();
-                } else if let (Some(e_idx), Some(cur_str)) = (self.selected_event_idx, self.editing_string) {
+                } else if let (Some(e_idx), Some(cur_str)) =
+                    (self.selected_event_idx, self.editing_string)
+                {
                     if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
                         self.yaml_text = new_yaml;
                         self.process_and_render();
@@ -1391,7 +656,8 @@ impl eframe::App for MnxEditorApp {
                     }
                 }
             } else if delete_pressed {
-                if let (Some(e_idx), Some(cur_str)) = (self.selected_event_idx, self.editing_string) {
+                if let (Some(e_idx), Some(cur_str)) = (self.selected_event_idx, self.editing_string)
+                {
                     if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
                         self.yaml_text = new_yaml;
                         self.process_and_render();
@@ -1499,14 +765,18 @@ impl eframe::App for MnxEditorApp {
             } else if left_pressed || right_pressed || up_pressed || down_pressed {
                 // Left / Right arrow navigation: moves between events, always selecting all notes in target event
                 if left_pressed {
-                    let at_final_event = self.selected_event_idx == Some(total_events.saturating_sub(1));
-                    let is_final_blank = at_final_event && self.parsed_mnx.as_ref()
-                        .and_then(|d| d.parts.first())
-                        .and_then(|p| p.measures.last())
-                        .and_then(|m| m.sequences.first())
-                        .and_then(|s| s.content.last())
-                        .map(|e| e.notes.is_empty())
-                        .unwrap_or(false);
+                    let at_final_event =
+                        self.selected_event_idx == Some(total_events.saturating_sub(1));
+                    let is_final_blank = at_final_event
+                        && self
+                            .parsed_mnx
+                            .as_ref()
+                            .and_then(|d| d.parts.first())
+                            .and_then(|p| p.measures.last())
+                            .and_then(|m| m.sequences.first())
+                            .and_then(|s| s.content.last())
+                            .map(|e| e.notes.is_empty())
+                            .unwrap_or(false);
 
                     if is_final_blank {
                         // If nothing is entered into this blank note, shifting focus back to the left removes it
@@ -1534,10 +804,13 @@ impl eframe::App for MnxEditorApp {
                     }
                 }
                 if right_pressed {
-                    let at_final_event = self.selected_event_idx == Some(total_events.saturating_sub(1));
+                    let at_final_event =
+                        self.selected_event_idx == Some(total_events.saturating_sub(1));
 
                     if at_final_event {
-                        let is_final_blank = self.parsed_mnx.as_ref()
+                        let is_final_blank = self
+                            .parsed_mnx
+                            .as_ref()
                             .and_then(|d| d.parts.first())
                             .and_then(|p| p.measures.last())
                             .and_then(|m| m.sequences.first())
@@ -1554,19 +827,37 @@ impl eframe::App for MnxEditorApp {
                                         if let Some(last_event) = last_seq.content.last() {
                                             let m_idx = part.measures.len() - 1;
                                             let final_dur = &last_event.duration;
-                                            let dur_beats = validate::duration_to_quarter_beats(final_dur);
-                                            let time_sig = validate::get_time_signature_for_measure(doc, m_idx);
-                                            let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
-                                            let curr_beats: f64 = last_seq.content.iter().map(|e| validate::duration_to_quarter_beats(&e.duration)).sum();
+                                            let dur_beats =
+                                                validate::duration_to_quarter_beats(final_dur);
+                                            let time_sig = validate::get_time_signature_for_measure(
+                                                doc, m_idx,
+                                            );
+                                            let max_beats = (time_sig.count as f64)
+                                                * (4.0 / time_sig.unit as f64);
+                                            let curr_beats: f64 = last_seq
+                                                .content
+                                                .iter()
+                                                .map(|e| {
+                                                    validate::duration_to_quarter_beats(&e.duration)
+                                                })
+                                                .sum();
 
                                             if curr_beats + dur_beats <= max_beats + 1e-4 {
                                                 // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
-                                                if let Some(new_yaml) = add_blank_note_to_last_measure(&self.yaml_text, final_dur) {
+                                                if let Some(new_yaml) =
+                                                    add_blank_note_to_last_measure(
+                                                        &self.yaml_text,
+                                                        final_dur,
+                                                    )
+                                                {
                                                     self.yaml_text = new_yaml;
                                                     self.process_and_render();
-                                                    let new_total = find_all_event_ranges(&self.yaml_text).len();
+                                                    let new_total =
+                                                        find_all_event_ranges(&self.yaml_text)
+                                                            .len();
                                                     if new_total > 0 {
-                                                        self.selected_event_idx = Some(new_total - 1);
+                                                        self.selected_event_idx =
+                                                            Some(new_total - 1);
                                                     }
                                                     self.selected_note_idx_in_event = None;
                                                     self.editing_string = None;
@@ -1626,26 +917,34 @@ impl eframe::App for MnxEditorApp {
 
                                 if up_pressed {
                                     // Up: move to higher string (earlier in note_order)
-                                    self.selected_note_idx_in_event = match self.selected_note_idx_in_event {
-                                        None => Some(note_order[0]),
-                                        Some(cur) => {
-                                            let cur_pos = note_order.iter().position(|&x| x == cur).unwrap_or(0);
-                                            let new_pos = cur_pos.saturating_sub(1);
-                                            Some(note_order[new_pos])
-                                        }
-                                    };
+                                    self.selected_note_idx_in_event =
+                                        match self.selected_note_idx_in_event {
+                                            None => Some(note_order[0]),
+                                            Some(cur) => {
+                                                let cur_pos = note_order
+                                                    .iter()
+                                                    .position(|&x| x == cur)
+                                                    .unwrap_or(0);
+                                                let new_pos = cur_pos.saturating_sub(1);
+                                                Some(note_order[new_pos])
+                                            }
+                                        };
                                 }
 
                                 if down_pressed {
                                     // Down: move to lower string (later in note_order)
-                                    self.selected_note_idx_in_event = match self.selected_note_idx_in_event {
-                                        None => Some(note_order[0]),
-                                        Some(cur) => {
-                                            let cur_pos = note_order.iter().position(|&x| x == cur).unwrap_or(0);
-                                            let new_pos = (cur_pos + 1).min(note_count - 1);
-                                            Some(note_order[new_pos])
-                                        }
-                                    };
+                                    self.selected_note_idx_in_event =
+                                        match self.selected_note_idx_in_event {
+                                            None => Some(note_order[0]),
+                                            Some(cur) => {
+                                                let cur_pos = note_order
+                                                    .iter()
+                                                    .position(|&x| x == cur)
+                                                    .unwrap_or(0);
+                                                let new_pos = (cur_pos + 1).min(note_count - 1);
+                                                Some(note_order[new_pos])
+                                            }
+                                        };
                                 }
 
                                 self.preview_selected_sound();
@@ -1677,7 +976,7 @@ impl eframe::App for MnxEditorApp {
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
                     .unwrap_or("Untitled");
-                
+
                 ui.label(egui::RichText::new(format!("Editing: {}", file_name)).italics());
 
                 if let Some(sel) = self.selected_event_idx {
@@ -1990,20 +1289,62 @@ impl eframe::App for MnxEditorApp {
 
                     let is_editing_now = self.is_editing_fret;
 
-                    let mut layouter = |ui: &egui::Ui, text_buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                        let text = text_buf.as_str();
-                        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-                        let text_color = ui.visuals().text_color();
-                        let mut job = egui::text::LayoutJob::default();
-                        job.wrap.max_width = wrap_width;
+                    let mut layouter =
+                        |ui: &egui::Ui, text_buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                            let text = text_buf.as_str();
+                            let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+                            let text_color = ui.visuals().text_color();
+                            let mut job = egui::text::LayoutJob::default();
+                            job.wrap.max_width = wrap_width;
 
-                        if let Some(sel) = &selected_range {
-                            let sel_start = sel.start.min(text.len());
-                            let sel_end = sel.end.min(text.len());
+                            if let Some(sel) = &selected_range {
+                                let sel_start = sel.start.min(text.len());
+                                let sel_end = sel.end.min(text.len());
 
-                            if sel_start > 0 {
+                                if sel_start > 0 {
+                                    job.append(
+                                        &text[..sel_start],
+                                        0.0,
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: text_color,
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+
+                                if sel_end > sel_start {
+                                    let bg_hl = if is_editing_now {
+                                        Color32::from_rgba_unmultiplied(220, 140, 40, 140) // Orange highlight
+                                    } else {
+                                        Color32::from_rgba_unmultiplied(60, 130, 210, 120) // Blue highlight
+                                    };
+                                    job.append(
+                                        &text[sel_start..sel_end],
+                                        0.0,
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: Color32::from_rgb(255, 255, 255),
+                                            background: bg_hl,
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+
+                                if sel_end < text.len() {
+                                    job.append(
+                                        &text[sel_end..],
+                                        0.0,
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: text_color,
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+                            } else {
                                 job.append(
-                                    &text[..sel_start],
+                                    text,
                                     0.0,
                                     egui::TextFormat {
                                         font_id: font_id.clone(),
@@ -2013,49 +1354,8 @@ impl eframe::App for MnxEditorApp {
                                 );
                             }
 
-                            if sel_end > sel_start {
-                                let bg_hl = if is_editing_now {
-                                    Color32::from_rgba_unmultiplied(220, 140, 40, 140) // Orange highlight
-                                } else {
-                                    Color32::from_rgba_unmultiplied(60, 130, 210, 120) // Blue highlight
-                                };
-                                job.append(
-                                    &text[sel_start..sel_end],
-                                    0.0,
-                                    egui::TextFormat {
-                                        font_id: font_id.clone(),
-                                        color: Color32::from_rgb(255, 255, 255),
-                                        background: bg_hl,
-                                        ..Default::default()
-                                    },
-                                );
-                            }
-
-                            if sel_end < text.len() {
-                                job.append(
-                                    &text[sel_end..],
-                                    0.0,
-                                    egui::TextFormat {
-                                        font_id: font_id.clone(),
-                                        color: text_color,
-                                        ..Default::default()
-                                    },
-                                );
-                            }
-                        } else {
-                            job.append(
-                                text,
-                                0.0,
-                                egui::TextFormat {
-                                    font_id: font_id.clone(),
-                                    color: text_color,
-                                    ..Default::default()
-                                },
-                            );
-                        }
-
-                        ui.fonts_mut(|f| f.layout_job(job))
-                    };
+                            ui.fonts_mut(|f| f.layout_job(job))
+                        };
 
                     let response = ui.add(
                         egui::TextEdit::multiline(&mut self.yaml_text)
@@ -2065,7 +1365,7 @@ impl eframe::App for MnxEditorApp {
                             .code_editor()
                             .layouter(&mut layouter),
                     );
-                    
+
                     // Trigger real-time re-render on any keystroke
                     if response.changed() {
                         self.process_and_render();
@@ -2080,27 +1380,33 @@ impl eframe::App for MnxEditorApp {
                     if let Some(part) = doc.parts.first() {
                         let (_resp, clicked, add_bar_clicked) = render::draw_tablature(
                             ui,
-                            part,
-                            Some(&doc.global),
-                            &self.parsed_errors,
-                            self.selected_event_idx,
-                            self.selected_note_idx_in_event,
-                            self.is_editing_fret,
-                            &self.editing_fret_buf,
-                            self.editing_string,
+                            crate::render::TablatureOptions {
+                                part,
+                                global: Some(&doc.global),
+                                errors: &self.parsed_errors,
+                                selected_event: self.selected_event_idx,
+                                selected_note_in_event: self.selected_note_idx_in_event,
+                                is_editing_fret: self.is_editing_fret,
+                                editing_fret_text: &self.editing_fret_buf,
+                                editing_string: self.editing_string,
+                            },
                         );
                         if add_bar_clicked {
                             self.add_measure_to_end();
                         } else if let Some((clicked_event, clicked_note)) = clicked {
                             let total_events = find_all_event_ranges(&self.yaml_text).len();
-                            let was_at_final = self.selected_event_idx == Some(total_events.saturating_sub(1));
-                            let is_final_blank = was_at_final && self.parsed_mnx.as_ref()
-                                .and_then(|d| d.parts.first())
-                                .and_then(|p| p.measures.last())
-                                .and_then(|m| m.sequences.first())
-                                .and_then(|s| s.content.last())
-                                .map(|e| e.notes.is_empty())
-                                .unwrap_or(false);
+                            let was_at_final =
+                                self.selected_event_idx == Some(total_events.saturating_sub(1));
+                            let is_final_blank = was_at_final
+                                && self
+                                    .parsed_mnx
+                                    .as_ref()
+                                    .and_then(|d| d.parts.first())
+                                    .and_then(|p| p.measures.last())
+                                    .and_then(|m| m.sequences.first())
+                                    .and_then(|s| s.content.last())
+                                    .map(|e| e.notes.is_empty())
+                                    .unwrap_or(false);
 
                             if is_final_blank && clicked_event < total_events.saturating_sub(1) {
                                 if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
@@ -2186,9 +1492,15 @@ parts:
         let updated = update_note_in_yaml(yaml, 0, 0, 14, Some(&new_pitch)).expect("Should update");
         assert!(updated.contains("fret: 14"));
 
-        let updated_doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
+        let updated_doc =
+            serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
         let errors = crate::validate::validate_mnx(&updated_doc);
-        assert_eq!(errors.len(), 0, "There should be no validation errors after updating fret and pitch: {:?}", errors);
+        assert_eq!(
+            errors.len(),
+            0,
+            "There should be no validation errors after updating fret and pitch: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -2199,11 +1511,18 @@ parts:
 
         // Edit Event 1 to put String 4 Fret 12
         let new_pitch = calculate_pitch_for_string_fret(part, 4, 12);
-        let updated = set_or_add_note_on_string(yaml, 1, 4, 12, new_pitch.as_ref()).expect("Should update note");
+        let updated = set_or_add_note_on_string(yaml, 1, 4, 12, new_pitch.as_ref())
+            .expect("Should update note");
 
-        let updated_doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
+        let updated_doc =
+            serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
         let errors = crate::validate::validate_mnx(&updated_doc);
-        assert_eq!(errors.len(), 0, "Validation should pass with 0 errors for String 4 Fret 12: {:?}", errors);
+        assert_eq!(
+            errors.len(),
+            0,
+            "Validation should pass with 0 errors for String 4 Fret 12: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -2214,9 +1533,11 @@ parts:
 
         // Event 0 starts with String 7 Fret 12. Add String 6 Fret 9 (D3) to make it a 2-note chord.
         let new_pitch = calculate_pitch_for_string_fret(part, 6, 9);
-        let updated = set_or_add_note_on_string(yaml, 0, 6, 9, new_pitch.as_ref()).expect("Should add note");
+        let updated =
+            set_or_add_note_on_string(yaml, 0, 6, 9, new_pitch.as_ref()).expect("Should add note");
 
-        let updated_doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
+        let updated_doc =
+            serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
         let ev0_notes = &updated_doc.parts[0].measures[0].sequences[0].content[0].notes;
         assert_eq!(ev0_notes.len(), 2);
         assert_eq!(ev0_notes[0].string, Some(7));
@@ -2225,7 +1546,12 @@ parts:
         assert_eq!(ev0_notes[1].fret, Some(9));
 
         let errors = crate::validate::validate_mnx(&updated_doc);
-        assert_eq!(errors.len(), 0, "Validation should pass with 0 errors: {:?}", errors);
+        assert_eq!(
+            errors.len(),
+            0,
+            "Validation should pass with 0 errors: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -2253,14 +1579,16 @@ parts:
 "#;
         // Remove note on string 4
         let updated = remove_note_on_string(yaml, 0, 4).expect("Should remove note on string 4");
-        let updated_doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
+        let updated_doc =
+            serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
         let notes = &updated_doc.parts[0].measures[0].sequences[0].content[0].notes;
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].string, Some(5));
 
         // Remove note on string 5 (only note left)
         let updated2 = remove_note_on_string(&updated, 0, 5).expect("Should remove last note");
-        let updated2_doc = serde_saphyr::from_str::<MnxDocument>(&updated2).expect("Updated doc should parse");
+        let updated2_doc =
+            serde_saphyr::from_str::<MnxDocument>(&updated2).expect("Updated doc should parse");
         let notes2 = &updated2_doc.parts[0].measures[0].sequences[0].content[0].notes;
         assert_eq!(notes2.len(), 0);
     }
@@ -2272,14 +1600,23 @@ parts:
         let initial_measures = doc.parts[0].measures.len();
         assert_eq!(initial_measures, 2);
 
-        let final_dur = doc.parts[0].measures.last()
-            .unwrap().sequences.first()
-            .unwrap().content.last()
-            .unwrap().duration.clone();
+        let final_dur = doc.parts[0]
+            .measures
+            .last()
+            .unwrap()
+            .sequences
+            .first()
+            .unwrap()
+            .content
+            .last()
+            .unwrap()
+            .duration
+            .clone();
         assert_eq!(final_dur.base, "quarter");
 
         let updated = add_measure_to_yaml(yaml, &final_dur).expect("Should add measure");
-        let updated_doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
+        let updated_doc =
+            serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
         assert_eq!(updated_doc.global.measures.len(), 3);
         let part = &updated_doc.parts[0];
         assert_eq!(part.measures.len(), 3);
@@ -2294,7 +1631,12 @@ parts:
 
         // Validation should pass with 0 errors
         let errors = crate::validate::validate_mnx(&updated_doc);
-        assert_eq!(errors.len(), 0, "Validation should have 0 errors: {:?}", errors);
+        assert_eq!(
+            errors.len(),
+            0,
+            "Validation should have 0 errors: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -2317,30 +1659,56 @@ parts:
                     string: 5
                     fret: 3
 "#;
-        let dur = crate::mnx::Duration { base: "quarter".to_string(), dots: None };
+        let dur = crate::mnx::Duration {
+            base: "quarter".to_string(),
+            dots: None,
+        };
         let with_blank = add_blank_note_to_last_measure(yaml, &dur).expect("Should add blank note");
-        let doc_with_blank = serde_saphyr::from_str::<MnxDocument>(&with_blank).expect("Should parse");
-        assert_eq!(doc_with_blank.parts[0].measures[0].sequences[0].content.len(), 2);
-        assert_eq!(doc_with_blank.parts[0].measures[0].sequences[0].content[1].notes.len(), 0);
+        let doc_with_blank =
+            serde_saphyr::from_str::<MnxDocument>(&with_blank).expect("Should parse");
+        assert_eq!(
+            doc_with_blank.parts[0].measures[0].sequences[0]
+                .content
+                .len(),
+            2
+        );
+        assert_eq!(
+            doc_with_blank.parts[0].measures[0].sequences[0].content[1]
+                .notes
+                .len(),
+            0
+        );
 
         // Now remove the blank note (since nothing was entered into it)
         let cleaned = remove_last_blank_event(&with_blank).expect("Should remove blank note");
         let cleaned_doc = serde_saphyr::from_str::<MnxDocument>(&cleaned).expect("Should parse");
-        assert_eq!(cleaned_doc.parts[0].measures[0].sequences[0].content.len(), 1);
-        assert_eq!(cleaned_doc.parts[0].measures[0].sequences[0].content[0].notes.len(), 1);
+        assert_eq!(
+            cleaned_doc.parts[0].measures[0].sequences[0].content.len(),
+            1
+        );
+        assert_eq!(
+            cleaned_doc.parts[0].measures[0].sequences[0].content[0]
+                .notes
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn test_add_measure_and_remove_blank_measure() {
         let yaml = include_str!("../example.yaml");
-        let dur = crate::mnx::Duration { base: "quarter".to_string(), dots: None };
+        let dur = crate::mnx::Duration {
+            base: "quarter".to_string(),
+            dots: None,
+        };
         let with_new_measure = add_measure_to_yaml(yaml, &dur).expect("Should add measure");
         let doc1 = serde_saphyr::from_str::<MnxDocument>(&with_new_measure).expect("Should parse");
         assert_eq!(doc1.parts[0].measures.len(), 3);
         assert_eq!(doc1.global.measures.len(), 3);
 
         // When shifting focus back to the left without entering anything, the empty measure is removed
-        let cleaned = remove_last_blank_event(&with_new_measure).expect("Should remove empty measure");
+        let cleaned =
+            remove_last_blank_event(&with_new_measure).expect("Should remove empty measure");
         let doc2 = serde_saphyr::from_str::<MnxDocument>(&cleaned).expect("Should parse");
         assert_eq!(doc2.parts[0].measures.len(), 2);
         assert_eq!(doc2.global.measures.len(), 2);
@@ -2358,12 +1726,15 @@ parts:
 
         // Right arrow on full final bar -> Rule 2: creates Measure 3 with a blank note
         // (Simulate right arrow logic)
-        let final_dur = app.parsed_mnx.as_ref()
+        let final_dur = app
+            .parsed_mnx
+            .as_ref()
             .and_then(|d| d.parts.first())
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
             .and_then(|s| s.content.last())
-            .map(|e| e.duration.clone()).unwrap();
+            .map(|e| e.duration.clone())
+            .unwrap();
 
         let updated = add_measure_to_yaml(&app.yaml_text, &final_dur).unwrap();
         app.yaml_text = updated;
@@ -2373,12 +1744,15 @@ parts:
         app.selected_event_idx = Some(15);
 
         // Rule 3: Moving further to the right of a final blank note has no effect
-        let is_final_blank = app.parsed_mnx.as_ref()
+        let is_final_blank = app
+            .parsed_mnx
+            .as_ref()
             .and_then(|d| d.parts.first())
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
             .and_then(|s| s.content.last())
-            .map(|e| e.notes.is_empty()).unwrap();
+            .map(|e| e.notes.is_empty())
+            .unwrap();
         assert!(is_final_blank);
 
         // Shifting focus back to the left -> blank note and measure disappear
@@ -2392,18 +1766,46 @@ parts:
     #[test]
     fn test_update_event_duration_in_yaml() {
         let yaml = include_str!("../example.yaml");
-        let dur_quarter = crate::mnx::Duration { base: "quarter".to_string(), dots: None };
-        let updated = update_event_duration_in_yaml(yaml, 0, &dur_quarter).expect("Should update duration");
+        let dur_quarter = crate::mnx::Duration {
+            base: "quarter".to_string(),
+            dots: None,
+        };
+        let updated =
+            update_event_duration_in_yaml(yaml, 0, &dur_quarter).expect("Should update duration");
         let doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Should parse");
-        assert_eq!(doc.parts[0].measures[0].sequences[0].content[0].duration.base, "quarter");
-        assert_eq!(doc.parts[0].measures[0].sequences[0].content[0].duration.dots, None);
+        assert_eq!(
+            doc.parts[0].measures[0].sequences[0].content[0]
+                .duration
+                .base,
+            "quarter"
+        );
+        assert_eq!(
+            doc.parts[0].measures[0].sequences[0].content[0]
+                .duration
+                .dots,
+            None
+        );
 
         // Test dotted
-        let dur_dotted_half = crate::mnx::Duration { base: "half".to_string(), dots: Some(1) };
-        let updated_dot = update_event_duration_in_yaml(&updated, 0, &dur_dotted_half).expect("Should update to dotted");
+        let dur_dotted_half = crate::mnx::Duration {
+            base: "half".to_string(),
+            dots: Some(1),
+        };
+        let updated_dot = update_event_duration_in_yaml(&updated, 0, &dur_dotted_half)
+            .expect("Should update to dotted");
         let doc_dot = serde_saphyr::from_str::<MnxDocument>(&updated_dot).expect("Should parse");
-        assert_eq!(doc_dot.parts[0].measures[0].sequences[0].content[0].duration.base, "half");
-        assert_eq!(doc_dot.parts[0].measures[0].sequences[0].content[0].duration.dots, Some(1));
+        assert_eq!(
+            doc_dot.parts[0].measures[0].sequences[0].content[0]
+                .duration
+                .base,
+            "half"
+        );
+        assert_eq!(
+            doc_dot.parts[0].measures[0].sequences[0].content[0]
+                .duration
+                .dots,
+            Some(1)
+        );
     }
 
     #[test]
@@ -2436,9 +1838,13 @@ parts:
         let yaml = include_str!("../example.yaml");
         let result = set_bpm_in_yaml(yaml, 140.0);
         println!("RESULT YAML:\n{}", &result[..result.len().min(400)]);
-        let doc = serde_saphyr::from_str::<MnxDocument>(&result).expect("Should parse after BPM insert");
+        let doc =
+            serde_saphyr::from_str::<MnxDocument>(&result).expect("Should parse after BPM insert");
         println!("DOC GLOBAL: {:?}", doc.global);
-        let bpm = doc.global.measures.iter()
+        let bpm = doc
+            .global
+            .measures
+            .iter()
             .flat_map(|m| m.directions.iter())
             .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
         assert_eq!(bpm, Some(140.0), "BPM should be 140 after insert");
@@ -2449,12 +1855,19 @@ parts:
         let yaml = include_str!("../example.yaml");
         let with_bpm = set_bpm_in_yaml(yaml, 140.0);
         let updated = set_bpm_in_yaml(&with_bpm, 200.0);
-        let doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Should parse after BPM update");
-        let bpm = doc.global.measures.iter()
+        let doc =
+            serde_saphyr::from_str::<MnxDocument>(&updated).expect("Should parse after BPM update");
+        let bpm = doc
+            .global
+            .measures
+            .iter()
             .flat_map(|m| m.directions.iter())
             .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
         assert_eq!(bpm, Some(200.0), "BPM should be updated to 200");
-        let tempo_count = doc.global.measures.iter()
+        let tempo_count = doc
+            .global
+            .measures
+            .iter()
             .flat_map(|m| m.directions.iter())
             .filter(|d| d.tempo.is_some())
             .count();

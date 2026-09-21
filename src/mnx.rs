@@ -1,25 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct MnxDocument {
     pub mnx: MnxMeta,
     pub global: Global,
     pub parts: Vec<Part>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct MnxMeta {
     pub version: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct Global {
     #[serde(default)]
     pub measures: Vec<GlobalMeasure>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct GlobalMeasure {
     #[serde(default)]
     pub time: Option<TimeSignature>,
@@ -27,12 +27,12 @@ pub struct GlobalMeasure {
     pub directions: Vec<Direction>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Direction {
     pub tempo: Option<Tempo>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Tempo {
     pub bpm: f64,
     pub value: Option<String>, // e.g. "quarter"
@@ -44,61 +44,61 @@ pub struct TimeSignature {
     pub unit: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Part {
     pub instrument: Option<Instrument>,
     pub measures: Vec<Measure>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Instrument {
     pub name: String,
     pub tuning: Option<Vec<StringTuning>>,
     pub capo: Option<u8>,
     #[serde(rename = "microFretDivisions")]
-    pub micro_fret_divisions: Option<u8>, 
+    pub micro_fret_divisions: Option<u8>,
     #[serde(rename = "fretStepMultiplier")]
     pub fret_step_multiplier: Option<u8>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct StringTuning {
     pub string: u8,
     pub pitch: Pitch,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Measure {
     pub sequences: Vec<Sequence>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Sequence {
     pub content: Vec<Event>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Event {
     pub duration: Duration,
     pub notes: Vec<Note>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Duration {
     pub base: String,
     #[serde(default)]
     pub dots: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Note {
     pub pitch: Pitch,
     pub string: Option<u8>,
     pub fret: Option<u8>,
-    pub accidental: Option<String>, 
+    pub accidental: Option<String>,
 }
 
-/// Allows `alter` to be parsed from YAML as either a raw float (0.632) 
+/// Allows `alter` to be parsed from YAML as either a raw float (0.632)
 /// or an EDO fraction string ('1\19').
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(untagged)]
@@ -138,7 +138,7 @@ impl fmt::Display for Alteration {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Pitch {
     pub step: String,
-    pub alter: Option<Alteration>, 
+    pub alter: Option<Alteration>,
     pub octave: i32,
 }
 
@@ -146,11 +146,17 @@ impl Pitch {
     #[allow(dead_code)]
     pub fn to_midi_note(&self) -> f64 {
         let step_val = match self.step.as_str() {
-            "C" => 0.0, "D" => 2.0, "E" => 4.0, "F" => 5.0, "G" => 7.0, "A" => 9.0, "B" => 11.0,
-            _ => 0.0, 
+            "C" => 0.0,
+            "D" => 2.0,
+            "E" => 4.0,
+            "F" => 5.0,
+            "G" => 7.0,
+            "A" => 9.0,
+            "B" => 11.0,
+            _ => 0.0,
         };
         let alter_val = self.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
-        
+
         ((self.octave + 1) as f64) * 12.0 + step_val + alter_val
     }
 }
@@ -163,7 +169,7 @@ impl Part {
                 }
             }
         }
-        
+
         let (step, octave) = match string {
             1 => ("E", 4),
             2 => ("B", 3),
@@ -173,7 +179,7 @@ impl Part {
             6 => ("E", 2),
             _ => return None,
         };
-        
+
         Some(Pitch {
             step: step.to_string(),
             alter: None,
@@ -186,13 +192,19 @@ impl Part {
     }
 
     pub fn edo(&self) -> u32 {
-        self.instrument.as_ref().and_then(|i| i.micro_fret_divisions).unwrap_or(12) as u32
+        self.instrument
+            .as_ref()
+            .and_then(|i| i.micro_fret_divisions)
+            .unwrap_or(12) as u32
     }
 
     pub fn step_multiplier(&self) -> i32 {
-        self.instrument.as_ref().and_then(|i| i.fret_step_multiplier).unwrap_or(1) as i32
+        self.instrument
+            .as_ref()
+            .and_then(|i| i.fret_step_multiplier)
+            .unwrap_or(1) as i32
     }
-    
+
     pub fn num_strings(&self) -> usize {
         self.instrument
             .as_ref()

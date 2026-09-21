@@ -2,8 +2,8 @@ use crate::mnx::MnxDocument;
 use crate::tuning_table::FretboardFrequencyTable;
 use crate::validate::duration_to_quarter_beats;
 use midly::{
-    num::{u15, u24, u28, u4, u7},
     Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
+    num::{u4, u7, u15, u24, u28},
 };
 use std::collections::HashMap;
 
@@ -54,12 +54,12 @@ pub fn calculate_pitch_bend(semitone_diff: f32, pb_range: u8) -> u16 {
 /// Send MPE Configuration Message (MCM) on Master Channel 1 (0-indexed channel 0)
 pub fn send_mpe_configuration(out_conn: &mut midir::MidiOutputConnection, member_channels: u8) {
     let messages = [
-        [0xB0, 101, 0],               // RPN MSB: 0
-        [0xB0, 100, 6],               // RPN LSB: 6 (MPE Configuration)
-        [0xB0, 6, member_channels],   // Data Entry MSB: number of member channels
-        [0xB0, 38, 0],                // Data Entry LSB: 0
-        [0xB0, 101, 127],             // Null RPN MSB
-        [0xB0, 100, 127],             // Null RPN LSB
+        [0xB0, 101, 0],             // RPN MSB: 0
+        [0xB0, 100, 6],             // RPN LSB: 6 (MPE Configuration)
+        [0xB0, 6, member_channels], // Data Entry MSB: number of member channels
+        [0xB0, 38, 0],              // Data Entry LSB: 0
+        [0xB0, 101, 127],           // Null RPN MSB
+        [0xB0, 100, 127],           // Null RPN LSB
     ];
     for msg in messages.iter() {
         let _ = out_conn.send(msg);
@@ -142,42 +142,60 @@ pub fn generate_playback_track(
                 time_ticks: 0,
                 kind: InternalEventKind::Midi {
                     channel: u4::from(0),
-                    message: MidiMessage::Controller { controller: u7::from(101), value: u7::from(0) },
+                    message: MidiMessage::Controller {
+                        controller: u7::from(101),
+                        value: u7::from(0),
+                    },
                 },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
                 kind: InternalEventKind::Midi {
                     channel: u4::from(0),
-                    message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(6) },
+                    message: MidiMessage::Controller {
+                        controller: u7::from(100),
+                        value: u7::from(6),
+                    },
                 },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
                 kind: InternalEventKind::Midi {
                     channel: u4::from(0),
-                    message: MidiMessage::Controller { controller: u7::from(6), value: u7::from(member_channels) },
+                    message: MidiMessage::Controller {
+                        controller: u7::from(6),
+                        value: u7::from(member_channels),
+                    },
                 },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
                 kind: InternalEventKind::Midi {
                     channel: u4::from(0),
-                    message: MidiMessage::Controller { controller: u7::from(38), value: u7::from(0) },
+                    message: MidiMessage::Controller {
+                        controller: u7::from(38),
+                        value: u7::from(0),
+                    },
                 },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
                 kind: InternalEventKind::Midi {
                     channel: u4::from(0),
-                    message: MidiMessage::Controller { controller: u7::from(101), value: u7::from(127) },
+                    message: MidiMessage::Controller {
+                        controller: u7::from(101),
+                        value: u7::from(127),
+                    },
                 },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
                 kind: InternalEventKind::Midi {
                     channel: u4::from(0),
-                    message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(127) },
+                    message: MidiMessage::Controller {
+                        controller: u7::from(100),
+                        value: u7::from(127),
+                    },
                 },
             });
         }
@@ -186,27 +204,63 @@ pub fn generate_playback_track(
         for &ch in options.string_to_channel.values() {
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
-                kind: InternalEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(101), value: u7::from(0) } }
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::Controller {
+                        controller: u7::from(101),
+                        value: u7::from(0),
+                    },
+                },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
-                kind: InternalEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(0) } }
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::Controller {
+                        controller: u7::from(100),
+                        value: u7::from(0),
+                    },
+                },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
-                kind: InternalEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(6), value: u7::from(options.pitch_bend_range.min(127)) } }
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::Controller {
+                        controller: u7::from(6),
+                        value: u7::from(options.pitch_bend_range.min(127)),
+                    },
+                },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
-                kind: InternalEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(38), value: u7::from(0) } }
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::Controller {
+                        controller: u7::from(38),
+                        value: u7::from(0),
+                    },
+                },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
-                kind: InternalEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(101), value: u7::from(127) } }
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::Controller {
+                        controller: u7::from(101),
+                        value: u7::from(127),
+                    },
+                },
             });
             abs_events.push(InternalAbsoluteEvent {
                 time_ticks: 0,
-                kind: InternalEventKind::Midi { channel: ch, message: MidiMessage::Controller { controller: u7::from(100), value: u7::from(127) } }
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::Controller {
+                        controller: u7::from(100),
+                        value: u7::from(127),
+                    },
+                },
             });
         }
 
@@ -261,14 +315,22 @@ pub fn generate_playback_track(
                                 } else {
                                     u4::from((string - 1) % 16)
                                 };
-                                let channel = options.string_to_channel.get(&string).copied().unwrap_or(default_ch);
+                                let channel = options
+                                    .string_to_channel
+                                    .get(&string)
+                                    .copied()
+                                    .unwrap_or(default_ch);
 
                                 if let Some(pos_state) = freq_table.get(string, fret) {
                                     let midi_note_frac = pos_state.midi_note_number;
                                     let base_note = midi_note_frac.round() as u8;
-                                    let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+                                    let semitone_diff =
+                                        (midi_note_frac - (base_note as f64)) as f32;
 
-                                    let pitch_bend_val = calculate_pitch_bend(semitone_diff, options.pitch_bend_range);
+                                    let pitch_bend_val = calculate_pitch_bend(
+                                        semitone_diff,
+                                        options.pitch_bend_range,
+                                    );
 
                                     // Pitch Bend
                                     abs_events.push(InternalAbsoluteEvent {
@@ -276,7 +338,9 @@ pub fn generate_playback_track(
                                         kind: InternalEventKind::Midi {
                                             channel,
                                             message: MidiMessage::PitchBend {
-                                                bend: midly::PitchBend(midly::num::u14::from(pitch_bend_val)),
+                                                bend: midly::PitchBend(midly::num::u14::from(
+                                                    pitch_bend_val,
+                                                )),
                                             },
                                         },
                                     });
@@ -328,7 +392,9 @@ pub fn generate_playback_track(
         last_time = abs_e.time_ticks;
         let kind = match abs_e.kind {
             InternalEventKind::Tempo(t) => PlaybackEventKind::Tempo(t),
-            InternalEventKind::Midi { channel, message } => PlaybackEventKind::Midi { channel, message },
+            InternalEventKind::Midi { channel, message } => {
+                PlaybackEventKind::Midi { channel, message }
+            }
             InternalEventKind::EventMarker(idx) => PlaybackEventKind::EventMarker(idx),
         };
         playback_events.push(PlaybackEvent {
@@ -479,17 +545,17 @@ impl MidiPlayer {
         if !self.is_playing() {
             return None;
         }
-        let val = self.current_event.load(std::sync::atomic::Ordering::Relaxed);
-        if val >= 0 {
-            Some(val as usize)
-        } else {
-            None
-        }
+        let val = self
+            .current_event
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if val >= 0 { Some(val as usize) } else { None }
     }
 
     pub fn stop(&mut self) {
-        self.stop_signal.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.current_event.store(-1, std::sync::atomic::Ordering::Relaxed);
+        self.stop_signal
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.current_event
+            .store(-1, std::sync::atomic::Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -508,9 +574,12 @@ impl MidiPlayer {
         let midi_out = midir::MidiOutput::new("mnx_tab_cli_player")
             .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
         let ports = midi_out.ports();
-        let port = ports.get(port_index).ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
+        let port = ports
+            .get(port_index)
+            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
 
-        let mut conn_out = midi_out.connect(port, "mnx_playback")
+        let mut conn_out = midi_out
+            .connect(port, "mnx_playback")
             .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
 
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -559,7 +628,8 @@ impl MidiPlayer {
                         }
                     }
                     PlaybackEventKind::EventMarker(idx) => {
-                        current_event_tracker.store(idx as i64, std::sync::atomic::Ordering::Relaxed);
+                        current_event_tracker
+                            .store(idx as i64, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -577,7 +647,6 @@ impl MidiPlayer {
         self.handle = Some(handle);
         Ok(())
     }
-
 
     pub fn play_preview(
         &mut self,
@@ -597,9 +666,12 @@ impl MidiPlayer {
         let midi_out = midir::MidiOutput::new("mnx_tab_cli_preview")
             .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
         let ports = midi_out.ports();
-        let port = ports.get(port_index).ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
+        let port = ports
+            .get(port_index)
+            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
 
-        let mut conn_out = midi_out.connect(port, "mnx_preview")
+        let mut conn_out = midi_out
+            .connect(port, "mnx_preview")
             .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
 
         if is_mpe {
@@ -680,7 +752,7 @@ impl MidiPlayer {
 mod tests {
     use super::*;
     use crate::mnx::MnxDocument;
-    
+
     #[test]
     fn test_generate_midi_output() {
         let yaml = include_str!("../example.yaml");
@@ -688,9 +760,20 @@ mod tests {
         let smf = generate_midi(&doc, MidiOptions::default());
         assert_eq!(smf.tracks.len(), 1);
         let track = &smf.tracks[0];
-        
-        let has_pitch_bend = track.iter().any(|ev| matches!(ev.kind, TrackEventKind::Midi { message: MidiMessage::PitchBend { .. }, .. }));
-        assert!(has_pitch_bend, "Should generate pitch bend events for microtonal tuning");
+
+        let has_pitch_bend = track.iter().any(|ev| {
+            matches!(
+                ev.kind,
+                TrackEventKind::Midi {
+                    message: MidiMessage::PitchBend { .. },
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_pitch_bend,
+            "Should generate pitch bend events for microtonal tuning"
+        );
     }
 
     #[test]
@@ -732,7 +815,10 @@ mod tests {
             }
             false
         });
-        assert!(has_mpe_config, "MPE track must include MPE Configuration Message (RPN 6) on Master Channel 1");
+        assert!(
+            has_mpe_config,
+            "MPE track must include MPE Configuration Message (RPN 6) on Master Channel 1"
+        );
 
         // Verify member channels use pitch bend sensitivity of 48: CC 6 = 48
         let has_pb_range_48 = track.iter().any(|ev| {
@@ -745,7 +831,10 @@ mod tests {
             }
             false
         });
-        assert!(has_pb_range_48, "MPE member channels must have pitch bend range set to 48");
+        assert!(
+            has_pb_range_48,
+            "MPE member channels must have pitch bend range set to 48"
+        );
 
         // Verify notes are assigned to MPE member channels (Channels 1..8, i.e. MIDI channels 2..9)
         let member_note_on_found = track.iter().any(|ev| {
@@ -756,20 +845,31 @@ mod tests {
             }
             false
         });
-        assert!(member_note_on_found, "NoteOn events must be sent on MPE member channels (>= 1)");
+        assert!(
+            member_note_on_found,
+            "NoteOn events must be sent on MPE member channels (>= 1)"
+        );
     }
 
     #[test]
     fn test_serialize_midi_message() {
-        let note_on = MidiMessage::NoteOn { key: midly::num::u7::from(60), vel: midly::num::u7::from(100) };
+        let note_on = MidiMessage::NoteOn {
+            key: midly::num::u7::from(60),
+            vel: midly::num::u7::from(100),
+        };
         let bytes = serialize_midi_message(midly::num::u4::from(2), &note_on);
         assert_eq!(bytes, vec![0x92, 60, 100]);
 
-        let note_off = MidiMessage::NoteOff { key: midly::num::u7::from(60), vel: midly::num::u7::from(64) };
+        let note_off = MidiMessage::NoteOff {
+            key: midly::num::u7::from(60),
+            vel: midly::num::u7::from(64),
+        };
         let bytes_off = serialize_midi_message(midly::num::u4::from(0), &note_off);
         assert_eq!(bytes_off, vec![0x80, 60, 64]);
 
-        let pb = MidiMessage::PitchBend { bend: midly::PitchBend(midly::num::u14::from(8192)) };
+        let pb = MidiMessage::PitchBend {
+            bend: midly::PitchBend(midly::num::u14::from(8192)),
+        };
         let bytes_pb = serialize_midi_message(midly::num::u4::from(5), &pb);
         assert_eq!(bytes_pb, vec![0xE5, 0x00, 0x40]);
     }
@@ -785,17 +885,45 @@ mod tests {
         let yaml = include_str!("../example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let full_smf = generate_midi(&doc, MidiOptions::default());
-        let full_note_ons = full_smf.tracks[0].iter().filter(|ev| matches!(ev.kind, TrackEventKind::Midi { message: MidiMessage::NoteOn { .. }, .. })).count();
+        let full_note_ons = full_smf.tracks[0]
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev.kind,
+                    TrackEventKind::Midi {
+                        message: MidiMessage::NoteOn { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
 
         let partial_options = MidiOptions {
             start_event_idx: Some(1),
             ..Default::default()
         };
         let partial_smf = generate_midi(&doc, partial_options);
-        let partial_note_ons = partial_smf.tracks[0].iter().filter(|ev| matches!(ev.kind, TrackEventKind::Midi { message: MidiMessage::NoteOn { .. }, .. })).count();
+        let partial_note_ons = partial_smf.tracks[0]
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev.kind,
+                    TrackEventKind::Midi {
+                        message: MidiMessage::NoteOn { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
 
-        assert!(partial_note_ons < full_note_ons, "Partial playback should have fewer NoteOn events");
-        assert!(partial_note_ons > 0, "Partial playback should have remaining NoteOn events");
+        assert!(
+            partial_note_ons < full_note_ons,
+            "Partial playback should have fewer NoteOn events"
+        );
+        assert!(
+            partial_note_ons > 0,
+            "Partial playback should have remaining NoteOn events"
+        );
     }
 
     #[test]
@@ -805,16 +933,22 @@ mod tests {
         let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
         assert_eq!(ppq, 480.0);
 
-        let markers: Vec<usize> = track.iter().filter_map(|ev| {
-            if let PlaybackEventKind::EventMarker(idx) = ev.kind {
-                Some(idx)
-            } else {
-                None
-            }
-        }).collect();
+        let markers: Vec<usize> = track
+            .iter()
+            .filter_map(|ev| {
+                if let PlaybackEventKind::EventMarker(idx) = ev.kind {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         // example.yaml has 2 measures of notes
-        assert!(!markers.is_empty(), "Playback track must contain score event markers");
+        assert!(
+            !markers.is_empty(),
+            "Playback track must contain score event markers"
+        );
         assert_eq!(markers[0], 0, "First marker must be event 0");
         // Verify monotonically increasing event indices 0, 1, 2, ...
         for (i, &m) in markers.iter().enumerate() {
@@ -833,27 +967,47 @@ mod tests {
         };
         let (track, _) = generate_playback_track(&doc, options);
 
-        let markers: Vec<usize> = track.iter().filter_map(|ev| {
-            if let PlaybackEventKind::EventMarker(idx) = ev.kind {
-                Some(idx)
-            } else {
-                None
-            }
-        }).collect();
+        let markers: Vec<usize> = track
+            .iter()
+            .filter_map(|ev| {
+                if let PlaybackEventKind::EventMarker(idx) = ev.kind {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         assert!(!markers.is_empty());
-        assert_eq!(markers[0], 3, "First event marker must be the requested start_event_idx");
+        assert_eq!(
+            markers[0], 3,
+            "First event marker must be the requested start_event_idx"
+        );
 
         // The first playback event (or marker) for event 3 must start at delta 0
-        let first_marker_event = track.iter().find(|ev| matches!(ev.kind, PlaybackEventKind::EventMarker(3))).unwrap();
-        assert_eq!(first_marker_event.delta_ticks, 0, "First note/marker of partial playback must start at tick 0");
+        let first_marker_event = track
+            .iter()
+            .find(|ev| matches!(ev.kind, PlaybackEventKind::EventMarker(3)))
+            .unwrap();
+        assert_eq!(
+            first_marker_event.delta_ticks, 0,
+            "First note/marker of partial playback must start at tick 0"
+        );
 
         // Subsequent markers must have non-zero total delta advance
         if markers.len() > 1 {
-            let second_marker_idx = track.iter().position(|ev| matches!(ev.kind, PlaybackEventKind::EventMarker(4))).unwrap();
-            let accumulated_ticks: u32 = track[..=second_marker_idx].iter().map(|ev| ev.delta_ticks).sum();
-            assert!(accumulated_ticks > 0, "Subsequent events must have positive accumulated delta ticks");
+            let second_marker_idx = track
+                .iter()
+                .position(|ev| matches!(ev.kind, PlaybackEventKind::EventMarker(4)))
+                .unwrap();
+            let accumulated_ticks: u32 = track[..=second_marker_idx]
+                .iter()
+                .map(|ev| ev.delta_ticks)
+                .sum();
+            assert!(
+                accumulated_ticks > 0,
+                "Subsequent events must have positive accumulated delta ticks"
+            );
         }
     }
 }
-

@@ -1,5 +1,5 @@
-use crate::mnx::{Duration, MnxDocument, TimeSignature};
 use crate::edo::EdoTuning;
+use crate::mnx::{Duration, MnxDocument, TimeSignature};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,7 +15,9 @@ pub struct ValidationError {
 pub fn duration_to_quarter_beats(duration: &Duration) -> f64 {
     let base_str = duration.base.trim().to_lowercase();
     let is_string_dotted = base_str.contains("dotted") || base_str.contains('.');
-    let dot_count = duration.dots.unwrap_or(if is_string_dotted { 1 } else { 0 });
+    let dot_count = duration
+        .dots
+        .unwrap_or(if is_string_dotted { 1 } else { 0 });
 
     let raw_beats = if base_str.contains("breve") || base_str.contains("double-whole") {
         8.0
@@ -23,9 +25,17 @@ pub fn duration_to_quarter_beats(duration: &Duration) -> f64 {
         4.0
     } else if base_str.contains("half") || base_str == "1/2" {
         2.0
-    } else if base_str.contains("32nd") || base_str.contains("thirtysecond") || base_str.contains("thirty-second") || base_str == "1/32" {
+    } else if base_str.contains("32nd")
+        || base_str.contains("thirtysecond")
+        || base_str.contains("thirty-second")
+        || base_str == "1/32"
+    {
         0.125
-    } else if base_str.contains("64th") || base_str.contains("sixtyfourth") || base_str.contains("sixty-fourth") || base_str == "1/64" {
+    } else if base_str.contains("64th")
+        || base_str.contains("sixtyfourth")
+        || base_str.contains("sixty-fourth")
+        || base_str == "1/64"
+    {
         0.0625
     } else if base_str.contains("16th") || base_str.contains("sixteenth") || base_str == "1/16" {
         0.25
@@ -78,7 +88,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
         let capo_fret = part.capo_fret();
         let edo = part.edo();
         let step_multiplier = part.step_multiplier();
-        
+
         let tuning_calc = EdoTuning::new(edo);
         let num_measures = part.measures.len();
 
@@ -89,7 +99,11 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
 
             for seq in &measure.sequences {
                 // Validate sequence total duration against measure time signature
-                let total_beats: f64 = seq.content.iter().map(|event| duration_to_quarter_beats(&event.duration)).sum();
+                let total_beats: f64 = seq
+                    .content
+                    .iter()
+                    .map(|event| duration_to_quarter_beats(&event.duration))
+                    .sum();
 
                 // Final measure exception: allowed to be under-capacity while writing,
                 // but still flags errors if it overflows the measure.
@@ -128,12 +142,11 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                 }
 
                 // Note-level geometry and concurrency checks
-                for (e_idx, event) in seq.content.iter().enumerate() { 
+                for (e_idx, event) in seq.content.iter().enumerate() {
                     let mut active_strings = HashSet::new();
 
                     for note in &event.notes {
                         if let (Some(string), Some(fret)) = (note.string, note.fret) {
-                            
                             if !active_strings.insert(string) {
                                 errors.push(ValidationError {
                                     measure_idx: m_idx + 1,
@@ -146,16 +159,22 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
 
                             if let Some(string_pitch) = part.get_string_tuning(string) {
                                 let string_base = tuning_calc.pitch_to_steps(&string_pitch);
-                                
+
                                 let physical_capo_steps = (capo_fret as i32) * step_multiplier;
                                 let physical_fret_steps = (fret as i32) * step_multiplier;
-                                let played_steps = string_base + physical_capo_steps + physical_fret_steps;
+                                let played_steps =
+                                    string_base + physical_capo_steps + physical_fret_steps;
 
                                 let expected_steps = tuning_calc.pitch_to_steps(&note.pitch);
 
                                 if played_steps != expected_steps {
-                                    let alter_str = note.pitch.alter.as_ref().map(|a| format!(" alter {}", a)).unwrap_or_default();
-                                    
+                                    let alter_str = note
+                                        .pitch
+                                        .alter
+                                        .as_ref()
+                                        .map(|a| format!(" alter {}", a))
+                                        .unwrap_or_default();
+
                                     errors.push(ValidationError {
                                         measure_idx: m_idx + 1,
                                         event_idx: e_idx,
@@ -165,9 +184,14 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                             "Geometry mismatch on String {} Fret {}. \
                                             Physically produces step {} in {}-EDO. \
                                             MNX data expects {}{}{} (step {}).",
-                                            string, fret, 
-                                            played_steps, edo,
-                                            note.pitch.step, note.pitch.octave, alter_str, expected_steps
+                                            string,
+                                            fret,
+                                            played_steps,
+                                            edo,
+                                            note.pitch.step,
+                                            note.pitch.octave,
+                                            alter_str,
+                                            expected_steps
                                         ),
                                     });
                                 }
@@ -177,7 +201,10 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                     event_idx: e_idx,
                                     string,
                                     fret,
-                                    message: format!("Note placed on string {}, but no tuning is defined.", string),
+                                    message: format!(
+                                        "Note placed on string {}, but no tuning is defined.",
+                                        string
+                                    ),
                                 });
                             }
                         }
@@ -195,15 +222,69 @@ mod tests {
 
     #[test]
     fn test_duration_to_quarter_beats() {
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "whole".to_string(), dots: None }), 4.0);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "half".to_string(), dots: None }), 2.0);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "quarter".to_string(), dots: None }), 1.0);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "eighth".to_string(), dots: None }), 0.5);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "sixteenth".to_string(), dots: None }), 0.25);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "32nd".to_string(), dots: None }), 0.125);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "dotted-quarter".to_string(), dots: None }), 1.5);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "quarter".to_string(), dots: Some(1) }), 1.5);
-        assert_eq!(duration_to_quarter_beats(&Duration { base: "quarter".to_string(), dots: Some(2) }), 1.75);
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "whole".to_string(),
+                dots: None
+            }),
+            4.0
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "half".to_string(),
+                dots: None
+            }),
+            2.0
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "quarter".to_string(),
+                dots: None
+            }),
+            1.0
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "eighth".to_string(),
+                dots: None
+            }),
+            0.5
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "sixteenth".to_string(),
+                dots: None
+            }),
+            0.25
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "32nd".to_string(),
+                dots: None
+            }),
+            0.125
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "dotted-quarter".to_string(),
+                dots: None
+            }),
+            1.5
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "quarter".to_string(),
+                dots: Some(1)
+            }),
+            1.5
+        );
+        assert_eq!(
+            duration_to_quarter_beats(&Duration {
+                base: "quarter".to_string(),
+                dots: Some(2)
+            }),
+            1.75
+        );
     }
 
     #[test]

@@ -67,7 +67,7 @@ pub struct FretboardFrequencyTable {
 
 impl FretboardFrequencyTable {
     /// Builds the fretboard frequency state table from a `Part` and a `ReferencePitch` across frets `0..=max_fret`.
-    /// 
+    ///
     /// Inputs leveraged from `part.instrument`:
     /// - `microFretDivisions` (`part.edo()`)
     /// - `fretStepMultiplier` (`part.step_multiplier()`)
@@ -90,12 +90,14 @@ impl FretboardFrequencyTable {
                 for fret in 0..=max_fret {
                     let physical_capo_steps = (capo as i32) * step_multiplier;
                     let physical_fret_steps = (fret as i32) * step_multiplier;
-                    let played_steps = string_base_steps + physical_capo_steps + physical_fret_steps;
+                    let played_steps =
+                        string_base_steps + physical_capo_steps + physical_fret_steps;
 
                     // Standard EDO frequency math:
                     // f = f_ref * 2 ^ ((played_steps - ref_steps) / edo)
                     let step_delta = (played_steps - ref_steps) as f64;
-                    let frequency_hz = reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (edo as f64));
+                    let frequency_hz =
+                        reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (edo as f64));
 
                     // MIDI continuous note number based on 12-TET A440 (where A4 = 440 Hz = MIDI 69)
                     let midi_note_number = 69.0 + 12.0 * (frequency_hz / 440.0).log2();
@@ -185,22 +187,47 @@ parts:
 
         // A4 is String 1 (E4) Fret 5
         let a4_state = table.get(1, 5).expect("String 1 Fret 5 should exist");
-        assert!((a4_state.frequency_hz - 440.0).abs() < 1e-4, "A4 should be 440 Hz, got {}", a4_state.frequency_hz);
-        assert!((a4_state.midi_note_number - 69.0).abs() < 1e-4, "A4 should be MIDI 69");
+        assert!(
+            (a4_state.frequency_hz - 440.0).abs() < 1e-4,
+            "A4 should be 440 Hz, got {}",
+            a4_state.frequency_hz
+        );
+        assert!(
+            (a4_state.midi_note_number - 69.0).abs() < 1e-4,
+            "A4 should be MIDI 69"
+        );
 
         // Open string 1 E4 is ~329.6276 Hz (MIDI 64)
         let e4_state = table.get(1, 0).expect("String 1 Fret 0 should exist");
-        assert!((e4_state.frequency_hz - 329.6276).abs() < 0.01, "E4 should be ~329.63 Hz, got {}", e4_state.frequency_hz);
-        assert!((e4_state.midi_note_number - 64.0).abs() < 1e-4, "E4 should be MIDI 64");
+        assert!(
+            (e4_state.frequency_hz - 329.6276).abs() < 0.01,
+            "E4 should be ~329.63 Hz, got {}",
+            e4_state.frequency_hz
+        );
+        assert!(
+            (e4_state.midi_note_number - 64.0).abs() < 1e-4,
+            "E4 should be MIDI 64"
+        );
 
         // String 5 Open is A2 = 110 Hz (MIDI 45)
         let a2_state = table.get(5, 0).expect("String 5 Fret 0 should exist");
-        assert!((a2_state.frequency_hz - 110.0).abs() < 1e-4, "A2 should be 110 Hz, got {}", a2_state.frequency_hz);
-        assert!((a2_state.midi_note_number - 45.0).abs() < 1e-4, "A2 should be MIDI 45");
+        assert!(
+            (a2_state.frequency_hz - 110.0).abs() < 1e-4,
+            "A2 should be 110 Hz, got {}",
+            a2_state.frequency_hz
+        );
+        assert!(
+            (a2_state.midi_note_number - 45.0).abs() < 1e-4,
+            "A2 should be MIDI 45"
+        );
 
         // String 5 Fret 12 is A3 = 220 Hz (MIDI 57)
         let a3_state = table.get(5, 12).expect("String 5 Fret 12 should exist");
-        assert!((a3_state.frequency_hz - 220.0).abs() < 1e-4, "A3 should be 220 Hz, got {}", a3_state.frequency_hz);
+        assert!(
+            (a3_state.frequency_hz - 220.0).abs() < 1e-4,
+            "A3 should be 220 Hz, got {}",
+            a3_state.frequency_hz
+        );
     }
 
     #[test]
@@ -249,10 +276,14 @@ parts:
 "#;
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let part = &doc.parts[0];
-        
+
         // Use custom reference frequency: A4 = 432 Hz
         let ref_pitch = ReferencePitch {
-            pitch: Pitch { step: "A".to_string(), alter: None, octave: 4 },
+            pitch: Pitch {
+                step: "A".to_string(),
+                alter: None,
+                octave: 4,
+            },
             frequency_hz: 432.0,
         };
         let table = FretboardFrequencyTable::from_part(part, ref_pitch, 12);
@@ -267,4 +298,3 @@ parts:
         assert_eq!(s5_f0.pitch.octave, 2);
     }
 }
-

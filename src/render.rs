@@ -63,7 +63,7 @@ fn draw_time_signature(
 
     let width = num_galley.size().x.max(den_galley.size().x);
     // offset from the true center by a small pad
-    let center_pad = font_size/4.0+0.25;
+    let center_pad = font_size / 4.0 + 0.25;
 
     // Numerator: bottom sits at center minus small pad
     painter.text(
@@ -103,11 +103,11 @@ impl Rhythm {
     #[allow(dead_code)]
     fn beats(self) -> f64 {
         match self {
-            Rhythm::Whole        => 4.0,
-            Rhythm::Half         => 2.0,
-            Rhythm::Quarter      => 1.0,
-            Rhythm::Eighth       => 0.5,
-            Rhythm::Sixteenth    => 0.25,
+            Rhythm::Whole => 4.0,
+            Rhythm::Half => 2.0,
+            Rhythm::Quarter => 1.0,
+            Rhythm::Eighth => 0.5,
+            Rhythm::Sixteenth => 0.25,
             Rhythm::ThirtySecond => 0.125,
         }
     }
@@ -116,8 +116,8 @@ impl Rhythm {
     fn flag_count(self) -> usize {
         match self {
             Rhythm::Whole | Rhythm::Half | Rhythm::Quarter => 0,
-            Rhythm::Eighth       => 1,
-            Rhythm::Sixteenth    => 2,
+            Rhythm::Eighth => 1,
+            Rhythm::Sixteenth => 2,
             Rhythm::ThirtySecond => 3,
         }
     }
@@ -127,13 +127,19 @@ fn parse_rhythm(base: &str) -> (Rhythm, bool) {
     let s = base.to_lowercase();
     // dotted: the spec might say "dotted-quarter" or similar
     let is_dotted = s.contains("dotted") || s.contains('.');
-    let r = if s.contains("whole")         { Rhythm::Whole }
-       else if s.contains("half")          { Rhythm::Half }
-       else if s.contains("32nd") || s.contains("thirtysecond") { Rhythm::ThirtySecond }
-       else if s.contains("16th") || s.contains("sixteenth")    { Rhythm::Sixteenth }
-       else if s.contains("eighth")        { Rhythm::Eighth }
-       else if s.contains("quarter")       { Rhythm::Quarter }
-       else                                { Rhythm::Quarter };
+    let r = if s.contains("whole") {
+        Rhythm::Whole
+    } else if s.contains("half") {
+        Rhythm::Half
+    } else if s.contains("32nd") || s.contains("thirtysecond") {
+        Rhythm::ThirtySecond
+    } else if s.contains("16th") || s.contains("sixteenth") {
+        Rhythm::Sixteenth
+    } else if s.contains("eighth") {
+        Rhythm::Eighth
+    } else {
+        Rhythm::Quarter
+    };
     (r, is_dotted)
 }
 
@@ -148,17 +154,30 @@ struct RhythmNote {
 
 // ── Main draw function ────────────────────────────────────────────────────────
 
+pub struct TablatureOptions<'a> {
+    pub part: &'a Part,
+    pub global: Option<&'a Global>,
+    pub errors: &'a [ValidationError],
+    pub selected_event: Option<usize>,
+    pub selected_note_in_event: Option<usize>,
+    pub is_editing_fret: bool,
+    pub editing_fret_text: &'a str,
+    pub editing_string: Option<u8>,
+}
+
 pub fn draw_tablature(
     ui: &mut egui::Ui,
-    part: &Part,
-    global: Option<&Global>,
-    errors: &[ValidationError],
-    selected_event: Option<usize>,
-    selected_note_in_event: Option<usize>,
-    is_editing_fret: bool,
-    editing_fret_text: &str,
-    editing_string: Option<u8>,
+    opts: TablatureOptions<'_>,
 ) -> (egui::Response, Option<(usize, Option<usize>)>, bool) {
+    let part = opts.part;
+    let global = opts.global;
+    let errors = opts.errors;
+    let selected_event = opts.selected_event;
+    let selected_note_in_event = opts.selected_note_in_event;
+    let is_editing_fret = opts.is_editing_fret;
+    let editing_fret_text = opts.editing_fret_text;
+    let editing_string = opts.editing_string;
+
     let num_strings = part.num_strings();
     if num_strings == 0 {
         return (ui.label("No strings found."), None, false);
@@ -166,17 +185,17 @@ pub fn draw_tablature(
 
     // ── Layout constants ─────────────────────────────────────────────────────
 
-    let line_spacing   = 24.0_f32;  // vertical gap between string lines
-    let event_spacing  = 30.0_f32;  // horizontal gap between events
-    let measure_spacing= 20.0_f32;  // extra gap after a bar line
-    let margin_left    = 10.0_f32;
-    let label_gap      =  8.0_f32;
-    let first_bar_pad  = 25.0_f32;  // breathing room after the opening barline
+    let line_spacing = 24.0_f32; // vertical gap between string lines
+    let event_spacing = 30.0_f32; // horizontal gap between events
+    let measure_spacing = 20.0_f32; // extra gap after a bar line
+    let margin_left = 10.0_f32;
+    let label_gap = 8.0_f32;
+    let first_bar_pad = 25.0_f32; // breathing room after the opening barline
 
     // Rhythm row sits below the staff
-    let rhythm_gap     = 14.0_f32;  // gap between last string line and stem top
-    let stem_height    = 22.0_f32;
-    let flag_spacing   =  4.5_f32;  // vertical distance between flags
+    let rhythm_gap = 14.0_f32; // gap between last string line and stem top
+    let stem_height = 22.0_f32;
+    let flag_spacing = 4.5_f32; // vertical distance between flags
 
     // ── Font ─────────────────────────────────────────────────────────────────
 
@@ -185,12 +204,12 @@ pub fn draw_tablature(
     // ── String labels ────────────────────────────────────────────────────────
 
     let mut prefixes: Vec<String> = (1..=num_strings).map(|i| i.to_string()).collect();
-    if let Some(inst) = &part.instrument {
-        if let Some(tuning) = &inst.tuning {
-            for t in tuning {
-                if t.string >= 1 && (t.string as usize) <= num_strings {
-                    prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch);
-                }
+    if let Some(inst) = &part.instrument
+        && let Some(tuning) = &inst.tuning
+    {
+        for t in tuning {
+            if t.string >= 1 && (t.string as usize) <= num_strings {
+                prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch);
             }
         }
     }
@@ -219,30 +238,32 @@ pub fn draw_tablature(
     let mut num_rendered_time_sigs = 0;
     let mut current_ts_check: Option<TimeSignature> = None;
     for m_idx in 0..part.measures.len() {
-        let m_ts = global.and_then(|g| g.measures.get(m_idx)).and_then(|m| m.time);
+        let m_ts = global
+            .and_then(|g| g.measures.get(m_idx))
+            .and_then(|m| m.time);
         if m_idx == 0 {
             if let Some(ts) = m_ts {
                 num_rendered_time_sigs += 1;
                 current_ts_check = Some(ts);
             }
-        } else if let Some(ts) = m_ts {
-            if current_ts_check != Some(ts) {
-                num_rendered_time_sigs += 1;
-                current_ts_check = Some(ts);
-            }
+        } else if let Some(ts) = m_ts
+            && current_ts_check != Some(ts)
+        {
+            num_rendered_time_sigs += 1;
+            current_ts_check = Some(ts);
         }
     }
 
     // ── Canvas size ───────────────────────────────────────────────────────────
 
     let first_barline_offset = margin_left + max_prefix_width + label_gap;
-    let start_offset_x       = first_barline_offset + first_bar_pad;
+    let start_offset_x = first_barline_offset + first_bar_pad;
 
-    let staff_height   = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
-    let rhythm_row_h   = rhythm_gap + stem_height + 10.0;                 // stem + flags/dots + pad
-    let top_pad        = 48.0_f32;                                         // room for name + EDO label
-    let total_height   = top_pad + staff_height + rhythm_row_h + 10.0;     // top pad + staff + rhythm + bottom pad
-    let total_width    = start_offset_x
+    let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
+    let rhythm_row_h = rhythm_gap + stem_height + 10.0; // stem + flags/dots + pad
+    let top_pad = 48.0_f32; // room for name + EDO label
+    let total_height = top_pad + staff_height + rhythm_row_h + 10.0; // top pad + staff + rhythm + bottom pad
+    let total_width = start_offset_x
         + (total_events as f32) * event_spacing
         + (part.measures.len() as f32) * measure_spacing
         + (num_rendered_time_sigs as f32) * 45.0
@@ -250,21 +271,19 @@ pub fn draw_tablature(
 
     // ── Allocate painter ──────────────────────────────────────────────────────
 
-    let (response, painter) = ui.allocate_painter(
-        Vec2::new(total_width, total_height),
-        egui::Sense::click(),
-    );
+    let (response, painter) =
+        ui.allocate_painter(Vec2::new(total_width, total_height), egui::Sense::click());
     let rect = response.rect;
 
     let first_barline_x = rect.min.x + first_barline_offset;
-    let label_x         = first_barline_x - label_gap;
+    let label_x = first_barline_x - label_gap;
 
     // ── Instrument name + EDO header ──────────────────────────────────────────
 
     if let Some(inst) = &part.instrument {
         let header_x = rect.min.x + margin_left;
-        let name_y   = rect.min.y + 14.0;
-        let edo_y    = rect.min.y + 32.0;
+        let name_y = rect.min.y + 14.0;
+        let edo_y = rect.min.y + 32.0;
 
         // Bold instrument name
         painter.text(
@@ -280,7 +299,7 @@ pub fn draw_tablature(
             painter.text(
                 Pos2::new(header_x, edo_y),
                 egui::Align2::LEFT_CENTER,
-                &format!("{} EDO", divisions),
+                format!("{} EDO", divisions),
                 FontId::new(15.0, egui::FontFamily::Proportional),
                 Color32::from_gray(160),
             );
@@ -295,7 +314,10 @@ pub fn draw_tablature(
         string_y_coords.push(y);
 
         painter.line_segment(
-            [Pos2::new(first_barline_x, y), Pos2::new(rect.max.x - 10.0, y)],
+            [
+                Pos2::new(first_barline_x, y),
+                Pos2::new(rect.max.x - 10.0, y),
+            ],
             Stroke::new(1.0, Color32::from_gray(100)),
         );
 
@@ -310,8 +332,8 @@ pub fn draw_tablature(
 
     // The bottom of the last string line — rhythms sit below here.
     let last_string_y = *string_y_coords.last().unwrap();
-    let stem_top_y    = last_string_y + rhythm_gap;
-    let stem_bot_y    = stem_top_y + stem_height;
+    let stem_top_y = last_string_y + rhythm_gap;
+    let stem_bot_y = stem_top_y + stem_height;
 
     // ── Error coordinate set ──────────────────────────────────────────────────
 
@@ -331,10 +353,10 @@ pub fn draw_tablature(
         Stroke::new(2.0, Color32::from_gray(150)),
     );
 
-    let bg_color        = ui.visuals().panel_fill;
-    let note_color      = ui.visuals().text_color();
+    let bg_color = ui.visuals().panel_fill;
+    let note_color = ui.visuals().text_color();
     let highlight_color = Color32::from_rgb(100, 180, 255); // Light blue
-    let edit_color      = Color32::from_rgb(255, 175, 75);  // Light orange
+    let edit_color = Color32::from_rgb(255, 175, 75); // Light orange
 
     let mut current_x = first_barline_x;
     let mut current_time_sig: Option<TimeSignature> = None;
@@ -360,7 +382,8 @@ pub fn draw_tablature(
     // Collect rhythm notes so we can do beam-grouping after the main loop.
     let mut rhythm_notes: Vec<RhythmNote> = Vec::new();
     // Hit boxes for each event: (fret_rects: Vec<(Rect, usize)>, stem_rect, col_rect)
-    let mut event_hit_boxes: Vec<(Vec<(Rect, usize)>, Rect, Rect)> = Vec::new();
+    type HitBoxInfo = (Vec<(Rect, usize)>, Rect, Rect);
+    let mut event_hit_boxes: Vec<HitBoxInfo> = Vec::new();
 
     let mut flat_event_idx = 0;
 
@@ -403,8 +426,7 @@ pub fn draw_tablature(
                     let y = string_y_coords[i];
 
                     if let Some((fret, n_idx)) = step_frets[i] {
-                        let is_err =
-                            error_coords.contains(&(m_idx + 1, e_idx, string_num, fret));
+                        let is_err = error_coords.contains(&(m_idx + 1, e_idx, string_num, fret));
                         let is_this_string_editing =
                             is_selected && is_editing_fret && editing_string == Some(string_num);
                         let is_this_note_selected = !is_editing_fret
@@ -430,11 +452,10 @@ pub fn draw_tablature(
                             fret.to_string()
                         };
 
-                        let galley = painter.layout_no_wrap(display_text, font_id.clone(), text_color);
-                        let text_rect = Rect::from_center_size(
-                            Pos2::new(current_x, y),
-                            galley.size(),
-                        );
+                        let galley =
+                            painter.layout_no_wrap(display_text, font_id.clone(), text_color);
+                        let text_rect =
+                            Rect::from_center_size(Pos2::new(current_x, y), galley.size());
 
                         if is_this_string_editing {
                             painter.rect_filled(text_rect.expand(3.5), 3.0, edit_color);
@@ -459,11 +480,10 @@ pub fn draw_tablature(
                         } else {
                             editing_fret_text.to_string()
                         };
-                        let galley = painter.layout_no_wrap(display_text, font_id.clone(), Color32::BLACK);
-                        let text_rect = Rect::from_center_size(
-                            Pos2::new(current_x, y),
-                            galley.size(),
-                        );
+                        let galley =
+                            painter.layout_no_wrap(display_text, font_id.clone(), Color32::BLACK);
+                        let text_rect =
+                            Rect::from_center_size(Pos2::new(current_x, y), galley.size());
                         painter.rect_filled(text_rect.expand(3.5), 3.0, edit_color);
                         painter.galley(text_rect.min, galley, Color32::BLACK);
                     }
@@ -502,7 +522,9 @@ pub fn draw_tablature(
         );
 
         if m_idx + 1 < part.measures.len() {
-            let next_ts = global.and_then(|g| g.measures.get(m_idx + 1)).and_then(|m| m.time);
+            let next_ts = global
+                .and_then(|g| g.measures.get(m_idx + 1))
+                .and_then(|m| m.time);
             if let Some(ts) = next_ts {
                 if current_time_sig != Some(ts) {
                     current_time_sig = Some(ts);
@@ -557,7 +579,11 @@ pub fn draw_tablature(
         let cx = note.x;
         let flags = note.rhythm.flag_count();
         let is_selected = selected_event == Some(i);
-        let this_stem_color = if is_selected { highlight_color } else { note_color };
+        let this_stem_color = if is_selected {
+            highlight_color
+        } else {
+            note_color
+        };
         let stem_thickness = if is_selected { 2.5 } else { 1.5 };
 
         // ── Stem ──────────────────────────────────────────────────────────────
@@ -570,11 +596,7 @@ pub fn draw_tablature(
 
         // ── Dot (augmentation) ────────────────────────────────────────────────
         if note.is_dotted {
-            painter.circle_filled(
-                Pos2::new(cx + 5.0, stem_bot_y - 2.0),
-                1.5,
-                this_stem_color,
-            );
+            painter.circle_filled(Pos2::new(cx + 5.0, stem_bot_y - 2.0), 1.5, this_stem_color);
         }
 
         // ── Flags or beams (at bottom of stems) ────────────────────────────────
@@ -584,7 +606,7 @@ pub fn draw_tablature(
             // Part of a beam group — draw beams as thick horizontal lines at stem_bot_y
             if beam_right[i] {
                 let nx = rhythm_notes[i + 1].x; // right note stem x
-                let sx = cx;                     // this note stem x
+                let sx = cx; // this note stem x
 
                 // How many beam lines to draw between this note and the right note
                 let shared_flags = flags.min(rhythm_notes[i + 1].rhythm.flag_count());
@@ -630,13 +652,19 @@ pub fn draw_tablature(
             for f in 0..flags {
                 let flag_y_bot = stem_bot_y - (f as f32) * flag_spacing;
                 let flag_y_top = flag_y_bot - flag_spacing - 2.0;
-                let flag_w     = event_spacing * 0.45;
+                let flag_w = event_spacing * 0.45;
                 painter.line_segment(
-                    [Pos2::new(sx, flag_y_bot), Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5)],
+                    [
+                        Pos2::new(sx, flag_y_bot),
+                        Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
+                    ],
                     Stroke::new(if is_selected { 2.0 } else { 1.5 }, this_stem_color),
                 );
                 painter.line_segment(
-                    [Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5), Pos2::new(sx + flag_w * 0.4, flag_y_top)],
+                    [
+                        Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
+                        Pos2::new(sx + flag_w * 0.4, flag_y_top),
+                    ],
                     Stroke::new(if is_selected { 2.0 } else { 1.5 }, this_stem_color),
                 );
             }
@@ -648,10 +676,13 @@ pub fn draw_tablature(
     let btn_w = 32.0;
     let btn_top_y = string_y_coords[0];
     let btn_bot_y = last_string_y;
-    let btn_rect = Rect::from_min_max(Pos2::new(btn_x, btn_top_y), Pos2::new(btn_x + btn_w, btn_bot_y));
+    let btn_rect = Rect::from_min_max(
+        Pos2::new(btn_x, btn_top_y),
+        Pos2::new(btn_x + btn_w, btn_bot_y),
+    );
 
     let hover_pos = ui.input(|i| i.pointer.hover_pos());
-    let is_btn_hovered = hover_pos.map_or(false, |pos| btn_rect.expand(5.0).contains(pos));
+    let is_btn_hovered = hover_pos.is_some_and(|pos| btn_rect.expand(5.0).contains(pos));
 
     if is_btn_hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -682,14 +713,35 @@ pub fn draw_tablature(
     painter.rect_filled(btn_rect.expand(2.0), 3.0, btn_bg);
 
     // Draw left and right vertical lines | and |
-    painter.line_segment([Pos2::new(btn_x, btn_top_y), Pos2::new(btn_x, btn_bot_y)], btn_stroke);
-    painter.line_segment([Pos2::new(btn_x + btn_w, btn_top_y), Pos2::new(btn_x + btn_w, btn_bot_y)], btn_stroke);
+    painter.line_segment(
+        [Pos2::new(btn_x, btn_top_y), Pos2::new(btn_x, btn_bot_y)],
+        btn_stroke,
+    );
+    painter.line_segment(
+        [
+            Pos2::new(btn_x + btn_w, btn_top_y),
+            Pos2::new(btn_x + btn_w, btn_bot_y),
+        ],
+        btn_stroke,
+    );
 
     // Draw + sign in center
     let center = btn_rect.center();
     let plus_size = 5.0;
-    painter.line_segment([Pos2::new(center.x - plus_size, center.y), Pos2::new(center.x + plus_size, center.y)], btn_stroke);
-    painter.line_segment([Pos2::new(center.x, center.y - plus_size), Pos2::new(center.x, center.y + plus_size)], btn_stroke);
+    painter.line_segment(
+        [
+            Pos2::new(center.x - plus_size, center.y),
+            Pos2::new(center.x + plus_size, center.y),
+        ],
+        btn_stroke,
+    );
+    painter.line_segment(
+        [
+            Pos2::new(center.x, center.y - plus_size),
+            Pos2::new(center.x, center.y + plus_size),
+        ],
+        btn_stroke,
+    );
 
     // ── Click interaction ─────────────────────────────────────────────────────
     let mut clicked_selection = None;
