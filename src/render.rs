@@ -394,9 +394,34 @@ pub fn draw_tablature(
 
     // ── Main event loop ───────────────────────────────────────────────────────
 
+    let mut active_tuplets: Vec<(f32, u32)> = Vec::new();
     for (m_idx, measure) in part.measures.iter().enumerate() {
         if let Some(seq) = measure.sequences.first() {
-            for (e_idx, event) in seq.content.iter().enumerate() {
+            let mut layout_items = Vec::new();
+            for item in &seq.content {
+                item.to_layout_items(&mut layout_items);
+            }
+            let mut e_idx = 0;
+            for l_item in layout_items {
+                let event = match l_item {
+                    LayoutItem::TupletStart(t) => {
+                        active_tuplets.push((current_x, t.inner.multiple));
+                        continue;
+                    }
+                    LayoutItem::TupletEnd => {
+                        if let Some((start_x, mult)) = active_tuplets.pop() {
+                            let end_x = current_x - event_spacing * 0.5;
+                            let y = string_y_coords[0] - 25.0; // Above the staff
+                            painter.line_segment([egui::Pos2::new(start_x, y+6.0), egui::Pos2::new(start_x, y)], Stroke::new(1.0, Color32::GRAY));
+                            painter.line_segment([egui::Pos2::new(start_x, y), egui::Pos2::new(end_x, y)], Stroke::new(1.0, Color32::GRAY));
+                            painter.line_segment([egui::Pos2::new(end_x, y), egui::Pos2::new(end_x, y+6.0)], Stroke::new(1.0, Color32::GRAY));
+                            painter.text(egui::Pos2::new((start_x + end_x) / 2.0, y - 8.0), egui::Align2::CENTER_CENTER, mult.to_string(), FontId::monospace(11.0), Color32::GRAY);
+                        }
+                        continue;
+                    }
+                    LayoutItem::Event(e) => e,
+                };
+
                 let is_selected = selected_event == Some(flat_event_idx);
 
                 let col_rect = Rect::from_min_max(
@@ -513,6 +538,7 @@ pub fn draw_tablature(
                 });
 
                 flat_event_idx += 1;
+                e_idx += 1;
                 current_x += event_spacing;
             }
         }
@@ -795,5 +821,26 @@ mod tests {
         assert_eq!(smufl_time_sig_digits(15), "\u{E081}\u{E085}");
         assert_eq!(smufl_time_sig_digits(8), "\u{E088}");
         assert_eq!(smufl_time_sig_digits(16), "\u{E081}\u{E086}");
+    }
+}
+
+enum LayoutItem<'a> {
+    Event(&'a crate::mnx::Event),
+    TupletStart(&'a crate::mnx::Tuplet),
+    TupletEnd,
+}
+
+impl crate::mnx::SequenceItem {
+    fn to_layout_items<'a>(&'a self, out: &mut Vec<LayoutItem<'a>>) {
+        match self {
+            crate::mnx::SequenceItem::Event(e) => out.push(LayoutItem::Event(e)),
+            crate::mnx::SequenceItem::Tuplet(t) => {
+                out.push(LayoutItem::TupletStart(t));
+                for inner in &t.content {
+                    inner.to_layout_items(out);
+                }
+                out.push(LayoutItem::TupletEnd);
+            }
+        }
     }
 }

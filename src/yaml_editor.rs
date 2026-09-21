@@ -31,6 +31,11 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
     let finish_event = |start_line: usize, end_line: usize, results: &mut Vec<EventRange>| {
         let total_start = line_starts[start_line];
         let total_end = line_starts[end_line] + lines[end_line].len();
+        
+        let event_text = &yaml[total_start..total_end];
+        if event_text.contains("type: tuplet") {
+            return;
+        }
 
         let mut note_ranges = Vec::new();
         let mut in_notes = false;
@@ -756,13 +761,13 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
     let part = doc.parts.first()?;
     let last_measure = part.measures.last()?;
     let last_seq = last_measure.sequences.first()?;
-    let last_event = last_seq.content.last()?;
+    let last_event = last_seq.flattened_events().last().copied()?;
 
     if !last_event.notes.is_empty() {
         return None;
     }
 
-    if last_seq.content.len() > 1 {
+    if last_seq.flattened_events().len() > 1 {
         let event_ranges = find_all_event_ranges(yaml);
         let last_er = event_ranges.last()?;
         let mut start = last_er.total_range.start;

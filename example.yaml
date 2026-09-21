@@ -4,6 +4,7 @@ global:
   measures:
     - time: { count: 4, unit: 4 }
     - time: { count: 4, unit: 4 }
+    - time: { count: 4, unit: 4 }
 parts:
   - instrument:
       name: "Kite Guitar"
@@ -107,3 +108,38 @@ parts:
                   - pitch: { step: C, octave: 5 }
                     string: 1
                     fret: 14
+      - sequences:
+          - content:
+              - type: tuplet
+                inner:
+                  duration: { base: eighth }
+                  multiple: 3
+                outer:
+                  duration: { base: eighth }
+                  multiple: 2
+                content:
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: C, octave: 5 }
+                        string: 1
+                        fret: 14
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: B, alter: '-1\41', octave: 4 }
+                        string: 1
+                        fret: 12
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: A, alter: '-1\41', octave: 4 }
+                        string: 2
+                        fret: 15
+              - duration: { base: half }
+                notes:
+                  - pitch: { step: G, octave: 4 }
+                    string: 2
+                    fret: 12
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: G, octave: 4 }
+                    string: 2
+                    fret: 12

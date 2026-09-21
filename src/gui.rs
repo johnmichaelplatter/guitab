@@ -126,7 +126,7 @@ impl MnxEditorApp {
         let mut cur_e = 0;
         for m in &part.measures {
             for seq in &m.sequences {
-                for ev in &seq.content {
+                for ev in seq.flattened_events() {
                     if cur_e == e_idx {
                         return Some(ev.duration.clone());
                     }
@@ -141,11 +141,11 @@ impl MnxEditorApp {
         if let Some(e_idx) = self.selected_event_idx {
             let cur_dur =
                 self.get_selected_event_duration()
-                    .unwrap_or_else(|| crate::mnx::Duration {
+                    .unwrap_or_else(|| crate::mnx::Duration { multiple: None,
                         base: "quarter".to_string(),
                         dots: None,
                     });
-            let new_duration = crate::mnx::Duration {
+            let new_duration = crate::mnx::Duration { multiple: None,
                 base: new_base.to_string(),
                 dots: cur_dur.dots,
             };
@@ -162,7 +162,7 @@ impl MnxEditorApp {
         if let Some(e_idx) = self.selected_event_idx {
             let cur_dur =
                 self.get_selected_event_duration()
-                    .unwrap_or_else(|| crate::mnx::Duration {
+                    .unwrap_or_else(|| crate::mnx::Duration { multiple: None,
                         base: "quarter".to_string(),
                         dots: None,
                     });
@@ -175,7 +175,7 @@ impl MnxEditorApp {
                 .replace("-dotted", "")
                 .replace("dotted", "")
                 .replace('.', "");
-            let new_duration = crate::mnx::Duration {
+            let new_duration = crate::mnx::Duration { multiple: None,
                 base: if clean_base.is_empty() {
                     "quarter".to_string()
                 } else {
@@ -286,7 +286,7 @@ impl MnxEditorApp {
         let mut target_event = None;
         'find_ev: for m in &part.measures {
             for seq in &m.sequences {
-                for ev in &seq.content {
+                for ev in seq.flattened_events() {
                     if cur_e == e_idx {
                         target_event = Some(ev);
                         break 'find_ev;
@@ -369,7 +369,7 @@ impl MnxEditorApp {
                 let mut cur_e = 0;
                 'find_n: for m in &part.measures {
                     for seq in &m.sequences {
-                        for ev in &seq.content {
+                        for ev in seq.flattened_events() {
                             if cur_e == e_idx {
                                 for (n_i, n) in ev.notes.iter().enumerate() {
                                     if n.string == Some(string_num) {
@@ -426,7 +426,7 @@ impl MnxEditorApp {
                     if let Some(part) = doc.parts.first() {
                         if let Some(last_measure) = part.measures.last() {
                             if let Some(last_seq) = last_measure.sequences.first() {
-                                if let Some(last_event) = last_seq.content.last() {
+                                if let Some(last_event) = last_seq.flattened_events().last().copied() {
                                     let m_idx = part.measures.len() - 1;
                                     let final_dur = &last_event.duration;
                                     let dur_beats = validate::duration_to_quarter_beats(final_dur);
@@ -435,10 +435,7 @@ impl MnxEditorApp {
                                     let max_beats =
                                         (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
                                     let curr_beats: f64 = last_seq
-                                        .content
-                                        .iter()
-                                        .map(|e| validate::duration_to_quarter_beats(&e.duration))
-                                        .sum();
+                                        .total_beats();
 
                                     if curr_beats + dur_beats <= max_beats + 1e-4 {
                                         if let Some(new_yaml) = add_blank_note_to_last_measure(
@@ -501,7 +498,7 @@ impl MnxEditorApp {
         let mut cur_e = 0;
         for m in &part.measures {
             for seq in &m.sequences {
-                for ev in &seq.content {
+                for ev in seq.flattened_events() {
                     if cur_e == e_idx {
                         return ev.notes.get(note_idx).and_then(|n| n.string);
                     }
@@ -517,7 +514,7 @@ impl MnxEditorApp {
         let mut cur_e = 0;
         for m in &part.measures {
             for seq in &m.sequences {
-                for ev in &seq.content {
+                for ev in seq.flattened_events() {
                     if cur_e == e_idx {
                         return ev.notes.first().and_then(|n| n.string);
                     }
@@ -534,7 +531,7 @@ impl MnxEditorApp {
                 let mut cur_e = 0;
                 for m in &part.measures {
                     for seq in &m.sequences {
-                        for ev in &seq.content {
+                        for ev in seq.flattened_events() {
                             if cur_e == e_idx {
                                 return ev.notes.iter().any(|n| n.string == Some(string_num));
                             }
@@ -553,7 +550,7 @@ impl MnxEditorApp {
                 let mut cur_e = 0;
                 for m in &part.measures {
                     for seq in &m.sequences {
-                        for ev in &seq.content {
+                        for ev in seq.flattened_events() {
                             if cur_e == e_idx {
                                 return !ev.notes.is_empty();
                             }
@@ -573,9 +570,9 @@ impl MnxEditorApp {
             .and_then(|d| d.parts.first())
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
-            .and_then(|s| s.content.last())
+            .and_then(|s| s.flattened_events().last().copied())
             .map(|e| e.duration.clone())
-            .unwrap_or_else(|| crate::mnx::Duration {
+            .unwrap_or_else(|| crate::mnx::Duration { multiple: None,
                 base: "quarter".to_string(),
                 dots: None,
             });
@@ -1156,7 +1153,7 @@ impl MnxEditorApp {
                                     .and_then(|d| d.parts.first())
                                     .and_then(|p| p.measures.last())
                                     .and_then(|m| m.sequences.first())
-                                    .and_then(|s| s.content.last())
+                                    .and_then(|s| s.flattened_events().last().copied())
                                     .map(|e| e.notes.is_empty())
                                     .unwrap_or(false);
 
@@ -1273,7 +1270,7 @@ impl MnxEditorApp {
                                 .and_then(|d| d.parts.first())
                                 .and_then(|p| p.measures.last())
                                 .and_then(|m| m.sequences.first())
-                                .and_then(|s| s.content.last())
+                                .and_then(|s| s.flattened_events().last().copied())
                                 .map(|e| e.notes.is_empty())
                                 .unwrap_or(false);
 
@@ -1417,7 +1414,7 @@ impl MnxEditorApp {
                         .and_then(|d| d.parts.first())
                         .and_then(|p| p.measures.last())
                         .and_then(|m| m.sequences.first())
-                        .and_then(|s| s.content.last())
+                        .and_then(|s| s.flattened_events().last().copied())
                         .map(|e| e.notes.is_empty())
                         .unwrap_or(false);
 
@@ -1482,7 +1479,7 @@ impl MnxEditorApp {
                         let mut cur_e = 0;
                         'find_init: for m in &part.measures {
                             for seq in &m.sequences {
-                                for ev in &seq.content {
+                                for ev in seq.flattened_events() {
                                     if cur_e == e_idx {
                                         if let Some(n_idx) = self.selected_note_idx_in_event {
                                             if let Some(n) = ev.notes.get(n_idx) {
@@ -1518,7 +1515,7 @@ impl MnxEditorApp {
                             .and_then(|d| d.parts.first())
                             .and_then(|p| p.measures.last())
                             .and_then(|m| m.sequences.first())
-                            .and_then(|s| s.content.last())
+                            .and_then(|s| s.flattened_events().last().copied())
                             .map(|e| e.notes.is_empty())
                             .unwrap_or(false);
 
@@ -1558,7 +1555,7 @@ impl MnxEditorApp {
                             .and_then(|d| d.parts.first())
                             .and_then(|p| p.measures.last())
                             .and_then(|m| m.sequences.first())
-                            .and_then(|s| s.content.last())
+                            .and_then(|s| s.flattened_events().last().copied())
                             .map(|e| e.notes.is_empty())
                             .unwrap_or(false);
 
@@ -1568,7 +1565,7 @@ impl MnxEditorApp {
                             if let Some(part) = doc.parts.first() {
                                 if let Some(last_measure) = part.measures.last() {
                                     if let Some(last_seq) = last_measure.sequences.first() {
-                                        if let Some(last_event) = last_seq.content.last() {
+                                        if let Some(last_event) = last_seq.flattened_events().last().copied() {
                                             let m_idx = part.measures.len() - 1;
                                             let final_dur = &last_event.duration;
                                             let dur_beats =
@@ -1579,12 +1576,7 @@ impl MnxEditorApp {
                                             let max_beats = (time_sig.count as f64)
                                                 * (4.0 / time_sig.unit as f64);
                                             let curr_beats: f64 = last_seq
-                                                .content
-                                                .iter()
-                                                .map(|e| {
-                                                    validate::duration_to_quarter_beats(&e.duration)
-                                                })
-                                                .sum();
+                                                .total_beats();
 
                                             if curr_beats + dur_beats <= max_beats + 1e-4 {
                                                 // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
@@ -1642,7 +1634,7 @@ impl MnxEditorApp {
                                         let mut cur_e = 0;
                                         'find_ev: for m in &part.measures {
                                             for seq in &m.sequences {
-                                                for ev in &seq.content {
+                                                for ev in seq.flattened_events() {
                                                     if cur_e == e_idx {
                                                         note_order.sort_by_key(|&n_i| {
                                                             ev.notes
@@ -1765,7 +1757,7 @@ mod tests {
     fn test_find_all_event_ranges_example_yaml() {
         let yaml = include_str!("../example.yaml");
         let ranges = find_all_event_ranges(yaml);
-        assert_eq!(ranges.len(), 15);
+        assert_eq!(ranges.len(), 20);
         for er in &ranges {
             let snippet = &yaml[er.total_range.clone()];
             assert!(snippet.contains("duration"));
@@ -1863,7 +1855,7 @@ parts:
 
         let updated_doc =
             serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
-        let ev0_notes = &updated_doc.parts[0].measures[0].sequences[0].content[0].notes;
+        let ev0_notes = &updated_doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes;
         assert_eq!(ev0_notes.len(), 2);
         assert_eq!(ev0_notes[0].string, Some(7));
         assert_eq!(ev0_notes[0].fret, Some(12));
@@ -1906,7 +1898,7 @@ parts:
         let updated = remove_note_on_string(yaml, 0, 4).expect("Should remove note on string 4");
         let updated_doc =
             serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
-        let notes = &updated_doc.parts[0].measures[0].sequences[0].content[0].notes;
+        let notes = &updated_doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes;
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].string, Some(5));
 
@@ -1914,7 +1906,7 @@ parts:
         let updated2 = remove_note_on_string(&updated, 0, 5).expect("Should remove last note");
         let updated2_doc =
             serde_saphyr::from_str::<MnxDocument>(&updated2).expect("Updated doc should parse");
-        let notes2 = &updated2_doc.parts[0].measures[0].sequences[0].content[0].notes;
+        let notes2 = &updated2_doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes;
         assert_eq!(notes2.len(), 0);
     }
 
@@ -1923,7 +1915,7 @@ parts:
         let yaml = include_str!("../example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let initial_measures = doc.parts[0].measures.len();
-        assert_eq!(initial_measures, 2);
+        assert_eq!(initial_measures, 3);
 
         let final_dur = doc.parts[0]
             .measures
@@ -1932,7 +1924,7 @@ parts:
             .sequences
             .first()
             .unwrap()
-            .content
+            .flattened_events()
             .last()
             .unwrap()
             .duration
@@ -1942,15 +1934,15 @@ parts:
         let updated = add_measure_to_yaml(yaml, &final_dur).expect("Should add measure");
         let updated_doc =
             serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
-        assert_eq!(updated_doc.global.measures.len(), 3);
+        assert_eq!(updated_doc.global.measures.len(), 4);
         let part = &updated_doc.parts[0];
-        assert_eq!(part.measures.len(), 3);
+        assert_eq!(part.measures.len(), 4);
 
         // Check the newly added measure
-        let new_measure = &part.measures[2];
+        let new_measure = &part.measures[3];
         let new_seq = &new_measure.sequences[0];
-        assert_eq!(new_seq.content.len(), 1);
-        let new_event = &new_seq.content[0];
+        assert_eq!(new_seq.flattened_events().len(), 1);
+        let new_event = &new_seq.flattened_events()[0];
         assert_eq!(new_event.duration.base, "quarter");
         assert_eq!(new_event.notes.len(), 0);
 
@@ -1984,7 +1976,7 @@ parts:
                     string: 5
                     fret: 3
 "#;
-        let dur = crate::mnx::Duration {
+        let dur = crate::mnx::Duration { multiple: None,
             base: "quarter".to_string(),
             dots: None,
         };
@@ -1993,12 +1985,12 @@ parts:
             serde_saphyr::from_str::<MnxDocument>(&with_blank).expect("Should parse");
         assert_eq!(
             doc_with_blank.parts[0].measures[0].sequences[0]
-                .content
+                .flattened_events()
                 .len(),
             2
         );
         assert_eq!(
-            doc_with_blank.parts[0].measures[0].sequences[0].content[1]
+            doc_with_blank.parts[0].measures[0].sequences[0].flattened_events()[1]
                 .notes
                 .len(),
             0
@@ -2008,11 +2000,11 @@ parts:
         let cleaned = remove_last_blank_event(&with_blank).expect("Should remove blank note");
         let cleaned_doc = serde_saphyr::from_str::<MnxDocument>(&cleaned).expect("Should parse");
         assert_eq!(
-            cleaned_doc.parts[0].measures[0].sequences[0].content.len(),
+            cleaned_doc.parts[0].measures[0].sequences[0].flattened_events().len(),
             1
         );
         assert_eq!(
-            cleaned_doc.parts[0].measures[0].sequences[0].content[0]
+            cleaned_doc.parts[0].measures[0].sequences[0].flattened_events()[0]
                 .notes
                 .len(),
             1
@@ -2022,21 +2014,21 @@ parts:
     #[test]
     fn test_add_measure_and_remove_blank_measure() {
         let yaml = include_str!("../example.yaml");
-        let dur = crate::mnx::Duration {
+        let dur = crate::mnx::Duration { multiple: None,
             base: "quarter".to_string(),
             dots: None,
         };
         let with_new_measure = add_measure_to_yaml(yaml, &dur).expect("Should add measure");
         let doc1 = serde_saphyr::from_str::<MnxDocument>(&with_new_measure).expect("Should parse");
-        assert_eq!(doc1.parts[0].measures.len(), 3);
-        assert_eq!(doc1.global.measures.len(), 3);
+        assert_eq!(doc1.parts[0].measures.len(), 4);
+        assert_eq!(doc1.global.measures.len(), 4);
 
         // When shifting focus back to the left without entering anything, the empty measure is removed
         let cleaned =
             remove_last_blank_event(&with_new_measure).expect("Should remove empty measure");
         let doc2 = serde_saphyr::from_str::<MnxDocument>(&cleaned).expect("Should parse");
-        assert_eq!(doc2.parts[0].measures.len(), 2);
-        assert_eq!(doc2.global.measures.len(), 2);
+        assert_eq!(doc2.parts[0].measures.len(), 3);
+        assert_eq!(doc2.global.measures.len(), 3);
     }
 
     #[test]
@@ -2044,10 +2036,10 @@ parts:
         let mut app = MnxEditorApp::default();
         // App starts with example.yaml (15 events across 2 measures)
         let total_initial = find_all_event_ranges(&app.yaml_text).len();
-        assert_eq!(total_initial, 15);
+        assert_eq!(total_initial, 20);
 
-        // Select the final event (event 14, in Measure 2 which is full)
-        app.selected_event_idx = Some(14);
+        // Select the final event (event 19, in Measure 2 which is full)
+        app.selected_event_idx = Some(19);
 
         // Right arrow on full final bar -> Rule 2: creates Measure 3 with a blank note
         // (Simulate right arrow logic)
@@ -2057,7 +2049,7 @@ parts:
             .and_then(|d| d.parts.first())
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
-            .and_then(|s| s.content.last())
+            .and_then(|s| s.flattened_events().last().copied())
             .map(|e| e.duration.clone())
             .unwrap();
 
@@ -2065,8 +2057,8 @@ parts:
         app.yaml_text = updated;
         app.process_and_render();
         let total_after_r2 = find_all_event_ranges(&app.yaml_text).len();
-        assert_eq!(total_after_r2, 16);
-        app.selected_event_idx = Some(15);
+        assert_eq!(total_after_r2, 21);
+        app.selected_event_idx = Some(20);
 
         // Rule 3: Moving further to the right of a final blank note has no effect
         let is_final_blank = app
@@ -2075,7 +2067,7 @@ parts:
             .and_then(|d| d.parts.first())
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
-            .and_then(|s| s.content.last())
+            .and_then(|s| s.flattened_events().last().copied())
             .map(|e| e.notes.is_empty())
             .unwrap();
         assert!(is_final_blank);
@@ -2085,13 +2077,13 @@ parts:
         app.yaml_text = cleaned;
         app.process_and_render();
         let total_after_left = find_all_event_ranges(&app.yaml_text).len();
-        assert_eq!(total_after_left, 15);
+        assert_eq!(total_after_left, 20);
     }
 
     #[test]
     fn test_update_event_duration_in_yaml() {
         let yaml = include_str!("../example.yaml");
-        let dur_quarter = crate::mnx::Duration {
+        let dur_quarter = crate::mnx::Duration { multiple: None,
             base: "quarter".to_string(),
             dots: None,
         };
@@ -2099,20 +2091,20 @@ parts:
             update_event_duration_in_yaml(yaml, 0, &dur_quarter).expect("Should update duration");
         let doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Should parse");
         assert_eq!(
-            doc.parts[0].measures[0].sequences[0].content[0]
+            doc.parts[0].measures[0].sequences[0].flattened_events()[0]
                 .duration
                 .base,
             "quarter"
         );
         assert_eq!(
-            doc.parts[0].measures[0].sequences[0].content[0]
+            doc.parts[0].measures[0].sequences[0].flattened_events()[0]
                 .duration
                 .dots,
             None
         );
 
         // Test dotted
-        let dur_dotted_half = crate::mnx::Duration {
+        let dur_dotted_half = crate::mnx::Duration { multiple: None,
             base: "half".to_string(),
             dots: Some(1),
         };
@@ -2120,13 +2112,13 @@ parts:
             .expect("Should update to dotted");
         let doc_dot = serde_saphyr::from_str::<MnxDocument>(&updated_dot).expect("Should parse");
         assert_eq!(
-            doc_dot.parts[0].measures[0].sequences[0].content[0]
+            doc_dot.parts[0].measures[0].sequences[0].flattened_events()[0]
                 .duration
                 .base,
             "half"
         );
         assert_eq!(
-            doc_dot.parts[0].measures[0].sequences[0].content[0]
+            doc_dot.parts[0].measures[0].sequences[0].flattened_events()[0]
                 .duration
                 .dots,
             Some(1)
@@ -2215,7 +2207,7 @@ parts:
 
         // Check event 0 was updated to fret 14 on string 7
         let doc = serde_saphyr::from_str::<MnxDocument>(&app.yaml_text).unwrap();
-        let note = &doc.parts[0].measures[0].sequences[0].content[0].notes[0];
+        let note = &doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes[0];
         assert_eq!(note.string, Some(7));
         assert_eq!(note.fret, Some(14));
 
@@ -2232,7 +2224,7 @@ parts:
         app.retreat_to_prev_note_in_edit_mode(cur_str);
 
         let doc2 = serde_saphyr::from_str::<MnxDocument>(&app.yaml_text).unwrap();
-        let note2 = doc2.parts[0].measures[0].sequences[0].content[1]
+        let note2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[1]
             .notes
             .iter()
             .find(|n| n.string == Some(7))
@@ -2282,7 +2274,7 @@ parts:
         // Verify event 1 note is removed (notes is empty)
         let doc = serde_saphyr::from_str::<MnxDocument>(&app.yaml_text).unwrap();
         assert!(
-            doc.parts[0].measures[0].sequences[0].content[1]
+            doc.parts[0].measures[0].sequences[0].flattened_events()[1]
                 .notes
                 .is_empty()
         );
@@ -2323,17 +2315,17 @@ parts:
     fn test_edit_mode_blank_note_left_arrow_removes_blank() {
         let mut app = MnxEditorApp::default();
         let total_initial = find_all_event_ranges(&app.yaml_text).len();
-        assert_eq!(total_initial, 15);
+        assert_eq!(total_initial, 20);
 
         // Select the final event (event 14) and advance right to create a new blank note in edit mode
-        app.selected_event_idx = Some(14);
+        app.selected_event_idx = Some(19);
         app.is_editing_fret = true;
         app.editing_string = Some(4);
         app.advance_to_next_note_in_edit_mode(Some(4), total_initial);
 
         let total_after_advance = find_all_event_ranges(&app.yaml_text).len();
-        assert_eq!(total_after_advance, 16);
-        assert_eq!(app.selected_event_idx, Some(15));
+        assert_eq!(total_after_advance, 21);
+        assert_eq!(app.selected_event_idx, Some(20));
         assert!(app.is_editing_fret);
         assert_eq!(app.editing_string, Some(4));
 
@@ -2350,7 +2342,7 @@ parts:
                     .and_then(|d| d.parts.first())
                     .and_then(|p| p.measures.last())
                     .and_then(|m| m.sequences.first())
-                    .and_then(|s| s.content.last())
+                    .and_then(|s| s.flattened_events().last().copied())
                     .map(|e| e.notes.is_empty())
                     .unwrap_or(false);
 
@@ -2359,7 +2351,7 @@ parts:
                 app.yaml_text = new_yaml;
                 app.process_and_render();
                 let new_total = find_all_event_ranges(&app.yaml_text).len();
-                assert_eq!(new_total, 15);
+                assert_eq!(new_total, 20);
                 let prev_idx = new_total - 1;
                 app.selected_event_idx = Some(prev_idx);
                 app.editing_string = cur_str;
@@ -2370,7 +2362,7 @@ parts:
             }
         }
 
-        assert_eq!(app.selected_event_idx, Some(14));
+        assert_eq!(app.selected_event_idx, Some(19));
         assert!(app.is_editing_fret);
         assert_eq!(app.editing_string, Some(4));
     }

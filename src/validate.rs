@@ -99,11 +99,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
 
             for seq in &measure.sequences {
                 // Validate sequence total duration against measure time signature
-                let total_beats: f64 = seq
-                    .content
-                    .iter()
-                    .map(|event| duration_to_quarter_beats(&event.duration))
-                    .sum();
+                let total_beats: f64 = seq.total_beats();
 
                 // Final measure exception: allowed to be under-capacity while writing,
                 // but still flags errors if it overflows the measure.
@@ -142,7 +138,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                 }
 
                 // Note-level geometry and concurrency checks
-                for (e_idx, event) in seq.content.iter().enumerate() {
+                for (e_idx, event) in seq.flattened_events().into_iter().enumerate() {
                     let mut active_strings = HashSet::new();
 
                     for note in &event.notes {
@@ -223,63 +219,63 @@ mod tests {
     #[test]
     fn test_duration_to_quarter_beats() {
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "whole".to_string(),
                 dots: None
             }),
             4.0
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "half".to_string(),
                 dots: None
             }),
             2.0
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "quarter".to_string(),
                 dots: None
             }),
             1.0
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "eighth".to_string(),
                 dots: None
             }),
             0.5
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "sixteenth".to_string(),
                 dots: None
             }),
             0.25
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "32nd".to_string(),
                 dots: None
             }),
             0.125
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "dotted-quarter".to_string(),
                 dots: None
             }),
             1.5
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "quarter".to_string(),
                 dots: Some(1)
             }),
             1.5
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration {
+            duration_to_quarter_beats(&Duration { multiple: None,
                 base: "quarter".to_string(),
                 dots: Some(2)
             }),

@@ -196,12 +196,14 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let mut current_event_idx = 0;
         for measure in &part.measures {
             for seq in &measure.sequences {
-                for event in &seq.content {
+                let mut events_scaled = Vec::new();
+                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                for (event, scale) in events_scaled {
                     if current_event_idx == start_event {
                         return start_tick_offset;
                     }
                     let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    start_tick_offset += (beats * self.ppq).round() as u32;
+                    start_tick_offset += ((beats * scale) * self.ppq).round() as u32;
                     current_event_idx += 1;
                 }
             }
@@ -222,9 +224,11 @@ impl<'a> PlaybackTrackGenerator<'a> {
         for measure in &part.measures {
             for seq in &measure.sequences {
                 let mut seq_time_ticks = current_time_ticks;
-                for event in &seq.content {
+                let mut events_scaled = Vec::new();
+                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                for (event, scale) in events_scaled {
                     let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    let duration_ticks = (beats * self.ppq).round() as u32;
+                    let duration_ticks = ((beats * scale) * self.ppq).round() as u32;
 
                     if current_event_idx >= start_event {
                         let event_start_ticks = seq_time_ticks.saturating_sub(start_tick_offset);
@@ -959,6 +963,20 @@ mod tests {
                 accumulated_ticks > 0,
                 "Subsequent events must have positive accumulated delta ticks"
             );
+        }
+    }
+}
+
+fn walk_events_with_scaling<'a>(content: &'a [crate::mnx::SequenceItem], out: &mut Vec<(&'a crate::mnx::Event, f64)>, scale: f64) {
+    for item in content {
+        match item {
+            crate::mnx::SequenceItem::Event(e) => out.push((e, scale)),
+            crate::mnx::SequenceItem::Tuplet(t) => {
+                let inner_beats = crate::validate::duration_to_quarter_beats(&t.inner.duration) * (t.inner.multiple as f64);
+                let outer_beats = crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64);
+                let new_scale = if inner_beats > 0.0 { scale * (outer_beats / inner_beats) } else { scale };
+                walk_events_with_scaling(&t.content, out, new_scale);
+            }
         }
     }
 }

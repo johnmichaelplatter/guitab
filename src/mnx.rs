@@ -74,7 +74,34 @@ pub struct Measure {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Sequence {
-    pub content: Vec<Event>,
+    pub content: Vec<SequenceItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum SequenceItem {
+    Tuplet(Tuplet),
+    Event(Event),
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Tuplet {
+    #[serde(rename = "type")]
+    pub item_type: Option<String>,
+    pub inner: TupletDuration,
+    pub outer: TupletDuration,
+    pub content: Vec<SequenceItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct TupletDuration {
+    pub duration: Duration,
+    #[serde(default = "default_multiple")]
+    pub multiple: u32,
+}
+
+fn default_multiple() -> u32 {
+    1
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -88,6 +115,8 @@ pub struct Duration {
     pub base: String,
     #[serde(default)]
     pub dots: Option<u32>,
+    #[serde(default)]
+    pub multiple: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -212,5 +241,41 @@ impl Part {
             .and_then(|tuning| tuning.iter().map(|t| t.string).max())
             .unwrap_or(6)
             .max(1) as usize
+    }
+}
+
+impl Sequence {
+    pub fn total_beats(&self) -> f64 {
+        let mut total = 0.0;
+        for item in &self.content {
+            total += item.total_beats();
+        }
+        total
+    }
+    pub fn flattened_events(&self) -> Vec<&Event> {
+        let mut result = Vec::new();
+        for item in &self.content {
+            item.collect_events(&mut result);
+        }
+        result
+    }
+}
+
+impl SequenceItem {
+    pub fn total_beats(&self) -> f64 {
+        match self {
+            SequenceItem::Event(e) => crate::validate::duration_to_quarter_beats(&e.duration),
+            SequenceItem::Tuplet(t) => crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64),
+        }
+    }
+    pub fn collect_events<'a>(&'a self, out: &mut Vec<&'a Event>) {
+        match self {
+            SequenceItem::Event(e) => out.push(e),
+            SequenceItem::Tuplet(t) => {
+                for inner in &t.content {
+                    inner.collect_events(out);
+                }
+            }
+        }
     }
 }
