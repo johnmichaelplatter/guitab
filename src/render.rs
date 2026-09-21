@@ -44,7 +44,7 @@ fn smufl_time_sig_digits(num: u32) -> String {
 fn draw_time_signature(
     painter: &egui::Painter,
     time_sig: &TimeSignature,
-    center_x: f32,
+    left_x: f32,
     top_string_y: f32,
     bottom_string_y: f32,
     color: Color32,
@@ -62,6 +62,7 @@ fn draw_time_signature(
     let den_galley = painter.layout_no_wrap(den_text.clone(), bravura_font.clone(), color);
 
     let width = num_galley.size().x.max(den_galley.size().x);
+    let center_x = left_x + width / 2.0;
     // offset from the true center by a small pad
     let center_pad = font_size / 4.0 + 0.25;
 
@@ -266,7 +267,7 @@ pub fn draw_tablature(
     let total_width = start_offset_x
         + (total_events as f32) * event_spacing
         + (part.measures.len() as f32) * measure_spacing
-        + (num_rendered_time_sigs as f32) * 45.0
+        + (num_rendered_time_sigs as f32) * 75.0
         + 80.0;
 
     // ── Allocate painter ──────────────────────────────────────────────────────
@@ -321,12 +322,14 @@ pub fn draw_tablature(
             Stroke::new(1.0, Color32::from_gray(100)),
         );
 
+        // String name / number label to the left of the opening barline
+        let label_str = &prefixes[i];
         painter.text(
             Pos2::new(label_x, y),
             egui::Align2::RIGHT_CENTER,
-            &prefixes[i],
+            label_str,
             font_id.clone(),
-            Color32::DARK_GRAY,
+            Color32::from_gray(180),
         );
     }
 
@@ -365,16 +368,18 @@ pub fn draw_tablature(
     let m0_ts = global.and_then(|g| g.measures.first()).and_then(|m| m.time);
     if let Some(ts) = m0_ts {
         current_time_sig = Some(ts);
-        let ts_center_x = current_x + 16.0;
+        let left_pad = 12.0_f32;
+        let right_pad = 16.0_f32;
+        let ts_left_x = current_x + left_pad;
         let ts_w = draw_time_signature(
             &painter,
             &ts,
-            ts_center_x,
+            ts_left_x,
             string_y_coords[0],
             last_string_y,
             note_color,
         );
-        current_x = ts_center_x + (ts_w / 2.0) + 16.0;
+        current_x = ts_left_x + ts_w + right_pad;
     } else {
         current_x += first_bar_pad;
     }
@@ -528,16 +533,18 @@ pub fn draw_tablature(
             if let Some(ts) = next_ts {
                 if current_time_sig != Some(ts) {
                     current_time_sig = Some(ts);
-                    let ts_center_x = current_x + 14.0;
+                    let left_pad = 6.0_f32;
+                    let right_pad = 16.0_f32;
+                    let ts_left_x = current_x + left_pad;
                     let ts_w = draw_time_signature(
                         &painter,
                         &ts,
-                        ts_center_x,
+                        ts_left_x,
                         string_y_coords[0],
                         last_string_y,
                         note_color,
                     );
-                    current_x = ts_center_x + (ts_w / 2.0) + 16.0;
+                    current_x = ts_left_x + ts_w + right_pad;
                 } else {
                     current_x += measure_spacing;
                 }
@@ -785,6 +792,7 @@ mod tests {
         assert_eq!(smufl_time_sig_digits(4), "\u{E084}");
         assert_eq!(smufl_time_sig_digits(3), "\u{E083}");
         assert_eq!(smufl_time_sig_digits(12), "\u{E081}\u{E082}");
+        assert_eq!(smufl_time_sig_digits(15), "\u{E081}\u{E085}");
         assert_eq!(smufl_time_sig_digits(8), "\u{E088}");
         assert_eq!(smufl_time_sig_digits(16), "\u{E081}\u{E086}");
     }
