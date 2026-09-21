@@ -362,6 +362,210 @@ impl MnxEditorApp {
         }
     }
 
+    fn select_note_on_string(&mut self, e_idx: usize, string_num: u8) {
+        self.selected_note_idx_in_event = None;
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(part) = doc.parts.first() {
+                let mut cur_e = 0;
+                'find_n: for m in &part.measures {
+                    for seq in &m.sequences {
+                        for ev in &seq.content {
+                            if cur_e == e_idx {
+                                for (n_i, n) in ev.notes.iter().enumerate() {
+                                    if n.string == Some(string_num) {
+                                        self.selected_note_idx_in_event = Some(n_i);
+                                        break;
+                                    }
+                                }
+                                break 'find_n;
+                            }
+                            cur_e += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn commit_fret_edit(&mut self) -> bool {
+        let mut committed = false;
+        if let Some(e_idx) = self.selected_event_idx {
+            if let Some(cur_str) = self.editing_string {
+                if let Ok(new_fret) = self.editing_fret_buf.trim().parse::<u8>() {
+                    let new_pitch = self
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.parts.first())
+                        .and_then(|part| calculate_pitch_for_string_fret(part, cur_str, new_fret));
+
+                    if let Some(new_yaml) = set_or_add_note_on_string(
+                        &self.yaml_text,
+                        e_idx,
+                        cur_str,
+                        new_fret,
+                        new_pitch.as_ref(),
+                    ) {
+                        self.yaml_text = new_yaml;
+                        self.process_and_render();
+                        self.select_note_on_string(e_idx, cur_str);
+                        self.preview_selected_sound();
+                        committed = true;
+                    }
+                }
+            }
+        }
+        committed
+    }
+
+    fn advance_to_next_note_in_edit_mode(&mut self, cur_str: Option<u8>, total_events: usize) {
+        if let Some(e_idx) = self.selected_event_idx {
+            let at_final_event = e_idx == total_events.saturating_sub(1);
+            let next_idx = if at_final_event {
+                let mut added_idx = None;
+                if let Some(doc) = &self.parsed_mnx {
+                    if let Some(part) = doc.parts.first() {
+                        if let Some(last_measure) = part.measures.last() {
+                            if let Some(last_seq) = last_measure.sequences.first() {
+                                if let Some(last_event) = last_seq.content.last() {
+                                    let m_idx = part.measures.len() - 1;
+                                    let final_dur = &last_event.duration;
+                                    let dur_beats = validate::duration_to_quarter_beats(final_dur);
+                                    let time_sig =
+                                        validate::get_time_signature_for_measure(doc, m_idx);
+                                    let max_beats =
+                                        (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+                                    let curr_beats: f64 = last_seq
+                                        .content
+                                        .iter()
+                                        .map(|e| validate::duration_to_quarter_beats(&e.duration))
+                                        .sum();
+
+                                    if curr_beats + dur_beats <= max_beats + 1e-4 {
+                                        if let Some(new_yaml) = add_blank_note_to_last_measure(
+                                            &self.yaml_text,
+                                            final_dur,
+                                        ) {
+                                            self.yaml_text = new_yaml;
+                                            self.process_and_render();
+                                            let new_total =
+                                                find_all_event_ranges(&self.yaml_text).len();
+                                            if new_total > 0 {
+                                                added_idx = Some(new_total - 1);
+                                            }
+                                        }
+                                    } else {
+                                        self.add_measure_to_end();
+                                        let new_total =
+                                            find_all_event_ranges(&self.yaml_text).len();
+                                        if new_total > 0 {
+                                            added_idx = Some(new_total - 1);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                added_idx.unwrap_or(e_idx)
+            } else {
+                (e_idx + 1).min(total_events.saturating_sub(1))
+            };
+
+            self.selected_event_idx = Some(next_idx);
+            self.editing_string = cur_str;
+            self.editing_fret_buf.clear();
+            self.is_editing_fret = true;
+            if let Some(s) = cur_str {
+                self.select_note_on_string(next_idx, s);
+            }
+        }
+    }
+
+    fn retreat_to_prev_note_in_edit_mode(&mut self, cur_str: Option<u8>) {
+        if let Some(e_idx) = self.selected_event_idx {
+            if e_idx > 0 {
+                let prev_idx = e_idx - 1;
+                self.selected_event_idx = Some(prev_idx);
+                self.editing_string = cur_str;
+                self.editing_fret_buf.clear();
+                self.is_editing_fret = true;
+                if let Some(s) = cur_str {
+                    self.select_note_on_string(prev_idx, s);
+                }
+            }
+        }
+    }
+
+    fn get_string_for_note(&self, e_idx: usize, note_idx: usize) -> Option<u8> {
+        let part = self.parsed_mnx.as_ref()?.parts.first()?;
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in &seq.content {
+                    if cur_e == e_idx {
+                        return ev.notes.get(note_idx).and_then(|n| n.string);
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+        None
+    }
+
+    fn find_primary_string_for_event(&self, e_idx: usize) -> Option<u8> {
+        let part = self.parsed_mnx.as_ref()?.parts.first()?;
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in &seq.content {
+                    if cur_e == e_idx {
+                        return ev.notes.first().and_then(|n| n.string);
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+        None
+    }
+
+    fn event_has_note_on_string(&self, e_idx: usize, string_num: u8) -> bool {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(part) = doc.parts.first() {
+                let mut cur_e = 0;
+                for m in &part.measures {
+                    for seq in &m.sequences {
+                        for ev in &seq.content {
+                            if cur_e == e_idx {
+                                return ev.notes.iter().any(|n| n.string == Some(string_num));
+                            }
+                            cur_e += 1;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn event_has_any_notes(&self, e_idx: usize) -> bool {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(part) = doc.parts.first() {
+                let mut cur_e = 0;
+                for m in &part.measures {
+                    for seq in &m.sequences {
+                        for ev in &seq.content {
+                            if cur_e == e_idx {
+                                return !ev.notes.is_empty();
+                            }
+                            cur_e += 1;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub fn add_measure_to_end(&mut self) {
         let last_duration = self
             .parsed_mnx
@@ -968,6 +1172,10 @@ impl MnxEditorApp {
                             self.is_editing_fret = false;
                             self.editing_fret_buf.clear();
                             self.editing_string = None;
+
+                            if clicked_note.is_some() {
+                                self.preview_selected_sound();
+                            }
                         }
                     } else {
                         ui.label("No parts found in document.");
@@ -994,6 +1202,8 @@ impl MnxEditorApp {
             let delete_pressed = ui.input(|i| i.key_pressed(egui::Key::Delete));
             let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+            let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
+            let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
 
             let num_strings = self
                 .parsed_mnx
@@ -1006,58 +1216,90 @@ impl MnxEditorApp {
                 self.is_editing_fret = false;
                 self.editing_fret_buf.clear();
             } else if enter_pressed {
-                if let Some(e_idx) = self.selected_event_idx {
-                    if let Some(cur_str) = self.editing_string {
-                        if let Ok(new_fret) = self.editing_fret_buf.trim().parse::<u8>() {
-                            let new_pitch = self
-                                .parsed_mnx
-                                .as_ref()
-                                .and_then(|d| d.parts.first())
-                                .and_then(|part| {
-                                    calculate_pitch_for_string_fret(part, cur_str, new_fret)
-                                });
-
-                            if let Some(new_yaml) = set_or_add_note_on_string(
-                                &self.yaml_text,
-                                e_idx,
-                                cur_str,
-                                new_fret,
-                                new_pitch.as_ref(),
-                            ) {
-                                self.yaml_text = new_yaml;
-                                self.process_and_render();
-                            }
-                        }
-                    }
-                }
+                self.commit_fret_edit();
                 self.is_editing_fret = false;
                 self.editing_fret_buf.clear();
-            } else if up_pressed || down_pressed {
-                // If the user typed digits before moving string, commit them to the current string first
-                if let Some(e_idx) = self.selected_event_idx {
-                    if let Some(cur_str) = self.editing_string {
-                        if let Ok(new_fret) = self.editing_fret_buf.trim().parse::<u8>() {
-                            let new_pitch = self
-                                .parsed_mnx
-                                .as_ref()
-                                .and_then(|d| d.parts.first())
-                                .and_then(|part| {
-                                    calculate_pitch_for_string_fret(part, cur_str, new_fret)
-                                });
+            } else if left_pressed || right_pressed {
+                let cur_str = self.editing_string;
+                let e_idx_opt = self.selected_event_idx;
+                let is_current_str_existing = if let (Some(e_idx), Some(s)) = (e_idx_opt, cur_str) {
+                    self.event_has_note_on_string(e_idx, s)
+                } else {
+                    false
+                };
 
-                            if let Some(new_yaml) = set_or_add_note_on_string(
-                                &self.yaml_text,
-                                e_idx,
-                                cur_str,
-                                new_fret,
-                                new_pitch.as_ref(),
-                            ) {
-                                self.yaml_text = new_yaml;
-                                self.process_and_render();
+                if !self.editing_fret_buf.trim().is_empty() {
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
+
+                    if right_pressed {
+                        self.advance_to_next_note_in_edit_mode(cur_str, total_events);
+                    } else if left_pressed {
+                        self.retreat_to_prev_note_in_edit_mode(cur_str);
+                    }
+                } else if is_current_str_existing {
+                    if let (Some(e_idx), Some(s)) = (e_idx_opt, cur_str) {
+                        self.select_note_on_string(e_idx, s);
+                        self.preview_selected_sound();
+                    }
+                    self.editing_fret_buf.clear();
+
+                    if right_pressed {
+                        self.advance_to_next_note_in_edit_mode(cur_str, total_events);
+                    } else if left_pressed {
+                        self.retreat_to_prev_note_in_edit_mode(cur_str);
+                    }
+                } else if right_pressed {
+                    self.editing_fret_buf.clear();
+                    if let Some(e_idx) = e_idx_opt {
+                        if e_idx + 1 < total_events && self.event_has_any_notes(e_idx + 1) {
+                            let next_idx = e_idx + 1;
+                            self.selected_event_idx = Some(next_idx);
+                            self.editing_string = cur_str;
+                            self.is_editing_fret = true;
+                            if let Some(s) = cur_str {
+                                self.select_note_on_string(next_idx, s);
                             }
                         }
                     }
+                } else if left_pressed {
+                    self.editing_fret_buf.clear();
+                    if let Some(e_idx) = e_idx_opt {
+                        let at_final_event = e_idx == total_events.saturating_sub(1);
+                        let is_final_blank = at_final_event
+                            && self
+                                .parsed_mnx
+                                .as_ref()
+                                .and_then(|d| d.parts.first())
+                                .and_then(|p| p.measures.last())
+                                .and_then(|m| m.sequences.first())
+                                .and_then(|s| s.content.last())
+                                .map(|e| e.notes.is_empty())
+                                .unwrap_or(false);
+
+                        if is_final_blank {
+                            if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
+                                self.yaml_text = new_yaml;
+                                self.process_and_render();
+                                let new_total = find_all_event_ranges(&self.yaml_text).len();
+                                if new_total > 0 {
+                                    let prev_idx = new_total - 1;
+                                    self.selected_event_idx = Some(prev_idx);
+                                    self.editing_string = cur_str;
+                                    self.is_editing_fret = true;
+                                    if let Some(s) = cur_str {
+                                        self.select_note_on_string(prev_idx, s);
+                                    }
+                                }
+                            }
+                        } else if e_idx > 0 {
+                            self.retreat_to_prev_note_in_edit_mode(cur_str);
+                        }
+                    }
                 }
+            } else if up_pressed || down_pressed {
+                // If the user typed digits before moving string, commit them to the current string first
+                self.commit_fret_edit();
                 self.editing_fret_buf.clear();
 
                 // Move string Up (s - 1) or Down (s + 1)
@@ -1074,28 +1316,7 @@ impl MnxEditorApp {
                 // Update selected_note_idx_in_event to the note on the new string if one exists
                 if let Some(e_idx) = self.selected_event_idx {
                     if let Some(cur_str) = self.editing_string {
-                        self.selected_note_idx_in_event = None;
-                        if let Some(doc) = &self.parsed_mnx {
-                            if let Some(part) = doc.parts.first() {
-                                let mut cur_e = 0;
-                                'find_n: for m in &part.measures {
-                                    for seq in &m.sequences {
-                                        for ev in &seq.content {
-                                            if cur_e == e_idx {
-                                                for (n_i, n) in ev.notes.iter().enumerate() {
-                                                    if n.string == Some(cur_str) {
-                                                        self.selected_note_idx_in_event = Some(n_i);
-                                                        break;
-                                                    }
-                                                }
-                                                break 'find_n;
-                                            }
-                                            cur_e += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        self.select_note_on_string(e_idx, cur_str);
                     }
                 }
             } else if backspace_pressed {
@@ -1179,13 +1400,81 @@ impl MnxEditorApp {
                 }
             }
 
+            let backspace_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
             let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
 
-            if enter_pressed && self.selected_event_idx.is_some() {
+            if backspace_pressed && self.selected_event_idx.is_some() {
+                let e_idx = self.selected_event_idx.unwrap();
+                let at_final_event = e_idx == total_events.saturating_sub(1);
+                let is_final_blank = at_final_event
+                    && self
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.parts.first())
+                        .and_then(|p| p.measures.last())
+                        .and_then(|m| m.sequences.first())
+                        .and_then(|s| s.content.last())
+                        .map(|e| e.notes.is_empty())
+                        .unwrap_or(false);
+
+                if is_final_blank {
+                    if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
+                        self.yaml_text = new_yaml;
+                        self.process_and_render();
+                        let new_total = find_all_event_ranges(&self.yaml_text).len();
+                        if new_total > 0 {
+                            let prior_idx = new_total - 1;
+                            let prior_str =
+                                self.find_primary_string_for_event(prior_idx).unwrap_or(1);
+                            self.selected_event_idx = Some(prior_idx);
+                            self.editing_string = Some(prior_str);
+                            self.select_note_on_string(prior_idx, prior_str);
+                            self.editing_fret_buf.clear();
+                            self.is_editing_fret = true;
+                        } else {
+                            self.selected_event_idx = None;
+                            self.is_editing_fret = false;
+                        }
+                    }
+                } else {
+                    let target_str = self
+                        .selected_note_idx_in_event
+                        .and_then(|n_i| self.get_string_for_note(e_idx, n_i))
+                        .or_else(|| self.find_primary_string_for_event(e_idx));
+
+                    if let Some(s) = target_str {
+                        if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
+                            self.yaml_text = new_yaml;
+                            self.process_and_render();
+                        }
+                    }
+
+                    if e_idx > 0 {
+                        let prior_idx = e_idx - 1;
+                        let prior_str = target_str
+                            .filter(|&ts| self.event_has_note_on_string(prior_idx, ts))
+                            .or_else(|| self.find_primary_string_for_event(prior_idx))
+                            .unwrap_or(target_str.unwrap_or(1));
+
+                        self.selected_event_idx = Some(prior_idx);
+                        self.editing_string = Some(prior_str);
+                        self.select_note_on_string(prior_idx, prior_str);
+                        self.editing_fret_buf.clear();
+                        self.is_editing_fret = true;
+                    } else {
+                        let current_str = target_str.unwrap_or(1);
+                        self.selected_event_idx = Some(0);
+                        self.editing_string = Some(current_str);
+                        self.select_note_on_string(0, current_str);
+                        self.editing_fret_buf.clear();
+                        self.is_editing_fret = true;
+                    }
+                }
+            } else if enter_pressed && self.selected_event_idx.is_some() {
                 let e_idx = self.selected_event_idx.unwrap();
                 let mut initial_string = 1;
                 if let Some(doc) = &self.parsed_mnx {
@@ -1908,5 +2197,215 @@ parts:
             .filter(|d| d.tempo.is_some())
             .count();
         assert_eq!(tempo_count, 1, "Should only have one tempo directive");
+    }
+
+    #[test]
+    fn test_edit_mode_arrow_commit_and_advance() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.editing_string = Some(7);
+        app.editing_fret_buf = "14".to_string();
+
+        let total_events = find_all_event_ranges(&app.yaml_text).len();
+        let cur_str = app.editing_string;
+        assert!(app.commit_fret_edit());
+        app.editing_fret_buf.clear();
+        app.advance_to_next_note_in_edit_mode(cur_str, total_events);
+
+        // Check event 0 was updated to fret 14 on string 7
+        let doc = serde_saphyr::from_str::<MnxDocument>(&app.yaml_text).unwrap();
+        let note = &doc.parts[0].measures[0].sequences[0].content[0].notes[0];
+        assert_eq!(note.string, Some(7));
+        assert_eq!(note.fret, Some(14));
+
+        // Check app moved to event 1 and is in edit mode on string 7
+        assert_eq!(app.selected_event_idx, Some(1));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(7));
+        assert!(app.editing_fret_buf.is_empty());
+
+        // Now edit event 1 and retreat left
+        app.editing_fret_buf = "10".to_string();
+        assert!(app.commit_fret_edit());
+        app.editing_fret_buf.clear();
+        app.retreat_to_prev_note_in_edit_mode(cur_str);
+
+        let doc2 = serde_saphyr::from_str::<MnxDocument>(&app.yaml_text).unwrap();
+        let note2 = doc2.parts[0].measures[0].sequences[0].content[1]
+            .notes
+            .iter()
+            .find(|n| n.string == Some(7))
+            .expect("Should have note on string 7");
+        assert_eq!(note2.fret, Some(10));
+
+        assert_eq!(app.selected_event_idx, Some(0));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(7));
+    }
+
+    #[test]
+    fn test_blue_mode_backspace_removes_note_and_opens_orange_edit() {
+        let mut app = MnxEditorApp::default();
+        // Start in blue select mode at event 1
+        app.selected_event_idx = Some(1);
+        app.is_editing_fret = false;
+
+        let _total_events = find_all_event_ranges(&app.yaml_text).len();
+        let e_idx = 1;
+
+        let target_str = app
+            .selected_note_idx_in_event
+            .and_then(|n_i| app.get_string_for_note(e_idx, n_i))
+            .or_else(|| app.find_primary_string_for_event(e_idx));
+        assert!(target_str.is_some());
+
+        if let Some(s) = target_str {
+            if let Some(new_yaml) = remove_note_on_string(&app.yaml_text, e_idx, s) {
+                app.yaml_text = new_yaml;
+                app.process_and_render();
+            }
+        }
+
+        let prior_idx = e_idx - 1;
+        let prior_str = target_str
+            .filter(|&ts| app.event_has_note_on_string(prior_idx, ts))
+            .or_else(|| app.find_primary_string_for_event(prior_idx))
+            .unwrap_or(target_str.unwrap_or(1));
+
+        app.selected_event_idx = Some(prior_idx);
+        app.editing_string = Some(prior_str);
+        app.select_note_on_string(prior_idx, prior_str);
+        app.editing_fret_buf.clear();
+        app.is_editing_fret = true;
+
+        // Verify event 1 note is removed (notes is empty)
+        let doc = serde_saphyr::from_str::<MnxDocument>(&app.yaml_text).unwrap();
+        assert!(
+            doc.parts[0].measures[0].sequences[0].content[1]
+                .notes
+                .is_empty()
+        );
+
+        // Verify orange edit mode is open on prior note (event 0)
+        assert_eq!(app.selected_event_idx, Some(0));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(prior_str));
+    }
+
+    #[test]
+    fn test_edit_mode_navigate_existing_note_without_typing() {
+        let mut app = MnxEditorApp::default();
+        // Start in edit mode on event 0, string 7 without typing anything (buffer is empty)
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.editing_string = Some(7);
+        app.editing_fret_buf.clear();
+
+        let total_events = find_all_event_ranges(&app.yaml_text).len();
+        let cur_str = app.editing_string;
+
+        // Pressing right arrow should navigate to event 1 on string 7 in edit mode
+        app.advance_to_next_note_in_edit_mode(cur_str, total_events);
+        assert_eq!(app.selected_event_idx, Some(1));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(7));
+        assert!(app.editing_fret_buf.is_empty());
+
+        // Pressing left arrow should navigate back to event 0 on string 7 in edit mode
+        app.retreat_to_prev_note_in_edit_mode(cur_str);
+        assert_eq!(app.selected_event_idx, Some(0));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(7));
+    }
+
+    #[test]
+    fn test_edit_mode_blank_note_left_arrow_removes_blank() {
+        let mut app = MnxEditorApp::default();
+        let total_initial = find_all_event_ranges(&app.yaml_text).len();
+        assert_eq!(total_initial, 15);
+
+        // Select the final event (event 14) and advance right to create a new blank note in edit mode
+        app.selected_event_idx = Some(14);
+        app.is_editing_fret = true;
+        app.editing_string = Some(4);
+        app.advance_to_next_note_in_edit_mode(Some(4), total_initial);
+
+        let total_after_advance = find_all_event_ranges(&app.yaml_text).len();
+        assert_eq!(total_after_advance, 16);
+        assert_eq!(app.selected_event_idx, Some(15));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(4));
+
+        // Now, while on the blank note with empty buffer, heading left should remove the blank note
+        let cur_str = app.editing_string;
+        let e_idx_opt = app.selected_event_idx;
+        if let Some(e_idx) = e_idx_opt {
+            let total_events = find_all_event_ranges(&app.yaml_text).len();
+            let at_final_event = e_idx == total_events.saturating_sub(1);
+            let is_final_blank = at_final_event
+                && app
+                    .parsed_mnx
+                    .as_ref()
+                    .and_then(|d| d.parts.first())
+                    .and_then(|p| p.measures.last())
+                    .and_then(|m| m.sequences.first())
+                    .and_then(|s| s.content.last())
+                    .map(|e| e.notes.is_empty())
+                    .unwrap_or(false);
+
+            assert!(is_final_blank);
+            if let Some(new_yaml) = remove_last_blank_event(&app.yaml_text) {
+                app.yaml_text = new_yaml;
+                app.process_and_render();
+                let new_total = find_all_event_ranges(&app.yaml_text).len();
+                assert_eq!(new_total, 15);
+                let prev_idx = new_total - 1;
+                app.selected_event_idx = Some(prev_idx);
+                app.editing_string = cur_str;
+                app.is_editing_fret = true;
+                if let Some(s) = cur_str {
+                    app.select_note_on_string(prev_idx, s);
+                }
+            }
+        }
+
+        assert_eq!(app.selected_event_idx, Some(14));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(4));
+    }
+
+    #[test]
+    fn test_edit_mode_navigate_right_on_blank_string_when_next_event_has_notes() {
+        let mut app = MnxEditorApp::default();
+        // In example.yaml, event 0 has a note on string 7, but string 1 is blank at event 0.
+        // Event 1 has a note on string 7.
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+        app.editing_fret_buf.clear();
+
+        // Check string 1 is indeed blank at event 0
+        assert!(!app.event_has_note_on_string(0, 1));
+        // Check event 1 has notes
+        assert!(app.event_has_any_notes(1));
+
+        let total_events = find_all_event_ranges(&app.yaml_text).len();
+        let cur_str = app.editing_string;
+        let e_idx = 0;
+
+        if e_idx + 1 < total_events && app.event_has_any_notes(e_idx + 1) {
+            let next_idx = e_idx + 1;
+            app.selected_event_idx = Some(next_idx);
+            app.editing_string = cur_str;
+            app.is_editing_fret = true;
+            if let Some(s) = cur_str {
+                app.select_note_on_string(next_idx, s);
+            }
+        }
+
+        assert_eq!(app.selected_event_idx, Some(1));
+        assert!(app.is_editing_fret);
+        assert_eq!(app.editing_string, Some(1));
     }
 }
