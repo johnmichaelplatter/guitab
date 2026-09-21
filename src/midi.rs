@@ -1,6 +1,5 @@
 use crate::mnx::MnxDocument;
-use crate::tuning_table::FretboardFrequencyTable;
-use crate::validate::duration_to_quarter_beats;
+
 use midly::{
     Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
     num::{u4, u7, u15, u24, u28},
@@ -92,230 +91,158 @@ enum InternalEventKind {
     EventMarker(usize),
 }
 
-pub fn generate_playback_track(
-    doc: &MnxDocument,
-    mut options: MidiOptions,
-) -> (Vec<PlaybackEvent>, f64) {
-    let ppq = u16::from(options.ppq) as f64;
-    let mut abs_events: Vec<InternalAbsoluteEvent> = Vec::new();
+pub struct PlaybackTrackGenerator<'a> {
+    doc: &'a MnxDocument,
+    options: MidiOptions,
+    abs_events: Vec<InternalAbsoluteEvent>,
+    ppq: f64,
+}
 
-    // Determine BPM from MNX or fallback
-    let mut current_bpm = options.default_bpm;
-    if !doc.global.measures.is_empty() {
-        if let Some(first_measure) = doc.global.measures.first() {
-            for dir in &first_measure.directions {
-                if let Some(tempo) = &dir.tempo {
-                    current_bpm = tempo.bpm;
+impl<'a> PlaybackTrackGenerator<'a> {
+    pub fn new(doc: &'a MnxDocument, options: MidiOptions) -> Self {
+        let ppq = u16::from(options.ppq) as f64;
+        Self {
+            doc,
+            options,
+            abs_events: Vec::new(),
+            ppq,
+        }
+    }
+
+    fn setup_tempo(&mut self) -> f64 {
+        let mut current_bpm = self.options.default_bpm;
+        if !self.doc.global.measures.is_empty() {
+            if let Some(first_measure) = self.doc.global.measures.first() {
+                for dir in &first_measure.directions {
+                    if let Some(tempo) = &dir.tempo {
+                        current_bpm = tempo.bpm;
+                    }
                 }
+            }
+        }
+        let micros_per_beat = (60_000_000.0 / current_bpm).round() as u32;
+        self.abs_events.push(InternalAbsoluteEvent {
+            time_ticks: 0,
+            kind: InternalEventKind::Tempo(micros_per_beat),
+        });
+        current_bpm
+    }
+
+    fn setup_channels_and_mpe(&mut self, num_strings: u8) {
+        if self.options.string_to_channel.is_empty() {
+            for s in 1..=num_strings {
+                if self.options.is_mpe {
+                    let ch = ((s - 1) % 15 + 1) as u8;
+                    self.options.string_to_channel.insert(s, u4::from(ch));
+                } else {
+                    let ch = (s - 1) % 16;
+                    let ch = if ch == 9 { (ch + 1) % 16 } else { ch };
+                    self.options.string_to_channel.insert(s, u4::from(ch));
+                }
+            }
+        }
+
+        if self.options.is_mpe {
+            let member_channels = num_strings.min(15);
+            let mpe_ccs = [
+                (101, 0),
+                (100, 6),
+                (6, member_channels),
+                (38, 0),
+                (101, 127),
+                (100, 127),
+            ];
+            for (cc, val) in mpe_ccs {
+                self.abs_events.push(InternalAbsoluteEvent {
+                    time_ticks: 0,
+                    kind: InternalEventKind::Midi {
+                        channel: u4::from(0),
+                        message: MidiMessage::Controller {
+                            controller: u7::from(cc),
+                            value: u7::from(val),
+                        },
+                    },
+                });
+            }
+        }
+
+        for &ch in self.options.string_to_channel.values() {
+            let pb_range = self.options.pitch_bend_range.min(127);
+            let pb_ccs = [
+                (101, 0),
+                (100, 0),
+                (6, pb_range),
+                (38, 0),
+                (101, 127),
+                (100, 127),
+            ];
+            for (cc, val) in pb_ccs {
+                self.abs_events.push(InternalAbsoluteEvent {
+                    time_ticks: 0,
+                    kind: InternalEventKind::Midi {
+                        channel: ch,
+                        message: MidiMessage::Controller {
+                            controller: u7::from(cc),
+                            value: u7::from(val),
+                        },
+                    },
+                });
             }
         }
     }
 
-    // Add tempo event at tick 0
-    let micros_per_beat = (60_000_000.0 / current_bpm).round() as u32;
-    abs_events.push(InternalAbsoluteEvent {
-        time_ticks: 0,
-        kind: InternalEventKind::Tempo(micros_per_beat),
-    });
-
-    if let Some(part) = doc.parts.first() {
-        let num_strings = part.num_strings() as u8;
-
-        // Setup channel mappings for strings if not explicitly provided
-        if options.string_to_channel.is_empty() {
-            for s in 1..=num_strings {
-                if options.is_mpe {
-                    let ch = ((s - 1) % 15 + 1) as u8;
-                    options.string_to_channel.insert(s, u4::from(ch));
-                } else {
-                    let ch = (s - 1) % 16;
-                    let ch = if ch == 9 { (ch + 1) % 16 } else { ch };
-                    options.string_to_channel.insert(s, u4::from(ch));
-                }
-            }
-        }
-
-        // If MPE mode is enabled, emit MPE Configuration Message on Master Channel 1 (0-indexed 0)
-        if options.is_mpe {
-            let member_channels = num_strings.min(15);
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: u4::from(0),
-                    message: MidiMessage::Controller {
-                        controller: u7::from(101),
-                        value: u7::from(0),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: u4::from(0),
-                    message: MidiMessage::Controller {
-                        controller: u7::from(100),
-                        value: u7::from(6),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: u4::from(0),
-                    message: MidiMessage::Controller {
-                        controller: u7::from(6),
-                        value: u7::from(member_channels),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: u4::from(0),
-                    message: MidiMessage::Controller {
-                        controller: u7::from(38),
-                        value: u7::from(0),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: u4::from(0),
-                    message: MidiMessage::Controller {
-                        controller: u7::from(101),
-                        value: u7::from(127),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: u4::from(0),
-                    message: MidiMessage::Controller {
-                        controller: u7::from(100),
-                        value: u7::from(127),
-                    },
-                },
-            });
-        }
-
-        // Setup pitch bend ranges (RPN 0) for all used string member channels
-        for &ch in options.string_to_channel.values() {
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: ch,
-                    message: MidiMessage::Controller {
-                        controller: u7::from(101),
-                        value: u7::from(0),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: ch,
-                    message: MidiMessage::Controller {
-                        controller: u7::from(100),
-                        value: u7::from(0),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: ch,
-                    message: MidiMessage::Controller {
-                        controller: u7::from(6),
-                        value: u7::from(options.pitch_bend_range.min(127)),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: ch,
-                    message: MidiMessage::Controller {
-                        controller: u7::from(38),
-                        value: u7::from(0),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: ch,
-                    message: MidiMessage::Controller {
-                        controller: u7::from(101),
-                        value: u7::from(127),
-                    },
-                },
-            });
-            abs_events.push(InternalAbsoluteEvent {
-                time_ticks: 0,
-                kind: InternalEventKind::Midi {
-                    channel: ch,
-                    message: MidiMessage::Controller {
-                        controller: u7::from(100),
-                        value: u7::from(127),
-                    },
-                },
-            });
-        }
-
-        let freq_table = FretboardFrequencyTable::from_part_default(part);
-        let mut current_time_ticks = 0;
-        let mut current_event_idx = 0;
-        let start_event = options.start_event_idx.unwrap_or(0);
-
-        // Find time tick offset of start_event so playback from selected note starts immediately
+    fn find_start_offset(&self, part: &crate::mnx::Part, start_event: usize) -> u32 {
         let mut start_tick_offset = 0;
-        'find_offset: for measure in &part.measures {
+        let mut current_event_idx = 0;
+        for measure in &part.measures {
             for seq in &measure.sequences {
-                let mut seq_time = current_time_ticks;
                 for event in &seq.content {
                     if current_event_idx == start_event {
-                        start_tick_offset = seq_time;
-                        break 'find_offset;
+                        return start_tick_offset;
                     }
-                    let beats = duration_to_quarter_beats(&event.duration);
-                    let duration_ticks = (beats * ppq).round() as u32;
-                    seq_time += duration_ticks;
+                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
+                    start_tick_offset += (beats * self.ppq).round() as u32;
                     current_event_idx += 1;
                 }
-                current_time_ticks = seq_time;
             }
         }
+        start_tick_offset
+    }
 
-        current_time_ticks = 0;
-        current_event_idx = 0;
+    fn process_events(
+        &mut self,
+        part: &crate::mnx::Part,
+        start_event: usize,
+        start_tick_offset: u32,
+    ) {
+        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
+        let mut current_time_ticks: u32 = 0;
+        let mut current_event_idx = 0;
 
         for measure in &part.measures {
             for seq in &measure.sequences {
                 let mut seq_time_ticks = current_time_ticks;
-
                 for event in &seq.content {
-                    let beats = duration_to_quarter_beats(&event.duration);
-                    let duration_ticks = (beats * ppq).round() as u32;
+                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
+                    let duration_ticks = (beats * self.ppq).round() as u32;
 
                     if current_event_idx >= start_event {
                         let event_start_ticks = seq_time_ticks.saturating_sub(start_tick_offset);
 
-                        // Emit score event marker for synchronization with the UI
-                        abs_events.push(InternalAbsoluteEvent {
+                        self.abs_events.push(InternalAbsoluteEvent {
                             time_ticks: event_start_ticks,
                             kind: InternalEventKind::EventMarker(current_event_idx),
                         });
 
                         for note in &event.notes {
                             if let (Some(string), Some(fret)) = (note.string, note.fret) {
-                                let default_ch = if options.is_mpe {
+                                let default_ch = if self.options.is_mpe {
                                     u4::from(((string - 1) % 15 + 1) as u8)
                                 } else {
                                     u4::from((string - 1) % 16)
                                 };
-                                let channel = options
+                                let channel = self
+                                    .options
                                     .string_to_channel
                                     .get(&string)
                                     .copied()
@@ -326,14 +253,12 @@ pub fn generate_playback_track(
                                     let base_note = midi_note_frac.round() as u8;
                                     let semitone_diff =
                                         (midi_note_frac - (base_note as f64)) as f32;
-
                                     let pitch_bend_val = calculate_pitch_bend(
                                         semitone_diff,
-                                        options.pitch_bend_range,
+                                        self.options.pitch_bend_range,
                                     );
 
-                                    // Pitch Bend
-                                    abs_events.push(InternalAbsoluteEvent {
+                                    self.abs_events.push(InternalAbsoluteEvent {
                                         time_ticks: event_start_ticks,
                                         kind: InternalEventKind::Midi {
                                             channel,
@@ -345,8 +270,7 @@ pub fn generate_playback_track(
                                         },
                                     });
 
-                                    // Note On
-                                    abs_events.push(InternalAbsoluteEvent {
+                                    self.abs_events.push(InternalAbsoluteEvent {
                                         time_ticks: event_start_ticks,
                                         kind: InternalEventKind::Midi {
                                             channel,
@@ -357,8 +281,7 @@ pub fn generate_playback_track(
                                         },
                                     });
 
-                                    // Note Off
-                                    abs_events.push(InternalAbsoluteEvent {
+                                    self.abs_events.push(InternalAbsoluteEvent {
                                         time_ticks: event_start_ticks + duration_ticks,
                                         kind: InternalEventKind::Midi {
                                             channel,
@@ -381,29 +304,57 @@ pub fn generate_playback_track(
         }
     }
 
-    // Sort by absolute time
-    abs_events.sort_by_key(|e| e.time_ticks);
-
-    // Convert to relative delta times
-    let mut playback_events = Vec::new();
-    let mut last_time = 0;
-    for abs_e in abs_events {
-        let delta = abs_e.time_ticks - last_time;
-        last_time = abs_e.time_ticks;
-        let kind = match abs_e.kind {
-            InternalEventKind::Tempo(t) => PlaybackEventKind::Tempo(t),
-            InternalEventKind::Midi { channel, message } => {
-                PlaybackEventKind::Midi { channel, message }
+    fn resolve_deltas(mut self) -> Vec<PlaybackEvent> {
+        self.abs_events.sort_by_key(|e| e.time_ticks);
+        let mut playback_events = Vec::new();
+        let mut last_time = 0;
+        for abs_e in self.abs_events {
+            let delta = abs_e.time_ticks.saturating_sub(last_time);
+            last_time = abs_e.time_ticks;
+            match abs_e.kind {
+                InternalEventKind::Midi { channel, message } => {
+                    playback_events.push(PlaybackEvent {
+                        delta_ticks: delta,
+                        kind: PlaybackEventKind::Midi { channel, message },
+                    });
+                }
+                InternalEventKind::Tempo(mpb) => {
+                    playback_events.push(PlaybackEvent {
+                        delta_ticks: delta,
+                        kind: PlaybackEventKind::Tempo(mpb),
+                    });
+                }
+                InternalEventKind::EventMarker(idx) => {
+                    playback_events.push(PlaybackEvent {
+                        delta_ticks: delta,
+                        kind: PlaybackEventKind::EventMarker(idx),
+                    });
+                }
             }
-            InternalEventKind::EventMarker(idx) => PlaybackEventKind::EventMarker(idx),
-        };
-        playback_events.push(PlaybackEvent {
-            delta_ticks: delta,
-            kind,
-        });
+        }
+        playback_events
     }
 
-    (playback_events, ppq)
+    pub fn generate(mut self) -> (Vec<PlaybackEvent>, f64) {
+        let _bpm = self.setup_tempo();
+        if let Some(part) = self.doc.parts.first() {
+            let num_strings = part.num_strings() as u8;
+            self.setup_channels_and_mpe(num_strings);
+
+            let start_event = self.options.start_event_idx.unwrap_or(0);
+            let start_tick_offset = self.find_start_offset(part, start_event);
+            self.process_events(part, start_event, start_tick_offset);
+        }
+        let ppq = self.ppq;
+        (self.resolve_deltas(), ppq)
+    }
+}
+
+pub fn generate_playback_track(
+    doc: &MnxDocument,
+    options: MidiOptions,
+) -> (Vec<PlaybackEvent>, f64) {
+    PlaybackTrackGenerator::new(doc, options).generate()
 }
 
 pub fn generate_midi<'a>(doc: &MnxDocument, options: MidiOptions) -> Smf<'a> {
