@@ -7,7 +7,7 @@ pub struct ValidationError {
     pub measure_idx: usize,
     pub event_idx: usize, // 0 for measure-level errors
     pub string: u8,       // 0 for measure-level errors
-    pub fret: u8,         // 0 for measure-level errors
+    pub fret: i32,         // 0 for measure-level errors
     pub message: String,
 }
 
@@ -160,6 +160,19 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                 let physical_fret_steps = (fret as i32) * step_multiplier;
                                 let played_steps =
                                     string_base + physical_capo_steps + physical_fret_steps;
+
+                                if fret < 0 {
+                                    errors.push(ValidationError {
+                                        measure_idx: m_idx + 1,
+                                        event_idx: e_idx,
+                                        string,
+                                        fret,
+                                        message: format!(
+                                            "Negative fret {} on String {} is physically impossible.",
+                                            fret, string
+                                        ),
+                                    });
+                                }
 
                                 let expected_steps = tuning_calc.pitch_to_steps(&note.pitch);
 

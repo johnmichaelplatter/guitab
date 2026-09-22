@@ -4,19 +4,53 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
 // ── Pitch helpers ────────────────────────────────────────────────────────────
 
-fn format_pitch(pitch: &Pitch) -> String {
+fn format_pitch(pitch: &Pitch, edo: u32) -> String {
     let mut prefix = String::new();
     let mut suffix = String::new();
+    
     if let Some(alter) = &pitch.alter {
+        let mut alter_val = 0;
         let alter_str = alter.to_string();
-        if alter_str.starts_with("-1\\") || alter_str.starts_with("-1/") {
-            prefix.push('v');
-        } else if alter_str.starts_with("1\\") || alter_str.starts_with("1/") {
-            prefix.push('^');
-        } else {
-            suffix = format!("({})", alter_str);
+        if let Some(pos) = alter_str.find('\\') {
+            if let Ok(v) = alter_str[..pos].parse::<i32>() {
+                alter_val = v;
+            }
+        } else if let Ok(v) = alter_str.parse::<f64>() {
+            alter_val = v as i32;
+        }
+        
+        let tuning = crate::edo::EdoTuning::new(edo);
+        let sharp_steps = tuning.sharp_steps;
+        
+        // Find best combination of sharps/flats and up/down
+        // Similar to steps_to_pitch logic
+        let mut best_score = i32::MAX;
+        let mut best_sharps = 0;
+        let mut best_ups = 0;
+        
+        for sharps in -2..=2 {
+            let ups = alter_val - sharps * sharp_steps;
+            let score = sharps.abs() * 2 + ups.abs() * 3;
+            if score < best_score {
+                best_score = score;
+                best_sharps = sharps;
+                best_ups = ups;
+            }
+        }
+        
+        if best_ups > 0 {
+            prefix.push_str(&"^".repeat(best_ups as usize));
+        } else if best_ups < 0 {
+            prefix.push_str(&"v".repeat((-best_ups) as usize));
+        }
+        
+        if best_sharps > 0 {
+            suffix.push_str(&"#".repeat(best_sharps as usize));
+        } else if best_sharps < 0 {
+            suffix.push_str(&"b".repeat((-best_sharps) as usize));
         }
     }
+    
     format!("{}{}{}", prefix, pitch.step, suffix)
 }
 
@@ -249,7 +283,7 @@ pub fn draw_tablature(
     {
         for t in tuning {
             if t.string >= 1 && (t.string as usize) <= num_strings {
-                prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch);
+                prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch, part.edo());
             }
         }
     }
@@ -430,20 +464,20 @@ pub fn draw_tablature(
     type HitBoxInfo = (Vec<(Rect, usize)>, Rect, Rect);
     let mut event_hit_boxes: Vec<HitBoxInfo> = Vec::new();
 
-    let mut note_id_map: std::collections::HashMap<String, (Pos2, u8, u8)> =
+    let mut note_id_map: std::collections::HashMap<String, (Pos2, u8, i32)> =
         std::collections::HashMap::new();
     let mut event_id_map: std::collections::HashMap<String, (f32, bool)> =
         std::collections::HashMap::new();
     let mut event_notes_map: std::collections::HashMap<
         String,
-        Vec<(Option<String>, u8, u8, Pos2)>,
+        Vec<(Option<String>, u8, i32, Pos2)>,
     > = std::collections::HashMap::new();
     let mut event_id_to_idx: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    let mut collected_ties: Vec<(Pos2, u8, u8, String)> = Vec::new();
+    let mut collected_ties: Vec<(Pos2, u8, i32, String)> = Vec::new();
     let mut collected_slurs: Vec<(
         crate::mnx::Slur,
-        Vec<(Option<String>, u8, u8, Pos2)>,
+        Vec<(Option<String>, u8, i32, Pos2)>,
     )> = Vec::new();
 
     let mut flat_event_idx = 0;
@@ -585,8 +619,8 @@ pub fn draw_tablature(
                 }
 
                 // Fret numbers on strings: store (fret, note_idx)
-                let mut step_frets: Vec<Option<(u8, usize)>> = vec![None; num_strings];
-                let mut this_event_notes: Vec<(Option<String>, u8, u8, Pos2)> = Vec::new();
+                let mut step_frets: Vec<Option<(i32, usize)>> = vec![None; num_strings];
+                let mut this_event_notes: Vec<(Option<String>, u8, i32, Pos2)> = Vec::new();
                 for (n_idx, note) in event.notes.iter().enumerate() {
                     if let (Some(s), Some(f)) = (note.string, note.fret) {
                         if s >= 1 && (s as usize) <= num_strings {
@@ -812,7 +846,7 @@ pub fn draw_tablature(
             None => continue,
         };
 
-        let mut matched_pair: Option<((u8, u8, Pos2), (u8, u8, Pos2))> = None;
+        let mut matched_pair: Option<((u8, i32, Pos2), (u8, i32, Pos2))> = None;
 
         if let (Some(start_nid), Some(end_nid)) = (&slur.start_note, &slur.end_note) {
             let s_opt = start_notes

@@ -44,7 +44,7 @@ impl ReferencePitch {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FretboardPositionState {
     pub string: u8,
-    pub fret: u8,
+    pub fret: i32,
     pub played_steps: i32,
     pub pitch: Pitch,
     pub frequency_hz: f64,
@@ -62,7 +62,7 @@ pub struct FretboardFrequencyTable {
     pub reference_pitch: ReferencePitch,
     pub ref_steps: i32,
     /// Quick lookup mapped by (string, fret)
-    pub table: HashMap<(u8, u8), FretboardPositionState>,
+    pub table: HashMap<(u8, i32), FretboardPositionState>,
 }
 
 impl FretboardFrequencyTable {
@@ -107,14 +107,14 @@ impl FretboardFrequencyTable {
 
                     let state = FretboardPositionState {
                         string: string_idx,
-                        fret,
+                        fret: fret as i32,
                         played_steps,
                         pitch,
                         frequency_hz,
                         midi_note_number,
                     };
 
-                    table.insert((string_idx, fret), state);
+                    table.insert((string_idx, fret as i32), state);
                 }
             }
         }
@@ -137,12 +137,12 @@ impl FretboardFrequencyTable {
     }
 
     /// Query the state for a given string and fret.
-    pub fn get(&self, string: u8, fret: u8) -> Option<&FretboardPositionState> {
+    pub fn get(&self, string: u8, fret: i32) -> Option<&FretboardPositionState> {
         self.table.get(&(string, fret))
     }
 
     /// Query the Hz for a given string and fret.
-    pub fn get_hz(&self, string: u8, fret: u8) -> Option<f64> {
+    pub fn get_hz(&self, string: u8, fret: i32) -> Option<f64> {
         self.get(string, fret).map(|s| s.frequency_hz)
     }
 

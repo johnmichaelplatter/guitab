@@ -180,7 +180,7 @@ fn format_pitch_yaml(pitch: &crate::mnx::Pitch) -> String {
 pub fn calculate_pitch_for_string_fret(
     part: &crate::mnx::Part,
     string: u8,
-    fret: u8,
+    fret: i32,
 ) -> Option<crate::mnx::Pitch> {
     let capo_fret = part.capo_fret();
     let edo = part.edo();
@@ -214,7 +214,7 @@ pub fn update_note_in_yaml(
     yaml: &str,
     event_idx: usize,
     note_idx: usize,
-    new_fret: u8,
+    new_fret: i32,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> Option<String> {
     let event_ranges = find_all_event_ranges(yaml);
@@ -277,7 +277,7 @@ pub fn set_or_add_note_on_string(
     yaml: &str,
     event_idx: usize,
     target_string: u8,
-    new_fret: u8,
+    new_fret: i32,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> Option<String> {
     let event_ranges = find_all_event_ranges(yaml);

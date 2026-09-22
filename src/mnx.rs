@@ -165,7 +165,7 @@ pub struct Note {
     pub id: Option<String>,
     pub pitch: Pitch,
     pub string: Option<u8>,
-    pub fret: Option<u8>,
+    pub fret: Option<i32>,
     pub accidental: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ties: Option<Vec<Tie>>,

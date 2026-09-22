@@ -96,6 +96,49 @@ impl EdoTuning {
             octave,
         }
     }
+    pub fn parse_pitch_string(&self, s: &str, octave: i32) -> Option<crate::mnx::Pitch> {
+        let mut ups = 0;
+        let mut downs = 0;
+        let mut sharps = 0;
+        let mut flats = 0;
+        let mut nom = None;
+        
+        for c in s.chars() {
+            match c {
+                '^' => ups += 1,
+                'v' => downs += 1,
+                '#' => sharps += 1,
+                'b' => flats += 1,
+                'A'..='G' => nom = Some(c),
+                _ => return None,
+            }
+        }
+        
+        let nom = nom?;
+        if ups > 3 || downs > 3 || sharps > 2 || flats > 2 {
+            return None;
+        }
+        if ups > 0 && downs > 0 { return None; }
+        if sharps > 0 && flats > 0 { return None; }
+        
+        let total_sharps = sharps - flats;
+        let total_ups = ups - downs;
+        
+        let alter_steps = total_sharps * self.sharp_steps + total_ups;
+        let alter = if alter_steps == 0 {
+            None
+        } else if self.edo == 12 {
+            Some(crate::mnx::Alteration::Value(alter_steps as f64))
+        } else {
+            Some(crate::mnx::Alteration::Fraction(format!("{}\\{}", alter_steps, self.edo)))
+        };
+        
+        Some(crate::mnx::Pitch {
+            step: nom.to_string(),
+            alter,
+            octave,
+        })
+    }
 }
 
 #[cfg(test)]
