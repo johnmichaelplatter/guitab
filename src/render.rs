@@ -263,7 +263,7 @@ pub fn draw_tablature(
 
     let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
     let rhythm_row_h = rhythm_gap + stem_height + 10.0; // stem + flags/dots + pad
-    let top_pad = 48.0_f32; // room for name + EDO label
+    let top_pad = 56.0_f32; // room for name + EDO label + slurs on top string
     let total_height = top_pad + staff_height + rhythm_row_h + 10.0; // top pad + staff + rhythm + bottom pad
     let total_width = start_offset_x
         + (total_events as f32) * event_spacing
@@ -391,6 +391,22 @@ pub fn draw_tablature(
     type HitBoxInfo = (Vec<(Rect, usize)>, Rect, Rect);
     let mut event_hit_boxes: Vec<HitBoxInfo> = Vec::new();
 
+    let mut note_id_map: std::collections::HashMap<String, (Pos2, u8, u8)> =
+        std::collections::HashMap::new();
+    let mut event_id_map: std::collections::HashMap<String, (f32, bool)> =
+        std::collections::HashMap::new();
+    let mut event_notes_map: std::collections::HashMap<
+        String,
+        Vec<(Option<String>, u8, u8, Pos2)>,
+    > = std::collections::HashMap::new();
+    let mut event_id_to_idx: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut collected_ties: Vec<(Pos2, u8, u8, String)> = Vec::new();
+    let mut collected_slurs: Vec<(
+        crate::mnx::Slur,
+        Vec<(Option<String>, u8, u8, Pos2)>,
+    )> = Vec::new();
+
     let mut flat_event_idx = 0;
 
     // ── Main event loop ───────────────────────────────────────────────────────
@@ -440,6 +456,11 @@ pub fn draw_tablature(
                     }
                     LayoutItem::Event(e) => e,
                 };
+
+                if let Some(ev_id) = &event.id {
+                    event_id_map.insert(ev_id.clone(), (current_x, event.rest.is_some()));
+                    event_id_to_idx.insert(ev_id.clone(), flat_event_idx);
+                }
 
                 let is_selected = selected_event == Some(flat_event_idx);
 
@@ -498,12 +519,31 @@ pub fn draw_tablature(
 
                 // Fret numbers on strings: store (fret, note_idx)
                 let mut step_frets: Vec<Option<(u8, usize)>> = vec![None; num_strings];
+                let mut this_event_notes: Vec<(Option<String>, u8, u8, Pos2)> = Vec::new();
                 for (n_idx, note) in event.notes.iter().enumerate() {
                     if let (Some(s), Some(f)) = (note.string, note.fret) {
                         if s >= 1 && (s as usize) <= num_strings {
                             step_frets[(s - 1) as usize] = Some((f, n_idx));
+                            let note_pos = Pos2::new(current_x, string_y_coords[(s - 1) as usize]);
+                            this_event_notes.push((note.id.clone(), s, f, note_pos));
+                            if let Some(nid) = &note.id {
+                                note_id_map.insert(nid.clone(), (note_pos, s, f));
+                            }
+                            if let Some(ties) = &note.ties {
+                                for tie in ties {
+                                    collected_ties.push((note_pos, s, f, tie.target.clone()));
+                                }
+                            }
                         }
                     }
+                }
+                if let Some(slurs) = &event.slurs {
+                    for slur in slurs {
+                        collected_slurs.push((slur.clone(), this_event_notes.clone()));
+                    }
+                }
+                if let Some(ev_id) = &event.id {
+                    event_notes_map.insert(ev_id.clone(), this_event_notes);
                 }
 
                 let mut current_fret_rects = Vec::new();
@@ -638,32 +678,195 @@ pub fn draw_tablature(
         }
     }
 
+    // ── Draw Ties ──────────────────────────────────────────────────────────────
+    for (start_pos, start_string, _start_fret, target_id) in &collected_ties {
+        let string_y = start_pos.y;
+        if let Some(&(target_pos, target_string, _target_fret)) = note_id_map.get(target_id) {
+            if *start_string == target_string && target_pos.x > start_pos.x {
+                let x1 = start_pos.x + 9.0;
+                let x2 = target_pos.x - 9.0;
+                if x2 > x1 {
+                    let p0 = Pos2::new(x1, string_y + 3.0);
+                    let p3 = Pos2::new(x2, string_y + 3.0);
+                    let dx = p3.x - p0.x;
+                    let dip = (dx * 0.12).clamp(5.0, 11.0);
+                    let p1 = Pos2::new(p0.x + dx * 0.25, string_y + 3.0 + dip);
+                    let p2 = Pos2::new(p3.x - dx * 0.25, string_y + 3.0 + dip);
+                    let shape = egui::epaint::CubicBezierShape::from_points_stroke(
+                        [p0, p1, p2, p3],
+                        false,
+                        Color32::TRANSPARENT,
+                        Stroke::new(1.5, note_color),
+                    );
+                    painter.add(shape);
+                }
+            }
+        } else if let Some(&(rest_x, is_rest)) = event_id_map.get(target_id) {
+            // Note tied to a rest -> "let ring"
+            if is_rest && rest_x > start_pos.x {
+                let x1 = start_pos.x + 9.0;
+                let x2 = rest_x - 6.0;
+                if x2 > x1 {
+                    let p0 = Pos2::new(x1, string_y + 3.0);
+                    let p3 = Pos2::new(x2, string_y + 3.0);
+                    let dx = p3.x - p0.x;
+                    let dip = (dx * 0.12).clamp(5.0, 11.0);
+                    let p1 = Pos2::new(p0.x + dx * 0.25, string_y + 3.0 + dip);
+                    let p2 = Pos2::new(p3.x - dx * 0.25, string_y + 3.0 + dip);
+                    let shape = egui::epaint::CubicBezierShape::from_points_stroke(
+                        [p0, p1, p2, p3],
+                        false,
+                        Color32::TRANSPARENT,
+                        Stroke::new(1.5, note_color),
+                    );
+                    painter.add(shape);
+
+                    painter.text(
+                        Pos2::new((x1 + x2) * 0.5, string_y + 4.0 + dip),
+                        egui::Align2::CENTER_TOP,
+                        "l.r.",
+                        FontId::proportional(10.0),
+                        Color32::from_gray(160),
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Draw Slurs (Hammer-ons / Pull-offs) ──────────────────────────────────────
+    for (slur, start_notes) in &collected_slurs {
+        let target_notes = match event_notes_map.get(&slur.target) {
+            Some(notes) => notes,
+            None => continue,
+        };
+
+        let mut matched_pair: Option<((u8, u8, Pos2), (u8, u8, Pos2))> = None;
+
+        if let (Some(start_nid), Some(end_nid)) = (&slur.start_note, &slur.end_note) {
+            let s_opt = start_notes
+                .iter()
+                .find(|(nid, _, _, _)| nid.as_ref() == Some(start_nid));
+            let e_opt = target_notes
+                .iter()
+                .find(|(nid, _, _, _)| nid.as_ref() == Some(end_nid));
+            if let (Some((_, s_str, s_fret, s_pos)), Some((_, e_str, e_fret, e_pos))) =
+                (s_opt, e_opt)
+            {
+                matched_pair = Some(((*s_str, *s_fret, *s_pos), (*e_str, *e_fret, *e_pos)));
+            }
+        } else {
+            for (_, s_str, s_fret, s_pos) in start_notes {
+                if let Some((_, e_str, e_fret, e_pos)) = target_notes
+                    .iter()
+                    .find(|(_, str_num, _, _)| str_num == s_str)
+                {
+                    matched_pair = Some(((*s_str, *s_fret, *s_pos), (*e_str, *e_fret, *e_pos)));
+                    break;
+                }
+            }
+        }
+
+        if let Some(((s_str, s_fret, s_pos), (e_str, e_fret, e_pos))) = matched_pair {
+            // Enforce guitar constraint: "These can only occur on a single string!"
+            if s_str != e_str || e_pos.x <= s_pos.x {
+                continue;
+            }
+
+            let string_y = s_pos.y;
+            let y_base = string_y - 8.0;
+            let x1 = s_pos.x + 4.0;
+            let x2 = e_pos.x - 4.0;
+            let dx = x2 - x1;
+            let arc_height = (dx * 0.15).clamp(6.0, 12.0);
+            let peak_y = y_base - arc_height;
+
+            let p0 = Pos2::new(x1, y_base);
+            let p3 = Pos2::new(x2, y_base);
+            let p1 = Pos2::new(p0.x + dx * 0.25, peak_y);
+            let p2 = Pos2::new(p3.x - dx * 0.25, peak_y);
+
+            let shape = egui::epaint::CubicBezierShape::from_points_stroke(
+                [p0, p1, p2, p3],
+                false,
+                Color32::TRANSPARENT,
+                Stroke::new(1.5, note_color),
+            );
+            painter.add(shape);
+
+            let mid_x = (p0.x + p3.x) * 0.5;
+            if e_fret > s_fret {
+                painter.text(
+                    Pos2::new(mid_x, peak_y - 2.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    "h",
+                    FontId::proportional(11.0),
+                    note_color,
+                );
+            } else if e_fret < s_fret {
+                painter.text(
+                    Pos2::new(mid_x, peak_y - 2.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    "p",
+                    FontId::proportional(11.0),
+                    note_color,
+                );
+            }
+        }
+    }
+
     // ── Rhythm notation ───────────────────────────────────────────────────────
     let n = rhythm_notes.len();
     let mut beam_right = vec![false; n];
-    let mut current_group_count = 0;
 
-    for i in 0..n {
-        let flags = rhythm_notes[i].rhythm.flag_count();
-        if flags == 0 || rhythm_notes[i].is_rest {
-            current_group_count = 0;
-            continue;
-        }
+    for (m_idx, measure) in part.measures.iter().enumerate() {
+        let explicit_beams: Vec<&crate::mnx::BeamGroup> = measure
+            .beams
+            .as_ref()
+            .map(|b| b.iter().collect())
+            .unwrap_or_default();
+        let seq_beams: Vec<&crate::mnx::BeamGroup> = measure
+            .sequences
+            .iter()
+            .filter_map(|s| s.beams.as_ref())
+            .flat_map(|b| b.iter())
+            .collect();
+        let all_explicit_beams: Vec<&crate::mnx::BeamGroup> = explicit_beams
+            .into_iter()
+            .chain(seq_beams.into_iter())
+            .collect();
 
-        current_group_count += 1;
-
-        if current_group_count < 4 && i + 1 < n {
-            let next_note = &rhythm_notes[i + 1];
-            if next_note.measure_idx == rhythm_notes[i].measure_idx
-                && next_note.rhythm.flag_count() >= 1
-                && !next_note.is_rest
-            {
-                beam_right[i] = true;
-            } else {
-                current_group_count = 0;
+        if !all_explicit_beams.is_empty() {
+            for bg in all_explicit_beams {
+                apply_beam_group(bg, &event_id_to_idx, &rhythm_notes, &mut beam_right);
             }
         } else {
-            current_group_count = 0;
+            let mut current_group_count = 0;
+            for i in 0..n {
+                if rhythm_notes[i].measure_idx != m_idx {
+                    continue;
+                }
+                let flags = rhythm_notes[i].rhythm.flag_count();
+                if flags == 0 || rhythm_notes[i].is_rest {
+                    current_group_count = 0;
+                    continue;
+                }
+
+                current_group_count += 1;
+
+                if current_group_count < 4 && i + 1 < n {
+                    let next_note = &rhythm_notes[i + 1];
+                    if next_note.measure_idx == m_idx
+                        && next_note.rhythm.flag_count() >= 1
+                        && !next_note.is_rest
+                    {
+                        beam_right[i] = true;
+                    } else {
+                        current_group_count = 0;
+                    }
+                } else {
+                    current_group_count = 0;
+                }
+            }
         }
     }
 
@@ -884,6 +1087,120 @@ mod tests {
         assert_eq!(smufl_time_sig_digits(8), "\u{E088}");
         assert_eq!(smufl_time_sig_digits(16), "\u{E081}\u{E086}");
     }
+
+    #[test]
+    fn test_apply_beam_group() {
+        let notes = vec![
+            RhythmNote {
+                x: 0.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+            },
+            RhythmNote {
+                x: 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+            },
+            RhythmNote {
+                x: 60.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+            },
+            RhythmNote {
+                x: 90.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+            },
+        ];
+        let mut id_map = std::collections::HashMap::new();
+        id_map.insert("ev1".to_string(), 0);
+        id_map.insert("ev2".to_string(), 1);
+        id_map.insert("ev3".to_string(), 2);
+        id_map.insert("ev4".to_string(), 3);
+
+        // Group 1: ev1 and ev2 beamed
+        let bg1 = crate::mnx::BeamGroup {
+            events: vec!["ev1".to_string(), "ev2".to_string()],
+            beams: None,
+            direction: None,
+        };
+        // Group 2: ev3 and ev4 beamed
+        let bg2 = crate::mnx::BeamGroup {
+            events: vec!["ev3".to_string(), "ev4".to_string()],
+            beams: None,
+            direction: None,
+        };
+
+        let mut beam_right = vec![false; 4];
+        apply_beam_group(&bg1, &id_map, &notes, &mut beam_right);
+        apply_beam_group(&bg2, &id_map, &notes, &mut beam_right);
+
+        assert_eq!(beam_right, vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn test_apply_beam_group_does_not_beam_rest() {
+        let notes = vec![
+            RhythmNote {
+                x: 0.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+            },
+            RhythmNote {
+                x: 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: true, // Rest
+            },
+        ];
+        let mut id_map = std::collections::HashMap::new();
+        id_map.insert("ev1".to_string(), 0);
+        id_map.insert("ev2".to_string(), 1);
+
+        let bg = crate::mnx::BeamGroup {
+            events: vec!["ev1".to_string(), "ev2".to_string()],
+            beams: None,
+            direction: None,
+        };
+        let mut beam_right = vec![false; 2];
+        apply_beam_group(&bg, &id_map, &notes, &mut beam_right);
+        assert_eq!(beam_right, vec![false, false]);
+    }
+
+    #[test]
+    fn test_slur_classification_and_guitar_string_constraint() {
+        // Hammer-on: same string (6), upward fret (9 -> 12)
+        let s_str = 6;
+        let s_fret = 9;
+        let e_str = 6;
+        let e_fret = 12;
+        assert_eq!(s_str, e_str);
+        assert!(e_fret > s_fret);
+
+        // Pull-off: same string (1), downward fret (14 -> 12)
+        let s_str2 = 1;
+        let s_fret2 = 14;
+        let e_str2 = 1;
+        let e_fret2 = 12;
+        assert_eq!(s_str2, e_str2);
+        assert!(e_fret2 < s_fret2);
+
+        // Cross-string slur (invalid on guitar)
+        let s_str3 = 6;
+        let e_str3 = 5;
+        assert_ne!(s_str3, e_str3);
+    }
 }
 
 enum LayoutItem<'a> {
@@ -903,6 +1220,34 @@ impl crate::mnx::SequenceItem {
                 }
                 out.push(LayoutItem::TupletEnd);
             }
+        }
+    }
+}
+
+fn apply_beam_group(
+    group: &crate::mnx::BeamGroup,
+    event_id_to_idx: &std::collections::HashMap<String, usize>,
+    rhythm_notes: &[RhythmNote],
+    beam_right: &mut [bool],
+) {
+    for window in group.events.windows(2) {
+        if let (Some(&ia), Some(&ib)) = (
+            event_id_to_idx.get(&window[0]),
+            event_id_to_idx.get(&window[1]),
+        ) {
+            if ib == ia + 1
+                && !rhythm_notes[ia].is_rest
+                && !rhythm_notes[ib].is_rest
+                && rhythm_notes[ia].rhythm.flag_count() >= 1
+                && rhythm_notes[ib].rhythm.flag_count() >= 1
+            {
+                beam_right[ia] = true;
+            }
+        }
+    }
+    if let Some(inner_beams) = &group.beams {
+        for inner in inner_beams {
+            apply_beam_group(inner, event_id_to_idx, rhythm_notes, beam_right);
         }
     }
 }

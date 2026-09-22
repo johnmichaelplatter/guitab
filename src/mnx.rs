@@ -68,13 +68,27 @@ pub struct StringTuning {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct BeamGroup {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beams: Option<Vec<BeamGroup>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Measure {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beams: Option<Vec<BeamGroup>>,
     pub sequences: Vec<Sequence>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Sequence {
     pub content: Vec<SequenceItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beams: Option<Vec<BeamGroup>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -105,12 +119,27 @@ fn default_multiple() -> u32 {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Slur {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
+    #[serde(rename = "startNote", default, skip_serializing_if = "Option::is_none")]
+    pub start_note: Option<String>,
+    #[serde(rename = "endNote", default, skip_serializing_if = "Option::is_none")]
+    pub end_note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Event {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub duration: Duration,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rest: Option<Rest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slurs: Option<Vec<Slur>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -126,11 +155,20 @@ pub struct Duration {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Tie {
+    pub target: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Note {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub pitch: Pitch,
     pub string: Option<u8>,
     pub fret: Option<u8>,
     pub accidental: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ties: Option<Vec<Tie>>,
 }
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632)
@@ -332,5 +370,117 @@ impl MnxDocument {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_mnx_ties_slurs_beams() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - beams:
+          - events: [ev1, ev2]
+        sequences:
+          - content:
+              - id: ev1
+                duration: { base: eighth }
+                notes:
+                  - id: n1
+                    pitch: { step: C, octave: 3 }
+                    string: 6
+                    fret: 8
+                    ties:
+                      - target: n2
+                slurs:
+                  - target: ev2
+                    side: up
+                    startNote: n1
+                    endNote: n2
+              - id: ev2
+                duration: { base: eighth }
+                notes:
+                  - id: n2
+                    pitch: { step: D, octave: 3 }
+                    string: 6
+                    fret: 10
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX");
+        let measure = &doc.parts[0].measures[0];
+        assert_eq!(
+            measure.beams.as_ref().unwrap()[0].events,
+            vec!["ev1".to_string(), "ev2".to_string()]
+        );
+        let seq = &measure.sequences[0];
+        if let SequenceItem::Event(ev1) = &seq.content[0] {
+            assert_eq!(ev1.id.as_deref(), Some("ev1"));
+            assert_eq!(ev1.notes[0].id.as_deref(), Some("n1"));
+            assert_eq!(
+                ev1.notes[0].ties.as_ref().unwrap()[0].target,
+                "n2"
+            );
+            assert_eq!(
+                ev1.slurs.as_ref().unwrap()[0].target,
+                "ev2"
+            );
+            assert_eq!(
+                ev1.slurs.as_ref().unwrap()[0].start_note.as_deref(),
+                Some("n1")
+            );
+            assert_eq!(
+                ev1.slurs.as_ref().unwrap()[0].end_note.as_deref(),
+                Some("n2")
+            );
+        } else {
+            panic!("Expected Event at index 0");
+        }
+    }
+
+    #[test]
+    fn test_parse_tie_to_rest_let_ring() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 0
+                    ties:
+                      - target: rest_ev
+              - id: rest_ev
+                duration: { base: quarter }
+                rest: {}
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX");
+        let seq = &doc.parts[0].measures[0].sequences[0];
+        if let SequenceItem::Event(ev1) = &seq.content[0] {
+            assert_eq!(ev1.notes[0].ties.as_ref().unwrap()[0].target, "rest_ev");
+        } else {
+            panic!("Expected Event at index 0");
+        }
+        if let SequenceItem::Event(ev2) = &seq.content[1] {
+            assert!(ev2.rest.is_some());
+            assert_eq!(ev2.id.as_deref(), Some("rest_ev"));
+        } else {
+            panic!("Expected Event at index 1");
+        }
     }
 }

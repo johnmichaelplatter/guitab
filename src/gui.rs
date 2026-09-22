@@ -1069,11 +1069,11 @@ impl MnxEditorApp {
                             color,
                         );
 
-                        let bracket_y = center.y - 7.0;
+                        let bracket_y = center.y + 7.0;
                         let hook_len = 3.5;
                         let left_x = center.x - 9.0;
-                        let left_inner_x = center.x - 4.5;
-                        let right_inner_x = center.x + 4.5;
+                        let left_inner_x = center.x - 2.0;
+                        let right_inner_x = center.x + 2.0;
                         let right_x = center.x + 9.0;
                         let stroke = egui::Stroke::new(1.3, color);
 
