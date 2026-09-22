@@ -90,7 +90,7 @@ fn draw_time_signature(
 // ── Rhythm types ─────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Rhythm {
+pub enum Rhythm {
     Whole,
     Half,
     Quarter,
@@ -102,7 +102,7 @@ enum Rhythm {
 impl Rhythm {
     /// Duration in quarter-note beats (used for beam-grouping decisions).
     #[allow(dead_code)]
-    fn beats(self) -> f64 {
+    pub fn beats(self) -> f64 {
         match self {
             Rhythm::Whole => 4.0,
             Rhythm::Half => 2.0,
@@ -114,7 +114,7 @@ impl Rhythm {
     }
 
     /// Number of beam/flag lines needed (0 for whole/half/quarter).
-    fn flag_count(self) -> usize {
+    pub fn flag_count(self) -> usize {
         match self {
             Rhythm::Whole | Rhythm::Half | Rhythm::Quarter => 0,
             Rhythm::Eighth => 1,
@@ -144,14 +144,52 @@ fn parse_rhythm(base: &str) -> (Rhythm, bool) {
     (r, is_dotted)
 }
 
+/// Calculates duration spacing weight multiplier.
+/// - Quarter note (1.0 beats) = 1.0 (baseline)
+/// - Half note (2.0 beats) = 1.5 (+50% vs quarter note)
+/// - Whole note (4.0 beats) = 1.7 (+70% vs quarter note)
+/// - Eighth note (0.5 beats) = 0.85
+/// - 16th note (0.25 beats) = 0.75
+pub fn duration_spacing_weight(beats: f64) -> f32 {
+    if beats <= 0.0 {
+        return 1.0;
+    }
+    if beats >= 1.0 {
+        if beats <= 2.0 {
+            1.0 + 0.50 * (beats as f32 - 1.0)
+        } else if beats <= 4.0 {
+            1.50 + 0.10 * (beats as f32 - 2.0)
+        } else {
+            (1.70 + 0.0375 * (beats as f32 - 4.0)).min(2.0)
+        }
+    } else if beats >= 0.5 {
+        (1.0 + 0.30 * (beats as f32 - 1.0)).max(0.85)
+    } else if beats >= 0.25 {
+        (0.85 + 0.40 * (beats as f32 - 0.5)).max(0.75)
+    } else {
+        (0.75 + 0.533 * (beats as f32 - 0.25)).max(0.60)
+    }
+}
+
+/// Computes horizontal spacing for an event based on its duration.
+pub fn duration_spacing(duration: &crate::mnx::Duration, base_spacing: f32) -> f32 {
+    let beats = crate::validate::duration_to_quarter_beats(duration);
+    base_spacing * duration_spacing_weight(beats)
+}
+
 // ── Collected note position for rhythm drawing ────────────────────────────────
 
-struct RhythmNote {
-    x: f32,
-    rhythm: Rhythm,
-    is_dotted: bool,
-    measure_idx: usize,
-    is_rest: bool,
+#[derive(Clone, Debug)]
+pub struct RhythmNote {
+    pub x: f32,
+    pub rhythm: Rhythm,
+    pub is_dotted: bool,
+    pub measure_idx: usize,
+    pub is_rest: bool,
+    pub tuplet_id: Option<usize>,
+    pub start_beat: f64,
+    #[allow(dead_code)]
+    pub end_beat: f64,
 }
 
 // ── Main draw function ────────────────────────────────────────────────────────
@@ -226,13 +264,14 @@ pub fn draw_tablature(
         })
         .fold(0.0_f32, f32::max);
 
-    // ── Total event count ─────────────────────────────────────────────────────
+    // ── Total events width ────────────────────────────────────────────────────
 
-    let total_events: usize = part
+    let total_events_width: f32 = part
         .measures
         .iter()
         .filter_map(|m| m.sequences.first())
-        .map(|s| s.content.len())
+        .flat_map(|s| s.flattened_events())
+        .map(|ev| duration_spacing(&ev.duration, event_spacing))
         .sum();
 
     // ── Time signatures to render ─────────────────────────────────────────────
@@ -266,7 +305,7 @@ pub fn draw_tablature(
     let top_pad = 56.0_f32; // room for name + EDO label + slurs on top string
     let total_height = top_pad + staff_height + rhythm_row_h + 10.0; // top pad + staff + rhythm + bottom pad
     let total_width = start_offset_x
-        + (total_events as f32) * event_spacing
+        + total_events_width
         + (part.measures.len() as f32) * measure_spacing
         + (num_rendered_time_sigs as f32) * 75.0
         + 80.0;
@@ -408,11 +447,18 @@ pub fn draw_tablature(
     )> = Vec::new();
 
     let mut flat_event_idx = 0;
+    let mut last_event_spacing = event_spacing;
 
     // ── Main event loop ───────────────────────────────────────────────────────
 
     let mut active_tuplets: Vec<(f32, u32)> = Vec::new();
+    let mut tuplet_counter: usize = 0;
+    let mut tuplet_stack: Vec<(usize, f64)> = Vec::new(); // (tuplet_id, scale)
+
     for (m_idx, measure) in part.measures.iter().enumerate() {
+        let mut current_measure_beat: f64 = 0.0;
+        tuplet_stack.clear();
+
         if let Some(seq) = measure.sequences.first() {
             let mut layout_items = Vec::new();
             for item in &seq.content {
@@ -422,12 +468,25 @@ pub fn draw_tablature(
             for l_item in layout_items {
                 let event = match l_item {
                     LayoutItem::TupletStart(t) => {
+                        tuplet_counter += 1;
+                        let current_scale = tuplet_stack.last().map(|&(_, s)| s).unwrap_or(1.0);
+                        let inner_beats = crate::validate::duration_to_quarter_beats(&t.inner.duration)
+                            * (t.inner.multiple as f64);
+                        let outer_beats = crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                            * (t.outer.multiple as f64);
+                        let new_scale = if inner_beats > 0.0 {
+                            current_scale * (outer_beats / inner_beats)
+                        } else {
+                            current_scale
+                        };
+                        tuplet_stack.push((tuplet_counter, new_scale));
                         active_tuplets.push((current_x, t.inner.multiple));
                         continue;
                     }
                     LayoutItem::TupletEnd => {
+                        tuplet_stack.pop();
                         if let Some((start_x, mult)) = active_tuplets.pop() {
-                            let end_x = current_x - event_spacing * 0.5;
+                            let end_x = current_x - last_event_spacing * 0.5;
                             let y = string_y_coords[0] - 25.0; // Above the staff
                             painter.line_segment(
                                 [
@@ -456,6 +515,14 @@ pub fn draw_tablature(
                     }
                     LayoutItem::Event(e) => e,
                 };
+
+                let current_tuplet_id = tuplet_stack.last().map(|&(id, _)| id);
+                let current_scale = tuplet_stack.last().map(|&(_, s)| s).unwrap_or(1.0);
+                let event_beats =
+                    crate::validate::duration_to_quarter_beats(&event.duration) * current_scale;
+                let start_beat = current_measure_beat;
+                let end_beat = current_measure_beat + event_beats;
+                current_measure_beat = end_beat;
 
                 if let Some(ev_id) = &event.id {
                     event_id_map.insert(ev_id.clone(), (current_x, event.rest.is_some()));
@@ -633,11 +700,16 @@ pub fn draw_tablature(
                     is_dotted,
                     measure_idx: m_idx,
                     is_rest: event.rest.is_some(),
+                    tuplet_id: current_tuplet_id,
+                    start_beat,
+                    end_beat,
                 });
 
+                let spacing = duration_spacing(&event.duration, event_spacing);
                 flat_event_idx += 1;
                 e_idx += 1;
-                current_x += event_spacing;
+                current_x += spacing;
+                last_event_spacing = spacing;
             }
         }
 
@@ -840,33 +912,8 @@ pub fn draw_tablature(
                 apply_beam_group(bg, &event_id_to_idx, &rhythm_notes, &mut beam_right);
             }
         } else {
-            let mut current_group_count = 0;
-            for i in 0..n {
-                if rhythm_notes[i].measure_idx != m_idx {
-                    continue;
-                }
-                let flags = rhythm_notes[i].rhythm.flag_count();
-                if flags == 0 || rhythm_notes[i].is_rest {
-                    current_group_count = 0;
-                    continue;
-                }
-
-                current_group_count += 1;
-
-                if current_group_count < 4 && i + 1 < n {
-                    let next_note = &rhythm_notes[i + 1];
-                    if next_note.measure_idx == m_idx
-                        && next_note.rhythm.flag_count() >= 1
-                        && !next_note.is_rest
-                    {
-                        beam_right[i] = true;
-                    } else {
-                        current_group_count = 0;
-                    }
-                } else {
-                    current_group_count = 0;
-                }
-            }
+            let time_sig = get_time_signature_for_measure(global, m_idx);
+            compute_default_beaming_for_measure(m_idx, &time_sig, &rhythm_notes, &mut beam_right);
         }
     }
 
@@ -1097,6 +1144,9 @@ mod tests {
                 is_dotted: false,
                 measure_idx: 0,
                 is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.0,
+                end_beat: 0.5,
             },
             RhythmNote {
                 x: 30.0,
@@ -1104,6 +1154,9 @@ mod tests {
                 is_dotted: false,
                 measure_idx: 0,
                 is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 1.0,
             },
             RhythmNote {
                 x: 60.0,
@@ -1111,6 +1164,9 @@ mod tests {
                 is_dotted: false,
                 measure_idx: 0,
                 is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.0,
+                end_beat: 1.5,
             },
             RhythmNote {
                 x: 90.0,
@@ -1118,6 +1174,9 @@ mod tests {
                 is_dotted: false,
                 measure_idx: 0,
                 is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.5,
+                end_beat: 2.0,
             },
         ];
         let mut id_map = std::collections::HashMap::new();
@@ -1155,6 +1214,9 @@ mod tests {
                 is_dotted: false,
                 measure_idx: 0,
                 is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.0,
+                end_beat: 0.5,
             },
             RhythmNote {
                 x: 30.0,
@@ -1162,6 +1224,9 @@ mod tests {
                 is_dotted: false,
                 measure_idx: 0,
                 is_rest: true, // Rest
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 1.0,
             },
         ];
         let mut id_map = std::collections::HashMap::new();
@@ -1200,6 +1265,507 @@ mod tests {
         let s_str3 = 6;
         let e_str3 = 5;
         assert_ne!(s_str3, e_str3);
+    }
+
+    #[test]
+    fn test_duration_spacing_weights() {
+        let base = 30.0;
+        let quarter_d = crate::mnx::Duration {
+            base: "quarter".into(),
+            dots: None,
+            multiple: None,
+        };
+        let half_d = crate::mnx::Duration {
+            base: "half".into(),
+            dots: None,
+            multiple: None,
+        };
+        let whole_d = crate::mnx::Duration {
+            base: "whole".into(),
+            dots: None,
+            multiple: None,
+        };
+        let eighth_d = crate::mnx::Duration {
+            base: "eighth".into(),
+            dots: None,
+            multiple: None,
+        };
+        let sixteenth_d = crate::mnx::Duration {
+            base: "16th".into(),
+            dots: None,
+            multiple: None,
+        };
+
+        let q_spacing = duration_spacing(&quarter_d, base);
+        let h_spacing = duration_spacing(&half_d, base);
+        let w_spacing = duration_spacing(&whole_d, base);
+        let e_spacing = duration_spacing(&eighth_d, base);
+        let s_spacing = duration_spacing(&sixteenth_d, base);
+
+        // Quarter is baseline (30.0)
+        assert_eq!(q_spacing, 30.0);
+        // Half note is ~50% more than quarter (45.0)
+        assert_eq!(h_spacing, 45.0);
+        assert!((h_spacing / q_spacing - 1.5).abs() < 1e-4);
+        // Whole note is ~70% more than quarter (51.0)
+        assert_eq!(w_spacing, 51.0);
+        assert!((w_spacing / q_spacing - 1.7).abs() < 1e-4);
+        // Eighth is less than quarter (25.5)
+        assert!(e_spacing < q_spacing);
+        assert_eq!(e_spacing, 25.5);
+        // 16th is less than eighth (22.5)
+        assert!(s_spacing < e_spacing);
+        assert_eq!(s_spacing, 22.5);
+    }
+
+    #[test]
+    fn test_get_beam_breaks() {
+        let ts_4_4 = TimeSignature { count: 4, unit: 4 };
+        assert_eq!(get_beam_breaks(&ts_4_4, false), vec![2.0, 4.0]);
+        assert_eq!(get_beam_breaks(&ts_4_4, true), vec![1.0, 2.0, 3.0, 4.0]);
+
+        let ts_3_4 = TimeSignature { count: 3, unit: 4 };
+        assert_eq!(get_beam_breaks(&ts_3_4, false), vec![1.0, 2.0, 3.0]);
+        assert_eq!(get_beam_breaks(&ts_3_4, true), vec![1.0, 2.0, 3.0]);
+
+        let ts_2_4 = TimeSignature { count: 2, unit: 4 };
+        assert_eq!(get_beam_breaks(&ts_2_4, false), vec![1.0, 2.0]);
+
+        let ts_5_4 = TimeSignature { count: 5, unit: 4 };
+        assert_eq!(get_beam_breaks(&ts_5_4, false), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+
+        let ts_5_8 = TimeSignature { count: 5, unit: 8 };
+        assert_eq!(get_beam_breaks(&ts_5_8, false), vec![1.5, 2.5]);
+
+        let ts_6_8 = TimeSignature { count: 6, unit: 8 };
+        assert_eq!(get_beam_breaks(&ts_6_8, false), vec![1.5, 3.0]);
+
+        let ts_9_8 = TimeSignature { count: 9, unit: 8 };
+        assert_eq!(get_beam_breaks(&ts_9_8, false), vec![1.5, 3.0, 4.5]);
+
+        let ts_12_8 = TimeSignature { count: 12, unit: 8 };
+        assert_eq!(get_beam_breaks(&ts_12_8, false), vec![1.5, 3.0, 4.5, 6.0]);
+
+        let ts_3_8 = TimeSignature { count: 3, unit: 8 };
+        assert_eq!(get_beam_breaks(&ts_3_8, false), vec![1.5]);
+
+        let ts_9_16 = TimeSignature { count: 9, unit: 16 };
+        assert_eq!(get_beam_breaks(&ts_9_16, false), vec![0.75, 1.5, 2.25]);
+
+        let ts_7_8 = TimeSignature { count: 7, unit: 8 };
+        assert_eq!(get_beam_breaks(&ts_7_8, false), vec![1.5, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_default_beaming_4_4_eighth_and_sixteenth() {
+        let ts_4_4 = TimeSignature { count: 4, unit: 4 };
+
+        // 8 eighth notes in 4/4 -> beamed 4 at a time (beats 1-2 and beats 3-4)
+        let mut notes_8th = Vec::new();
+        for i in 0..8 {
+            notes_8th.push(RhythmNote {
+                x: (i as f32) * 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.5,
+                end_beat: ((i + 1) as f64) * 0.5,
+            });
+        }
+        let mut beam_right_8th = vec![false; 8];
+        compute_default_beaming_for_measure(0, &ts_4_4, &notes_8th, &mut beam_right_8th);
+        assert_eq!(
+            beam_right_8th,
+            vec![true, true, true, false, true, true, true, false]
+        );
+
+        // 16 sixteenth notes in 4/4 -> break at each beat boundary (groups of 4)
+        let mut notes_16th = Vec::new();
+        for i in 0..16 {
+            notes_16th.push(RhythmNote {
+                x: (i as f32) * 20.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.25,
+                end_beat: ((i + 1) as f64) * 0.25,
+            });
+        }
+        let mut beam_right_16th = vec![false; 16];
+        compute_default_beaming_for_measure(0, &ts_4_4, &notes_16th, &mut beam_right_16th);
+        for i in 0..16 {
+            let should_beam = (i % 4) != 3;
+            assert_eq!(
+                beam_right_16th[i], should_beam,
+                "16th note at index {} beaming mismatch",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_beaming_3_4_two_eighths_at_a_time() {
+        let ts_3_4 = TimeSignature { count: 3, unit: 4 };
+
+        // 6 eighth notes in 3/4 -> beamed two at a time (breaks at 1.0, 2.0, 3.0)
+        let mut notes = Vec::new();
+        for i in 0..6 {
+            notes.push(RhythmNote {
+                x: (i as f32) * 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.5,
+                end_beat: ((i + 1) as f64) * 0.5,
+            });
+        }
+        let mut beam_right = vec![false; 6];
+        compute_default_beaming_for_measure(0, &ts_3_4, &notes, &mut beam_right);
+        assert_eq!(beam_right, vec![true, false, true, false, true, false]);
+    }
+
+    #[test]
+    fn test_default_beaming_5_8_odd_meter() {
+        let ts_5_8 = TimeSignature { count: 5, unit: 8 };
+
+        // 5 eighth notes in 5/8 -> beamed 3 + 2 (break at 1.5)
+        let mut notes_8th = Vec::new();
+        for i in 0..5 {
+            notes_8th.push(RhythmNote {
+                x: (i as f32) * 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.5,
+                end_beat: ((i + 1) as f64) * 0.5,
+            });
+        }
+        let mut beam_right_8th = vec![false; 5];
+        compute_default_beaming_for_measure(0, &ts_5_8, &notes_8th, &mut beam_right_8th);
+        assert_eq!(beam_right_8th, vec![true, true, false, true, false]);
+
+        // 10 sixteenth notes in 5/8 -> beamed 6 + 4 up to break at 1.5
+        let mut notes_16th = Vec::new();
+        for i in 0..10 {
+            notes_16th.push(RhythmNote {
+                x: (i as f32) * 20.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.25,
+                end_beat: ((i + 1) as f64) * 0.25,
+            });
+        }
+        let mut beam_right_16th = vec![false; 10];
+        compute_default_beaming_for_measure(0, &ts_5_8, &notes_16th, &mut beam_right_16th);
+        assert_eq!(
+            beam_right_16th,
+            vec![true, true, true, true, true, false, true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn test_default_beaming_compound_meters() {
+        let ts_6_8 = TimeSignature { count: 6, unit: 8 };
+
+        // 6 eighth notes in 6/8 -> 3 + 3
+        let mut notes_8th = Vec::new();
+        for i in 0..6 {
+            notes_8th.push(RhythmNote {
+                x: (i as f32) * 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.5,
+                end_beat: ((i + 1) as f64) * 0.5,
+            });
+        }
+        let mut beam_right_8th = vec![false; 6];
+        compute_default_beaming_for_measure(0, &ts_6_8, &notes_8th, &mut beam_right_8th);
+        assert_eq!(beam_right_8th, vec![true, true, false, true, true, false]);
+
+        // 12 sixteenth notes in 6/8 -> 6 + 6
+        let mut notes_16th = Vec::new();
+        for i in 0..12 {
+            notes_16th.push(RhythmNote {
+                x: (i as f32) * 20.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.25,
+                end_beat: ((i + 1) as f64) * 0.25,
+            });
+        }
+        let mut beam_right_16th = vec![false; 12];
+        compute_default_beaming_for_measure(0, &ts_6_8, &notes_16th, &mut beam_right_16th);
+        assert_eq!(
+            beam_right_16th,
+            vec![
+                true, true, true, true, true, false, // First 6 (span 0.0 - 1.5)
+                true, true, true, true, true, false // Second 6 (span 1.5 - 3.0)
+            ]
+        );
+
+        // 9/16 with 9 sixteenth notes -> 3 + 3 + 3
+        let ts_9_16 = TimeSignature { count: 9, unit: 16 };
+        let mut notes_9_16 = Vec::new();
+        for i in 0..9 {
+            notes_9_16.push(RhythmNote {
+                x: (i as f32) * 20.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.25,
+                end_beat: ((i + 1) as f64) * 0.25,
+            });
+        }
+        let mut beam_right_9_16 = vec![false; 9];
+        compute_default_beaming_for_measure(0, &ts_9_16, &notes_9_16, &mut beam_right_9_16);
+        assert_eq!(
+            beam_right_9_16,
+            vec![true, true, false, true, true, false, true, true, false]
+        );
+    }
+
+    #[test]
+    fn test_default_beaming_7_8() {
+        let ts_7_8 = TimeSignature { count: 7, unit: 8 };
+
+        // 7 eighth notes in 7/8 with breaks at 1.5 and 3.0 (3 + 3 + 2 grouping)
+        let mut notes_8th = Vec::new();
+        for i in 0..7 {
+            notes_8th.push(RhythmNote {
+                x: (i as f32) * 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.5,
+                end_beat: ((i + 1) as f64) * 0.5,
+            });
+        }
+        let mut beam_right_8th = vec![false; 7];
+        compute_default_beaming_for_measure(0, &ts_7_8, &notes_8th, &mut beam_right_8th);
+        assert_eq!(
+            beam_right_8th,
+            vec![true, true, false, true, true, false, false]
+        );
+
+        // 14 sixteenth notes in 7/8 -> 6 + 6 + 2
+        let mut notes_16th = Vec::new();
+        for i in 0..14 {
+            notes_16th.push(RhythmNote {
+                x: (i as f32) * 20.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: (i as f64) * 0.25,
+                end_beat: ((i + 1) as f64) * 0.25,
+            });
+        }
+        let mut beam_right_16th = vec![false; 14];
+        compute_default_beaming_for_measure(0, &ts_7_8, &notes_16th, &mut beam_right_16th);
+        assert_eq!(
+            beam_right_16th,
+            vec![
+                true, true, true, true, true, false, // 6 sixteenths
+                true, true, true, true, true, false, // 6 sixteenths
+                true, false // 2 sixteenths
+            ]
+        );
+    }
+
+    #[test]
+    fn test_default_beaming_tuplet_isolation() {
+        let ts_4_4 = TimeSignature { count: 4, unit: 4 };
+
+        // Notes:
+        // 0, 1, 2: in Tuplet 1 (triplet eighth notes)
+        // 3, 4: outside tuplet (regular eighth notes)
+        // 5, 6, 7: in Tuplet 2 (another triplet)
+        let notes = vec![
+            // Tuplet 1
+            RhythmNote {
+                x: 0.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: Some(1),
+                start_beat: 0.0,
+                end_beat: 0.333,
+            },
+            RhythmNote {
+                x: 20.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: Some(1),
+                start_beat: 0.333,
+                end_beat: 0.666,
+            },
+            RhythmNote {
+                x: 40.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: Some(1),
+                start_beat: 0.666,
+                end_beat: 1.0,
+            },
+            // Non-tuplet notes on beat 2
+            RhythmNote {
+                x: 70.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.0,
+                end_beat: 1.5,
+            },
+            RhythmNote {
+                x: 100.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.5,
+                end_beat: 2.0,
+            },
+            // Tuplet 2 on beat 3
+            RhythmNote {
+                x: 130.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: Some(2),
+                start_beat: 2.0,
+                end_beat: 2.333,
+            },
+            RhythmNote {
+                x: 150.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: Some(2),
+                start_beat: 2.333,
+                end_beat: 2.666,
+            },
+            RhythmNote {
+                x: 170.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: Some(2),
+                start_beat: 2.666,
+                end_beat: 3.0,
+            },
+        ];
+
+        let mut beam_right = vec![false; 8];
+        compute_default_beaming_for_measure(0, &ts_4_4, &notes, &mut beam_right);
+
+        assert_eq!(
+            beam_right,
+            vec![
+                true, true, false, // Tuplet 1 notes beam together; note 2 does not beam to note 3
+                true, false,       // Non-tuplet notes 3 & 4 beam together; note 4 does not beam into Tuplet 2
+                true, true, false  // Tuplet 2 notes beam together
+            ]
+        );
+    }
+
+    #[test]
+    fn test_default_beaming_rests_and_quarter_notes() {
+        let ts_4_4 = TimeSignature { count: 4, unit: 4 };
+
+        let notes = vec![
+            RhythmNote {
+                x: 0.0,
+                rhythm: Rhythm::Quarter,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.0,
+                end_beat: 1.0,
+            },
+            RhythmNote {
+                x: 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.0,
+                end_beat: 1.5,
+            },
+            RhythmNote {
+                x: 60.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: true, // Rest
+                tuplet_id: None,
+                start_beat: 1.5,
+                end_beat: 2.0,
+            },
+            RhythmNote {
+                x: 90.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 2.0,
+                end_beat: 2.5,
+            },
+            RhythmNote {
+                x: 120.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 2.5,
+                end_beat: 3.0,
+            },
+        ];
+
+        let mut beam_right = vec![false; 5];
+        compute_default_beaming_for_measure(0, &ts_4_4, &notes, &mut beam_right);
+
+        // Quarter note: no beam
+        // Eighth note before rest: no beam to rest
+        // Rest: no beam
+        // Eighth notes on beat 3 (2.0 and 2.5): beam together
+        assert_eq!(beam_right, vec![false, false, false, true, false]);
     }
 }
 
@@ -1248,6 +1814,143 @@ fn apply_beam_group(
     if let Some(inner_beams) = &group.beams {
         for inner in inner_beams {
             apply_beam_group(inner, event_id_to_idx, rhythm_notes, beam_right);
+        }
+    }
+}
+
+/// Finds the applicable TimeSignature for a measure index by inspecting global.measures up to measure_idx,
+/// defaulting to 4/4 if not specified.
+pub fn get_time_signature_for_measure(
+    global: Option<&crate::mnx::Global>,
+    measure_idx: usize,
+) -> TimeSignature {
+    if let Some(g) = global {
+        let max_check = measure_idx.min(g.measures.len().saturating_sub(1));
+        if !g.measures.is_empty() {
+            for i in (0..=max_check).rev() {
+                if let Some(time) = g.measures[i].time {
+                    return time;
+                }
+            }
+        }
+    }
+    TimeSignature { count: 4, unit: 4 }
+}
+
+/// Computes beam break points (in quarter-note beats from start of measure)
+/// based on the measure's time signature and whether sixteenth notes (or shorter) are present.
+pub fn get_beam_breaks(time_sig: &TimeSignature, has_sub_eighth: bool) -> Vec<f64> {
+    let count = time_sig.count;
+    let unit = time_sig.unit;
+    let unit_beat = 4.0 / (unit as f64);
+    let total_beats = (count as f64) * unit_beat;
+
+    let mut breaks = Vec::new();
+
+    if unit >= 8 {
+        // Compound / odd meters with eighth-note or smaller unit
+        let group_sizes: Vec<usize> = if count == 5 {
+            vec![3, 2]
+        } else if count % 3 == 0 {
+            vec![3; (count / 3) as usize]
+        } else if count == 7 {
+            vec![3, 3, 2]
+        } else if count % 2 == 0 {
+            vec![2; (count / 2) as usize]
+        } else {
+            vec![1; count as usize]
+        };
+
+        let mut acc = 0.0;
+        for sz in group_sizes {
+            acc += (sz as f64) * unit_beat;
+            breaks.push(acc);
+        }
+    } else if unit == 4 {
+        if count == 4 {
+            // 4/4: Eighth notes beam up to 4 at a time (half-measure breaks at 2.0, 4.0).
+            // Sixteenth notes (or shorter) break at each quarter-note beat (1.0, 2.0, 3.0, 4.0).
+            if has_sub_eighth {
+                breaks = vec![1.0, 2.0, 3.0, 4.0];
+            } else {
+                breaks = vec![2.0, 4.0];
+            }
+        } else {
+            // Other time signatures with quarter-note beats (e.g. 2/4, 3/4, 5/4, 6/4):
+            // "in time signatures other than 4/4, eighth notes should generally be beamed two at a time"
+            // Break at every 1.0 beat (every quarter note).
+            let mut acc = 0.0;
+            while acc + 1.0 <= total_beats + 1e-4 {
+                acc += 1.0;
+                breaks.push(acc);
+            }
+        }
+    } else {
+        // Other units (e.g. unit == 2, half notes): break every unit_beat or 1.0 beat
+        let step = unit_beat.min(1.0);
+        let mut acc = 0.0;
+        while acc + step <= total_beats + 1e-4 {
+            acc += step;
+            breaks.push(acc);
+        }
+    }
+
+    breaks
+}
+
+/// Applies default beaming rules for a given measure when explicit beams are absent.
+/// Enforces:
+/// 1. Notes of a tuplet beam to notes inside the tuplet and NOT to notes outside the tuplet.
+/// 2. Within a tuplet, adjacent flagged notes beam together.
+/// 3. In time signatures other than 4/4, eighth notes beam 2 at a time.
+/// 4. Beam breaks for 5/n (3+2), 3k/n (3 at a time), 7/n (3+3+2), 4/4 (half-measure for 8ths, beat for 16ths).
+/// 5. Rests never receive beams and break beam groups.
+pub fn compute_default_beaming_for_measure(
+    measure_idx: usize,
+    time_sig: &TimeSignature,
+    rhythm_notes: &[RhythmNote],
+    beam_right: &mut [bool],
+) {
+    let n = rhythm_notes.len();
+    for i in 0..n {
+        if rhythm_notes[i].measure_idx != measure_idx {
+            continue;
+        }
+        if i + 1 >= n || rhythm_notes[i + 1].measure_idx != measure_idx {
+            continue;
+        }
+
+        let note_a = &rhythm_notes[i];
+        let note_b = &rhythm_notes[i + 1];
+
+        // Neither note can be a rest, and both must require beams (flag_count >= 1)
+        if note_a.is_rest || note_b.is_rest {
+            continue;
+        }
+        if note_a.rhythm.flag_count() == 0 || note_b.rhythm.flag_count() == 0 {
+            continue;
+        }
+
+        // Tuplet constraint:
+        // - notes of a tuple should beam to notes inside the tuple and NOT to notes outside the tuple
+        if note_a.tuplet_id.is_some() || note_b.tuplet_id.is_some() {
+            if note_a.tuplet_id == note_b.tuplet_id {
+                beam_right[i] = true;
+            }
+            continue;
+        }
+
+        // Non-tuplet notes: apply time signature beam breaks
+        let has_sub_eighth =
+            note_a.rhythm.flag_count() >= 2 || note_b.rhythm.flag_count() >= 2;
+        let breaks = get_beam_breaks(time_sig, has_sub_eighth);
+        let eps = 1e-4;
+        let has_break = breaks.iter().any(|&b| {
+            note_a.start_beat + eps < b && b <= note_b.start_beat + eps
+        });
+
+        if !has_break {
+            beam_right[i] = true;
         }
     }
 }
