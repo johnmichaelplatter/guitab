@@ -1022,12 +1022,27 @@ impl MnxEditorApp {
 
                     // Rest button (quarter rest glyph from Bravura)
                     let is_rest = self.is_selected_event_rest();
-                    let rest_btn = egui::Button::new(
-                        egui::RichText::new("\u{E4E5}")
-                            .font(egui::FontId::new(20.0, egui::FontFamily::Name("Bravura".into()))),
-                    )
-                    .selected(is_rest);
-                    if ui.add_sized(btn_size, rest_btn).on_hover_text("Rest (R)").clicked() {
+                    let (r_rect, r_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(r_rect) {
+                        let visuals = ui.style().interact_selectable(&r_resp, is_rest);
+                        ui.painter().rect(
+                            r_rect,
+                            visuals.corner_radius,
+                            visuals.bg_fill,
+                            visuals.bg_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(20.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(
+                            r_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "\u{E4E5}",
+                            font_id,
+                            color,
+                        );
+                    }
+                    if r_resp.on_hover_text("Rest (R)").clicked() {
                         rest_clicked = true;
                     }
 
