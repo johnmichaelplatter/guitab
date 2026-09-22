@@ -31,7 +31,7 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
     let finish_event = |start_line: usize, end_line: usize, results: &mut Vec<EventRange>| {
         let total_start = line_starts[start_line];
         let total_end = line_starts[end_line] + lines[end_line].len();
-        
+
         let event_text = &yaml[total_start..total_end];
         if event_text.contains("type: tuplet") {
             return;
@@ -346,20 +346,17 @@ pub fn set_or_add_note_on_string(
             let abs_rest_pos = er.total_range.start + rest_pos;
             let after_rest = &yaml[abs_rest_pos..];
             let line_end_rel = after_rest.find('\n').unwrap_or(after_rest.len());
-            
-            let line_start = yaml[..abs_rest_pos]
-                .rfind('\n')
-                .map(|p| p + 1)
-                .unwrap_or(0);
+
+            let line_start = yaml[..abs_rest_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
             let notes_indent_len = abs_rest_pos - line_start;
             let indent = " ".repeat(notes_indent_len + 2);
             let sub_indent = " ".repeat(notes_indent_len + 4);
-            
+
             let new_notes_block = format!(
                 "notes:\n{}- {}\n{}string: {}\n{}fret: {}",
                 indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
             );
-            
+
             let abs_replace_end = abs_rest_pos + line_end_rel;
             let mut res = yaml.to_string();
             res.replace_range(abs_rest_pos..abs_replace_end, &new_notes_block);
@@ -368,15 +365,18 @@ pub fn set_or_add_note_on_string(
             // Append notes block
             let first_line_start = event_text.find('-').unwrap_or(0);
             let before_dash = &event_text[..first_line_start];
-            let indent_len = before_dash.rfind('\n').map(|p| before_dash.len() - p - 1).unwrap_or(before_dash.len());
+            let indent_len = before_dash
+                .rfind('\n')
+                .map(|p| before_dash.len() - p - 1)
+                .unwrap_or(before_dash.len());
             let indent = " ".repeat(indent_len + 2);
             let sub_indent = " ".repeat(indent_len + 4);
-            
+
             let new_notes_block = format!(
                 "\n{}notes:\n{}- {}\n{}string: {}\n{}fret: {}",
                 indent, indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
             );
-            
+
             let mut res = yaml.to_string();
             res.insert_str(er.total_range.end, &new_notes_block);
             Some(res)
@@ -765,10 +765,27 @@ pub fn add_blank_note_to_last_measure(
     let event_ranges = find_all_event_ranges(yaml);
     let last_er = event_ranges.last()?;
 
-    let event_first_line = &yaml[last_er.total_range.start..];
-    let indent_len = event_first_line.len() - event_first_line.trim_start().len();
-    let indent = " ".repeat(indent_len);
-    let sub_indent = " ".repeat(indent_len + 2);
+    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok();
+    let total_events = event_ranges.len();
+    let tuplet_info = doc
+        .as_ref()
+        .and_then(|d| d.find_event_tuplet_info(total_events.saturating_sub(1)));
+
+    let indent = if tuplet_info.is_some() {
+        let before_first = &yaml[..last_er.total_range.start];
+        let tuplet_pos = before_first
+            .rfind("- type: tuplet")
+            .or_else(|| before_first.rfind("- type: \"tuplet\""))
+            .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
+        let tuplet_line_start = yaml[..tuplet_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let tuplet_indent_len = tuplet_pos - tuplet_line_start;
+        " ".repeat(tuplet_indent_len)
+    } else {
+        let event_first_line = &yaml[last_er.total_range.start..];
+        let indent_len = event_first_line.len() - event_first_line.trim_start().len();
+        " ".repeat(indent_len)
+    };
+    let sub_indent = format!("{}  ", indent);
 
     let dur_str = if let Some(dots) = duration.dots {
         if dots > 0 {
@@ -788,6 +805,40 @@ pub fn add_blank_note_to_last_measure(
     let mut result = yaml.to_string();
     result.insert_str(last_er.total_range.end, &new_event_str);
     Some(result)
+}
+
+pub fn insert_blank_note_after_tuplet(
+    yaml: &str,
+    event_idx: usize,
+    base: &str,
+) -> Option<(String, usize)> {
+    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    let info = doc.find_event_tuplet_info(event_idx)?;
+    let event_ranges = find_all_event_ranges(yaml);
+
+    let tuplet_end = info.event_range.end;
+    let last_er = event_ranges.get(tuplet_end.saturating_sub(1))?;
+
+    let before_first = &yaml[..last_er.total_range.start];
+    let tuplet_pos = before_first
+        .rfind("- type: tuplet")
+        .or_else(|| before_first.rfind("- type: \"tuplet\""))
+        .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
+    let tuplet_line_start = yaml[..tuplet_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let tuplet_indent_len = tuplet_pos - tuplet_line_start;
+    let dash_indent = " ".repeat(tuplet_indent_len);
+
+    let insert_text = format!(
+        "\n{}- duration: {{ base: {} }}\n{}  notes: []",
+        dash_indent, base, dash_indent
+    );
+    let insert_pos = last_er.total_range.end;
+
+    let mut result = yaml.to_string();
+    result.insert_str(insert_pos, &insert_text);
+
+    let new_event_idx = tuplet_end;
+    Some((result, new_event_idx))
 }
 
 /// If the final event in the last measure is blank (notes: []), removes it from the YAML.
@@ -876,56 +927,293 @@ pub fn convert_event_to_rest(yaml: &str, event_idx: usize) -> Option<String> {
     let event_ranges = find_all_event_ranges(yaml);
     let er = event_ranges.get(event_idx)?;
     let event_text = yaml.get(er.total_range.clone())?;
-    
+
     // Find where notes: block starts, or if we have notes at all
     let mut result = yaml.to_string();
-    
+
     // Find the indent of the event's first line
     let first_line_start = event_text.find('-').unwrap_or(0);
     let before_dash = &event_text[..first_line_start];
-    let indent_len = before_dash.rfind('\n').map(|p| before_dash.len() - p - 1).unwrap_or(before_dash.len());
+    let indent_len = before_dash
+        .rfind('\n')
+        .map(|p| before_dash.len() - p - 1)
+        .unwrap_or(before_dash.len());
     let indent = " ".repeat(indent_len + 2); // properties are usually indented 2 spaces from the dash
-    
+
     let mut to_replace_start = None;
     let mut to_replace_end = None;
-    
+
     if let Some(notes_pos) = event_text.find("notes:") {
         let abs_start = er.total_range.start + notes_pos;
         to_replace_start = Some(abs_start);
-        
+
         // Find end of notes block
-        let mut block_end = er.total_range.end;
-        if !er.note_ranges.is_empty() {
+        let block_end = if !er.note_ranges.is_empty() {
             let last_note_range = er.note_ranges.last().unwrap();
             let after_last_note = &yaml[last_note_range.end..er.total_range.end];
-            // Find the end of the line
             if let Some(nl) = after_last_note.find('\n') {
-                block_end = last_note_range.end + nl;
+                last_note_range.end + nl
             } else {
-                block_end = er.total_range.end;
+                er.total_range.end
             }
         } else {
             let after_notes = &event_text[notes_pos..];
             if let Some(nl) = after_notes.find('\n') {
-                block_end = abs_start + nl;
+                abs_start + nl
             } else {
-                block_end = er.total_range.end;
+                er.total_range.end
             }
-        }
+        };
         to_replace_end = Some(block_end);
     } else if event_text.contains("rest:") {
         // Already a rest
         return None;
     }
-    
+
     let rest_line = format!("rest: {{}}");
-    
+
     if let (Some(start), Some(end)) = (to_replace_start, to_replace_end) {
         result.replace_range(start..end, &rest_line);
     } else {
         // Just append rest: {} to the end of the event
         result.insert_str(er.total_range.end, &format!("\n{}{}", indent, rest_line));
     }
-    
+
     Some(result)
+}
+
+fn replace_event_duration_base(event_text: &str, new_base: &str) -> String {
+    let lines: Vec<&str> = event_text.lines().collect();
+    let mut new_lines = Vec::new();
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("- duration:") {
+            let indent = line.len() - line.trim_start().len();
+            new_lines.push(format!(
+                "{}- duration: {{ base: {} }}",
+                " ".repeat(indent),
+                new_base
+            ));
+        } else if trimmed.starts_with("duration:") {
+            let indent = line.len() - line.trim_start().len();
+            new_lines.push(format!(
+                "{}duration: {{ base: {} }}",
+                " ".repeat(indent),
+                new_base
+            ));
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+    new_lines.join("\n")
+}
+
+pub fn create_tuplet_in_yaml(
+    yaml: &str,
+    event_idx: usize,
+    inner_multiple: u32,
+    outer_multiple: u32,
+    base: &str,
+) -> Option<String> {
+    let event_ranges = find_all_event_ranges(yaml);
+    let er = event_ranges.get(event_idx)?;
+    let event_text = yaml.get(er.total_range.clone())?;
+
+    let first_line_start = event_text.find('-').unwrap_or(0);
+    let before_dash = &event_text[..first_line_start];
+    let indent_len = before_dash
+        .rfind('\n')
+        .map(|p| before_dash.len() - p - 1)
+        .unwrap_or(before_dash.len());
+    let dash_indent = " ".repeat(indent_len);
+    let prop_indent = " ".repeat(indent_len + 2);
+    let inner_dash_indent = " ".repeat(indent_len + 4);
+
+    let mut tuplet_yaml = String::new();
+    tuplet_yaml.push_str(&format!("{}- type: tuplet\n", dash_indent));
+    tuplet_yaml.push_str(&format!("{}inner:\n", prop_indent));
+    tuplet_yaml.push_str(&format!(
+        "{}duration: {{ base: {} }}\n",
+        inner_dash_indent, base
+    ));
+    tuplet_yaml.push_str(&format!(
+        "{}multiple: {}\n",
+        inner_dash_indent, inner_multiple
+    ));
+    tuplet_yaml.push_str(&format!("{}outer:\n", prop_indent));
+    tuplet_yaml.push_str(&format!(
+        "{}duration: {{ base: {} }}\n",
+        inner_dash_indent, base
+    ));
+    tuplet_yaml.push_str(&format!(
+        "{}multiple: {}\n",
+        inner_dash_indent, outer_multiple
+    ));
+    tuplet_yaml.push_str(&format!("{}content:\n", prop_indent));
+
+    let updated_event_text = replace_event_duration_base(event_text, base);
+    for line in updated_event_text.lines() {
+        tuplet_yaml.push_str(&format!("    {}\n", line));
+    }
+
+    for _ in 1..inner_multiple {
+        tuplet_yaml.push_str(&format!(
+            "{}- duration: {{ base: {} }}\n",
+            inner_dash_indent, base
+        ));
+        tuplet_yaml.push_str(&format!("{}  rest: {{}}\n", inner_dash_indent));
+    }
+
+    let mut result = yaml.to_string();
+    result.replace_range(er.total_range.clone(), tuplet_yaml.trim_end());
+    Some(result)
+}
+
+pub fn remove_tuplet_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {
+    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    let info = doc.find_event_tuplet_info(event_idx)?;
+    let event_ranges = find_all_event_ranges(yaml);
+
+    let first_er = event_ranges.get(info.event_range.start)?;
+    let last_er = event_ranges.get(info.event_range.end.saturating_sub(1))?;
+
+    let before_first = &yaml[..first_er.total_range.start];
+    let tuplet_pos = before_first
+        .rfind("- type: tuplet")
+        .or_else(|| before_first.rfind("- type: \"tuplet\""))
+        .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
+
+    let tuplet_line_start = yaml[..tuplet_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let tuplet_indent = tuplet_pos - tuplet_line_start;
+
+    let inner_content_text = &yaml[first_er.total_range.start..last_er.total_range.end];
+
+    let first_inner_dash = inner_content_text.find('-').unwrap_or(0);
+    let inner_indent_len = inner_content_text[..first_inner_dash]
+        .rfind('\n')
+        .map(|p| inner_content_text[..first_inner_dash].len() - p - 1)
+        .unwrap_or(inner_content_text[..first_inner_dash].len());
+
+    let de_indent = inner_indent_len.saturating_sub(tuplet_indent);
+
+    let mut unwrapped_lines = Vec::new();
+    for line in inner_content_text.lines() {
+        if line.len() >= de_indent && line[..de_indent].trim().is_empty() {
+            unwrapped_lines.push(&line[de_indent..]);
+        } else {
+            unwrapped_lines.push(line.trim_start());
+        }
+    }
+    let unwrapped_text = unwrapped_lines.join("\n");
+
+    let mut result = yaml.to_string();
+    result.replace_range(tuplet_line_start..last_er.total_range.end, &unwrapped_text);
+    Some(result)
+}
+
+pub fn fill_tuplet_rests_and_add_blank(yaml: &str, event_idx: usize) -> Option<(String, usize)> {
+    let mut current_yaml = yaml.to_string();
+    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&current_yaml).ok()?;
+    let info = doc.find_event_tuplet_info(event_idx)?;
+
+    let tuplet_end = info.event_range.end;
+    let outer_base = info.tuplet.outer.duration.base.clone();
+
+    // Check if the current event is blank (has no notes and is not a rest)
+    let flat_events = doc
+        .parts
+        .first()?
+        .measures
+        .iter()
+        .flat_map(|m| m.sequences.iter())
+        .flat_map(|s| s.flattened_events())
+        .collect::<Vec<_>>();
+    let cur_is_blank = flat_events
+        .get(event_idx)
+        .map(|e| e.notes.is_empty() && e.rest.is_none())
+        .unwrap_or(false);
+
+    let convert_start = if cur_is_blank {
+        event_idx
+    } else {
+        event_idx + 1
+    };
+
+    // Fill remaining events in tuplet with rests in reverse order so indices remain stable
+    for idx in (convert_start..tuplet_end).rev() {
+        if let Some(updated) = convert_event_to_rest(&current_yaml, idx) {
+            current_yaml = updated;
+        }
+    }
+
+    // Now insert a new blank note after the tuplet
+    let event_ranges = find_all_event_ranges(&current_yaml);
+    let last_er = event_ranges.get(tuplet_end.saturating_sub(1))?;
+
+    // Determine indentation for top-level sequence items from the tuplet header
+    let before_first = &current_yaml[..last_er.total_range.start];
+    let tuplet_pos = before_first
+        .rfind("- type: tuplet")
+        .or_else(|| before_first.rfind("- type: \"tuplet\""))
+        .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
+    let tuplet_line_start = current_yaml[..tuplet_pos]
+        .rfind('\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let tuplet_indent_len = tuplet_pos - tuplet_line_start;
+    let dash_indent = " ".repeat(tuplet_indent_len);
+
+    // Check if measure capacity allows adding note or requires a new measure
+    let current_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&current_yaml).ok()?;
+    let part = current_doc.parts.first()?;
+
+    // Find which measure contains the tuplet
+    let mut cur_e = 0;
+    let mut measure_idx = 0;
+    let mut is_last_event_in_measure = false;
+    for (m_i, measure) in part.measures.iter().enumerate() {
+        if let Some(seq) = measure.sequences.first() {
+            let count = seq.flattened_events().len();
+            if tuplet_end <= cur_e + count {
+                measure_idx = m_i;
+                is_last_event_in_measure = tuplet_end == cur_e + count;
+                break;
+            }
+            cur_e += count;
+        }
+    }
+
+    let is_last_measure = measure_idx == part.measures.len().saturating_sub(1);
+    let outer_dur = crate::mnx::Duration {
+        base: outer_base.clone(),
+        dots: None,
+        multiple: None,
+    };
+    let dur_beats = crate::validate::duration_to_quarter_beats(&outer_dur);
+    let time_sig = crate::validate::get_time_signature_for_measure(&current_doc, measure_idx);
+    let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+    let seq_beats = part.measures[measure_idx]
+        .sequences
+        .first()
+        .map(|s| s.total_beats())
+        .unwrap_or(0.0);
+
+    if is_last_measure && is_last_event_in_measure && (seq_beats + dur_beats > max_beats + 1e-4) {
+        // Measure is full, add a new measure
+        if let Some(new_yaml) = add_measure_to_yaml(&current_yaml, &outer_dur) {
+            let new_total = find_all_event_ranges(&new_yaml).len();
+            return Some((new_yaml, new_total.saturating_sub(1)));
+        }
+    }
+
+    // Insert blank note right after the tuplet
+    let insert_text = format!(
+        "\n{}- duration: {{ base: {} }}\n{}  notes: []",
+        dash_indent, outer_base, dash_indent
+    );
+    let insert_pos = last_er.total_range.end;
+    current_yaml.insert_str(insert_pos, &insert_text);
+
+    let new_event_idx = tuplet_end;
+    Some((current_yaml, new_event_idx))
 }

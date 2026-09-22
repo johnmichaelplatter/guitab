@@ -219,63 +219,72 @@ mod tests {
     #[test]
     fn test_duration_to_quarter_beats() {
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "whole".to_string(),
                 dots: None
             }),
             4.0
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "half".to_string(),
                 dots: None
             }),
             2.0
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "quarter".to_string(),
                 dots: None
             }),
             1.0
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "eighth".to_string(),
                 dots: None
             }),
             0.5
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "sixteenth".to_string(),
                 dots: None
             }),
             0.25
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "32nd".to_string(),
                 dots: None
             }),
             0.125
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "dotted-quarter".to_string(),
                 dots: None
             }),
             1.5
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "quarter".to_string(),
                 dots: Some(1)
             }),
             1.5
         );
         assert_eq!(
-            duration_to_quarter_beats(&Duration { multiple: None,
+            duration_to_quarter_beats(&Duration {
+                multiple: None,
                 base: "quarter".to_string(),
                 dots: Some(2)
             }),

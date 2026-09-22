@@ -967,14 +967,24 @@ mod tests {
     }
 }
 
-fn walk_events_with_scaling<'a>(content: &'a [crate::mnx::SequenceItem], out: &mut Vec<(&'a crate::mnx::Event, f64)>, scale: f64) {
+fn walk_events_with_scaling<'a>(
+    content: &'a [crate::mnx::SequenceItem],
+    out: &mut Vec<(&'a crate::mnx::Event, f64)>,
+    scale: f64,
+) {
     for item in content {
         match item {
             crate::mnx::SequenceItem::Event(e) => out.push((e, scale)),
             crate::mnx::SequenceItem::Tuplet(t) => {
-                let inner_beats = crate::validate::duration_to_quarter_beats(&t.inner.duration) * (t.inner.multiple as f64);
-                let outer_beats = crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64);
-                let new_scale = if inner_beats > 0.0 { scale * (outer_beats / inner_beats) } else { scale };
+                let inner_beats = crate::validate::duration_to_quarter_beats(&t.inner.duration)
+                    * (t.inner.multiple as f64);
+                let outer_beats = crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                    * (t.outer.multiple as f64);
+                let new_scale = if inner_beats > 0.0 {
+                    scale * (outer_beats / inner_beats)
+                } else {
+                    scale
+                };
                 walk_events_with_scaling(&t.content, out, new_scale);
             }
         }

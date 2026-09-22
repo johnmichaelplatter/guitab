@@ -413,10 +413,28 @@ pub fn draw_tablature(
                         if let Some((start_x, mult)) = active_tuplets.pop() {
                             let end_x = current_x - event_spacing * 0.5;
                             let y = string_y_coords[0] - 25.0; // Above the staff
-                            painter.line_segment([egui::Pos2::new(start_x, y+6.0), egui::Pos2::new(start_x, y)], Stroke::new(1.0, Color32::GRAY));
-                            painter.line_segment([egui::Pos2::new(start_x, y), egui::Pos2::new(end_x, y)], Stroke::new(1.0, Color32::GRAY));
-                            painter.line_segment([egui::Pos2::new(end_x, y), egui::Pos2::new(end_x, y+6.0)], Stroke::new(1.0, Color32::GRAY));
-                            painter.text(egui::Pos2::new((start_x + end_x) / 2.0, y - 8.0), egui::Align2::CENTER_CENTER, mult.to_string(), FontId::monospace(11.0), Color32::GRAY);
+                            painter.line_segment(
+                                [
+                                    egui::Pos2::new(start_x, y + 6.0),
+                                    egui::Pos2::new(start_x, y),
+                                ],
+                                Stroke::new(1.0, Color32::GRAY),
+                            );
+                            painter.line_segment(
+                                [egui::Pos2::new(start_x, y), egui::Pos2::new(end_x, y)],
+                                Stroke::new(1.0, Color32::GRAY),
+                            );
+                            painter.line_segment(
+                                [egui::Pos2::new(end_x, y), egui::Pos2::new(end_x, y + 6.0)],
+                                Stroke::new(1.0, Color32::GRAY),
+                            );
+                            painter.text(
+                                egui::Pos2::new((start_x + end_x) / 2.0, y - 8.0),
+                                egui::Align2::CENTER_CENTER,
+                                mult.to_string(),
+                                FontId::monospace(11.0),
+                                Color32::GRAY,
+                            );
                         }
                         continue;
                     }
@@ -451,21 +469,28 @@ pub fn draw_tablature(
                         "64th" => '\u{E4E9}',
                         _ => '\u{E4E5}',
                     };
-                    
-                    let center_y = (string_y_coords.first().unwrap() + string_y_coords.last().unwrap()) / 2.0;
+
+                    let center_y =
+                        (string_y_coords.first().unwrap() + string_y_coords.last().unwrap()) / 2.0;
                     let text = rest_char.to_string();
                     let font_id = FontId::new(32.0, egui::FontFamily::Name("Bravura".into()));
                     let galley = painter.layout_no_wrap(text, font_id, note_color);
-                    let text_rect = Rect::from_center_size(Pos2::new(current_x, center_y), galley.size());
+                    let text_rect =
+                        Rect::from_center_size(Pos2::new(current_x, center_y), galley.size());
                     painter.galley(text_rect.min, galley, note_color);
-                    
+
                     if let Some(dots) = event.duration.dots {
                         if dots > 0 {
                             let dot_char = '\u{E4CD}';
                             let dot_text = dot_char.to_string();
-                            let dot_font_id = FontId::new(32.0, egui::FontFamily::Name("Bravura".into()));
-                            let dot_galley = painter.layout_no_wrap(dot_text, dot_font_id, note_color);
-                            let dot_rect = Rect::from_center_size(Pos2::new(current_x + text_rect.width() / 2.0 + 4.0, center_y), dot_galley.size());
+                            let dot_font_id =
+                                FontId::new(32.0, egui::FontFamily::Name("Bravura".into()));
+                            let dot_galley =
+                                painter.layout_no_wrap(dot_text, dot_font_id, note_color);
+                            let dot_rect = Rect::from_center_size(
+                                Pos2::new(current_x + text_rect.width() / 2.0 + 4.0, center_y),
+                                dot_galley.size(),
+                            );
                             painter.galley(dot_rect.min, dot_galley, note_color);
                         }
                     }
@@ -630,7 +655,8 @@ pub fn draw_tablature(
         if current_group_count < 4 && i + 1 < n {
             let next_note = &rhythm_notes[i + 1];
             if next_note.measure_idx == rhythm_notes[i].measure_idx
-                && next_note.rhythm.flag_count() >= 1 && !next_note.is_rest
+                && next_note.rhythm.flag_count() >= 1
+                && !next_note.is_rest
             {
                 beam_right[i] = true;
             } else {
@@ -642,7 +668,9 @@ pub fn draw_tablature(
     }
 
     for (i, note) in rhythm_notes.iter().enumerate() {
-        if note.is_rest { continue; }
+        if note.is_rest {
+            continue;
+        }
         let cx = note.x;
         let flags = note.rhythm.flag_count();
         let is_selected = selected_event == Some(i);

@@ -81,6 +81,22 @@ pub struct MnxEditorApp {
     is_mpe_mode: bool,                         // Toggle button for multi-timbral vs MPE output
     midi_player: crate::midi::MidiPlayer,      // Real-time MIDI sequencer playback engine
     midi_status_msg: Option<String>,           // Status or error message from MIDI playback
+    pub active_dialog: ActiveDialog,           // Active modal dialog
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActiveDialog {
+    None,
+    CreateTuplet {
+        inner_multiple: u32,
+        outer_multiple: u32,
+        base: String,
+        from_select_mode: bool,
+        event_idx: usize,
+    },
+    ConfirmRemoveTuplet {
+        event_idx: usize,
+    },
 }
 
 impl Default for MnxEditorApp {
@@ -111,6 +127,7 @@ impl Default for MnxEditorApp {
             is_mpe_mode: false,
             midi_player: crate::midi::MidiPlayer::new(),
             midi_status_msg: None,
+            active_dialog: ActiveDialog::None,
         };
 
         app.process_and_render();
@@ -137,15 +154,108 @@ impl MnxEditorApp {
         None
     }
 
+    pub fn is_selected_event_rest(&self) -> bool {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return false,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return false,
+        };
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return false,
+        };
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    if cur_e == e_idx {
+                        return ev.rest.is_some();
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn is_selected_event_in_tuplet(&self) -> bool {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return false,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return false,
+        };
+        doc.find_event_tuplet_info(e_idx).is_some()
+    }
+
+    pub fn convert_selected_to_rest(&mut self) {
+        if let Some(e_idx) = self.selected_event_idx {
+            if let Some(new_yaml) =
+                crate::yaml_editor::convert_event_to_rest(&self.yaml_text, e_idx)
+            {
+                self.yaml_text = new_yaml;
+                self.process_and_render();
+            }
+            if self.is_editing_fret {
+                self.is_editing_fret = false;
+                self.editing_fret_buf.clear();
+            }
+        }
+    }
+
+    pub fn handle_tuplet_button_click(&mut self) {
+        if let Some(e_idx) = self.selected_event_idx {
+            let is_in_tuplet = self.is_selected_event_in_tuplet();
+            if !is_in_tuplet {
+                let current_dur = self.get_selected_event_duration();
+                let base = current_dur
+                    .map(|d| d.base)
+                    .unwrap_or_else(|| "eighth".to_string());
+                let from_select_mode = !self.is_editing_fret;
+                self.active_dialog = ActiveDialog::CreateTuplet {
+                    inner_multiple: 3,
+                    outer_multiple: 2,
+                    base,
+                    from_select_mode,
+                    event_idx: e_idx,
+                };
+            } else {
+                if self.is_editing_fret {
+                    if let Some((new_yaml, new_idx)) =
+                        crate::yaml_editor::fill_tuplet_rests_and_add_blank(&self.yaml_text, e_idx)
+                    {
+                        self.yaml_text = new_yaml;
+                        self.process_and_render();
+                        self.selected_event_idx = Some(new_idx);
+                        self.is_editing_fret = true;
+                        self.editing_fret_buf.clear();
+                        if let Some(s) = self.editing_string {
+                            self.select_note_on_string(new_idx, s);
+                        }
+                    }
+                } else {
+                    self.active_dialog = ActiveDialog::ConfirmRemoveTuplet { event_idx: e_idx };
+                }
+            }
+        }
+    }
+
     pub fn change_selected_duration_base(&mut self, new_base: &str) {
         if let Some(e_idx) = self.selected_event_idx {
             let cur_dur =
                 self.get_selected_event_duration()
-                    .unwrap_or_else(|| crate::mnx::Duration { multiple: None,
+                    .unwrap_or_else(|| crate::mnx::Duration {
+                        multiple: None,
                         base: "quarter".to_string(),
                         dots: None,
                     });
-            let new_duration = crate::mnx::Duration { multiple: None,
+            let new_duration = crate::mnx::Duration {
+                multiple: None,
                 base: new_base.to_string(),
                 dots: cur_dur.dots,
             };
@@ -162,7 +272,8 @@ impl MnxEditorApp {
         if let Some(e_idx) = self.selected_event_idx {
             let cur_dur =
                 self.get_selected_event_duration()
-                    .unwrap_or_else(|| crate::mnx::Duration { multiple: None,
+                    .unwrap_or_else(|| crate::mnx::Duration {
+                        multiple: None,
                         base: "quarter".to_string(),
                         dots: None,
                     });
@@ -175,7 +286,8 @@ impl MnxEditorApp {
                 .replace("-dotted", "")
                 .replace("dotted", "")
                 .replace('.', "");
-            let new_duration = crate::mnx::Duration { multiple: None,
+            let new_duration = crate::mnx::Duration {
+                multiple: None,
                 base: if clean_base.is_empty() {
                     "quarter".to_string()
                 } else {
@@ -417,55 +529,153 @@ impl MnxEditorApp {
         committed
     }
 
+    fn handle_tuplet_right_arrow(&mut self, e_idx: usize, _total_events: usize) -> Option<usize> {
+        let doc = self.parsed_mnx.as_ref()?;
+        let info = doc.find_event_tuplet_info(e_idx)?;
+
+        // Must be the final event of the tuplet
+        if e_idx != info.event_range.end - 1 {
+            return None;
+        }
+
+        // Must fill the final rhythmic duration (has notes or is a rest)
+        let part = doc.parts.first()?;
+        let flat_events = part
+            .measures
+            .iter()
+            .flat_map(|m| m.sequences.iter())
+            .flat_map(|s| s.flattened_events())
+            .collect::<Vec<_>>();
+        let cur_ev = flat_events.get(e_idx)?;
+        if cur_ev.notes.is_empty() && cur_ev.rest.is_none() {
+            return None;
+        }
+
+        let final_note_base = cur_ev.duration.base.clone();
+
+        // Check if there is already an event after this tuplet in the same measure
+        let mut cur_e = 0;
+        let mut measure_idx = 0;
+        let mut tuplet_is_last_in_measure = false;
+        for (m_i, measure) in part.measures.iter().enumerate() {
+            if let Some(seq) = measure.sequences.first() {
+                let count = seq.flattened_events().len();
+                if info.event_range.end <= cur_e + count {
+                    measure_idx = m_i;
+                    tuplet_is_last_in_measure = info.event_range.end == cur_e + count;
+                    break;
+                }
+                cur_e += count;
+            }
+        }
+
+        if !tuplet_is_last_in_measure {
+            // There is already an event in this measure after the tuplet, move to it
+            return Some(info.event_range.end);
+        }
+
+        // Tuplet is the last item in this measure.
+        // Check measure capacity:
+        let dur = crate::mnx::Duration {
+            base: final_note_base.clone(),
+            dots: None,
+            multiple: None,
+        };
+        let dur_beats = crate::validate::duration_to_quarter_beats(&dur);
+        let time_sig = crate::validate::get_time_signature_for_measure(doc, measure_idx);
+        let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+        let seq_beats = part.measures[measure_idx]
+            .sequences
+            .first()
+            .map(|s| s.total_beats())
+            .unwrap_or(0.0);
+
+        let is_last_measure = measure_idx == part.measures.len().saturating_sub(1);
+
+        if seq_beats + dur_beats <= max_beats + 1e-4 {
+            // Measure has room: insert new non-tuple blank note after the tuplet in this measure
+            if let Some((new_yaml, new_idx)) = crate::yaml_editor::insert_blank_note_after_tuplet(
+                &self.yaml_text,
+                e_idx,
+                &final_note_base,
+            ) {
+                self.yaml_text = new_yaml;
+                self.process_and_render();
+                return Some(new_idx);
+            }
+        } else if is_last_measure {
+            // Measure is full, and it's the last measure: add a new measure with blank note
+            if let Some(new_yaml) = crate::yaml_editor::add_measure_to_yaml(&self.yaml_text, &dur) {
+                self.yaml_text = new_yaml;
+                self.process_and_render();
+                let new_total = find_all_event_ranges(&self.yaml_text).len();
+                return Some(new_total.saturating_sub(1));
+            }
+        } else {
+            // Measure is full, but next measure exists: move to next measure's first event
+            return Some(info.event_range.end);
+        }
+
+        None
+    }
+
     fn advance_to_next_note_in_edit_mode(&mut self, cur_str: Option<u8>, total_events: usize) {
         if let Some(e_idx) = self.selected_event_idx {
-            let at_final_event = e_idx == total_events.saturating_sub(1);
-            let next_idx = if at_final_event {
-                let mut added_idx = None;
-                if let Some(doc) = &self.parsed_mnx {
-                    if let Some(part) = doc.parts.first() {
-                        if let Some(last_measure) = part.measures.last() {
-                            if let Some(last_seq) = last_measure.sequences.first() {
-                                if let Some(last_event) = last_seq.flattened_events().last().copied() {
-                                    let m_idx = part.measures.len() - 1;
-                                    let final_dur = &last_event.duration;
-                                    let dur_beats = validate::duration_to_quarter_beats(final_dur);
-                                    let time_sig =
-                                        validate::get_time_signature_for_measure(doc, m_idx);
-                                    let max_beats =
-                                        (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
-                                    let curr_beats: f64 = last_seq
-                                        .total_beats();
+            let next_idx = if let Some(tuplet_next) =
+                self.handle_tuplet_right_arrow(e_idx, total_events)
+            {
+                tuplet_next
+            } else {
+                let at_final_event = e_idx == total_events.saturating_sub(1);
+                if at_final_event {
+                    let mut added_idx = None;
+                    if let Some(doc) = &self.parsed_mnx {
+                        if let Some(part) = doc.parts.first() {
+                            if let Some(last_measure) = part.measures.last() {
+                                if let Some(last_seq) = last_measure.sequences.first() {
+                                    if let Some(last_event) =
+                                        last_seq.flattened_events().last().copied()
+                                    {
+                                        let m_idx = part.measures.len() - 1;
+                                        let final_dur = &last_event.duration;
+                                        let dur_beats =
+                                            validate::duration_to_quarter_beats(final_dur);
+                                        let time_sig =
+                                            validate::get_time_signature_for_measure(doc, m_idx);
+                                        let max_beats =
+                                            (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+                                        let curr_beats: f64 = last_seq.total_beats();
 
-                                    if curr_beats + dur_beats <= max_beats + 1e-4 {
-                                        if let Some(new_yaml) = add_blank_note_to_last_measure(
-                                            &self.yaml_text,
-                                            final_dur,
-                                        ) {
-                                            self.yaml_text = new_yaml;
-                                            self.process_and_render();
+                                        if curr_beats + dur_beats <= max_beats + 1e-4 {
+                                            if let Some(new_yaml) = add_blank_note_to_last_measure(
+                                                &self.yaml_text,
+                                                final_dur,
+                                            ) {
+                                                self.yaml_text = new_yaml;
+                                                self.process_and_render();
+                                                let new_total =
+                                                    find_all_event_ranges(&self.yaml_text).len();
+                                                if new_total > 0 {
+                                                    added_idx = Some(new_total - 1);
+                                                }
+                                            }
+                                        } else {
+                                            self.add_measure_to_end();
                                             let new_total =
                                                 find_all_event_ranges(&self.yaml_text).len();
                                             if new_total > 0 {
                                                 added_idx = Some(new_total - 1);
                                             }
                                         }
-                                    } else {
-                                        self.add_measure_to_end();
-                                        let new_total =
-                                            find_all_event_ranges(&self.yaml_text).len();
-                                        if new_total > 0 {
-                                            added_idx = Some(new_total - 1);
-                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    added_idx.unwrap_or(e_idx)
+                } else {
+                    (e_idx + 1).min(total_events.saturating_sub(1))
                 }
-                added_idx.unwrap_or(e_idx)
-            } else {
-                (e_idx + 1).min(total_events.saturating_sub(1))
             };
 
             self.selected_event_idx = Some(next_idx);
@@ -572,7 +782,8 @@ impl MnxEditorApp {
             .and_then(|m| m.sequences.first())
             .and_then(|s| s.flattened_events().last().copied())
             .map(|e| e.duration.clone())
-            .unwrap_or_else(|| crate::mnx::Duration { multiple: None,
+            .unwrap_or_else(|| crate::mnx::Duration {
+                multiple: None,
                 base: "quarter".to_string(),
                 dots: None,
             });
@@ -771,6 +982,8 @@ impl MnxEditorApp {
                     ToggleDot,
                 }
                 let mut clicked_action: Option<DurationAction> = None;
+                let mut rest_clicked = false;
+                let mut tuplet_clicked = false;
 
                 if let Some(textures) = &self.duration_textures {
                     let icon_size = egui::vec2(22.0, 22.0);
@@ -806,6 +1019,57 @@ impl MnxEditorApp {
                     if make_icon_btn(ui, &textures.dot, is_dotted, "Augmentation Dot (.)") {
                         clicked_action = Some(DurationAction::ToggleDot);
                     }
+
+                    // Rest button (quarter rest glyph from Bravura)
+                    let is_rest = self.is_selected_event_rest();
+                    let rest_btn = egui::Button::new(
+                        egui::RichText::new("\u{E4E5}")
+                            .font(egui::FontId::new(20.0, egui::FontFamily::Name("Bravura".into()))),
+                    )
+                    .selected(is_rest);
+                    if ui.add_sized(btn_size, rest_btn).on_hover_text("Rest (R)").clicked() {
+                        rest_clicked = true;
+                    }
+
+                    // Tuplet button (brackets and small 3)
+                    let is_tuplet = self.is_selected_event_in_tuplet();
+                    let (t_rect, t_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(t_rect) {
+                        let visuals = ui.style().interact_selectable(&t_resp, is_tuplet);
+                        ui.painter().rect(
+                            t_rect,
+                            visuals.corner_radius,
+                            visuals.bg_fill,
+                            visuals.bg_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        let color = visuals.text_color();
+
+                        let center = t_rect.center();
+                        ui.painter().text(
+                            center,
+                            egui::Align2::CENTER_CENTER,
+                            "3",
+                            egui::FontId::monospace(12.0),
+                            color,
+                        );
+
+                        let bracket_y = center.y - 7.0;
+                        let hook_len = 3.5;
+                        let left_x = center.x - 9.0;
+                        let left_inner_x = center.x - 4.5;
+                        let right_inner_x = center.x + 4.5;
+                        let right_x = center.x + 9.0;
+                        let stroke = egui::Stroke::new(1.3, color);
+
+                        ui.painter().line_segment([egui::pos2(left_x, bracket_y + hook_len), egui::pos2(left_x, bracket_y)], stroke);
+                        ui.painter().line_segment([egui::pos2(left_x, bracket_y), egui::pos2(left_inner_x, bracket_y)], stroke);
+                        ui.painter().line_segment([egui::pos2(right_inner_x, bracket_y), egui::pos2(right_x, bracket_y)], stroke);
+                        ui.painter().line_segment([egui::pos2(right_x, bracket_y), egui::pos2(right_x, bracket_y + hook_len)], stroke);
+                    }
+                    if t_resp.on_hover_text("Tuplet").clicked() {
+                        tuplet_clicked = true;
+                    }
                 }
 
                 if let Some(action) = clicked_action {
@@ -813,6 +1077,13 @@ impl MnxEditorApp {
                         DurationAction::Base(b) => self.change_selected_duration_base(b),
                         DurationAction::ToggleDot => self.toggle_selected_duration_dot(),
                     }
+                }
+
+                if rest_clicked {
+                    self.convert_selected_to_rest();
+                }
+                if tuplet_clicked {
+                    self.handle_tuplet_button_click();
                 }
 
                 // ── BPM Input ─────────────────────────────────────────────────
@@ -1191,6 +1462,10 @@ impl MnxEditorApp {
         event_ranges: &[EventRange],
         total_events: usize,
     ) {
+        if self.active_dialog != ActiveDialog::None {
+            return;
+        }
+
         // In-place Fret Editing Key Handling
         if self.is_editing_fret {
             let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -1211,13 +1486,7 @@ impl MnxEditorApp {
                 .unwrap_or(6) as u8;
 
             if r_pressed && self.selected_event_idx.is_some() {
-                let e_idx = self.selected_event_idx.unwrap();
-                if let Some(new_yaml) = crate::yaml_editor::convert_event_to_rest(&self.yaml_text, e_idx) {
-                    self.yaml_text = new_yaml;
-                    self.process_and_render();
-                }
-                self.is_editing_fret = false;
-                self.editing_fret_buf.clear();
+                self.convert_selected_to_rest();
             } else if esc_pressed {
                 self.is_editing_fret = false;
                 self.editing_fret_buf.clear();
@@ -1415,11 +1684,7 @@ impl MnxEditorApp {
             let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
             if r_pressed && self.selected_event_idx.is_some() {
-                let e_idx = self.selected_event_idx.unwrap();
-                if let Some(new_yaml) = crate::yaml_editor::convert_event_to_rest(&self.yaml_text, e_idx) {
-                    self.yaml_text = new_yaml;
-                    self.process_and_render();
-                }
+                self.convert_selected_to_rest();
             } else if backspace_pressed && self.selected_event_idx.is_some() {
                 let e_idx = self.selected_event_idx.unwrap();
                 let at_final_event = e_idx == total_events.saturating_sub(1);
@@ -1561,79 +1826,92 @@ impl MnxEditorApp {
                     }
                 }
                 if right_pressed {
-                    let at_final_event =
-                        self.selected_event_idx == Some(total_events.saturating_sub(1));
+                    let cur_e_idx = self.selected_event_idx;
+                    let tuplet_next =
+                        cur_e_idx.and_then(|e_i| self.handle_tuplet_right_arrow(e_i, total_events));
 
-                    if at_final_event {
-                        let is_final_blank = self
-                            .parsed_mnx
-                            .as_ref()
-                            .and_then(|d| d.parts.first())
-                            .and_then(|p| p.measures.last())
-                            .and_then(|m| m.sequences.first())
-                            .and_then(|s| s.flattened_events().last().copied())
-                            .map(|e| e.notes.is_empty())
-                            .unwrap_or(false);
+                    if let Some(next_idx) = tuplet_next {
+                        self.selected_event_idx = Some(next_idx);
+                        self.selected_note_idx_in_event = None;
+                        self.editing_string = None;
+                        self.preview_selected_sound();
+                    } else {
+                        let at_final_event =
+                            self.selected_event_idx == Some(total_events.saturating_sub(1));
 
-                        if is_final_blank {
-                            // Rule 3: Moving further to the right of a final blank note has no effect.
-                        } else if let Some(doc) = &self.parsed_mnx {
-                            if let Some(part) = doc.parts.first() {
-                                if let Some(last_measure) = part.measures.last() {
-                                    if let Some(last_seq) = last_measure.sequences.first() {
-                                        if let Some(last_event) = last_seq.flattened_events().last().copied() {
-                                            let m_idx = part.measures.len() - 1;
-                                            let final_dur = &last_event.duration;
-                                            let dur_beats =
-                                                validate::duration_to_quarter_beats(final_dur);
-                                            let time_sig = validate::get_time_signature_for_measure(
-                                                doc, m_idx,
-                                            );
-                                            let max_beats = (time_sig.count as f64)
-                                                * (4.0 / time_sig.unit as f64);
-                                            let curr_beats: f64 = last_seq
-                                                .total_beats();
+                        if at_final_event {
+                            let is_final_blank = self
+                                .parsed_mnx
+                                .as_ref()
+                                .and_then(|d| d.parts.first())
+                                .and_then(|p| p.measures.last())
+                                .and_then(|m| m.sequences.first())
+                                .and_then(|s| s.flattened_events().last().copied())
+                                .map(|e| e.notes.is_empty())
+                                .unwrap_or(false);
 
-                                            if curr_beats + dur_beats <= max_beats + 1e-4 {
-                                                // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
-                                                if let Some(new_yaml) =
-                                                    add_blank_note_to_last_measure(
-                                                        &self.yaml_text,
-                                                        final_dur,
-                                                    )
-                                                {
-                                                    self.yaml_text = new_yaml;
-                                                    self.process_and_render();
-                                                    let new_total =
-                                                        find_all_event_ranges(&self.yaml_text)
-                                                            .len();
-                                                    if new_total > 0 {
-                                                        self.selected_event_idx =
-                                                            Some(new_total - 1);
+                            if is_final_blank {
+                                // Rule 3: Moving further to the right of a final blank note has no effect.
+                            } else if let Some(doc) = &self.parsed_mnx {
+                                if let Some(part) = doc.parts.first() {
+                                    if let Some(last_measure) = part.measures.last() {
+                                        if let Some(last_seq) = last_measure.sequences.first() {
+                                            if let Some(last_event) =
+                                                last_seq.flattened_events().last().copied()
+                                            {
+                                                let m_idx = part.measures.len() - 1;
+                                                let final_dur = &last_event.duration;
+                                                let dur_beats =
+                                                    validate::duration_to_quarter_beats(final_dur);
+                                                let time_sig =
+                                                    validate::get_time_signature_for_measure(
+                                                        doc, m_idx,
+                                                    );
+                                                let max_beats = (time_sig.count as f64)
+                                                    * (4.0 / time_sig.unit as f64);
+                                                let curr_beats: f64 = last_seq.total_beats();
+
+                                                if curr_beats + dur_beats <= max_beats + 1e-4 {
+                                                    // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
+                                                    if let Some(new_yaml) =
+                                                        add_blank_note_to_last_measure(
+                                                            &self.yaml_text,
+                                                            final_dur,
+                                                        )
+                                                    {
+                                                        self.yaml_text = new_yaml;
+                                                        self.process_and_render();
+                                                        let new_total =
+                                                            find_all_event_ranges(&self.yaml_text)
+                                                                .len();
+                                                        if new_total > 0 {
+                                                            self.selected_event_idx =
+                                                                Some(new_total - 1);
+                                                        }
+                                                        self.selected_note_idx_in_event = None;
+                                                        self.editing_string = None;
+                                                        self.preview_selected_sound();
                                                     }
-                                                    self.selected_note_idx_in_event = None;
-                                                    self.editing_string = None;
+                                                } else {
+                                                    // Rule 2: Bar has been filled up -> add new measure with blank note
+                                                    self.add_measure_to_end();
                                                     self.preview_selected_sound();
                                                 }
-                                            } else {
-                                                // Rule 2: Bar has been filled up -> add new measure with blank note
-                                                self.add_measure_to_end();
-                                                self.preview_selected_sound();
                                             }
                                         }
                                     }
                                 }
                             }
+                        } else {
+                            // Standard Right Arrow navigation
+                            self.selected_event_idx = match self.selected_event_idx {
+                                Some(idx) => Some((idx + 1).min(total_events - 1)),
+                                None => Some(0),
+                            };
+                            self.selected_note_idx_in_event = None;
+                            self.editing_string = None;
+                            self.preview_selected_sound();
                         }
-                    } else {
-                        // Standard Right Arrow navigation
-                        self.selected_event_idx = match self.selected_event_idx {
-                            Some(idx) => Some((idx + 1).min(total_events - 1)),
-                            None => Some(0),
-                        };
-                        self.selected_note_idx_in_event = None;
-                        self.editing_string = None;
-                        self.preview_selected_sound();
                     }
                 }
 
@@ -1707,6 +1985,154 @@ impl MnxEditorApp {
             }
         }
     }
+
+    fn render_dialogs(&mut self, ctx: &egui::Context) {
+        enum DialogAction {
+            CreateTuplet {
+                inner: u32,
+                outer: u32,
+                base: String,
+                from_select_mode: bool,
+                event_idx: usize,
+            },
+            RemoveTuplet {
+                event_idx: usize,
+            },
+        }
+
+        let mut close_dialog = false;
+        let mut apply_action = None;
+
+        match &mut self.active_dialog {
+            ActiveDialog::None => {}
+            ActiveDialog::CreateTuplet {
+                inner_multiple,
+                outer_multiple,
+                base,
+                from_select_mode,
+                event_idx,
+            } => {
+                let from_sel = *from_select_mode;
+                let ev_i = *event_idx;
+                let base_str = base.clone();
+
+                egui::Window::new("Create Tuplet")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.label(egui::RichText::new("Specify Tuplet Ratio:").strong());
+                        ui.label(format!("Base duration: {}", base_str));
+
+                        ui.horizontal(|ui| {
+                            ui.label("Inner multiple:");
+                            ui.add(egui::DragValue::new(inner_multiple).range(1..=64));
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Outer multiple:");
+                            ui.add(egui::DragValue::new(outer_multiple).range(1..=64));
+                        });
+
+                        ui.separator();
+
+                        let ok_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                        ui.horizontal(|ui| {
+                            if ui.button("OK").clicked() || ok_pressed {
+                                apply_action = Some(DialogAction::CreateTuplet {
+                                    inner: *inner_multiple,
+                                    outer: *outer_multiple,
+                                    base: base_str,
+                                    from_select_mode: from_sel,
+                                    event_idx: ev_i,
+                                });
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc_pressed {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
+            ActiveDialog::ConfirmRemoveTuplet { event_idx } => {
+                let ev_i = *event_idx;
+                egui::Window::new("Remove Tuplet")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.label(egui::RichText::new("Remove this tuple?").strong());
+                        ui.label(
+                            "This will convert all existing note and rhythm durations as standard durations outside the tuple.",
+                        );
+
+                        ui.separator();
+
+                        let ok_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                        ui.horizontal(|ui| {
+                            if ui.button("OK").clicked() || ok_pressed {
+                                apply_action = Some(DialogAction::RemoveTuplet { event_idx: ev_i });
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc_pressed {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
+        }
+
+        if close_dialog {
+            self.active_dialog = ActiveDialog::None;
+        }
+
+        if let Some(action) = apply_action {
+            match action {
+                DialogAction::CreateTuplet {
+                    inner,
+                    outer,
+                    base,
+                    from_select_mode,
+                    event_idx,
+                } => {
+                    if let Some(new_yaml) = crate::yaml_editor::create_tuplet_in_yaml(
+                        &self.yaml_text,
+                        event_idx,
+                        inner,
+                        outer,
+                        &base,
+                    ) {
+                        self.yaml_text = new_yaml;
+                        self.process_and_render();
+                        self.selected_event_idx = Some(event_idx);
+                        if from_select_mode {
+                            self.is_editing_fret = true;
+                            let cur_str =
+                                self.find_primary_string_for_event(event_idx).unwrap_or(1);
+                            self.editing_string = Some(cur_str);
+                            self.select_note_on_string(event_idx, cur_str);
+                            self.editing_fret_buf.clear();
+                        }
+                    }
+                }
+                DialogAction::RemoveTuplet { event_idx } => {
+                    if let Some(new_yaml) =
+                        crate::yaml_editor::remove_tuplet_in_yaml(&self.yaml_text, event_idx)
+                    {
+                        self.yaml_text = new_yaml;
+                        self.process_and_render();
+                        self.selected_event_idx = Some(event_idx);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for MnxEditorApp {
@@ -1762,6 +2188,9 @@ impl eframe::App for MnxEditorApp {
 
         // 4. Left Pane: Render Output
         self.render_central_panel(ui);
+
+        // 5. Modal Dialogs (Create Tuplet, Confirm Remove Tuplet)
+        self.render_dialogs(ui.ctx());
     }
 }
 
@@ -1992,7 +2421,8 @@ parts:
                     string: 5
                     fret: 3
 "#;
-        let dur = crate::mnx::Duration { multiple: None,
+        let dur = crate::mnx::Duration {
+            multiple: None,
             base: "quarter".to_string(),
             dots: None,
         };
@@ -2016,7 +2446,9 @@ parts:
         let cleaned = remove_last_blank_event(&with_blank).expect("Should remove blank note");
         let cleaned_doc = serde_saphyr::from_str::<MnxDocument>(&cleaned).expect("Should parse");
         assert_eq!(
-            cleaned_doc.parts[0].measures[0].sequences[0].flattened_events().len(),
+            cleaned_doc.parts[0].measures[0].sequences[0]
+                .flattened_events()
+                .len(),
             1
         );
         assert_eq!(
@@ -2030,7 +2462,8 @@ parts:
     #[test]
     fn test_add_measure_and_remove_blank_measure() {
         let yaml = include_str!("../example.yaml");
-        let dur = crate::mnx::Duration { multiple: None,
+        let dur = crate::mnx::Duration {
+            multiple: None,
             base: "quarter".to_string(),
             dots: None,
         };
@@ -2099,7 +2532,8 @@ parts:
     #[test]
     fn test_update_event_duration_in_yaml() {
         let yaml = include_str!("../example.yaml");
-        let dur_quarter = crate::mnx::Duration { multiple: None,
+        let dur_quarter = crate::mnx::Duration {
+            multiple: None,
             base: "quarter".to_string(),
             dots: None,
         };
@@ -2120,7 +2554,8 @@ parts:
         );
 
         // Test dotted
-        let dur_dotted_half = crate::mnx::Duration { multiple: None,
+        let dur_dotted_half = crate::mnx::Duration {
+            multiple: None,
             base: "half".to_string(),
             dots: Some(1),
         };
@@ -2425,34 +2860,188 @@ mod rest_tests {
     #[test]
     fn test_convert_event_to_rest_and_back() {
         let mut app = MnxEditorApp::default();
-        let total_initial = crate::yaml_editor::find_all_event_ranges(&app.yaml_text).len();
-        
+        let _total_initial = crate::yaml_editor::find_all_event_ranges(&app.yaml_text).len();
+
         // Select event 0 (which has notes)
         app.selected_event_idx = Some(0);
-        
+
         // Convert to rest
         if let Some(new_yaml) = crate::yaml_editor::convert_event_to_rest(&app.yaml_text, 0) {
             app.yaml_text = new_yaml;
             app.process_and_render();
         }
-        
+
         let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&app.yaml_text).unwrap();
         let ev = &doc.parts[0].measures[0].sequences[0].flattened_events()[0];
         assert!(ev.rest.is_some());
         assert!(ev.notes.is_empty());
-        
+
         // Convert back to note by typing a number
         app.is_editing_fret = true;
         app.editing_string = Some(3); // String 3
         app.editing_fret_buf = "5".to_string();
         app.commit_fret_edit();
         app.process_and_render();
-        
+
         let doc2 = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&app.yaml_text).unwrap();
         let ev2 = &doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
         assert!(ev2.rest.is_none());
         assert_eq!(ev2.notes.len(), 1);
         assert_eq!(ev2.notes[0].string, Some(3));
         assert_eq!(ev2.notes[0].fret, Some(5));
+    }
+}
+
+#[cfg(test)]
+mod tuplet_button_tests {
+    use super::*;
+
+    #[test]
+    fn test_tuplet_state_behaviors_and_yaml_lifecycle() {
+        let mut app = MnxEditorApp::default();
+
+        // 1. Select mode on non-tuple event (event 0)
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = false;
+        app.handle_tuplet_button_click();
+
+        // Should open CreateTuplet dialog with from_select_mode = true
+        assert!(matches!(
+            app.active_dialog,
+            ActiveDialog::CreateTuplet {
+                inner_multiple: 3,
+                outer_multiple: 2,
+                from_select_mode: true,
+                ..
+            }
+        ));
+
+        // Create the tuplet in YAML
+        let new_yaml = crate::yaml_editor::create_tuplet_in_yaml(&app.yaml_text, 0, 3, 2, "eighth")
+            .expect("Should create tuplet");
+        app.yaml_text = new_yaml;
+        app.process_and_render();
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true; // enters edit mode
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let tuplet_info = doc
+            .find_event_tuplet_info(0)
+            .expect("Event 0 should be in tuplet");
+        assert_eq!(tuplet_info.tuplet.inner.multiple, 3);
+        assert_eq!(tuplet_info.tuplet.outer.multiple, 2);
+        assert_eq!(tuplet_info.event_range, 0..3);
+
+        // Events 1 and 2 in the tuplet should be rests
+        let seq = &doc.parts[0].measures[0].sequences[0];
+        let flat = seq.flattened_events();
+        assert!(flat[0].rest.is_none());
+        assert!(flat[1].rest.is_some());
+        assert!(flat[2].rest.is_some());
+
+        // 2. In edit mode within a tuple figure:
+        // Pressing tuplet button fills remainder with rests and appends blank note after tuplet
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.active_dialog = ActiveDialog::None;
+
+        app.handle_tuplet_button_click();
+        assert_eq!(app.active_dialog, ActiveDialog::None);
+        // A new blank note should follow the end of the tuple duration (index 3)
+        assert_eq!(app.selected_event_idx, Some(3));
+        assert!(app.is_editing_fret);
+
+        let doc_after_fill = app.parsed_mnx.as_ref().unwrap();
+        let flat_after = doc_after_fill.parts[0].measures[0].sequences[0].flattened_events();
+        assert_eq!(flat_after[3].notes.len(), 0);
+
+        // 3. In select mode within a tuple figure:
+        // Select event 1 (inside the tuplet)
+        app.selected_event_idx = Some(1);
+        app.is_editing_fret = false;
+        app.handle_tuplet_button_click();
+
+        // Should open ConfirmRemoveTuplet dialog
+        assert!(matches!(
+            app.active_dialog,
+            ActiveDialog::ConfirmRemoveTuplet { event_idx: 1 }
+        ));
+
+        // When OK is confirmed, remove tuplet unwraps events
+        let unwrapped_yaml = crate::yaml_editor::remove_tuplet_in_yaml(&app.yaml_text, 1)
+            .expect("Should remove tuplet");
+        app.yaml_text = unwrapped_yaml;
+        app.process_and_render();
+        app.selected_event_idx = Some(1);
+        app.active_dialog = ActiveDialog::None;
+
+        let doc_unwrapped = app.parsed_mnx.as_ref().unwrap();
+        assert!(
+            doc_unwrapped.find_event_tuplet_info(1).is_none(),
+            "Tuplet wrapper should be removed"
+        );
+    }
+
+    #[test]
+    fn test_non_tuple_edit_mode_dialog() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.handle_tuplet_button_click();
+
+        assert!(matches!(
+            app.active_dialog,
+            ActiveDialog::CreateTuplet {
+                inner_multiple: 3,
+                outer_multiple: 2,
+                from_select_mode: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_tuplet_right_arrow_creates_non_tuple_blank_note() {
+        let mut app = MnxEditorApp::default();
+        let new_yaml = crate::yaml_editor::create_tuplet_in_yaml(&app.yaml_text, 0, 3, 2, "eighth")
+            .expect("Should create tuplet");
+        app.yaml_text = new_yaml;
+        app.process_and_render();
+
+        // Event 0: note, Event 1: rest, Event 2: rest.
+        // Event 2 is the final note/event in this tuplet.
+        app.selected_event_idx = Some(2);
+        let total = find_all_event_ranges(&app.yaml_text).len();
+
+        // 1. In select mode
+        let next_idx = app.handle_tuplet_right_arrow(2, total);
+        assert!(next_idx.is_some());
+        let new_e = next_idx.unwrap();
+        assert_eq!(new_e, 3);
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        // Crucial requirement: the new note must be NON-TUPLE
+        assert!(
+            doc.find_event_tuplet_info(new_e).is_none(),
+            "New note must be non-tuple"
+        );
+        let ev = &doc.parts[0].measures[0].sequences[0].flattened_events()[new_e];
+        // Must match the base duration of the final note inside the tuple ("eighth")
+        assert_eq!(ev.duration.base, "eighth");
+
+        // 2. In edit mode
+        app.selected_event_idx = Some(2);
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+        let total_now = find_all_event_ranges(&app.yaml_text).len();
+        app.advance_to_next_note_in_edit_mode(Some(1), total_now);
+
+        assert_eq!(app.selected_event_idx, Some(3));
+        assert!(app.is_editing_fret);
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        assert!(
+            doc2.find_event_tuplet_info(3).is_none(),
+            "Must be non-tuple in edit mode"
+        );
     }
 }

@@ -271,7 +271,10 @@ impl SequenceItem {
     pub fn total_beats(&self) -> f64 {
         match self {
             SequenceItem::Event(e) => crate::validate::duration_to_quarter_beats(&e.duration),
-            SequenceItem::Tuplet(t) => crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64),
+            SequenceItem::Tuplet(t) => {
+                crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                    * (t.outer.multiple as f64)
+            }
         }
     }
     pub fn collect_events<'a>(&'a self, out: &mut Vec<&'a Event>) {
@@ -283,5 +286,51 @@ impl SequenceItem {
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TupletInfo<'a> {
+    pub tuplet: &'a Tuplet,
+    pub event_range: std::ops::Range<usize>,
+    pub inner_event_idx: usize,
+}
+
+impl MnxDocument {
+    pub fn find_event_tuplet_info(&self, flat_event_idx: usize) -> Option<TupletInfo<'_>> {
+        let part = self.parts.first()?;
+        let mut cur_e = 0;
+        for measure in &part.measures {
+            for seq in &measure.sequences {
+                for item in &seq.content {
+                    match item {
+                        SequenceItem::Event(_) => {
+                            if cur_e == flat_event_idx {
+                                return None;
+                            }
+                            cur_e += 1;
+                        }
+                        SequenceItem::Tuplet(t) => {
+                            let mut tuplet_events = Vec::new();
+                            for inner_item in &t.content {
+                                inner_item.collect_events(&mut tuplet_events);
+                            }
+                            let count = tuplet_events.len();
+                            let start = cur_e;
+                            let end = cur_e + count;
+                            if flat_event_idx >= start && flat_event_idx < end {
+                                return Some(TupletInfo {
+                                    tuplet: t,
+                                    event_range: start..end,
+                                    inner_event_idx: flat_event_idx - start,
+                                });
+                            }
+                            cur_e = end;
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 }
