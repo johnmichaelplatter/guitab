@@ -220,8 +220,9 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
         let mut current_time_ticks: u32 = 0;
         let mut current_event_idx = 0;
-        
-        let mut pending_ties: std::collections::HashMap<String, (midly::num::u4, u8)> = std::collections::HashMap::new();
+
+        let mut pending_ties: std::collections::HashMap<String, (midly::num::u4, u8)> =
+            std::collections::HashMap::new();
         let mut final_ticks = 0;
 
         for measure in &part.measures {
@@ -266,8 +267,11 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         self.options.pitch_bend_range,
                                     );
 
-                                    let is_tied = note.id.as_ref().map_or(false, |id| pending_ties.contains_key(id));
-                                    
+                                    let is_tied = note
+                                        .id
+                                        .as_ref()
+                                        .map_or(false, |id| pending_ties.contains_key(id));
+
                                     let (ch, note_val) = if is_tied {
                                         let id = note.id.as_ref().unwrap();
                                         pending_ties.remove(id).unwrap()
@@ -297,7 +301,8 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         (channel, base_note)
                                     };
 
-                                    let has_forward_tie = note.ties.as_ref().map_or(false, |t| !t.is_empty());
+                                    let has_forward_tie =
+                                        note.ties.as_ref().map_or(false, |t| !t.is_empty());
                                     if has_forward_tie {
                                         let target = note.ties.as_ref().unwrap()[0].target.clone();
                                         pending_ties.insert(target, (ch, note_val));
@@ -316,7 +321,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 }
                             }
                         }
-                        
+
                         if let Some(ev_id) = &event.id {
                             if let Some((ch, note_val)) = pending_ties.remove(ev_id) {
                                 self.abs_events.push(InternalAbsoluteEvent {
@@ -338,7 +343,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                 current_time_ticks = current_time_ticks.max(seq_time_ticks);
             }
         }
-        
+
         for (_, (ch, note_val)) in pending_ties.drain() {
             self.abs_events.push(InternalAbsoluteEvent {
                 time_ticks: final_ticks,

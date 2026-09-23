@@ -54,9 +54,17 @@ pub struct Part {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Instrument {
     pub name: String,
-    #[serde(rename = "microFretDivisions", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "microFretDivisions",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub micro_fret_divisions: Option<u8>,
-    #[serde(rename = "fretStepMultiplier", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "fretStepMultiplier",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub fret_step_multiplier: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capo: Option<u8>,
@@ -429,14 +437,8 @@ parts:
         if let SequenceItem::Event(ev1) = &seq.content[0] {
             assert_eq!(ev1.id.as_deref(), Some("ev1"));
             assert_eq!(ev1.notes[0].id.as_deref(), Some("n1"));
-            assert_eq!(
-                ev1.notes[0].ties.as_ref().unwrap()[0].target,
-                "n2"
-            );
-            assert_eq!(
-                ev1.slurs.as_ref().unwrap()[0].target,
-                "ev2"
-            );
+            assert_eq!(ev1.notes[0].ties.as_ref().unwrap()[0].target, "n2");
+            assert_eq!(ev1.slurs.as_ref().unwrap()[0].target, "ev2");
             assert_eq!(
                 ev1.slurs.as_ref().unwrap()[0].start_note.as_deref(),
                 Some("n1")
@@ -490,4 +492,3 @@ parts:
         }
     }
 }
-

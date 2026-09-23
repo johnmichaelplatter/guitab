@@ -7,7 +7,7 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 fn format_pitch(pitch: &Pitch, edo: u32) -> String {
     let mut prefix = String::new();
     let mut suffix = String::new();
-    
+
     if let Some(alter) = &pitch.alter {
         let mut alter_val = 0;
         let alter_str = alter.to_string();
@@ -18,16 +18,16 @@ fn format_pitch(pitch: &Pitch, edo: u32) -> String {
         } else if let Ok(v) = alter_str.parse::<f64>() {
             alter_val = v as i32;
         }
-        
+
         let tuning = crate::edo::EdoTuning::new(edo);
         let sharp_steps = tuning.sharp_steps;
-        
+
         // Find best combination of sharps/flats and up/down
         // Similar to steps_to_pitch logic
         let mut best_score = i32::MAX;
         let mut best_sharps = 0;
         let mut best_ups = 0;
-        
+
         for sharps in -2..=2 {
             let ups = alter_val - sharps * sharp_steps;
             let score = sharps.abs() * 2 + ups.abs() * 3;
@@ -37,20 +37,20 @@ fn format_pitch(pitch: &Pitch, edo: u32) -> String {
                 best_ups = ups;
             }
         }
-        
+
         if best_ups > 0 {
             prefix.push_str(&"^".repeat(best_ups as usize));
         } else if best_ups < 0 {
             prefix.push_str(&"v".repeat((-best_ups) as usize));
         }
-        
+
         if best_sharps > 0 {
             suffix.push_str(&"#".repeat(best_sharps as usize));
         } else if best_sharps < 0 {
             suffix.push_str(&"b".repeat((-best_sharps) as usize));
         }
     }
-    
+
     format!("{}{}{}", prefix, pitch.step, suffix)
 }
 
@@ -475,10 +475,8 @@ pub fn draw_tablature(
     let mut event_id_to_idx: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     let mut collected_ties: Vec<(Pos2, u8, i32, String)> = Vec::new();
-    let mut collected_slurs: Vec<(
-        crate::mnx::Slur,
-        Vec<(Option<String>, u8, i32, Pos2)>,
-    )> = Vec::new();
+    let mut collected_slurs: Vec<(crate::mnx::Slur, Vec<(Option<String>, u8, i32, Pos2)>)> =
+        Vec::new();
 
     let mut flat_event_idx = 0;
     let mut last_event_spacing = event_spacing;
@@ -504,10 +502,12 @@ pub fn draw_tablature(
                     LayoutItem::TupletStart(t) => {
                         tuplet_counter += 1;
                         let current_scale = tuplet_stack.last().map(|&(_, s)| s).unwrap_or(1.0);
-                        let inner_beats = crate::validate::duration_to_quarter_beats(&t.inner.duration)
-                            * (t.inner.multiple as f64);
-                        let outer_beats = crate::validate::duration_to_quarter_beats(&t.outer.duration)
-                            * (t.outer.multiple as f64);
+                        let inner_beats =
+                            crate::validate::duration_to_quarter_beats(&t.inner.duration)
+                                * (t.inner.multiple as f64);
+                        let outer_beats =
+                            crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                                * (t.outer.multiple as f64);
                         let new_scale = if inner_beats > 0.0 {
                             current_scale * (outer_beats / inner_beats)
                         } else {
@@ -1366,7 +1366,10 @@ mod tests {
         assert_eq!(get_beam_breaks(&ts_2_4, false), vec![1.0, 2.0]);
 
         let ts_5_4 = TimeSignature { count: 5, unit: 4 };
-        assert_eq!(get_beam_breaks(&ts_5_4, false), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(
+            get_beam_breaks(&ts_5_4, false),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0]
+        );
 
         let ts_5_8 = TimeSignature { count: 5, unit: 8 };
         assert_eq!(get_beam_breaks(&ts_5_8, false), vec![1.5, 2.5]);
@@ -1728,9 +1731,11 @@ mod tests {
         assert_eq!(
             beam_right,
             vec![
-                true, true, false, // Tuplet 1 notes beam together; note 2 does not beam to note 3
-                true, false,       // Non-tuplet notes 3 & 4 beam together; note 4 does not beam into Tuplet 2
-                true, true, false  // Tuplet 2 notes beam together
+                true, true,
+                false, // Tuplet 1 notes beam together; note 2 does not beam to note 3
+                true,
+                false, // Non-tuplet notes 3 & 4 beam together; note 4 does not beam into Tuplet 2
+                true, true, false // Tuplet 2 notes beam together
             ]
         );
     }
@@ -1975,13 +1980,12 @@ pub fn compute_default_beaming_for_measure(
         }
 
         // Non-tuplet notes: apply time signature beam breaks
-        let has_sub_eighth =
-            note_a.rhythm.flag_count() >= 2 || note_b.rhythm.flag_count() >= 2;
+        let has_sub_eighth = note_a.rhythm.flag_count() >= 2 || note_b.rhythm.flag_count() >= 2;
         let breaks = get_beam_breaks(time_sig, has_sub_eighth);
         let eps = 1e-4;
-        let has_break = breaks.iter().any(|&b| {
-            note_a.start_beat + eps < b && b <= note_b.start_beat + eps
-        });
+        let has_break = breaks
+            .iter()
+            .any(|&b| note_a.start_beat + eps < b && b <= note_b.start_beat + eps);
 
         if !has_break {
             beam_right[i] = true;
