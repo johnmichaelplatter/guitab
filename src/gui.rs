@@ -63,6 +63,7 @@ impl DurationTextures {
 
 pub struct MnxEditorApp {
     yaml_text: String,
+    saved_yaml: String,
     parsed_mnx: Option<MnxDocument>,
     parsed_errors: Vec<validate::ValidationError>,
     validation_errors: Vec<String>,
@@ -91,6 +92,7 @@ pub enum ActiveDialog {
         title: String,
         text: String,
     },
+    ConfirmDiscardChanges,
     CreateTuplet {
         inner_multiple: u32,
         outer_multiple: u32,
@@ -107,6 +109,7 @@ pub enum ActiveDialog {
         step_multiplier: u8,
         tunings_text: Vec<String>, // text input for step
         tunings_octave: Vec<i32>,  // octave
+        is_new_tab: bool,
     },
     ConfirmEdoChange {
         new_edo: u8,
@@ -127,7 +130,8 @@ impl Default for MnxEditorApp {
         let selected_port = ports.first().map(|p| p.id);
 
         let mut app = Self {
-            yaml_text: initial_yaml,
+            yaml_text: initial_yaml.clone(),
+            saved_yaml: initial_yaml,
             parsed_mnx: None,
             parsed_errors: Vec::new(),
             validation_errors: Vec::new(),
@@ -873,6 +877,87 @@ impl MnxEditorApp {
             }
         }
     }
+    pub fn is_modified(&self) -> bool {
+        self.yaml_text != self.saved_yaml
+    }
+
+    pub fn prompt_new_tab_instrument_setup(&mut self) {
+        let mut tunings_text = Vec::new();
+        let mut tunings_octave = Vec::new();
+        for s in 1..=15 {
+            let (step, octave) = match s {
+                1 => ("E", 4),
+                2 => ("B", 3),
+                3 => ("G", 3),
+                4 => ("D", 3),
+                5 => ("A", 2),
+                6 => ("E", 2),
+                7 => ("B", 1),
+                8 => ("F#", 1),
+                _ => ("", 0),
+            };
+            tunings_text.push(step.to_string());
+            tunings_octave.push(octave);
+        }
+        self.active_dialog = ActiveDialog::InstrumentSetup {
+            num_strings: 6,
+            edo: 12,
+            step_multiplier: 1,
+            tunings_text,
+            tunings_octave,
+            is_new_tab: true,
+        };
+    }
+
+    pub fn start_new_tab(
+        &mut self,
+        _num_strings: u8,
+        edo: u8,
+        step_multiplier: u8,
+        tunings: Vec<crate::mnx::StringTuning>,
+    ) {
+        let mut tunings_str = String::new();
+        for t in &tunings {
+            tunings_str.push_str(&format!("        - string: {}\n          pitch: {{ step: \"{}\", octave: {} }}\n", t.string, t.pitch.step, t.pitch.octave));
+        }
+
+        let new_yaml = format!(r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: {{ count: 4, unit: 4 }}
+parts:
+  - instrument:
+      name: "Guitar"
+      microFretDivisions: {}
+      fretStepMultiplier: {}
+      tuning:
+{}    measures:
+      - sequences:
+          - content:
+              - duration: {{ base: quarter }}
+                rest: {{}}
+"#, edo, step_multiplier, tunings_str);
+
+        self.yaml_text = new_yaml.clone();
+        self.saved_yaml = new_yaml;
+        self.current_file_path = None;
+        self.selected_event_idx = Some(0);
+        self.selected_note_idx_in_event = None;
+        self.is_editing_fret = false;
+        self.editing_fret_buf.clear();
+        self.editing_string = None;
+        self.process_and_render();
+    }
+
+    pub fn new_file(&mut self) {
+        if self.is_modified() {
+            self.active_dialog = ActiveDialog::ConfirmDiscardChanges;
+        } else {
+            self.prompt_new_tab_instrument_setup();
+        }
+    }
+
     fn open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("YAML Documents", &["yaml", "yml"])
@@ -880,12 +965,14 @@ impl MnxEditorApp {
         {
             match fs::read_to_string(&path) {
                 Ok(content) => {
-                    self.yaml_text = content;
+                    self.yaml_text = content.clone();
+                    self.saved_yaml = content;
                     self.current_file_path = Some(path);
                     self.selected_event_idx = None;
                     self.selected_note_idx_in_event = None;
                     self.is_editing_fret = false;
                     self.editing_fret_buf.clear();
+                    self.editing_string = None;
                     self.process_and_render();
                 }
                 Err(e) => {
@@ -895,18 +982,22 @@ impl MnxEditorApp {
         }
     }
 
-    fn save_file(&mut self) {
+    fn save_file(&mut self) -> bool {
         // If we have a known file path, save to it. Otherwise, trigger "Save As".
-        if let Some(path) = &self.current_file_path {
-            if let Err(e) = fs::write(path, &self.yaml_text) {
+        if let Some(path) = self.current_file_path.clone() {
+            if let Err(e) = fs::write(&path, &self.yaml_text) {
                 self.validation_errors = vec![format!("Failed to save file: {}", e)];
+                false
+            } else {
+                self.saved_yaml = self.yaml_text.clone();
+                true
             }
         } else {
-            self.save_as_file();
+            self.save_as_file()
         }
     }
 
-    fn save_as_file(&mut self) {
+    fn save_as_file(&mut self) -> bool {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("YAML Documents", &["yaml", "yml"])
             .set_file_name("untitled.yaml")
@@ -914,10 +1005,15 @@ impl MnxEditorApp {
         {
             if let Err(e) = fs::write(&path, &self.yaml_text) {
                 self.validation_errors = vec![format!("Failed to save file: {}", e)];
+                false
             } else {
                 // Update the current path so subsequent "Saves" go here
                 self.current_file_path = Some(path);
+                self.saved_yaml = self.yaml_text.clone();
+                true
             }
+        } else {
+            false
         }
     }
 
@@ -929,6 +1025,9 @@ impl MnxEditorApp {
     ) {
         egui::Panel::top("top_panel").show(ui, |ui| {
             ui.horizontal(|ui| {
+                if ui.button("New").clicked() {
+                    self.new_file();
+                }
                 if ui.button("Open").clicked() {
                     self.open_file();
                 }
@@ -1292,6 +1391,7 @@ impl MnxEditorApp {
                         step_multiplier,
                         tunings_text,
                         tunings_octave,
+                        is_new_tab: false,
                     };
                 }
 
@@ -2081,6 +2181,7 @@ impl MnxEditorApp {
                 step_multiplier: u8,
                 tunings_text: Vec<String>,
                 tunings_octave: Vec<i32>,
+                is_new_tab: bool,
             },
             TranslateEdo {
                 new_edo: u8,
@@ -2096,6 +2197,9 @@ impl MnxEditorApp {
                 step_multiplier: u8,
                 tunings: Vec<crate::mnx::StringTuning>,
             },
+            DiscardChangesSave,
+            DiscardChangesSaveAs,
+            DiscardChangesProceed,
         }
 
         let mut close_dialog = false;
@@ -2103,6 +2207,34 @@ impl MnxEditorApp {
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
+            ActiveDialog::ConfirmDiscardChanges => {
+                egui::Window::new("Discard changes?")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.label("You have unsaved changes. What would you like to do?");
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Save").clicked() {
+                                apply_action = Some(DialogAction::DiscardChangesSave);
+                                close_dialog = true;
+                            }
+                            if ui.button("Save As").clicked() {
+                                apply_action = Some(DialogAction::DiscardChangesSaveAs);
+                                close_dialog = true;
+                            }
+                            if ui.button("Discard Changes").clicked() {
+                                apply_action = Some(DialogAction::DiscardChangesProceed);
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
             ActiveDialog::Message { title, text } => {
                 egui::Window::new(title.clone())
                     .collapsible(false)
@@ -2199,7 +2331,7 @@ impl MnxEditorApp {
                         });
                     });
             }
-            ActiveDialog::InstrumentSetup { num_strings, edo, step_multiplier, tunings_text, tunings_octave } => {
+            ActiveDialog::InstrumentSetup { num_strings, edo, step_multiplier, tunings_text, tunings_octave, is_new_tab } => {
                 egui::Window::new("Instrument Setup")
                     .collapsible(false)
                     .resizable(false)
@@ -2257,6 +2389,7 @@ impl MnxEditorApp {
                                     step_multiplier: *step_multiplier,
                                     tunings_text: tunings_text.clone(),
                                     tunings_octave: tunings_octave.clone(),
+                                    is_new_tab: *is_new_tab,
                                 });
                                 close_dialog = true;
                             }
@@ -2361,7 +2494,7 @@ impl MnxEditorApp {
                         self.selected_event_idx = Some(event_idx);
                     }
                 }
-                DialogAction::ApplyInstrumentSetup { num_strings, edo, step_multiplier, tunings_text, tunings_octave } => {
+                DialogAction::ApplyInstrumentSetup { num_strings, edo, step_multiplier, tunings_text, tunings_octave, is_new_tab } => {
                     let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
                     let old_num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
                     let old_edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
@@ -2385,7 +2518,9 @@ impl MnxEditorApp {
                         });
                     }
                     
-                    if edo != old_edo || step_multiplier != old_step {
+                    if is_new_tab {
+                        self.start_new_tab(num_strings, edo, step_multiplier, tunings);
+                    } else if edo != old_edo || step_multiplier != old_step {
                         self.active_dialog = ActiveDialog::ConfirmEdoChange { new_edo: edo, new_step_multiplier: step_multiplier };
                     } else if num_strings != old_num_strings || part.map(|p| p.instrument.as_ref().and_then(|i| i.tuning.as_ref())).flatten() != Some(&tunings) {
                         self.active_dialog = ActiveDialog::ConfirmTuningChange { new_num_strings: num_strings, new_tunings: tunings };
@@ -2624,36 +2759,20 @@ impl MnxEditorApp {
                     }
                 }
                 DialogAction::StartNewTab { num_strings, edo, step_multiplier, tunings } => {
-                    let mut doc = crate::mnx::MnxDocument {
-                        mnx: crate::mnx::MnxMeta { version: 1 },
-                        global: crate::mnx::Global { measures: vec![crate::mnx::GlobalMeasure { time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }), directions: vec![] }] },
-                        parts: vec![crate::mnx::Part {
-                            instrument: Some(crate::mnx::Instrument {
-                                name: "Guitar".to_string(),
-                                tuning: Some(tunings),
-                                capo: None,
-                                micro_fret_divisions: Some(edo),
-                                fret_step_multiplier: Some(step_multiplier),
-                            }),
-                            measures: vec![crate::mnx::Measure {
-                                beams: None,
-                                sequences: vec![crate::mnx::Sequence {
-                                    content: vec![crate::mnx::SequenceItem::Event(crate::mnx::Event {
-                                        id: None,
-                                        duration: crate::mnx::Duration { base: "whole".to_string(), dots: None, multiple: None },
-                                        notes: vec![],
-                                        rest: None,
-                                        slurs: None,
-                                    })],
-                                    beams: None,
-                                }],
-                            }],
-                        }],
-                    };
-                    if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                        self.yaml_text = new_yaml;
-                        self.process_and_render();
+                    self.start_new_tab(num_strings, edo, step_multiplier, tunings);
+                }
+                DialogAction::DiscardChangesSave => {
+                    if self.save_file() {
+                        self.prompt_new_tab_instrument_setup();
                     }
+                }
+                DialogAction::DiscardChangesSaveAs => {
+                    if self.save_as_file() {
+                        self.prompt_new_tab_instrument_setup();
+                    }
+                }
+                DialogAction::DiscardChangesProceed => {
+                    self.prompt_new_tab_instrument_setup();
                 }
             }
         }
@@ -3568,5 +3687,94 @@ mod tuplet_button_tests {
             doc2.find_event_tuplet_info(3).is_none(),
             "Must be non-tuple in edit mode"
         );
+    }
+
+    #[test]
+    fn test_new_file_when_unmodified_prompts_instrument_setup() {
+        let mut app = MnxEditorApp::default();
+        assert!(!app.is_modified(), "Initial app should not be modified");
+
+        app.new_file();
+        assert!(
+            matches!(
+                app.active_dialog,
+                ActiveDialog::InstrumentSetup {
+                    num_strings: 6,
+                    edo: 12,
+                    step_multiplier: 1,
+                    is_new_tab: true,
+                    ..
+                }
+            ),
+            "Unmodified new_file should open InstrumentSetup for new tab"
+        );
+    }
+
+    #[test]
+    fn test_new_file_when_modified_prompts_confirm_discard() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text.push_str("\n# modification");
+        assert!(app.is_modified(), "App should detect unsaved changes");
+
+        app.new_file();
+        assert_eq!(
+            app.active_dialog,
+            ActiveDialog::ConfirmDiscardChanges,
+            "Modified new_file should prompt ConfirmDiscardChanges"
+        );
+    }
+
+    #[test]
+    fn test_start_new_tab_resets_state_and_initializes_document() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(2);
+        app.is_editing_fret = true;
+        app.editing_fret_buf = "12".to_string();
+        app.current_file_path = Some(std::path::PathBuf::from("/fake/path.yaml"));
+
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4 },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3 },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3 },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3 },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2 },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2 },
+            },
+        ];
+
+        app.start_new_tab(6, 12, 1, tunings);
+
+        assert!(!app.is_modified(), "New tab should be clean (unmodified)");
+        assert!(app.current_file_path.is_none(), "File path should be reset");
+        assert_eq!(app.selected_event_idx, Some(0), "First rest should be selected");
+        assert!(!app.is_editing_fret, "Fret edit mode should be cleared");
+        assert!(app.editing_fret_buf.is_empty(), "Fret edit buf should be empty");
+
+        let doc = app.parsed_mnx.as_ref().expect("New tab document should parse");
+        assert_eq!(doc.parts.len(), 1);
+        assert_eq!(doc.parts[0].edo(), 12);
+        assert_eq!(doc.parts[0].num_strings(), 6);
+        assert_eq!(doc.parts[0].measures.len(), 1);
+        let events = doc.parts[0].measures[0].sequences[0].flattened_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].duration.base, "quarter");
+        assert!(events[0].rest.is_some(), "Default event in new tab should be a rest");
     }
 }

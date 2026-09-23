@@ -660,6 +660,7 @@ pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Optio
     let mut in_global = false;
     let mut global_measures_idx = None;
     let mut global_measure_item_idx = None;
+    let mut global_end_idx = None;
     let mut global_item_indent = 4;
     let mut last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
 
@@ -689,10 +690,16 @@ pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Optio
                     global_measure_item_idx = Some(i);
                     global_item_indent = indent;
                     if let Some(pos) = trimmed.find("time:") {
-                        last_time_sig_str = trimmed[pos..].to_string();
+                        let extracted = trimmed[pos..].trim();
+                        if extracted == "time:" {
+                            last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
+                        } else {
+                            last_time_sig_str = extracted.to_string();
+                        }
                     }
                 } else if trimmed.starts_with("parts:") || (indent == 0 && !trimmed.is_empty()) {
                     in_global = false;
+                    global_end_idx = Some(i);
                 }
             }
         }
@@ -722,8 +729,12 @@ pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Optio
     // Format new measure in global/measures if global/measures exists
     let mut result_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
 
-    if let Some(last_gm_idx) = global_measure_item_idx {
-        // Insert after the last item in global/measures
+    if let Some(end_idx) = global_end_idx {
+        // Insert at the end of the global block (just before parts)
+        let new_gm_line = format!("{}- {}", " ".repeat(global_item_indent), last_time_sig_str);
+        result_lines.insert(end_idx, new_gm_line);
+    } else if let Some(last_gm_idx) = global_measure_item_idx {
+        // Fallback: Insert after the last item in global/measures
         let new_gm_line = format!("{}- {}", " ".repeat(global_item_indent), last_time_sig_str);
         result_lines.insert(last_gm_idx + 1, new_gm_line);
     } else if let Some(gm_header_idx) = global_measures_idx {
