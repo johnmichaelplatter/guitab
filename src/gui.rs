@@ -2826,7 +2826,7 @@ parts:
                         .unwrap()
                         .fret_step_multiplier = Some(new_step_multiplier);
                     if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                        self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+                        self.yaml_text = new_yaml;
                         self.process_and_render();
                     }
                 }
@@ -2985,7 +2985,7 @@ parts:
                         }
                     }
                     if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                        self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+                        self.yaml_text = new_yaml;
                         self.process_and_render();
                     }
                 }
@@ -3178,7 +3178,7 @@ parts:
 
         if toggled_off {
             if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+                self.yaml_text = new_yaml;
                 self.process_and_render();
             }
             return;
@@ -3250,7 +3250,7 @@ parts:
                 });
 
                 if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                    self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+                    self.yaml_text = new_yaml;
                     self.process_and_render();
                 }
                 return;
@@ -3465,7 +3465,7 @@ parts:
         });
 
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+            self.yaml_text = new_yaml;
             self.process_and_render();
         }
     }

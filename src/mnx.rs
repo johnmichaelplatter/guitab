@@ -1,4 +1,38 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_saphyr::{FlowMap, FlowSeq};
+
+pub mod flow_opt {
+    use super::*;
+    pub fn serialize<T: Serialize, S: Serializer>(val: &Option<T>, s: S) -> Result<S::Ok, S::Error> {
+        match val {
+            Some(v) => FlowMap(v).serialize(s),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Option<T>, D::Error> {
+        Option::<T>::deserialize(d)
+    }
+}
+
+pub mod flow_req {
+    use super::*;
+    pub fn serialize<T: Serialize, S: Serializer>(val: &T, s: S) -> Result<S::Ok, S::Error> {
+        FlowMap(val).serialize(s)
+    }
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<T, D::Error> {
+        T::deserialize(d)
+    }
+}
+
+pub mod flow_seq_req {
+    use super::*;
+    pub fn serialize<T: Serialize, S: Serializer>(val: &T, s: S) -> Result<S::Ok, S::Error> {
+        FlowSeq(val).serialize(s)
+    }
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<T, D::Error> {
+        T::deserialize(d)
+    }
+}
 use std::fmt;
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -21,7 +55,7 @@ pub struct Global {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct GlobalMeasure {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub time: Option<TimeSignature>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub directions: Vec<Direction>,
@@ -75,12 +109,13 @@ pub struct Instrument {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct StringTuning {
     pub string: u8,
+    #[serde(with = "flow_req")]
     pub pitch: Pitch,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct BeamGroup {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "flow_seq_req")]
     pub events: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beams: Option<Vec<BeamGroup>>,
@@ -120,6 +155,7 @@ pub struct Tuplet {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct TupletDuration {
+    #[serde(with = "flow_req")]
     pub duration: Duration,
     #[serde(default = "default_multiple")]
     pub multiple: u32,
@@ -144,6 +180,7 @@ pub struct Slur {
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(with = "flow_req")]
     pub duration: Duration,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
@@ -159,9 +196,9 @@ pub struct Rest {}
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Duration {
     pub base: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dots: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiple: Option<u32>,
 }
 
@@ -174,6 +211,7 @@ pub struct Tie {
 pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(with = "flow_req")]
     pub pitch: Pitch,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub string: Option<u8>,
@@ -225,6 +263,7 @@ impl fmt::Display for Alteration {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Pitch {
     pub step: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alter: Option<Alteration>,
     pub octave: i32,
 }
