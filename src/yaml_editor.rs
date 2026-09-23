@@ -855,83 +855,63 @@ pub fn insert_blank_note_after_tuplet(
 /// If the final event in the last measure is blank (notes: []), removes it from the YAML.
 /// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
 pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
-    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
-    let part = doc.parts.first()?;
-    let last_measure = part.measures.last()?;
-    let last_seq = last_measure.sequences.first()?;
-    let last_event = last_seq.flattened_events().last().copied()?;
-
-    if !last_event.notes.is_empty() {
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    
+    if doc.parts.is_empty() {
         return None;
     }
-
-    if last_seq.flattened_events().len() > 1 {
-        let event_ranges = find_all_event_ranges(yaml);
-        let last_er = event_ranges.last()?;
-        let mut start = last_er.total_range.start;
-        let end = last_er.total_range.end;
-        if start > 0 && yaml.as_bytes()[start - 1] == b'\n' {
-            start -= 1;
-        }
-        let mut result = yaml.to_string();
-        result.replace_range(start..end, "");
-        return Some(result);
+    
+    let last_measure_idx = doc.parts[0].measures.len().saturating_sub(1);
+    if doc.parts[0].measures.is_empty() {
+        return None;
     }
-
-    // Only 1 event in the measure -> remove the last measure entirely
-    let lines: Vec<&str> = yaml.lines().collect();
-    let mut last_seq_line_idx = None;
-    let mut in_parts = false;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("parts:") {
-            in_parts = true;
-            continue;
-        }
-        if in_parts && (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:")) {
-            last_seq_line_idx = Some(i);
-        }
+    
+    let measure = &mut doc.parts[0].measures[last_measure_idx];
+    if measure.sequences.is_empty() {
+        return None;
     }
-
-    let seq_line_idx = last_seq_line_idx?;
-
-    // Also identify the corresponding global measure entry if it exists
-    let mut in_global = false;
-    let mut global_measure_item_idx = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed.starts_with("global:") {
-            in_global = true;
-            continue;
-        }
-        if in_global {
-            if trimmed.starts_with('-') {
-                global_measure_item_idx = Some(i);
-            } else if trimmed.starts_with("parts:") || (indent == 0 && !trimmed.is_empty()) {
-                in_global = false;
+    
+    let seq = &mut measure.sequences[0];
+    
+    if seq.content.is_empty() {
+        return None;
+    }
+    
+    fn remove_last_blank(items: &mut Vec<crate::mnx::SequenceItem>) -> bool {
+        if let Some(last_item) = items.last_mut() {
+            match last_item {
+                crate::mnx::SequenceItem::Event(e) => {
+                    if e.notes.is_empty() {
+                        items.pop();
+                        return true;
+                    }
+                    return false;
+                }
+                crate::mnx::SequenceItem::Tuplet(t) => {
+                    let removed = remove_last_blank(&mut t.content);
+                    if t.content.is_empty() {
+                        items.pop();
+                    }
+                    return removed;
+                }
             }
         }
+        false
     }
-
-    let mut result_lines = Vec::new();
-    for (i, &line) in lines.iter().enumerate() {
-        if let Some(gm_idx) = global_measure_item_idx {
-            if doc.global.measures.len() == part.measures.len() && i == gm_idx {
-                continue;
-            }
-        }
-        if i >= seq_line_idx {
-            continue;
-        }
-        result_lines.push(line);
+    
+    let removed = remove_last_blank(&mut seq.content);
+    if !removed {
+        return None;
     }
-
-    let trimmed = result_lines.join("\n");
-    Some(format!("{}\n", trimmed.trim_end()))
+    
+    if seq.content.is_empty() {
+        doc.parts[0].measures.pop();
+        if doc.global.measures.len() > last_measure_idx {
+            doc.global.measures.remove(last_measure_idx);
+        }
+    }
+    
+    serde_saphyr::to_string(&doc).ok()
 }
 
 pub fn convert_event_to_rest(yaml: &str, event_idx: usize) -> Option<String> {
@@ -1229,3 +1209,40 @@ pub fn fill_tuplet_rests_and_add_blank(yaml: &str, event_idx: usize) -> Option<(
     Some((current_yaml, new_event_idx))
 }
 
+
+#[cfg(test)]
+mod tuplet_delete_tests {
+    use super::*;
+
+    #[test]
+    fn test_remove_last_blank_tuplet_removes_tuplet() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes: []
+              - type: tuplet
+                inner:
+                  duration: { base: quarter }
+                  multiple: 3
+                outer:
+                  duration: { base: quarter }
+                  multiple: 2
+                content:
+                  - duration: { base: quarter }
+                    notes: []
+"#;
+
+        let res = remove_last_blank_event(yaml).unwrap();
+        // Since there is a quarter note before, the tuplet is removed but the measure stays
+        assert!(!res.contains("tuplet"));
+        assert!(res.contains("duration: {base: quarter}"));
+    }
+}
