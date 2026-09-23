@@ -21,9 +21,9 @@ pub struct Global {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct GlobalMeasure {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time: Option<TimeSignature>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub directions: Vec<Direction>,
 }
 
@@ -46,6 +46,7 @@ pub struct TimeSignature {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Part {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instrument: Option<Instrument>,
     pub measures: Vec<Measure>,
 }
@@ -53,12 +54,14 @@ pub struct Part {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Instrument {
     pub name: String,
-    pub tuning: Option<Vec<StringTuning>>,
-    pub capo: Option<u8>,
-    #[serde(rename = "microFretDivisions")]
+    #[serde(rename = "microFretDivisions", default, skip_serializing_if = "Option::is_none")]
     pub micro_fret_divisions: Option<u8>,
-    #[serde(rename = "fretStepMultiplier")]
+    #[serde(rename = "fretStepMultiplier", default, skip_serializing_if = "Option::is_none")]
     pub fret_step_multiplier: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capo: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tuning: Option<Vec<StringTuning>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -100,7 +103,7 @@ pub enum SequenceItem {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Tuplet {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub item_type: Option<String>,
     pub inner: TupletDuration,
     pub outer: TupletDuration,
@@ -164,8 +167,11 @@ pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub pitch: Pitch,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub string: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fret: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accidental: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ties: Option<Vec<Tie>>,

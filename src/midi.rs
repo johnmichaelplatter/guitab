@@ -220,6 +220,9 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
         let mut current_time_ticks: u32 = 0;
         let mut current_event_idx = 0;
+        
+        let mut pending_ties: std::collections::HashMap<String, (midly::num::u4, u8)> = std::collections::HashMap::new();
+        let mut final_ticks = 0;
 
         for measure in &part.measures {
             for seq in &measure.sequences {
@@ -228,10 +231,11 @@ impl<'a> PlaybackTrackGenerator<'a> {
                 walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
                 for (event, scale) in events_scaled {
                     let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    let duration_ticks = ((beats * scale) * self.ppq).round() as u32;
+                    let duration_ticks = ((beats * scale) * (self.ppq as f64)).round() as u32;
 
                     if current_event_idx >= start_event {
                         let event_start_ticks = seq_time_ticks.saturating_sub(start_tick_offset);
+                        final_ticks = final_ticks.max(event_start_ticks + duration_ticks);
 
                         self.abs_events.push(InternalAbsoluteEvent {
                             time_ticks: event_start_ticks,
@@ -262,49 +266,90 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         self.options.pitch_bend_range,
                                     );
 
-                                    self.abs_events.push(InternalAbsoluteEvent {
-                                        time_ticks: event_start_ticks,
-                                        kind: InternalEventKind::Midi {
-                                            channel,
-                                            message: MidiMessage::PitchBend {
-                                                bend: midly::PitchBend(midly::num::u14::from(
-                                                    pitch_bend_val,
-                                                )),
+                                    let is_tied = note.id.as_ref().map_or(false, |id| pending_ties.contains_key(id));
+                                    
+                                    let (ch, note_val) = if is_tied {
+                                        let id = note.id.as_ref().unwrap();
+                                        pending_ties.remove(id).unwrap()
+                                    } else {
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: event_start_ticks,
+                                            kind: InternalEventKind::Midi {
+                                                channel,
+                                                message: MidiMessage::PitchBend {
+                                                    bend: midly::PitchBend(midly::num::u14::from(
+                                                        pitch_bend_val,
+                                                    )),
+                                                },
                                             },
-                                        },
-                                    });
+                                        });
 
-                                    self.abs_events.push(InternalAbsoluteEvent {
-                                        time_ticks: event_start_ticks,
-                                        kind: InternalEventKind::Midi {
-                                            channel,
-                                            message: MidiMessage::NoteOn {
-                                                key: u7::from(base_note.min(127)),
-                                                vel: u7::from(100),
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: event_start_ticks,
+                                            kind: InternalEventKind::Midi {
+                                                channel,
+                                                message: MidiMessage::NoteOn {
+                                                    key: u7::from(base_note.min(127)),
+                                                    vel: u7::from(100),
+                                                },
                                             },
-                                        },
-                                    });
+                                        });
+                                        (channel, base_note)
+                                    };
 
-                                    self.abs_events.push(InternalAbsoluteEvent {
-                                        time_ticks: event_start_ticks + duration_ticks,
-                                        kind: InternalEventKind::Midi {
-                                            channel,
-                                            message: MidiMessage::NoteOff {
-                                                key: u7::from(base_note.min(127)),
-                                                vel: u7::from(64),
+                                    let has_forward_tie = note.ties.as_ref().map_or(false, |t| !t.is_empty());
+                                    if has_forward_tie {
+                                        let target = note.ties.as_ref().unwrap()[0].target.clone();
+                                        pending_ties.insert(target, (ch, note_val));
+                                    } else {
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: event_start_ticks + duration_ticks,
+                                            kind: InternalEventKind::Midi {
+                                                channel: ch,
+                                                message: MidiMessage::NoteOff {
+                                                    key: u7::from(note_val.min(127)),
+                                                    vel: u7::from(64),
+                                                },
                                             },
-                                        },
-                                    });
+                                        });
+                                    }
                                 }
                             }
                         }
+                        
+                        if let Some(ev_id) = &event.id {
+                            if let Some((ch, note_val)) = pending_ties.remove(ev_id) {
+                                self.abs_events.push(InternalAbsoluteEvent {
+                                    time_ticks: event_start_ticks + duration_ticks,
+                                    kind: InternalEventKind::Midi {
+                                        channel: ch,
+                                        message: MidiMessage::NoteOff {
+                                            key: u7::from(note_val.min(127)),
+                                            vel: u7::from(64),
+                                        },
+                                    },
+                                });
+                            }
+                        }
                     }
-
                     seq_time_ticks += duration_ticks;
                     current_event_idx += 1;
                 }
-                current_time_ticks = seq_time_ticks;
+                current_time_ticks = current_time_ticks.max(seq_time_ticks);
             }
+        }
+        
+        for (_, (ch, note_val)) in pending_ties.drain() {
+            self.abs_events.push(InternalAbsoluteEvent {
+                time_ticks: final_ticks,
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::NoteOff {
+                        key: u7::from(note_val.min(127)),
+                        vel: u7::from(64),
+                    },
+                },
+            });
         }
     }
 

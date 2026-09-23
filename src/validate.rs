@@ -388,3 +388,34 @@ parts:
         assert!(errors3[0].message.contains("exceeds"));
     }
 }
+
+pub fn quarter_beats_to_duration(beats: f64) -> Option<Duration> {
+    let eps = 0.001;
+    if (beats - 4.0).abs() < eps {
+        Some(Duration { base: "whole".to_string(), dots: None, multiple: None })
+    } else if (beats - 3.0).abs() < eps {
+        Some(Duration { base: "half".to_string(), dots: Some(1), multiple: None })
+    } else if (beats - 2.0).abs() < eps {
+        Some(Duration { base: "half".to_string(), dots: None, multiple: None })
+    } else if (beats - 1.5).abs() < eps {
+        Some(Duration { base: "quarter".to_string(), dots: Some(1), multiple: None })
+    } else if (beats - 1.0).abs() < eps {
+        Some(Duration { base: "quarter".to_string(), dots: None, multiple: None })
+    } else if (beats - 0.75).abs() < eps {
+        Some(Duration { base: "eighth".to_string(), dots: Some(1), multiple: None })
+    } else if (beats - 0.5).abs() < eps {
+        Some(Duration { base: "eighth".to_string(), dots: None, multiple: None })
+    } else if (beats - 0.375).abs() < eps {
+        Some(Duration { base: "16th".to_string(), dots: Some(1), multiple: None })
+    } else if (beats - 0.25).abs() < eps {
+        Some(Duration { base: "16th".to_string(), dots: None, multiple: None })
+    } else if (beats - 0.1875).abs() < eps {
+        Some(Duration { base: "32nd".to_string(), dots: Some(1), multiple: None })
+    } else if (beats - 0.125).abs() < eps {
+        Some(Duration { base: "32nd".to_string(), dots: None, multiple: None })
+    } else if (beats - 0.0625).abs() < eps {
+        Some(Duration { base: "64th".to_string(), dots: None, multiple: None })
+    } else {
+        None
+    }
+}

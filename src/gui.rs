@@ -1102,6 +1102,7 @@ parts:
                 let mut clicked_action: Option<DurationAction> = None;
                 let mut rest_clicked = false;
                 let mut tuplet_clicked = false;
+                let mut tie_clicked = false;
 
                 if let Some(textures) = &self.duration_textures {
                     let icon_size = egui::vec2(22.0, 22.0);
@@ -1203,6 +1204,31 @@ parts:
                     if t_resp.on_hover_text("Tuplet").clicked() {
                         tuplet_clicked = true;
                     }
+
+                    // Tie button
+                    let (tie_rect, tie_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(tie_rect) {
+                        let visuals = ui.style().interact_selectable(&tie_resp, false);
+                        ui.painter().rect(
+                            tie_rect,
+                            visuals.corner_radius,
+                            visuals.bg_fill,
+                            visuals.bg_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(20.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(
+                            tie_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "\u{E1D5}\u{E8E4}",
+                            font_id,
+                            color,
+                        );
+                    }
+                    if tie_resp.on_hover_text("Tie").clicked() {
+                        tie_clicked = true;
+                    }
                 }
 
                 if let Some(action) = clicked_action {
@@ -1217,6 +1243,9 @@ parts:
                 }
                 if tuplet_clicked {
                     self.handle_tuplet_button_click();
+                }
+                if tie_clicked {
+                    self.action_add_tie();
                 }
 
                 // ── BPM Input ─────────────────────────────────────────────────
@@ -2777,6 +2806,380 @@ parts:
             }
         }
     }
+
+    pub fn action_add_tie(&mut self) {
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+
+        #[derive(Clone, Copy, Debug)]
+        enum AstPath {
+            TopLevel(usize, usize, usize),
+            InTuplet(usize, usize, usize, usize),
+        }
+
+        let mut flattened_events = Vec::new();
+        for (m_idx, measure) in doc.parts[0].measures.iter().enumerate() {
+            for (s_idx, seq) in measure.sequences.iter().enumerate() {
+                for (i_idx, item) in seq.content.iter().enumerate() {
+                    match item {
+                        crate::mnx::SequenceItem::Event(_) => {
+                            flattened_events.push(AstPath::TopLevel(m_idx, s_idx, i_idx));
+                        }
+                        crate::mnx::SequenceItem::Tuplet(t) => {
+                            for (t_idx, inner) in t.content.iter().enumerate() {
+                                if let crate::mnx::SequenceItem::Event(_) = inner {
+                                    flattened_events.push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if event_idx >= flattened_events.len() {
+            return;
+        }
+
+        let cur_path = flattened_events[event_idx];
+        
+        let (cur_m, cur_s, cur_i) = match cur_path {
+            AstPath::TopLevel(m, s, i) => (m, s, i),
+            AstPath::InTuplet(m, s, i, _) => (m, s, i),
+        };
+
+        // Helper to clone an event out
+        let get_ev_clone = |doc: &crate::mnx::MnxDocument, path: AstPath| -> Option<crate::mnx::Event> {
+            match path {
+                AstPath::TopLevel(m, s, i) => {
+                    if let crate::mnx::SequenceItem::Event(e) = &doc.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                        Some(e.clone())
+                    } else { None }
+                }
+                AstPath::InTuplet(m, s, i, t) => {
+                    if let crate::mnx::SequenceItem::Tuplet(tu) = &doc.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                        if let crate::mnx::SequenceItem::Event(e) = tu.content.get(t)? {
+                            Some(e.clone())
+                        } else { None }
+                    } else { None }
+                }
+            }
+        };
+
+        let ev_cur_clone = match get_ev_clone(&doc, cur_path) {
+            Some(e) => e,
+            None => return,
+        };
+
+        let note_idx = match self.selected_note_idx_in_event {
+            Some(idx) => idx,
+            None => {
+                if let Some(target_str) = self.editing_string {
+                    let mut found = None;
+                    for (i, n) in ev_cur_clone.notes.iter().enumerate() {
+                        if n.string == Some(target_str) {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(idx) => idx,
+                        None => {
+                            if ev_cur_clone.notes.len() == 1 {
+                                0
+                            } else {
+                                return;
+                            }
+                        }
+                    }
+                } else {
+                    if ev_cur_clone.notes.len() == 1 {
+                        0
+                    } else {
+                        return;
+                    }
+                }
+            }
+        };
+
+        // Mutator macro to make life easy
+        macro_rules! mutate_ev {
+            ($doc:expr, $path:expr, $ev_ident:ident, $block:block) => {
+                match $path {
+                    AstPath::TopLevel(m, s, i) => {
+                        if let crate::mnx::SequenceItem::Event($ev_ident) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
+                            $block
+                        }
+                    }
+                    AstPath::InTuplet(m, s, i, t) => {
+                        if let crate::mnx::SequenceItem::Tuplet(tu) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
+                            if let crate::mnx::SequenceItem::Event($ev_ident) = &mut tu.content[t] {
+                                $block
+                            }
+                        }
+                    }
+                }
+            };
+        }
+
+        let mut toggled_off = false;
+        mutate_ev!(doc, cur_path, ev, {
+            let note_cur = &mut ev.notes[note_idx];
+            if let Some(ties) = &note_cur.ties {
+                if !ties.is_empty() {
+                    note_cur.ties = None;
+                    toggled_off = true;
+                }
+            }
+        });
+
+        if toggled_off {
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+                self.process_and_render();
+            }
+            return;
+        }
+
+        let cur_string = match ev_cur_clone.notes.get(note_idx) {
+            Some(n) => match n.string {
+                Some(s) => s,
+                None => return,
+            },
+            None => return,
+        };
+        let cur_fret = ev_cur_clone.notes[note_idx].fret;
+
+        let next_event_info = flattened_events.get(event_idx + 1).copied();
+        
+        if let Some(next_path) = next_event_info {
+            let mut target_id = None;
+            let mut has_same_string = false;
+            let mut diff_fret = false;
+            
+            mutate_ev!(doc, next_path, ev_next, {
+                for (n_i, n) in ev_next.notes.iter_mut().enumerate() {
+                    if n.string == Some(cur_string) {
+                        has_same_string = true;
+                        if n.fret == cur_fret {
+                            if n.id.is_none() {
+                                n.id = Some(format!("note_tgt_{}_{}_{}", event_idx, note_idx, n_i));
+                            }
+                            target_id = n.id.clone();
+                        } else {
+                            diff_fret = true;
+                        }
+                        break;
+                    }
+                }
+                
+                if !has_same_string {
+                    if ev_next.id.is_none() {
+                        ev_next.id = Some(format!("ev_tgt_{}", event_idx));
+                    }
+                    target_id = ev_next.id.clone();
+                }
+            });
+
+            if diff_fret {
+                return;
+            }
+
+            if let Some(tid) = target_id {
+                mutate_ev!(doc, cur_path, ev_cur, {
+                    let note_cur = &mut ev_cur.notes[note_idx];
+                    if note_cur.ties.is_none() {
+                        note_cur.ties = Some(Vec::new());
+                    }
+                    if !note_cur.ties.as_ref().unwrap().iter().any(|t| t.target == tid) {
+                        note_cur.ties.as_mut().unwrap().push(crate::mnx::Tie { target: tid });
+                    }
+                });
+                
+                if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                    self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+                    self.process_and_render();
+                }
+                return;
+            }
+        }
+
+        // Rule 5: end of tab create notes
+        let cur_dur = ev_cur_clone.duration;
+        let cur_pitch = ev_cur_clone.notes[note_idx].pitch.clone();
+        let new_note_duration_beats = crate::validate::duration_to_quarter_beats(&cur_dur);
+
+        let mut used_beats = 0.0;
+        for i in 0..=cur_i {
+            match &doc.parts[0].measures[cur_m].sequences[cur_s].content[i] {
+                crate::mnx::SequenceItem::Event(e) => {
+                    used_beats += crate::validate::duration_to_quarter_beats(&e.duration);
+                }
+                crate::mnx::SequenceItem::Tuplet(tu) => {
+                    used_beats += crate::validate::duration_to_quarter_beats(&tu.outer.duration) * (tu.outer.multiple as f64);
+                }
+            }
+        }
+        
+        let time_sig_count = doc.global.measures.get(cur_m).and_then(|gm| gm.time.as_ref()).map(|t| t.count).unwrap_or(4);
+        let time_sig_unit = doc.global.measures.get(cur_m).and_then(|gm| gm.time.as_ref()).map(|t| t.unit).unwrap_or(4);
+        let measure_total_beats = (time_sig_count as f64) * (4.0 / (time_sig_unit as f64));
+        
+        let available_beats = (measure_total_beats - used_beats).max(0.0);
+        let eps = 0.001;
+        
+        mutate_ev!(doc, cur_path, ev_cur, {
+            let note_cur = &mut ev_cur.notes[note_idx];
+            if note_cur.id.is_none() {
+                note_cur.id = Some(format!("note_src_{}", event_idx));
+            }
+        });
+
+        let mut next_target_id = String::new();
+
+        if available_beats >= new_note_duration_beats - eps {
+            let id = format!("note_new_1_{}", event_idx);
+            let new_ev = crate::mnx::Event {
+                id: None,
+                duration: cur_dur,
+                notes: vec![crate::mnx::Note {
+                    id: Some(id.clone()),
+                    pitch: cur_pitch,
+                    string: Some(cur_string),
+                    fret: cur_fret,
+                    ties: None,
+                    accidental: None,
+                }],
+                rest: None,
+                slurs: None,
+            };
+            next_target_id = id;
+            doc.parts[0].measures[cur_m].sequences[cur_s].content.insert(cur_i + 1, crate::mnx::SequenceItem::Event(new_ev));
+        } else if available_beats > eps {
+            let first_dur = match crate::validate::quarter_beats_to_duration(available_beats) {
+                Some(d) => d,
+                None => return,
+            };
+            let second_dur = match crate::validate::quarter_beats_to_duration(new_note_duration_beats - available_beats) {
+                Some(d) => d,
+                None => return,
+            };
+            
+            let id1 = format!("note_new_split1_{}", event_idx);
+            let id2 = format!("note_new_split2_{}", event_idx);
+            
+            let ev1 = crate::mnx::Event {
+                id: None,
+                duration: first_dur,
+                notes: vec![crate::mnx::Note {
+                    id: Some(id1.clone()),
+                    pitch: cur_pitch.clone(),
+                    string: Some(cur_string),
+                    fret: cur_fret,
+                    ties: Some(vec![crate::mnx::Tie { target: id2.clone() }]),
+                    accidental: None,
+                }],
+                rest: None,
+                slurs: None,
+            };
+            
+            let ev2 = crate::mnx::Event {
+                id: None,
+                duration: second_dur,
+                notes: vec![crate::mnx::Note {
+                    id: Some(id2.clone()),
+                    pitch: cur_pitch,
+                    string: Some(cur_string),
+                    fret: cur_fret,
+                    ties: None,
+                    accidental: None,
+                }],
+                rest: None,
+                slurs: None,
+            };
+            
+            next_target_id = id1;
+            
+            doc.parts[0].measures[cur_m].sequences[cur_s].content.insert(cur_i + 1, crate::mnx::SequenceItem::Event(ev1));
+            
+            let next_m = cur_m + 1;
+            if next_m >= doc.parts[0].measures.len() {
+                let mut new_m = crate::mnx::Measure {
+                    sequences: vec![crate::mnx::Sequence { content: Vec::new(), beams: None }],
+                    beams: None,
+                };
+                new_m.sequences[0].content.push(crate::mnx::SequenceItem::Event(ev2));
+                doc.parts[0].measures.push(new_m);
+                
+                if next_m >= doc.global.measures.len() {
+                    let gm = crate::mnx::GlobalMeasure {
+                        time: Some(crate::mnx::TimeSignature { count: time_sig_count, unit: time_sig_unit }),
+                        directions: Vec::new(),
+                    };
+                    doc.global.measures.push(gm);
+                }
+            } else {
+                doc.parts[0].measures[next_m].sequences[0].content.insert(0, crate::mnx::SequenceItem::Event(ev2));
+            }
+        } else {
+            let id2 = format!("note_new_split2_{}", event_idx);
+            let ev2 = crate::mnx::Event {
+                id: None,
+                duration: cur_dur,
+                notes: vec![crate::mnx::Note {
+                    id: Some(id2.clone()),
+                    pitch: cur_pitch,
+                    string: Some(cur_string),
+                    fret: cur_fret,
+                    ties: None,
+                    accidental: None,
+                }],
+                rest: None,
+                slurs: None,
+            };
+            
+            next_target_id = id2;
+            let next_m = cur_m + 1;
+            if next_m >= doc.parts[0].measures.len() {
+                let mut new_m = crate::mnx::Measure {
+                    sequences: vec![crate::mnx::Sequence { content: Vec::new(), beams: None }],
+                    beams: None,
+                };
+                new_m.sequences[0].content.push(crate::mnx::SequenceItem::Event(ev2));
+                doc.parts[0].measures.push(new_m);
+                
+                if next_m >= doc.global.measures.len() {
+                    let gm = crate::mnx::GlobalMeasure {
+                        time: Some(crate::mnx::TimeSignature { count: time_sig_count, unit: time_sig_unit }),
+                        directions: Vec::new(),
+                    };
+                    doc.global.measures.push(gm);
+                }
+            } else {
+                doc.parts[0].measures[next_m].sequences[0].content.insert(0, crate::mnx::SequenceItem::Event(ev2));
+            }
+        }
+        
+        mutate_ev!(doc, cur_path, ev_cur, {
+            let note_cur = &mut ev_cur.notes[note_idx];
+            if note_cur.ties.is_none() {
+                note_cur.ties = Some(Vec::new());
+            }
+            note_cur.ties.as_mut().unwrap().push(crate::mnx::Tie { target: next_target_id });
+        });
+        
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.yaml_text = crate::yaml_editor::post_process_generated_yaml(&new_yaml);
+            self.process_and_render();
+        }
+    }
+
 }
 
 impl eframe::App for MnxEditorApp {

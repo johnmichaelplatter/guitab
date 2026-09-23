@@ -809,7 +809,7 @@ pub fn draw_tablature(
             }
         } else if let Some(&(rest_x, is_rest)) = event_id_map.get(target_id) {
             // Note tied to a rest -> "let ring"
-            if is_rest && rest_x > start_pos.x {
+            if rest_x > start_pos.x {
                 let x1 = start_pos.x + 9.0;
                 let x2 = rest_x - 6.0;
                 if x2 > x1 {
