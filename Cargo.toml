@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 eframe = "0.36"
+egui_extras = { version = "0.36", features = ["svg"] }
 rfd = "0.14" # Native file dialogs
 serde-saphyr = "1.2.0"
 image = { version = "0.25", default-features = false, features = ["png"] }

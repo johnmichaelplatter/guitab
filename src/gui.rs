@@ -1,5 +1,5 @@
 use crate::yaml_editor::*;
-use eframe::egui::{self, Color32};
+use eframe::egui::{self, include_image, Color32};
 
 use crate::mnx::MnxDocument;
 use crate::render;
@@ -13,8 +13,6 @@ const EIGHTH_PNG: &[u8] = include_bytes!("../assets/eighth.png");
 const SIXTEENTH_PNG: &[u8] = include_bytes!("../assets/16th.png");
 const THIRTYSECOND_PNG: &[u8] = include_bytes!("../assets/32nd.png");
 const DOT_PNG: &[u8] = include_bytes!("../assets/dot.png");
-const TIE_PNG: &[u8] = include_bytes!("../assets/tie.png");
-const SLUR_PNG: &[u8] = include_bytes!("../assets/hammer_pulloff.png");
 
 pub struct DurationTextures {
     pub whole: egui::TextureHandle,
@@ -24,8 +22,6 @@ pub struct DurationTextures {
     pub sixteenth: egui::TextureHandle,
     pub thirty_second: egui::TextureHandle,
     pub dot: egui::TextureHandle,
-    pub tie: egui::TextureHandle,
-    pub slur: egui::TextureHandle,
 }
 
 fn load_texture_from_bytes(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
@@ -61,8 +57,6 @@ impl DurationTextures {
             sixteenth: load_texture_from_bytes(ctx, "icon_sixteenth", SIXTEENTH_PNG),
             thirty_second: load_texture_from_bytes(ctx, "icon_thirty_second", THIRTYSECOND_PNG),
             dot: load_texture_from_bytes(ctx, "icon_dot", DOT_PNG),
-            tie: load_texture_from_bytes(ctx, "icon_tie", TIE_PNG),
-            slur: load_texture_from_bytes(ctx, "icon_slur", SLUR_PNG),
         }
     }
 }
@@ -1261,11 +1255,17 @@ parts:
                 let mut slur_clicked = false;
 
                 if let Some(textures) = &self.duration_textures {
-                    let icon_size = egui::vec2(22.0, 22.0);
-                    let btn_size = egui::vec2(28.0, 28.0);
+                    let icon_size = egui::vec2(24.0, 24.0);
+                    let btn_size = egui::vec2(30.0, 30.0);
 
                     let make_icon_btn = |ui: &mut egui::Ui, texture: &egui::TextureHandle, is_active: bool, tooltip: &str| -> bool {
                         let img = egui::Image::new(texture).fit_to_exact_size(icon_size);
+                        let btn = egui::Button::image(img).selected(is_active);
+                        ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
+                    };
+
+                    let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
+                        let img = egui::Image::new(source).fit_to_exact_size(icon_size);
                         let btn = egui::Button::image(img).selected(is_active);
                         ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                     };
@@ -1363,13 +1363,13 @@ parts:
 
                     // Tie button
                     let is_tie = self.is_selected_event_tied();
-                    if make_icon_btn(ui, &textures.tie, is_tie, "Tie") || ui.input(|i| i.key_pressed(egui::Key::T)) {
+                    if make_svg_btn(ui, include_image!("../assets/tie.svg"), is_tie, "Tie") || ui.input(|i| i.key_pressed(egui::Key::T)) {
                         tie_clicked = true;
                     }
 
                     // Slur button
                     let is_slur = self.is_selected_note_slurred();
-                    if make_icon_btn(ui, &textures.slur, is_slur, "Hammer / Pull-off") || ui.input(|i| i.key_pressed(egui::Key::S)) {
+                    if make_svg_btn(ui, include_image!("../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off") || ui.input(|i| i.key_pressed(egui::Key::S)) {
                         slur_clicked = true;
                     }
                 }
@@ -3879,6 +3879,8 @@ parts:
 
 impl eframe::App for MnxEditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui_extras::install_image_loaders(ui.ctx());
+
         if self.duration_textures.is_none() {
             self.duration_textures = Some(DurationTextures::load(ui.ctx()));
         }
