@@ -1363,13 +1363,13 @@ parts:
 
                     // Tie button
                     let is_tie = self.is_selected_event_tied();
-                    if make_svg_btn(ui, include_image!("../assets/tie.svg"), is_tie, "Tie") || ui.input(|i| i.key_pressed(egui::Key::T)) {
+                    if make_svg_btn(ui, include_image!("../assets/tie.svg"), is_tie, "Tie (T)") || ui.input(|i| i.key_pressed(egui::Key::T)) {
                         tie_clicked = true;
                     }
 
                     // Slur button
                     let is_slur = self.is_selected_note_slurred();
-                    if make_svg_btn(ui, include_image!("../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off") || ui.input(|i| i.key_pressed(egui::Key::S)) {
+                    if make_svg_btn(ui, include_image!("../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off (S)") || ui.input(|i| i.key_pressed(egui::Key::S)) {
                         slur_clicked = true;
                     }
                 }
