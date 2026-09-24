@@ -14,6 +14,7 @@ const SIXTEENTH_PNG: &[u8] = include_bytes!("../assets/16th.png");
 const THIRTYSECOND_PNG: &[u8] = include_bytes!("../assets/32nd.png");
 const DOT_PNG: &[u8] = include_bytes!("../assets/dot.png");
 const TIE_PNG: &[u8] = include_bytes!("../assets/tie.png");
+const SLUR_PNG: &[u8] = include_bytes!("../assets/hammer_pulloff.png");
 
 pub struct DurationTextures {
     pub whole: egui::TextureHandle,
@@ -24,6 +25,7 @@ pub struct DurationTextures {
     pub thirty_second: egui::TextureHandle,
     pub dot: egui::TextureHandle,
     pub tie: egui::TextureHandle,
+    pub slur: egui::TextureHandle,
 }
 
 fn load_texture_from_bytes(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
@@ -60,6 +62,7 @@ impl DurationTextures {
             thirty_second: load_texture_from_bytes(ctx, "icon_thirty_second", THIRTYSECOND_PNG),
             dot: load_texture_from_bytes(ctx, "icon_dot", DOT_PNG),
             tie: load_texture_from_bytes(ctx, "icon_tie", TIE_PNG),
+            slur: load_texture_from_bytes(ctx, "icon_slur", SLUR_PNG),
         }
     }
 }
@@ -76,6 +79,7 @@ pub struct MnxEditorApp {
     is_editing_fret: bool,                     // In-place fret number editing mode
     editing_fret_buf: String,                  // Text buffer for the new fret number
     editing_string: Option<u8>,                // Currently focused string row in edit mode
+    pending_slur: Option<(usize, u8)>,         // (start_event_idx, string) waiting for note entry
     duration_textures: Option<DurationTextures>, // Note duration icons
     bpm_buf: String,                           // Text buffer for BPM input
     midi_ports: Vec<crate::midi::MidiPortInfo>, // Available MIDI output devices
@@ -144,6 +148,7 @@ impl Default for MnxEditorApp {
             is_editing_fret: false,
             editing_fret_buf: String::new(),
             editing_string: None,
+            pending_slur: None,
             duration_textures: None,
             bpm_buf: String::from("120"),
             midi_ports: ports,
@@ -219,6 +224,44 @@ impl MnxEditorApp {
         doc.find_event_tuplet_info(e_idx).is_some()
     }
 
+    pub fn is_selected_note_slurred(&self) -> bool {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return false,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return false,
+        };
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return false,
+        };
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    if cur_e == e_idx {
+                        if let Some(slurs) = &ev.slurs {
+                            if let Some(n_idx) = self.selected_note_idx_in_event {
+                                if let Some(n) = ev.notes.get(n_idx) {
+                                    if let Some(id) = &n.id {
+                                        return slurs.iter().any(|s| s.start_note.as_ref() == Some(id));
+                                    }
+                                }
+                            } else {
+                                // Blue mode: if any slur starts on this event
+                                return !slurs.is_empty();
+                            }
+                        }
+                        return false;
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+        false
+    }
     pub fn is_selected_event_tied(&self) -> bool {
         let e_idx = match self.selected_event_idx {
             Some(i) => i,
@@ -582,6 +625,8 @@ impl MnxEditorApp {
                         self.process_and_render();
                         self.select_note_on_string(e_idx, cur_str);
                         self.preview_selected_sound();
+                        self.resolve_pending_slur();
+                        self.process_and_render();
                         committed = true;
                     }
                 }
@@ -1147,6 +1192,7 @@ parts:
                 let mut rest_clicked = false;
                 let mut tuplet_clicked = false;
                 let mut tie_clicked = false;
+                let mut slur_clicked = false;
 
                 if let Some(textures) = &self.duration_textures {
                     let icon_size = egui::vec2(22.0, 22.0);
@@ -1254,6 +1300,12 @@ parts:
                     if make_icon_btn(ui, &textures.tie, is_tie, "Tie") {
                         tie_clicked = true;
                     }
+
+                    // Slur button
+                    let is_slur = self.is_selected_note_slurred();
+                    if make_icon_btn(ui, &textures.slur, is_slur, "Hammer / Pull-off") {
+                        slur_clicked = true;
+                    }
                 }
 
                 if let Some(action) = clicked_action {
@@ -1271,6 +1323,9 @@ parts:
                 }
                 if tie_clicked {
                     self.action_add_tie();
+                }
+                if slur_clicked {
+                    self.action_add_slur();
                 }
 
                 // ── BPM Input ─────────────────────────────────────────────────
@@ -3014,6 +3069,319 @@ parts:
         }
     }
 
+    fn resolve_pending_slur(&mut self) {
+        let (start_idx, slur_str) = match self.pending_slur {
+            Some(s) => s,
+            None => return,
+        };
+        let cur_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return,
+        };
+        let cur_str = match self.editing_string {
+            Some(s) => s,
+            None => return,
+        };
+
+        if cur_str != slur_str || cur_idx <= start_idx {
+            self.pending_slur = None;
+            return;
+        }
+
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+
+        #[derive(Clone, Copy, Debug)]
+        enum AstPath {
+            TopLevel(usize, usize, usize),
+            InTuplet(usize, usize, usize, usize),
+        }
+
+        let mut flattened_events = Vec::new();
+        for (m_idx, measure) in doc.parts[0].measures.iter().enumerate() {
+            for (s_idx, seq) in measure.sequences.iter().enumerate() {
+                for (i_idx, item) in seq.content.iter().enumerate() {
+                    match item {
+                        crate::mnx::SequenceItem::Event(_) => {
+                            flattened_events.push(AstPath::TopLevel(m_idx, s_idx, i_idx));
+                        }
+                        crate::mnx::SequenceItem::Tuplet(t) => {
+                            for (t_idx, inner) in t.content.iter().enumerate() {
+                                if let crate::mnx::SequenceItem::Event(_) = inner {
+                                    flattened_events.push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if start_idx >= flattened_events.len() || cur_idx >= flattened_events.len() {
+            self.pending_slur = None;
+            return;
+        }
+
+        let start_path = flattened_events[start_idx];
+        let cur_path = flattened_events[cur_idx];
+
+        macro_rules! mutate_ev {
+            ($doc:expr, $path:expr, $ev_ident:ident, $block:block) => {
+                match $path {
+                    AstPath::TopLevel(m, s, i) => {
+                        if let crate::mnx::SequenceItem::Event($ev_ident) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
+                            $block
+                        }
+                    }
+                    AstPath::InTuplet(m, s, i, t) => {
+                        if let crate::mnx::SequenceItem::Tuplet(tu) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
+                            if let crate::mnx::SequenceItem::Event($ev_ident) = &mut tu.content[t] {
+                                $block
+                            }
+                        }
+                    }
+                }
+            };
+        }
+
+        let mut start_note_id = None;
+        let mut target_ev_id = None;
+        let mut target_note_id = None;
+
+        // Give the target event and note IDs
+        mutate_ev!(doc, cur_path, ev_cur, {
+            if ev_cur.id.is_none() {
+                ev_cur.id = Some(format!("ev_tgt_{}", start_idx));
+            }
+            target_ev_id = ev_cur.id.clone();
+
+            if let Some(n) = ev_cur.notes.iter_mut().find(|n| n.string == Some(cur_str)) {
+                if n.id.is_none() {
+                    n.id = Some(format!("note_tgt_{}_{}", start_idx, cur_idx));
+                }
+                target_note_id = n.id.clone();
+            }
+        });
+
+        if target_note_id.is_none() {
+            self.pending_slur = None;
+            return;
+        }
+
+        // Give the start note an ID and append the slur
+        mutate_ev!(doc, start_path, ev_start, {
+            if let Some(n) = ev_start.notes.iter_mut().find(|n| n.string == Some(slur_str)) {
+                if n.id.is_none() {
+                    n.id = Some(format!("note_src_{}_{}", start_idx, cur_idx));
+                }
+                start_note_id = n.id.clone();
+            }
+
+            if start_note_id.is_some() {
+                if ev_start.slurs.is_none() {
+                    ev_start.slurs = Some(Vec::new());
+                }
+                ev_start.slurs.as_mut().unwrap().push(crate::mnx::Slur {
+                    target: target_ev_id.unwrap(),
+                    side: Some("up".to_string()),
+                    start_note: start_note_id,
+                    end_note: target_note_id,
+                });
+            }
+        });
+
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.yaml_text = new_yaml;
+        }
+        self.pending_slur = None;
+    }
+    pub fn action_add_slur(&mut self) {
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+
+        #[derive(Clone, Copy, Debug)]
+        enum AstPath {
+            TopLevel(usize, usize, usize),
+            InTuplet(usize, usize, usize, usize),
+        }
+
+        let mut flattened_events = Vec::new();
+        for (m_idx, measure) in doc.parts[0].measures.iter().enumerate() {
+            for (s_idx, seq) in measure.sequences.iter().enumerate() {
+                for (i_idx, item) in seq.content.iter().enumerate() {
+                    match item {
+                        crate::mnx::SequenceItem::Event(_) => {
+                            flattened_events.push(AstPath::TopLevel(m_idx, s_idx, i_idx));
+                        }
+                        crate::mnx::SequenceItem::Tuplet(t) => {
+                            for (t_idx, inner) in t.content.iter().enumerate() {
+                                if let crate::mnx::SequenceItem::Event(_) = inner {
+                                    flattened_events.push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if event_idx >= flattened_events.len() {
+            return;
+        }
+
+        let cur_path = flattened_events[event_idx];
+
+        let get_ev_clone = |doc: &crate::mnx::MnxDocument, path: AstPath| -> Option<crate::mnx::Event> {
+            match path {
+                AstPath::TopLevel(m, s, i) => {
+                    if let crate::mnx::SequenceItem::Event(e) = &doc.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                        Some(e.clone())
+                    } else { None }
+                }
+                AstPath::InTuplet(m, s, i, t) => {
+                    if let crate::mnx::SequenceItem::Tuplet(tu) = &doc.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                        if let crate::mnx::SequenceItem::Event(e) = tu.content.get(t)? {
+                            Some(e.clone())
+                        } else { None }
+                    } else { None }
+                }
+            }
+        };
+
+        let ev_cur_clone = match get_ev_clone(&doc, cur_path) {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Determine current string (fallback to only note if blue mode)
+        let cur_string = match self.editing_string {
+            Some(s) => s,
+            None => {
+                if ev_cur_clone.notes.len() == 1 {
+                    ev_cur_clone.notes[0].string.unwrap_or(1)
+                } else {
+                    return;
+                }
+            }
+        };
+
+        // Find the note on cur_string
+        let note_idx = match ev_cur_clone.notes.iter().position(|n| n.string == Some(cur_string)) {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        macro_rules! mutate_ev {
+            ($doc:expr, $path:expr, $ev_ident:ident, $block:block) => {
+                match $path {
+                    AstPath::TopLevel(m, s, i) => {
+                        if let crate::mnx::SequenceItem::Event($ev_ident) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
+                            $block
+                        }
+                    }
+                    AstPath::InTuplet(m, s, i, t) => {
+                        if let crate::mnx::SequenceItem::Tuplet(tu) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
+                            if let crate::mnx::SequenceItem::Event($ev_ident) = &mut tu.content[t] {
+                                $block
+                            }
+                        }
+                    }
+                }
+            };
+        }
+
+        let mut toggled_off = false;
+        mutate_ev!(doc, cur_path, ev, {
+            if let Some(slurs) = &mut ev.slurs {
+                let note_cur_id = ev.notes[note_idx].id.clone();
+                let original_len = slurs.len();
+                if let Some(id) = &note_cur_id {
+                    slurs.retain(|s| s.start_note.as_ref() != Some(id));
+                } else {
+                    // if it has no ID, it couldn't have had a slur
+                }
+                if slurs.len() < original_len {
+                    toggled_off = true;
+                }
+                if slurs.is_empty() {
+                    ev.slurs = None;
+                }
+            }
+        });
+
+        if toggled_off {
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.yaml_text = new_yaml;
+                self.process_and_render();
+            }
+            return;
+        }
+
+        // Search forward for the next note on the same string
+        let mut next_target = None;
+        for j in (event_idx + 1)..flattened_events.len() {
+            let path_j = flattened_events[j];
+            let ev_j = get_ev_clone(&doc, path_j).unwrap();
+            if let Some(n_idx) = ev_j.notes.iter().position(|n| n.string == Some(cur_string)) {
+                next_target = Some((j, path_j, ev_j, n_idx));
+                break;
+            }
+        }
+
+        if let Some((_, next_path, _, next_n_idx)) = next_target {
+            let mut target_ev_id = None;
+            let mut start_note_id = None;
+            let mut end_note_id = None;
+
+            mutate_ev!(doc, next_path, ev_next, {
+                if ev_next.id.is_none() {
+                    ev_next.id = Some(format!("ev_tgt_{}", event_idx));
+                }
+                target_ev_id = ev_next.id.clone();
+
+                let n_tgt = &mut ev_next.notes[next_n_idx];
+                if n_tgt.id.is_none() {
+                    n_tgt.id = Some(format!("note_tgt_{}_{}", event_idx, next_n_idx));
+                }
+                end_note_id = n_tgt.id.clone();
+            });
+
+            mutate_ev!(doc, cur_path, ev_cur, {
+                let n_cur = &mut ev_cur.notes[note_idx];
+                if n_cur.id.is_none() {
+                    n_cur.id = Some(format!("note_src_{}_{}", event_idx, note_idx));
+                }
+                start_note_id = n_cur.id.clone();
+
+                if ev_cur.slurs.is_none() {
+                    ev_cur.slurs = Some(Vec::new());
+                }
+                ev_cur.slurs.as_mut().unwrap().push(crate::mnx::Slur {
+                    target: target_ev_id.unwrap(),
+                    side: Some("up".to_string()),
+                    start_note: start_note_id,
+                    end_note: end_note_id,
+                });
+            });
+
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.yaml_text = new_yaml;
+                self.process_and_render();
+            }
+        } else {
+            // No notes following on same string.
+            self.pending_slur = Some((event_idx, cur_string));
+            self.advance_to_next_note_in_edit_mode(Some(cur_string), flattened_events.len());
+        }
+    }
     pub fn action_add_tie(&mut self) {
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,

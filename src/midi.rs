@@ -303,12 +303,21 @@ impl<'a> PlaybackTrackGenerator<'a> {
 
                                     let has_forward_tie =
                                         note.ties.as_ref().map_or(false, |t| !t.is_empty());
+
+                                    let mut has_forward_slur = false;
+                                    if let (Some(slurs), Some(n_id)) = (&event.slurs, &note.id) {
+                                        has_forward_slur = slurs.iter().any(|s| s.start_note.as_ref() == Some(n_id));
+                                    }
+
                                     if has_forward_tie {
                                         let target = note.ties.as_ref().unwrap()[0].target.clone();
                                         pending_ties.insert(target, (ch, note_val));
                                     } else {
+                                        // Legato overlap: if slur, delay NoteOff by ~5% of a quarter note
+                                        let overlap = if has_forward_slur { (self.ppq as f64 * 0.05) as u32 } else { 0 };
+                                        
                                         self.abs_events.push(InternalAbsoluteEvent {
-                                            time_ticks: event_start_ticks + duration_ticks,
+                                            time_ticks: event_start_ticks + duration_ticks + overlap,
                                             kind: InternalEventKind::Midi {
                                                 channel: ch,
                                                 message: MidiMessage::NoteOff {
