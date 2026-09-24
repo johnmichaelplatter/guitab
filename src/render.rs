@@ -237,6 +237,7 @@ pub struct TablatureOptions<'a> {
     pub is_editing_fret: bool,
     pub editing_fret_text: &'a str,
     pub editing_string: Option<u8>,
+    pub scroll_to_selected: bool,
 }
 
 pub fn draw_tablature(
@@ -577,7 +578,7 @@ pub fn draw_tablature(
                         Color32::from_rgba_unmultiplied(100, 180, 255, 35)
                     };
                     painter.rect_filled(col_rect, 4.0, col_color);
-                    ui.scroll_to_rect(col_rect, None);
+                    if opts.scroll_to_selected { ui.scroll_to_rect(col_rect, None); }
                 }
 
                 if event.rest.is_some() {

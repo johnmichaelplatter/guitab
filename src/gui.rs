@@ -68,6 +68,7 @@ impl DurationTextures {
 }
 
 pub struct MnxEditorApp {
+    pub needs_scroll: bool,
     yaml_text: String,
     saved_yaml: String,
     parsed_mnx: Option<MnxDocument>,
@@ -141,6 +142,7 @@ impl Default for MnxEditorApp {
             saved_yaml: initial_yaml,
             parsed_mnx: None,
             parsed_errors: Vec::new(),
+            needs_scroll: true,
             validation_errors: Vec::new(),
             current_file_path: None,
             selected_event_idx: None,
@@ -297,13 +299,27 @@ impl MnxEditorApp {
         false
     }
 
+    
+    pub fn update_yaml_and_clean_ties(&mut self, new_yaml: String) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&new_yaml) {
+            doc.clean_dangling_ties();
+            if let Ok(clean_yaml) = serde_saphyr::to_string(&doc) {
+                self.yaml_text = clean_yaml;
+            } else {
+                self.yaml_text = new_yaml;
+            }
+        } else {
+            self.yaml_text = new_yaml;
+        }
+        self.process_and_render();
+    }
+
     pub fn convert_selected_to_rest(&mut self) {
         if let Some(e_idx) = self.selected_event_idx {
             if let Some(new_yaml) =
                 crate::yaml_editor::convert_event_to_rest(&self.yaml_text, e_idx)
             {
-                self.yaml_text = new_yaml;
-                self.process_and_render();
+                self.update_yaml_and_clean_ties(new_yaml);
             }
             if self.is_editing_fret {
                 self.is_editing_fret = false;
@@ -727,12 +743,34 @@ impl MnxEditorApp {
 
     fn advance_to_next_note_in_edit_mode(&mut self, cur_str: Option<u8>, total_events: usize) {
         if let Some(e_idx) = self.selected_event_idx {
+            let mut is_cur_blank = false;
+            if let Some(doc) = &self.parsed_mnx {
+                if let Some(part) = doc.parts.first() {
+                    let mut count = 0;
+                    'find_cur: for m in &part.measures {
+                        for seq in &m.sequences {
+                            for ev in seq.flattened_events() {
+                                if count == e_idx {
+                                    is_cur_blank = ev.notes.is_empty() && ev.rest.is_none();
+                                    break 'find_cur;
+                                }
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if is_cur_blank {
+                return;
+            }
+
             let next_idx = if let Some(tuplet_next) =
                 self.handle_tuplet_right_arrow(e_idx, total_events)
             {
                 tuplet_next
             } else {
-                let at_final_event = e_idx == total_events.saturating_sub(1);
+                let at_final_event = e_idx >= total_events.saturating_sub(1);
                 if at_final_event {
                     let mut added_idx = None;
                     if let Some(doc) = &self.parsed_mnx {
@@ -796,6 +834,34 @@ impl MnxEditorApp {
 
     fn retreat_to_prev_note_in_edit_mode(&mut self, cur_str: Option<u8>) {
         if let Some(e_idx) = self.selected_event_idx {
+            let total_events = find_all_event_ranges(&self.yaml_text).len();
+            let at_final_event = e_idx >= total_events.saturating_sub(1);
+            let is_final_blank = at_final_event
+                && self
+                    .parsed_mnx
+                    .as_ref()
+                    .and_then(|d| d.parts.first())
+                    .and_then(|p| p.measures.last())
+                    .and_then(|m| m.sequences.first())
+                    .and_then(|s| s.flattened_events().last().copied())
+                    .map(|e| e.notes.is_empty() && e.rest.is_none())
+                    .unwrap_or(false);
+
+            if is_final_blank {
+                if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
+                    self.yaml_text = new_yaml;
+                    self.process_and_render();
+                    self.selected_event_idx = Some(e_idx.saturating_sub(1));
+                    self.editing_string = cur_str;
+                    self.editing_fret_buf.clear();
+                    self.is_editing_fret = true;
+                    if let Some(s) = cur_str {
+                        self.select_note_on_string(e_idx.saturating_sub(1), s);
+                    }
+                    return;
+                }
+            }
+
             if e_idx > 0 {
                 let prev_idx = e_idx - 1;
                 self.selected_event_idx = Some(prev_idx);
@@ -1297,13 +1363,13 @@ parts:
 
                     // Tie button
                     let is_tie = self.is_selected_event_tied();
-                    if make_icon_btn(ui, &textures.tie, is_tie, "Tie") {
+                    if make_icon_btn(ui, &textures.tie, is_tie, "Tie") || ui.input(|i| i.key_pressed(egui::Key::T)) {
                         tie_clicked = true;
                     }
 
                     // Slur button
                     let is_slur = self.is_selected_note_slurred();
-                    if make_icon_btn(ui, &textures.slur, is_slur, "Hammer / Pull-off") {
+                    if make_icon_btn(ui, &textures.slur, is_slur, "Hammer / Pull-off") || ui.input(|i| i.key_pressed(egui::Key::S)) {
                         slur_clicked = true;
                     }
                 }
@@ -1695,11 +1761,14 @@ parts:
                                 is_editing_fret: self.is_editing_fret,
                                 editing_fret_text: &self.editing_fret_buf,
                                 editing_string: self.editing_string,
+                                scroll_to_selected: self.needs_scroll,
                             },
                         );
+                        self.needs_scroll = false;
                         if add_bar_clicked {
                             self.add_measure_to_end();
                         } else if let Some((clicked_event, clicked_note)) = clicked {
+                            self.needs_scroll = false;
                             let total_events = find_all_event_ranges(&self.yaml_text).len();
                             let was_at_final =
                                 self.selected_event_idx == Some(total_events.saturating_sub(1));
@@ -1711,7 +1780,7 @@ parts:
                                     .and_then(|p| p.measures.last())
                                     .and_then(|m| m.sequences.first())
                                     .and_then(|s| s.flattened_events().last().copied())
-                                    .map(|e| e.notes.is_empty())
+                                    .map(|e| e.notes.is_empty() && e.rest.is_none())
                                     .unwrap_or(false);
 
                             if is_final_blank && clicked_event < total_events.saturating_sub(1) {
@@ -1751,6 +1820,10 @@ parts:
         if self.active_dialog != ActiveDialog::None {
             return;
         }
+        
+        if ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor"))) {
+            return;
+        }
 
         // In-place Fret Editing Key Handling
         if self.is_editing_fret {
@@ -1762,6 +1835,7 @@ parts:
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
             let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
+            if up_pressed || down_pressed || left_pressed || right_pressed { self.needs_scroll = true; }
             let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
             let num_strings = self
@@ -1791,72 +1865,20 @@ parts:
 
                 if !self.editing_fret_buf.trim().is_empty() {
                     self.commit_fret_edit();
-                    self.editing_fret_buf.clear();
-
-                    if right_pressed {
-                        self.advance_to_next_note_in_edit_mode(cur_str, total_events);
-                    } else if left_pressed {
-                        self.retreat_to_prev_note_in_edit_mode(cur_str);
-                    }
-                } else if is_current_str_existing {
-                    if let (Some(e_idx), Some(s)) = (e_idx_opt, cur_str) {
+                }
+                
+                if let (Some(e_idx), Some(s)) = (e_idx_opt, cur_str) {
+                    if is_current_str_existing {
                         self.select_note_on_string(e_idx, s);
                         self.preview_selected_sound();
                     }
-                    self.editing_fret_buf.clear();
+                }
+                self.editing_fret_buf.clear();
 
-                    if right_pressed {
-                        self.advance_to_next_note_in_edit_mode(cur_str, total_events);
-                    } else if left_pressed {
-                        self.retreat_to_prev_note_in_edit_mode(cur_str);
-                    }
-                } else if right_pressed {
-                    self.editing_fret_buf.clear();
-                    if let Some(e_idx) = e_idx_opt {
-                        if e_idx + 1 < total_events && self.event_has_any_notes(e_idx + 1) {
-                            let next_idx = e_idx + 1;
-                            self.selected_event_idx = Some(next_idx);
-                            self.editing_string = cur_str;
-                            self.is_editing_fret = true;
-                            if let Some(s) = cur_str {
-                                self.select_note_on_string(next_idx, s);
-                            }
-                        }
-                    }
+                if right_pressed {
+                    self.advance_to_next_note_in_edit_mode(cur_str, total_events);
                 } else if left_pressed {
-                    self.editing_fret_buf.clear();
-                    if let Some(e_idx) = e_idx_opt {
-                        let at_final_event = e_idx == total_events.saturating_sub(1);
-                        let is_final_blank = at_final_event
-                            && self
-                                .parsed_mnx
-                                .as_ref()
-                                .and_then(|d| d.parts.first())
-                                .and_then(|p| p.measures.last())
-                                .and_then(|m| m.sequences.first())
-                                .and_then(|s| s.flattened_events().last().copied())
-                                .map(|e| e.notes.is_empty())
-                                .unwrap_or(false);
-
-                        if is_final_blank {
-                            if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                                self.yaml_text = new_yaml;
-                                self.process_and_render();
-                                let new_total = find_all_event_ranges(&self.yaml_text).len();
-                                if new_total > 0 {
-                                    let prev_idx = new_total - 1;
-                                    self.selected_event_idx = Some(prev_idx);
-                                    self.editing_string = cur_str;
-                                    self.is_editing_fret = true;
-                                    if let Some(s) = cur_str {
-                                        self.select_note_on_string(prev_idx, s);
-                                    }
-                                }
-                            }
-                        } else if e_idx > 0 {
-                            self.retreat_to_prev_note_in_edit_mode(cur_str);
-                        }
-                    }
+                    self.retreat_to_prev_note_in_edit_mode(cur_str);
                 }
             } else if up_pressed || down_pressed {
                 // If the user typed digits before moving string, commit them to the current string first
@@ -1887,8 +1909,7 @@ parts:
                     (self.selected_event_idx, self.editing_string)
                 {
                     if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
-                        self.yaml_text = new_yaml;
-                        self.process_and_render();
+                        self.update_yaml_and_clean_ties(new_yaml);
                         self.selected_note_idx_in_event = None;
                     }
                 }
@@ -1896,8 +1917,7 @@ parts:
                 if let (Some(e_idx), Some(cur_str)) = (self.selected_event_idx, self.editing_string)
                 {
                     if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
-                        self.yaml_text = new_yaml;
-                        self.process_and_render();
+                        self.update_yaml_and_clean_ties(new_yaml);
                         self.editing_fret_buf.clear();
                         self.selected_note_idx_in_event = None;
                     }
@@ -1967,13 +1987,31 @@ parts:
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
             let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+            if up_pressed || down_pressed || left_pressed || right_pressed { self.needs_scroll = true; }
             let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
+            let delete_pressed = ui.input(|i| i.key_pressed(egui::Key::Delete));
             if r_pressed && self.selected_event_idx.is_some() {
                 self.convert_selected_to_rest();
-            } else if backspace_pressed && self.selected_event_idx.is_some() {
+            } else if (backspace_pressed || delete_pressed) && self.selected_event_idx.is_some() {
                 let e_idx = self.selected_event_idx.unwrap();
-                let at_final_event = e_idx == total_events.saturating_sub(1);
+                
+                if let Some(n_idx) = self.selected_note_idx_in_event {
+                    if let Some(s) = self.get_string_for_note(e_idx, n_idx) {
+                        if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
+                            self.update_yaml_and_clean_ties(new_yaml);
+                            self.selected_note_idx_in_event = None;
+                            return; 
+                        }
+                    }
+                } else if self.is_selected_event_rest() {
+                    if let Some(new_yaml) = crate::yaml_editor::convert_rest_to_blank(&self.yaml_text, e_idx) {
+                        self.update_yaml_and_clean_ties(new_yaml);
+                        return;
+                    }
+                }
+                
+                let at_final_event = e_idx >= total_events.saturating_sub(1);
                 let is_final_blank = at_final_event
                     && self
                         .parsed_mnx
@@ -1982,7 +2020,7 @@ parts:
                         .and_then(|p| p.measures.last())
                         .and_then(|m| m.sequences.first())
                         .and_then(|s| s.flattened_events().last().copied())
-                        .map(|e| e.notes.is_empty())
+                        .map(|e| e.notes.is_empty() && e.rest.is_none())
                         .unwrap_or(false);
 
                 if is_final_blank {
@@ -2083,7 +2121,7 @@ parts:
                             .and_then(|p| p.measures.last())
                             .and_then(|m| m.sequences.first())
                             .and_then(|s| s.flattened_events().last().copied())
-                            .map(|e| e.notes.is_empty())
+                            .map(|e| e.notes.is_empty() && e.rest.is_none())
                             .unwrap_or(false);
 
                     if is_final_blank {
@@ -2133,7 +2171,7 @@ parts:
                                 .and_then(|p| p.measures.last())
                                 .and_then(|m| m.sequences.first())
                                 .and_then(|s| s.flattened_events().last().copied())
-                                .map(|e| e.notes.is_empty())
+                                .map(|e| e.notes.is_empty() && e.rest.is_none())
                                 .unwrap_or(false);
 
                             if is_final_blank {
@@ -4221,7 +4259,7 @@ parts:
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
             .and_then(|s| s.flattened_events().last().copied())
-            .map(|e| e.notes.is_empty())
+            .map(|e| e.notes.is_empty() && e.rest.is_none())
             .unwrap();
         assert!(is_final_blank);
 
@@ -4498,7 +4536,7 @@ parts:
                     .and_then(|p| p.measures.last())
                     .and_then(|m| m.sequences.first())
                     .and_then(|s| s.flattened_events().last().copied())
-                    .map(|e| e.notes.is_empty())
+                    .map(|e| e.notes.is_empty() && e.rest.is_none())
                     .unwrap_or(false);
 
             assert!(is_final_blank);

@@ -35,6 +35,59 @@ pub mod flow_seq_req {
 }
 use std::fmt;
 
+impl MnxDocument {
+    pub fn clean_dangling_ties(&mut self) {
+        let mut all_note_ids = std::collections::HashSet::new();
+        
+        for part in &self.parts {
+            for measure in &part.measures {
+                for seq in &measure.sequences {
+                    for ev in seq.flattened_events() {
+                        for note in &ev.notes {
+                            if let Some(id) = &note.id {
+                                all_note_ids.insert(id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        macro_rules! traverse_mut {
+            ($content:expr) => {
+                fn walk(content: &mut Vec<SequenceItem>, all_note_ids: &std::collections::HashSet<String>) {
+                    for item in content {
+                        match item {
+                            SequenceItem::Event(ev) => {
+                                for note in &mut ev.notes {
+                                    if let Some(ties) = &mut note.ties {
+                                        ties.retain(|tie| all_note_ids.contains(&tie.target));
+                                        if ties.is_empty() {
+                                            note.ties = None;
+                                        }
+                                    }
+                                }
+                            }
+                            SequenceItem::Tuplet(t) => {
+                                walk(&mut t.content, all_note_ids);
+                            }
+                        }
+                    }
+                }
+                walk($content, &all_note_ids);
+            };
+        }
+
+        for part in &mut self.parts {
+            for measure in &mut part.measures {
+                for seq in &mut measure.sequences {
+                    traverse_mut!(&mut seq.content);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct MnxDocument {
     pub mnx: MnxMeta,

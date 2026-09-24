@@ -131,9 +131,10 @@ impl FretboardFrequencyTable {
         }
     }
 
-    /// Convenience constructor with default A4 = 440 Hz and standard fret count (e.g. 24).
+    /// Convenience constructor with default A4 = 440 Hz and dynamic max fret (2 * EDO).
     pub fn from_part_default(part: &Part) -> Self {
-        Self::from_part(part, ReferencePitch::default(), 24)
+        let max_fret = (part.edo() * 2).min(255) as u8;
+        Self::from_part(part, ReferencePitch::default(), max_fret)
     }
 
     /// Query the state for a given string and fret.

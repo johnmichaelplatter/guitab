@@ -914,6 +914,24 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
     serde_saphyr::to_string(&doc).ok()
 }
 
+pub fn convert_rest_to_blank(yaml: &str, event_idx: usize) -> Option<String> {
+    let event_ranges = find_all_event_ranges(yaml);
+    let er = event_ranges.get(event_idx)?;
+    let event_text = yaml.get(er.total_range.clone())?;
+
+    if let Some(rest_pos) = event_text.find("rest:") {
+        let abs_rest_pos = er.total_range.start + rest_pos;
+        let after_rest = &yaml[abs_rest_pos..];
+        let line_end_rel = after_rest.find('\n').unwrap_or(after_rest.len());
+        let abs_replace_end = abs_rest_pos + line_end_rel;
+
+        let mut res = yaml.to_string();
+        res.replace_range(abs_rest_pos..abs_replace_end, "notes: []");
+        return Some(res);
+    }
+    None
+}
+
 pub fn convert_event_to_rest(yaml: &str, event_idx: usize) -> Option<String> {
     let event_ranges = find_all_event_ranges(yaml);
     let er = event_ranges.get(event_idx)?;
