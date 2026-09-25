@@ -28,11 +28,18 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
         return;
     }
 
+    let mut current_ts = TimeSignature { count: 4, unit: 4 };
     while !item_queue.is_empty() {
-        let ts = global_measures
-            .get(m_idx)
-            .and_then(|gm| gm.time.clone())
-            .unwrap_or(TimeSignature { count: 4, unit: 4 });
+        // Find the most recent explicit TS up to m_idx
+        for i in (0..=m_idx).rev() {
+            if let Some(gm) = global_measures.get(i) {
+                if let Some(t) = &gm.time {
+                    current_ts = t.clone();
+                    break;
+                }
+            }
+        }
+        let ts = current_ts.clone();
 
         if m_idx >= global_measures.len() {
             global_measures.push(crate::mnx::GlobalMeasure {

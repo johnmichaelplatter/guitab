@@ -100,6 +100,12 @@ pub struct ClipboardData {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActiveDialog {
     None,
+    InsertTimeSignature {
+        count: u32,
+        unit: u32,
+        m_idx: usize,
+        warning: Option<String>,
+    },
     Message {
         title: String,
         text: String,
@@ -1441,6 +1447,74 @@ parts:
                     self.action_add_slur();
                 }
 
+                // ── Insert TS Button ─────────────────────────────────────────
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                
+                let btn_size = egui::vec2(30.0, 30.0);
+                let (rect, mut ts_btn) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                let visuals = ui.style().interact(&ts_btn);
+                
+                if ui.is_rect_visible(rect) {
+                    ui.painter().rect(
+                        rect,
+                        visuals.corner_radius,
+                        visuals.bg_fill,
+                        visuals.bg_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    
+                    let font_id = egui::FontId::new(25.0, egui::FontFamily::Name("Bravura".into()));
+                    let center = rect.center();
+                    
+                    // Draw numerals manually to fix the massive baseline offset in SMuFL fonts
+                    ui.painter().text(
+                        center - egui::vec2(0.0, 6.0), // push top number up
+                        egui::Align2::CENTER_CENTER,
+                        "\u{E083}",
+                        font_id.clone(),
+                        visuals.text_color(),
+                    );
+                    ui.painter().text(
+                        center + egui::vec2(0.0, 5.0), // push bottom number down
+                        egui::Align2::CENTER_CENTER,
+                        "\u{E084}",
+                        font_id,
+                        visuals.text_color(),
+                    );
+                }
+                
+                ts_btn = ts_btn.on_hover_text("Insert Time Signature");
+                
+                if ts_btn.clicked() {
+                    let mut m_idx = 0;
+                    if let Some(doc) = &self.parsed_mnx {
+                        if let Some(part) = doc.parts.first() {
+                            if let Some(e_idx) = self.selected_event_idx {
+                                let mut count = 0;
+                                'find_m: for (i, m) in part.measures.iter().enumerate() {
+                                    for seq in &m.sequences {
+                                        for _ in seq.flattened_events() {
+                                            if count == e_idx {
+                                                m_idx = i;
+                                                break 'find_m;
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.active_dialog = ActiveDialog::InsertTimeSignature {
+                        count: 4,
+                        unit: 4,
+                        m_idx,
+                        warning: None,
+                    };
+                }
+
                 // ── BPM Input ─────────────────────────────────────────────────
                 ui.add_space(8.0);
                 ui.separator();
@@ -2451,6 +2525,12 @@ parts:
 
     fn render_dialogs(&mut self, ctx: &egui::Context) {
         enum DialogAction {
+            InsertTimeSignature {
+                count: u32,
+                unit: u32,
+                m_idx: usize,
+                rebar_mode: u8,
+            },
             CreateTuplet {
                 inner: u32,
                 outer: u32,
@@ -2519,6 +2599,68 @@ parts:
                                 close_dialog = true;
                             }
                         });
+                    });
+            }
+            ActiveDialog::InsertTimeSignature { count, unit, m_idx, warning } => {
+                egui::Window::new("Insert Time Signature")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.label("Type Time Signature:");
+                        ui.add_space(8.0);
+                        
+                        ui.horizontal(|ui| {
+                            let mut c = *count;
+                            let mut u = *unit;
+                            ui.add(egui::DragValue::new(&mut c).speed(1.0).range(1..=32));
+                            ui.label("/");
+                            ui.add(egui::DragValue::new(&mut u).speed(1.0).range(1..=32));
+                            *count = c;
+                            *unit = u;
+                        });
+                        
+                        ui.add_space(8.0);
+                        
+                        if let Some(w) = warning {
+                            ui.label(egui::RichText::new(w.as_str()).color(egui::Color32::from_rgb(255, 100, 100)));
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Re-bar all following measures").clicked() {
+                                    apply_action = Some(DialogAction::InsertTimeSignature { count: *count, unit: *unit, m_idx: *m_idx, rebar_mode: 0 });
+                                    close_dialog = true;
+                                }
+                                if ui.button("Truncate content in this bar only").clicked() {
+                                    apply_action = Some(DialogAction::InsertTimeSignature { count: *count, unit: *unit, m_idx: *m_idx, rebar_mode: 1 });
+                                    close_dialog = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_dialog = true;
+                                }
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                if ui.button("OK").clicked() {
+                                    let capacity = (*count as f64) * 4.0 / (*unit as f64);
+                                    let measure_beats = self.parsed_mnx.as_ref()
+                                        .and_then(|d| d.parts.first())
+                                        .and_then(|p| p.measures.get(*m_idx))
+                                        .and_then(|m| m.sequences.first())
+                                        .map(|s| s.total_beats())
+                                        .unwrap_or(0.0);
+                                        
+                                    if measure_beats > capacity + 0.001 {
+                                        *warning = Some(format!("Warning: there is note content outside the new barline ({} beats in bar, new TS holds {} beats)", measure_beats, capacity));
+                                    } else {
+                                        apply_action = Some(DialogAction::InsertTimeSignature { count: *count, unit: *unit, m_idx: *m_idx, rebar_mode: 0 });
+                                        close_dialog = true;
+                                    }
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_dialog = true;
+                                }
+                            });
+                        }
                     });
             }
             ActiveDialog::Message { title, text } => {
@@ -2786,6 +2928,9 @@ parts:
 
         if let Some(action) = apply_action {
             match action {
+                DialogAction::InsertTimeSignature { count, unit, m_idx, rebar_mode } => {
+                    self.insert_time_signature(m_idx, count, unit, rebar_mode);
+                }
                 DialogAction::CreateTuplet {
                     inner,
                     outer,
@@ -3374,6 +3519,75 @@ parts:
         }
         self.pending_slur = None;
     }
+    pub fn insert_time_signature(&mut self, m_idx: usize, count: u32, unit: u32, rebar_mode: u8) {
+        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
+        
+        while doc.global.measures.len() <= m_idx {
+            let ts = doc.global.measures.last().and_then(|gm| gm.time.clone()).unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
+            doc.global.measures.push(crate::mnx::GlobalMeasure {
+                time: Some(ts),
+                directions: Vec::new(),
+            });
+        }
+        
+        doc.global.measures[m_idx].time = Some(crate::mnx::TimeSignature { count, unit });
+        
+        if rebar_mode == 0 {
+            // Re-bar all following
+            for i in (m_idx + 1)..doc.global.measures.len() {
+                doc.global.measures[i].time = None;
+            }
+        } else if rebar_mode == 1 {
+            // Truncate content in this bar only
+            let capacity = (count as f64) * 4.0 / (unit as f64);
+            let mut part = doc.parts.first_mut().unwrap();
+            if let Some(measure) = part.measures.get_mut(m_idx) {
+                let mut new_seq = Vec::new();
+                let mut current_beats = 0.0;
+                
+                for seq in &measure.sequences {
+                    for item in &seq.content {
+                        let item_beats = match item {
+                            crate::mnx::SequenceItem::Event(ev) => crate::validate::duration_to_quarter_beats(&ev.duration),
+                            crate::mnx::SequenceItem::Tuplet(t) => crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64),
+                        };
+                        
+                        if current_beats + item_beats <= capacity + 0.001 {
+                            new_seq.push(item.clone());
+                            current_beats += item_beats;
+                        } else if current_beats < capacity - 0.001 {
+                            let excess = current_beats + item_beats - capacity;
+                            let keep_beats = item_beats - excess;
+                            match item {
+                                crate::mnx::SequenceItem::Event(ev) => {
+                                    let chunks = crate::rebar::greedy_split_event_duration(ev.clone(), keep_beats);
+                                    for c in chunks {
+                                        new_seq.push(crate::mnx::SequenceItem::Event(c));
+                                    }
+                                },
+                                crate::mnx::SequenceItem::Tuplet(t) => {
+                                    new_seq.push(item.clone());
+                                }
+                            }
+                            current_beats = capacity;
+                        }
+                    }
+                }
+                if let Some(seq) = measure.sequences.first_mut() {
+                    seq.content = new_seq;
+                }
+            }
+        }
+        
+        let mut part = doc.parts.first_mut().unwrap();
+        crate::rebar::rebar_part(&mut part, &mut doc.global.measures);
+        
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
+    }
+
     pub fn action_add_slur(&mut self) {
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
