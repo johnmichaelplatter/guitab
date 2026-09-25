@@ -233,6 +233,7 @@ pub struct TablatureOptions<'a> {
     pub global: Option<&'a Global>,
     pub errors: &'a [ValidationError],
     pub selected_event: Option<usize>,
+    pub selection_anchor: Option<usize>,
     pub selected_note_in_event: Option<usize>,
     pub is_editing_fret: bool,
     pub editing_fret_text: &'a str,
@@ -564,7 +565,12 @@ pub fn draw_tablature(
                     event_id_to_idx.insert(ev_id.clone(), flat_event_idx);
                 }
 
-                let is_selected = selected_event == Some(flat_event_idx);
+                let is_selected = if let Some(cursor) = selected_event {
+                    let anchor = opts.selection_anchor.unwrap_or(cursor);
+                    flat_event_idx >= cursor.min(anchor) && flat_event_idx <= cursor.max(anchor)
+                } else {
+                    false
+                };
 
                 let col_rect = Rect::from_min_max(
                     Pos2::new(current_x - 12.0, string_y_coords[0] - 6.0),
@@ -958,7 +964,12 @@ pub fn draw_tablature(
         }
         let cx = note.x;
         let flags = note.rhythm.flag_count();
-        let is_selected = selected_event == Some(i);
+        let is_selected = if let Some(cursor) = selected_event {
+            let anchor = opts.selection_anchor.unwrap_or(cursor);
+            i >= cursor.min(anchor) && i <= cursor.max(anchor)
+        } else {
+            false
+        };
         let this_stem_color = if is_selected {
             highlight_color
         } else {

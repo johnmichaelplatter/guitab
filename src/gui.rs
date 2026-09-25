@@ -70,6 +70,7 @@ pub struct MnxEditorApp {
     validation_errors: Vec<String>,
     current_file_path: Option<std::path::PathBuf>, // Tracks the active file
     selected_event_idx: Option<usize>,             // Selected note/beat index
+    selection_anchor: Option<usize>,               // Anchor for shift-select
     selected_note_idx_in_event: Option<usize>, // Selected sub-note within chord/event (None = all)
     is_editing_fret: bool,                     // In-place fret number editing mode
     editing_fret_buf: String,                  // Text buffer for the new fret number
@@ -85,6 +86,15 @@ pub struct MnxEditorApp {
     midi_player: crate::midi::MidiPlayer,      // Real-time MIDI sequencer playback engine
     midi_status_msg: Option<String>,           // Status or error message from MIDI playback
     pub active_dialog: ActiveDialog,           // Active modal dialog
+    undo_stack: Vec<String>,
+    redo_stack: Vec<String>,
+    clipboard: Option<crate::gui::ClipboardData>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipboardData {
+    pub items: Vec<crate::mnx::SequenceItem>,
+    pub time_signature: Option<crate::mnx::TimeSignature>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,6 +150,7 @@ impl Default for MnxEditorApp {
             validation_errors: Vec::new(),
             current_file_path: None,
             selected_event_idx: None,
+            selection_anchor: None,
             selected_note_idx_in_event: None,
             is_editing_fret: false,
             editing_fret_buf: String::new(),
@@ -155,6 +166,9 @@ impl Default for MnxEditorApp {
             midi_player: crate::midi::MidiPlayer::new(),
             midi_status_msg: None,
             active_dialog: ActiveDialog::None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            clipboard: None,
         };
 
         app.process_and_render();
@@ -163,6 +177,36 @@ impl Default for MnxEditorApp {
 }
 
 impl MnxEditorApp {
+
+    pub fn push_undo_state(&mut self) {
+        if self.undo_stack.last() != Some(&self.yaml_text) {
+            self.undo_stack.push(self.yaml_text.clone());
+            self.redo_stack.clear();
+        }
+    }
+
+    pub fn update_yaml(&mut self, new_yaml: String) {
+        if self.yaml_text != new_yaml {
+            self.push_undo_state();
+            self.yaml_text = new_yaml;
+        }
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.yaml_text.clone());
+            self.yaml_text = prev;
+            self.process_and_render();
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.yaml_text.clone());
+            self.yaml_text = next;
+            self.process_and_render();
+        }
+    }
     pub fn get_selected_event_duration(&self) -> Option<crate::mnx::Duration> {
         let e_idx = self.selected_event_idx?;
         let doc = self.parsed_mnx.as_ref()?;
@@ -298,7 +342,7 @@ impl MnxEditorApp {
         if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&new_yaml) {
             doc.clean_dangling_ties();
             if let Ok(clean_yaml) = serde_saphyr::to_string(&doc) {
-                self.yaml_text = clean_yaml;
+                self.update_yaml(clean_yaml);
             } else {
                 self.yaml_text = new_yaml;
             }
@@ -343,7 +387,7 @@ impl MnxEditorApp {
                     if let Some((new_yaml, new_idx)) =
                         crate::yaml_editor::fill_tuplet_rests_and_add_blank(&self.yaml_text, e_idx)
                     {
-                        self.yaml_text = new_yaml;
+                        self.update_yaml(new_yaml);
                         self.process_and_render();
                         self.selected_event_idx = Some(new_idx);
                         self.is_editing_fret = true;
@@ -376,7 +420,7 @@ impl MnxEditorApp {
             if let Some(new_yaml) =
                 update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration)
             {
-                self.yaml_text = new_yaml;
+                self.update_yaml(new_yaml);
                 self.process_and_render();
             }
         }
@@ -412,7 +456,7 @@ impl MnxEditorApp {
             if let Some(new_yaml) =
                 update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration)
             {
-                self.yaml_text = new_yaml;
+                self.update_yaml(new_yaml);
                 self.process_and_render();
             }
         }
@@ -631,7 +675,7 @@ impl MnxEditorApp {
                         new_fret,
                         new_pitch.as_ref(),
                     ) {
-                        self.yaml_text = new_yaml;
+                        self.update_yaml(new_yaml);
                         self.process_and_render();
                         self.select_note_on_string(e_idx, cur_str);
                         self.preview_selected_sound();
@@ -715,14 +759,14 @@ impl MnxEditorApp {
                 e_idx,
                 &final_note_base,
             ) {
-                self.yaml_text = new_yaml;
+                self.update_yaml(new_yaml);
                 self.process_and_render();
                 return Some(new_idx);
             }
         } else if is_last_measure {
             // Measure is full, and it's the last measure: add a new measure with blank note
             if let Some(new_yaml) = crate::yaml_editor::add_measure_to_yaml(&self.yaml_text, &dur) {
-                self.yaml_text = new_yaml;
+                self.update_yaml(new_yaml);
                 self.process_and_render();
                 let new_total = find_all_event_ranges(&self.yaml_text).len();
                 return Some(new_total.saturating_sub(1));
@@ -789,7 +833,7 @@ impl MnxEditorApp {
                                                 &self.yaml_text,
                                                 final_dur,
                                             ) {
-                                                self.yaml_text = new_yaml;
+                                                self.update_yaml(new_yaml);
                                                 self.process_and_render();
                                                 let new_total =
                                                     find_all_event_ranges(&self.yaml_text).len();
@@ -843,7 +887,7 @@ impl MnxEditorApp {
 
             if is_final_blank {
                 if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                    self.yaml_text = new_yaml;
+                    self.update_yaml(new_yaml);
                     self.process_and_render();
                     self.selected_event_idx = Some(e_idx.saturating_sub(1));
                     self.editing_string = cur_str;
@@ -954,8 +998,11 @@ impl MnxEditorApp {
                 dots: None,
             });
 
+        println!("Adding measure to yaml...");
         if let Some(new_yaml) = add_measure_to_yaml(&self.yaml_text, &last_duration) {
-            self.yaml_text = new_yaml;
+            println!("Updating yaml...");
+            self.update_yaml(new_yaml);
+            println!("Process and render...");
             self.process_and_render();
 
             let total_events = find_all_event_ranges(&self.yaml_text).len();
@@ -969,7 +1016,7 @@ impl MnxEditorApp {
         }
     }
 
-    fn process_and_render(&mut self) {
+    pub fn process_and_render(&mut self) {
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(doc) => {
                 let errors = validate::validate_mnx(&doc);
@@ -1088,7 +1135,7 @@ parts:
             edo, step_multiplier, tunings_str
         );
 
-        self.yaml_text = new_yaml.clone();
+        self.update_yaml(new_yaml.clone());
         self.saved_yaml = new_yaml;
         self.current_file_path = None;
         self.selected_event_idx = Some(0);
@@ -1114,7 +1161,7 @@ parts:
         {
             match fs::read_to_string(&path) {
                 Ok(content) => {
-                    self.yaml_text = content.clone();
+                    self.update_yaml(content.clone());
                     self.saved_yaml = content;
                     self.current_file_path = Some(path);
                     self.selected_event_idx = None;
@@ -1416,7 +1463,7 @@ parts:
                 if commit_bpm {
                     if let Ok(new_bpm) = self.bpm_buf.trim().parse::<f64>() {
                         if new_bpm > 0.0 {
-                            self.yaml_text = set_bpm_in_yaml(&self.yaml_text, new_bpm);
+                            self.update_yaml(set_bpm_in_yaml(&self.yaml_text, new_bpm));
                             self.process_and_render();
                         }
                     }
@@ -1757,6 +1804,7 @@ parts:
                                 global: Some(&doc.global),
                                 errors: &self.parsed_errors,
                                 selected_event: self.selected_event_idx,
+                                selection_anchor: self.selection_anchor,
                                 selected_note_in_event: self.selected_note_idx_in_event,
                                 is_editing_fret: self.is_editing_fret,
                                 editing_fret_text: &self.editing_fret_buf,
@@ -1785,11 +1833,19 @@ parts:
 
                             if is_final_blank && clicked_event < total_events.saturating_sub(1) {
                                 if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                                    self.yaml_text = new_yaml;
+                                    self.update_yaml(new_yaml);
                                     self.process_and_render();
                                 }
                             }
 
+                            let shift_down = ui.input(|i| i.modifiers.shift);
+                            if shift_down {
+                                if self.selection_anchor.is_none() {
+                                    self.selection_anchor = self.selected_event_idx;
+                                }
+                            } else {
+                                self.selection_anchor = None;
+                            }
                             self.selected_event_idx = Some(clicked_event);
                             self.selected_note_idx_in_event = clicked_note;
                             self.is_editing_fret = false;
@@ -1822,6 +1878,84 @@ parts:
         }
         
         if ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor"))) {
+            return;
+        }
+
+        let shift_down = ui.input(|i| i.modifiers.shift);
+
+        let mut c_pressed = ui.input(|i| i.key_pressed(egui::Key::C));
+        let mut x_pressed = ui.input(|i| i.key_pressed(egui::Key::X));
+        let mut v_pressed = ui.input(|i| i.key_pressed(egui::Key::V));
+        
+        ui.input(|i| {
+            for event in &i.events {
+                match event {
+                    egui::Event::Copy => c_pressed = true,
+                    egui::Event::Cut => x_pressed = true,
+                    egui::Event::Paste(_) => v_pressed = true,
+                    _ => {}
+                }
+            }
+        });
+
+        let mut z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z)));
+        let mut shift_z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::Z)));
+        if !z_pressed { z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Z))); }
+        if !shift_z_pressed { shift_z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::Z))); }
+        
+        let mut cmd_c = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C))) || c_pressed;
+        if !cmd_c { cmd_c = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::C))); }
+        
+        let mut cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::X))) || (x_pressed && !shift_down);
+        if !cmd_x { cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::X))); }
+
+        let mut shift_cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::X))) || (x_pressed && shift_down);
+        if !shift_cmd_x { shift_cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::X))); }
+        
+        let mut cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V))) || (v_pressed && !shift_down);
+        if !cmd_v { cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::V))); }
+
+        let mut shift_cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::V))) || (v_pressed && shift_down);
+        if !shift_cmd_v { shift_cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::V))); }
+        
+        let mut cmd_i = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::I)));
+        if !cmd_i { cmd_i = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::I))); }
+
+        let mut cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::D)));
+        if !cmd_d { cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::D))); }
+
+        let mut shift_cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::D)));
+        if !shift_cmd_d { shift_cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::D))); }
+
+        if z_pressed {
+            self.undo();
+            return;
+        } else if shift_z_pressed {
+            self.redo();
+            return;
+        } else if cmd_c {
+            self.action_copy();
+            return;
+        } else if shift_cmd_x {
+            self.action_cut_time();
+            return;
+        } else if cmd_x {
+            self.action_cut_overwrite();
+            return;
+        } else if shift_cmd_v {
+            self.action_paste_insert();
+            return;
+        } else if cmd_v {
+            self.action_paste_overwrite();
+            return;
+        } else if cmd_i {
+            self.action_insert_time();
+            return;
+        } else if shift_cmd_d {
+            self.action_duplicate_insert();
+            return;
+        } else if cmd_d {
+            self.action_duplicate_overwrite();
             return;
         }
 
@@ -2025,7 +2159,7 @@ parts:
 
                 if is_final_blank {
                     if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                        self.yaml_text = new_yaml;
+                        self.update_yaml(new_yaml);
                         self.process_and_render();
                         let new_total = find_all_event_ranges(&self.yaml_text).len();
                         if new_total > 0 {
@@ -2050,7 +2184,7 @@ parts:
 
                     if let Some(s) = target_str {
                         if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
-                            self.yaml_text = new_yaml;
+                            self.update_yaml(new_yaml);
                             self.process_and_render();
                         }
                     }
@@ -2109,6 +2243,17 @@ parts:
                 self.editing_fret_buf.clear();
                 self.is_editing_fret = true;
             } else if left_pressed || right_pressed || up_pressed || down_pressed {
+                let shift_down = ui.input(|i| i.modifiers.shift);
+                if left_pressed || right_pressed {
+                    if shift_down {
+                        if self.selection_anchor.is_none() {
+                            self.selection_anchor = self.selected_event_idx;
+                        }
+                    } else {
+                        self.selection_anchor = None;
+                    }
+                }
+                
                 // Left / Right arrow navigation: moves between events, always selecting all notes in target event
                 if left_pressed {
                     let at_final_event =
@@ -2127,7 +2272,7 @@ parts:
                     if is_final_blank {
                         // If nothing is entered into this blank note, shifting focus back to the left removes it
                         if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                            self.yaml_text = new_yaml;
+                            self.update_yaml(new_yaml);
                             self.process_and_render();
                             let new_total = find_all_event_ranges(&self.yaml_text).len();
                             if new_total > 0 {
@@ -2203,7 +2348,7 @@ parts:
                                                             final_dur,
                                                         )
                                                     {
-                                                        self.yaml_text = new_yaml;
+                                                        self.update_yaml(new_yaml);
                                                         self.process_and_render();
                                                         let new_total =
                                                             find_all_event_ranges(&self.yaml_text)
@@ -2661,7 +2806,7 @@ parts:
                         outer,
                         &base,
                     ) {
-                        self.yaml_text = new_yaml;
+                        self.update_yaml(new_yaml);
                         self.process_and_render();
                         self.selected_event_idx = Some(event_idx);
                         if from_select_mode {
@@ -2678,7 +2823,7 @@ parts:
                     if let Some(new_yaml) =
                         crate::yaml_editor::remove_tuplet_in_yaml(&self.yaml_text, event_idx)
                     {
-                        self.yaml_text = new_yaml;
+                        self.update_yaml(new_yaml);
                         self.process_and_render();
                         self.selected_event_idx = Some(event_idx);
                     }
@@ -2919,7 +3064,7 @@ parts:
                         .unwrap()
                         .fret_step_multiplier = Some(new_step_multiplier);
                     if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                        self.yaml_text = new_yaml;
+                        self.update_yaml(new_yaml);
                         self.process_and_render();
                     }
                 }
@@ -3078,7 +3223,7 @@ parts:
                         }
                     }
                     if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                        self.yaml_text = new_yaml;
+                        self.update_yaml(new_yaml);
                         self.process_and_render();
                     }
                 }
@@ -3231,7 +3376,7 @@ parts:
         });
 
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.yaml_text = new_yaml;
+            self.update_yaml(new_yaml);
         }
         self.pending_slur = None;
     }
@@ -3357,7 +3502,7 @@ parts:
 
         if toggled_off {
             if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.yaml_text = new_yaml;
+                self.update_yaml(new_yaml);
                 self.process_and_render();
             }
             return;
@@ -3411,7 +3556,7 @@ parts:
             });
 
             if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.yaml_text = new_yaml;
+                self.update_yaml(new_yaml);
                 self.process_and_render();
             }
         } else {
@@ -3584,7 +3729,7 @@ parts:
 
         if toggled_off {
             if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.yaml_text = new_yaml;
+                self.update_yaml(new_yaml);
                 self.process_and_render();
             }
             return;
@@ -3656,7 +3801,7 @@ parts:
                 });
 
                 if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                    self.yaml_text = new_yaml;
+                    self.update_yaml(new_yaml);
                     self.process_and_render();
                 }
                 return;
@@ -3871,9 +4016,525 @@ parts:
         });
 
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.yaml_text = new_yaml;
+            self.update_yaml(new_yaml);
             self.process_and_render();
         }
+    }
+}
+
+
+impl MnxEditorApp {
+    pub fn extract_selected_items(&self) -> Option<(Vec<crate::mnx::SequenceItem>, Option<crate::mnx::TimeSignature>)> {
+        let cursor = self.selected_event_idx?;
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+
+        let doc = self.parsed_mnx.as_ref()?;
+        let part = doc.parts.first()?;
+        
+        let mut items = Vec::new();
+        let mut cur_e = 0;
+        let mut captured_ts = None;
+
+        for (m_idx, m) in part.measures.iter().enumerate() {
+            let measure_start_e = cur_e;
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    
+                    let item_start = cur_e;
+                    let item_end = cur_e + item_ev_count - 1;
+                    
+                    if item_start <= max_idx && item_end >= min_idx {
+                        if items.is_empty() && item_start == measure_start_e {
+                            if let Some(gm) = doc.global.measures.get(m_idx) {
+                                captured_ts = gm.time.clone();
+                            }
+                        }
+                        items.push(item.clone());
+                    }
+                    
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+        
+        if items.is_empty() { None } else { Some((items, captured_ts)) }
+    }
+
+    pub fn action_copy(&mut self) {
+        if let Some((items, ts)) = self.extract_selected_items() {
+            self.clipboard = Some(ClipboardData {
+                items,
+                time_signature: ts,
+            });
+        }
+    }
+
+    pub fn action_cut_overwrite(&mut self) {
+        self.action_copy();
+        
+        let cursor = match self.selected_event_idx { Some(c) => c, None => return };
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+        
+        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
+        let part = match doc.parts.first_mut() { Some(p) => p, None => return };
+        
+        let mut cur_e = 0;
+        for m in &mut part.measures {
+            for seq in &mut m.sequences {
+                for item in &mut seq.content {
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    let item_start = cur_e;
+                    let item_end = cur_e + item_ev_count - 1;
+                    
+                    if item_start <= max_idx && item_end >= min_idx {
+                        match item {
+                            crate::mnx::SequenceItem::Event(ev) => {
+                                ev.notes.clear();
+                                ev.slurs = None;
+                            },
+                            crate::mnx::SequenceItem::Tuplet(t) => {
+                                for sub_ev in &mut t.content {
+                                    if let crate::mnx::SequenceItem::Event(sev) = sub_ev {
+                                        sev.notes.clear();
+                                        sev.slurs = None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+        
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
+    }
+
+    pub fn action_cut_time(&mut self) {
+        self.action_copy();
+        
+        let cursor = match self.selected_event_idx { Some(c) => c, None => return };
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+        
+        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
+        let part = match doc.parts.first_mut() { Some(p) => p, None => return };
+        
+        let mut flat_items = Vec::new();
+        let mut cur_e = 0;
+        
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    let item_start = cur_e;
+                    let item_end = cur_e + item_ev_count - 1;
+                    
+                    if !(item_start <= max_idx && item_end >= min_idx) {
+                        flat_items.push(item.clone());
+                    }
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+        
+        part.measures.clear();
+        part.measures.push(crate::mnx::Measure {
+            beams: None,
+            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
+        });
+        crate::rebar::rebar_part(part, &doc.global.measures);
+        
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+            self.selected_event_idx = Some(min_idx);
+            self.selection_anchor = None;
+        }
+    }
+
+    pub fn prepare_pasted_items(items: &mut [crate::mnx::SequenceItem]) {
+        use std::collections::HashMap;
+        let mut id_map = HashMap::new();
+        
+        // Pass 1: Generate new IDs for everything and build a map
+        let mut collect_ids = |items: &mut [crate::mnx::SequenceItem]| {
+            let mut stack = vec![items];
+            while let Some(slice) = stack.pop() {
+                for item in slice {
+                    match item {
+                        crate::mnx::SequenceItem::Event(ev) => {
+                            if let Some(old_ev_id) = &ev.id {
+                                let new_ev_id = crate::rebar::generate_uuid();
+                                id_map.insert(old_ev_id.clone(), new_ev_id.clone());
+                                ev.id = Some(new_ev_id);
+                            } else {
+                                ev.id = Some(crate::rebar::generate_uuid());
+                            }
+                            
+                            for n in ev.notes.iter_mut() {
+                                if let Some(old_id) = &n.id {
+                                    let new_id = crate::rebar::generate_uuid();
+                                    id_map.insert(old_id.clone(), new_id.clone());
+                                    n.id = Some(new_id);
+                                } else {
+                                    n.id = Some(crate::rebar::generate_uuid());
+                                }
+                            }
+                        },
+                        crate::mnx::SequenceItem::Tuplet(t) => {
+                            stack.push(&mut t.content);
+                        }
+                    }
+                }
+            }
+        };
+        
+        // We have to clone to pass to collect_ids since we can't borrow mutably twice
+        // Actually we can just write a recursive fn
+        fn map_ids(items: &mut [crate::mnx::SequenceItem], id_map: &mut HashMap<String, String>) {
+            for item in items.iter_mut() {
+                match item {
+                    crate::mnx::SequenceItem::Event(ev) => {
+                        if let Some(old_ev_id) = &ev.id {
+                            let new_ev_id = crate::rebar::generate_uuid();
+                            id_map.insert(old_ev_id.clone(), new_ev_id.clone());
+                            ev.id = Some(new_ev_id);
+                        } else {
+                            ev.id = Some(crate::rebar::generate_uuid());
+                        }
+                        for n in ev.notes.iter_mut() {
+                            if let Some(old_id) = &n.id {
+                                let new_id = crate::rebar::generate_uuid();
+                                id_map.insert(old_id.clone(), new_id.clone());
+                                n.id = Some(new_id);
+                            } else {
+                                n.id = Some(crate::rebar::generate_uuid());
+                            }
+                        }
+                    },
+                    crate::mnx::SequenceItem::Tuplet(t) => {
+                        map_ids(&mut t.content, id_map);
+                    }
+                }
+            }
+        }
+        map_ids(items, &mut id_map);
+        
+        // Pass 2: Update ties and slurs if they point within the map, otherwise remove them
+        fn update_refs(items: &mut [crate::mnx::SequenceItem], id_map: &HashMap<String, String>) {
+            for item in items.iter_mut() {
+                match item {
+                    crate::mnx::SequenceItem::Event(ev) => {
+                        if let Some(slurs) = &mut ev.slurs {
+                            slurs.retain_mut(|s| {
+                                if let Some(new_target) = id_map.get(&s.target) {
+                                    s.target = new_target.clone();
+                                    true
+                                } else {
+                                    false
+                                }
+                            });
+                            if slurs.is_empty() { ev.slurs = None; }
+                        }
+                        for n in ev.notes.iter_mut() {
+                            if let Some(ties) = &mut n.ties {
+                                ties.retain_mut(|t| {
+                                    if let Some(new_target) = id_map.get(&t.target) {
+                                        t.target = new_target.clone();
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                });
+                                if ties.is_empty() { n.ties = None; }
+                            }
+                        }
+                    },
+                    crate::mnx::SequenceItem::Tuplet(t) => {
+                        update_refs(&mut t.content, id_map);
+                    }
+                }
+            }
+        }
+        update_refs(items, &id_map);
+    }
+
+    pub fn action_paste_insert(&mut self) {
+        let cursor = match self.selected_event_idx { Some(c) => c, None => return };
+        let cb = match &self.clipboard { Some(c) => c, None => return };
+        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
+        let part = match doc.parts.first_mut() { Some(p) => p, None => return };
+        
+        let mut flat_items = Vec::new();
+        let mut cur_e = 0;
+        let mut inserted = false;
+        
+        for (m_idx, m) in part.measures.iter().enumerate() {
+            let measure_start_e = cur_e;
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    if cur_e == cursor {
+                        if cur_e == measure_start_e {
+                            if let Some(ts) = &cb.time_signature {
+                                if let Some(gm) = doc.global.measures.get_mut(m_idx) {
+                                    gm.time = Some(ts.clone());
+                                }
+                            }
+                        }
+                        
+                        let mut pasted_items = cb.items.clone();
+                        Self::prepare_pasted_items(&mut pasted_items);
+                        flat_items.extend(pasted_items);
+                        inserted = true;
+                    }
+                    flat_items.push(item.clone());
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+        
+        if !inserted {
+            let mut pasted_items = cb.items.clone();
+            Self::prepare_pasted_items(&mut pasted_items);
+            flat_items.extend(pasted_items);
+        }
+        
+        part.measures.clear();
+        part.measures.push(crate::mnx::Measure {
+            beams: None,
+            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
+        });
+        crate::rebar::rebar_part(part, &doc.global.measures);
+        
+        let cb_count = self.clipboard_event_count();
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+            
+            if cb_count > 0 {
+                self.selection_anchor = Some(cursor);
+                self.selected_event_idx = Some(cursor + cb_count - 1);
+            }
+        }
+    }
+
+        fn clipboard_event_count(&self) -> usize {
+        let mut count = 0;
+        if let Some(cb) = &self.clipboard {
+            for item in &cb.items {
+                match item {
+                    crate::mnx::SequenceItem::Event(_) => count += 1,
+                    crate::mnx::SequenceItem::Tuplet(t) => count += t.content.len(),
+                }
+            }
+        }
+        count
+    }
+
+    pub fn action_paste_overwrite(&mut self) {
+        let cursor = match self.selected_event_idx { Some(c) => c, None => return };
+        let cb = match &self.clipboard { Some(c) => c, None => return };
+        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
+        let part = match doc.parts.first_mut() { Some(p) => p, None => return };
+        
+        let mut cb_beats = 0.0;
+        for item in &cb.items {
+            let beats = match item {
+                crate::mnx::SequenceItem::Event(ev) => crate::validate::duration_to_quarter_beats(&ev.duration),
+                crate::mnx::SequenceItem::Tuplet(t) => crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64),
+            };
+            cb_beats += beats;
+        }
+        
+        let mut flat_items = Vec::new();
+        let mut cur_e = 0;
+        let mut absorbed_beats = 0.0;
+        let mut inserted = false;
+        
+        for (m_idx, m) in part.measures.iter().enumerate() {
+            let measure_start_e = cur_e;
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    if cur_e == cursor && !inserted {
+                        if cur_e == measure_start_e {
+                            if let Some(ts) = &cb.time_signature {
+                                if let Some(gm) = doc.global.measures.get_mut(m_idx) {
+                                    gm.time = Some(ts.clone());
+                                }
+                            }
+                        }
+                        
+                        let mut pasted_items = cb.items.clone();
+                        Self::prepare_pasted_items(&mut pasted_items);
+                        flat_items.extend(pasted_items);
+                        inserted = true;
+                    }
+                    
+                    let item_beats = match item {
+                        crate::mnx::SequenceItem::Event(ev) => crate::validate::duration_to_quarter_beats(&ev.duration),
+                        crate::mnx::SequenceItem::Tuplet(t) => crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64),
+                    };
+                    
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    
+                    if inserted && absorbed_beats < cb_beats - 0.001 {
+                        absorbed_beats += item_beats;
+                        if absorbed_beats > cb_beats + 0.001 {
+                            let excess = absorbed_beats - cb_beats;
+                            match item {
+                                crate::mnx::SequenceItem::Event(ev) => {
+                                    let remainder_ev = ev.clone();
+                                    let chunks = crate::rebar::greedy_split_event_duration(remainder_ev, excess);
+                                    for c in chunks {
+                                        flat_items.push(crate::mnx::SequenceItem::Event(c));
+                                    }
+                                },
+                                crate::mnx::SequenceItem::Tuplet(t) => {
+                                    flat_items.push(item.clone());
+                                }
+                            }
+                        }
+                    } else {
+                        flat_items.push(item.clone());
+                    }
+                    
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+        
+        if !inserted {
+            let mut pasted_items = cb.items.clone();
+            Self::prepare_pasted_items(&mut pasted_items);
+            flat_items.extend(pasted_items);
+        }
+        
+        part.measures.clear();
+        part.measures.push(crate::mnx::Measure {
+            beams: None,
+            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
+        });
+        crate::rebar::rebar_part(part, &doc.global.measures);
+        
+        let cb_count = self.clipboard_event_count();
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+            
+            if cb_count > 0 {
+                self.selection_anchor = Some(cursor);
+                self.selected_event_idx = Some(cursor + cb_count - 1);
+            }
+        }
+    }
+
+    pub fn action_insert_time(&mut self) {
+        let cursor = match self.selected_event_idx { Some(c) => c, None => return };
+        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
+        let part = match doc.parts.first_mut() { Some(p) => p, None => return };
+        
+        let mut flat_items = Vec::new();
+        let mut cur_e = 0;
+        let mut inserted = false;
+        
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    if cur_e == cursor && !inserted {
+                        let rest_ev = crate::mnx::Event {
+                            id: None, duration: crate::mnx::Duration { base: "whole".to_string(), dots: None, multiple: None },
+                            notes: vec![],
+                            rest: Some(crate::mnx::Rest {}),
+                            slurs: None,
+                        };
+                        flat_items.push(crate::mnx::SequenceItem::Event(rest_ev));
+                        inserted = true;
+                    }
+                    flat_items.push(item.clone());
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+        
+        if !inserted {
+            let rest_ev = crate::mnx::Event {
+                id: None, duration: crate::mnx::Duration { base: "whole".to_string(), dots: None, multiple: None },
+                notes: vec![],
+                rest: Some(crate::mnx::Rest {}),
+                slurs: None,
+            };
+            flat_items.push(crate::mnx::SequenceItem::Event(rest_ev));
+        }
+        
+        part.measures.clear();
+        part.measures.push(crate::mnx::Measure {
+            beams: None,
+            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
+        });
+        crate::rebar::rebar_part(part, &doc.global.measures);
+        
+        let cb_count = self.clipboard_event_count();
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+            
+            if cb_count > 0 {
+                self.selection_anchor = Some(cursor);
+                self.selected_event_idx = Some(cursor + cb_count - 1);
+            }
+        }
+    }
+
+    pub fn action_duplicate_overwrite(&mut self) {
+        self.action_copy();
+        let max_idx = if let Some(cursor) = self.selected_event_idx {
+            let anchor = self.selection_anchor.unwrap_or(cursor);
+            cursor.max(anchor)
+        } else { return };
+        self.selected_event_idx = Some(max_idx + 1);
+        self.selection_anchor = None;
+        self.action_paste_overwrite();
+    }
+
+    pub fn action_duplicate_insert(&mut self) {
+        self.action_copy();
+        let max_idx = if let Some(cursor) = self.selected_event_idx {
+            let anchor = self.selection_anchor.unwrap_or(cursor);
+            cursor.max(anchor)
+        } else { return };
+        self.selected_event_idx = Some(max_idx + 1);
+        self.selection_anchor = None;
+        self.action_paste_insert();
     }
 }
 
