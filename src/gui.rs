@@ -2129,6 +2129,11 @@ parts:
                 self.convert_selected_to_rest();
             } else if (backspace_pressed || delete_pressed) && self.selected_event_idx.is_some() {
                 let e_idx = self.selected_event_idx.unwrap();
+                let anchor = self.selection_anchor.unwrap_or(e_idx);
+                if e_idx != anchor {
+                    self.action_delete_overwrite();
+                    return;
+                }
                 
                 if let Some(n_idx) = self.selected_note_idx_in_event {
                     if let Some(s) = self.get_string_for_note(e_idx, n_idx) {
@@ -4075,9 +4080,7 @@ impl MnxEditorApp {
         }
     }
 
-    pub fn action_cut_overwrite(&mut self) {
-        self.action_copy();
-        
+    pub fn action_delete_overwrite(&mut self) {
         let cursor = match self.selected_event_idx { Some(c) => c, None => return };
         let anchor = self.selection_anchor.unwrap_or(cursor);
         let min_idx = cursor.min(anchor);
@@ -4124,6 +4127,56 @@ impl MnxEditorApp {
         }
     }
 
+    pub fn action_cut_overwrite(&mut self) {
+        self.action_copy();
+        
+        let cursor = match self.selected_event_idx { Some(c) => c, None => return };
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+        
+        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
+        let part = match doc.parts.first_mut() { Some(p) => p, None => return };
+        
+        let mut cur_e = 0;
+        for m in &mut part.measures {
+            for seq in &mut m.sequences {
+                for item in &mut seq.content {
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    let item_start = cur_e;
+                    let item_end = cur_e + item_ev_count - 1;
+                    
+                    if item_start <= max_idx && item_end >= min_idx {
+                        match item {
+                            crate::mnx::SequenceItem::Event(ev) => {
+                                ev.notes.clear();
+                                ev.slurs = None;
+                            },
+                            crate::mnx::SequenceItem::Tuplet(t) => {
+                                for sub_ev in &mut t.content {
+                                    if let crate::mnx::SequenceItem::Event(sev) = sub_ev {
+                                        sev.notes.clear();
+                                        sev.slurs = None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+        
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+            self.process_and_render();
+        }
+    }
+
     pub fn action_cut_time(&mut self) {
         self.action_copy();
         
@@ -4165,6 +4218,7 @@ impl MnxEditorApp {
         
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
+            self.process_and_render();
             self.process_and_render();
             self.selected_event_idx = Some(min_idx);
             self.selection_anchor = None;
@@ -4248,6 +4302,16 @@ impl MnxEditorApp {
                             slurs.retain_mut(|s| {
                                 if let Some(new_target) = id_map.get(&s.target) {
                                     s.target = new_target.clone();
+                                    if let Some(old_start) = &s.start_note {
+                                        if let Some(new_start) = id_map.get(old_start) {
+                                            s.start_note = Some(new_start.clone());
+                                        }
+                                    }
+                                    if let Some(old_end) = &s.end_note {
+                                        if let Some(new_end) = id_map.get(old_end) {
+                                            s.end_note = Some(new_end.clone());
+                                        }
+                                    }
                                     true
                                 } else {
                                     false
@@ -4332,6 +4396,7 @@ impl MnxEditorApp {
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
+            self.process_and_render();
             self.process_and_render();
             
             if cb_count > 0 {
@@ -4446,6 +4511,7 @@ impl MnxEditorApp {
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
             self.process_and_render();
+            self.process_and_render();
             
             if cb_count > 0 {
                 self.selection_anchor = Some(cursor);
@@ -4506,6 +4572,7 @@ impl MnxEditorApp {
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
+            self.process_and_render();
             self.process_and_render();
             
             if cb_count > 0 {
