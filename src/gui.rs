@@ -1882,81 +1882,68 @@ parts:
         }
 
         let shift_down = ui.input(|i| i.modifiers.shift);
+        let command_down = ui.input(|i| i.modifiers.command);
+        let ctrl_down = ui.input(|i| i.modifiers.ctrl);
+        let cmd = command_down || ctrl_down;
 
-        let mut c_pressed = ui.input(|i| i.key_pressed(egui::Key::C));
-        let mut x_pressed = ui.input(|i| i.key_pressed(egui::Key::X));
-        let mut v_pressed = ui.input(|i| i.key_pressed(egui::Key::V));
-        
+        let z_pressed = ui.input(|i| i.key_pressed(egui::Key::Z));
+        let y_pressed = ui.input(|i| i.key_pressed(egui::Key::Y));
+        let c_pressed = ui.input(|i| i.key_pressed(egui::Key::C));
+        let x_pressed = ui.input(|i| i.key_pressed(egui::Key::X));
+        let v_pressed = ui.input(|i| i.key_pressed(egui::Key::V));
+        let i_pressed = ui.input(|i| i.key_pressed(egui::Key::I));
+        let d_pressed = ui.input(|i| i.key_pressed(egui::Key::D));
+
+        let mut is_copy = false;
+        let mut is_cut = false;
+        let mut is_paste = false;
         ui.input(|i| {
             for event in &i.events {
                 match event {
-                    egui::Event::Copy => c_pressed = true,
-                    egui::Event::Cut => x_pressed = true,
-                    egui::Event::Paste(_) => v_pressed = true,
+                    egui::Event::Copy => is_copy = true,
+                    egui::Event::Cut => is_cut = true,
+                    egui::Event::Paste(_) => is_paste = true,
                     _ => {}
                 }
             }
         });
 
-        let mut z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z)));
-        let mut shift_z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::Z)));
-        if !z_pressed { z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Z))); }
-        if !shift_z_pressed { shift_z_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::Z))); }
-        
-        let mut cmd_c = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C))) || c_pressed;
-        if !cmd_c { cmd_c = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::C))); }
-        
-        let mut cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::X))) || (x_pressed && !shift_down);
-        if !cmd_x { cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::X))); }
-
-        let mut shift_cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::X))) || (x_pressed && shift_down);
-        if !shift_cmd_x { shift_cmd_x = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::X))); }
-        
-        let mut cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V))) || (v_pressed && !shift_down);
-        if !cmd_v { cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::V))); }
-
-        let mut shift_cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::V))) || (v_pressed && shift_down);
-        if !shift_cmd_v { shift_cmd_v = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::V))); }
-        
-        let mut cmd_i = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::I)));
-        if !cmd_i { cmd_i = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::I))); }
-
-        let mut cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::D)));
-        if !cmd_d { cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::D))); }
-
-        let mut shift_cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT), egui::Key::D)));
-        if !shift_cmd_d { shift_cmd_d = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::SHIFT), egui::Key::D))); }
-
-        if z_pressed {
-            self.undo();
-            return;
-        } else if shift_z_pressed {
-            self.redo();
-            return;
-        } else if cmd_c {
-            self.action_copy();
-            return;
-        } else if shift_cmd_x {
-            self.action_cut_time();
-            return;
-        } else if cmd_x {
-            self.action_cut_overwrite();
-            return;
-        } else if shift_cmd_v {
-            self.action_paste_insert();
-            return;
-        } else if cmd_v {
-            self.action_paste_overwrite();
-            return;
-        } else if cmd_i {
-            self.action_insert_time();
-            return;
-        } else if shift_cmd_d {
-            self.action_duplicate_insert();
-            return;
-        } else if cmd_d {
-            self.action_duplicate_overwrite();
-            return;
+        if cmd {
+            if y_pressed {
+                self.redo();
+                ui.input_mut(|i| i.events.clear()); // consume
+                return;
+            } else if z_pressed {
+                if shift_down {
+                    self.redo();
+                } else {
+                    self.undo();
+                }
+                ui.input_mut(|i| i.events.clear()); // consume
+                return;
+            } else if is_copy || c_pressed {
+                self.action_copy();
+        let cb_after = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
+        println!("action_copy finished. cb_after: {}", cb_after);
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if is_cut || x_pressed {
+                if shift_down { self.action_cut_time(); } else { self.action_cut_overwrite(); }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if is_paste || v_pressed {
+                if shift_down { self.action_paste_insert(); } else { self.action_paste_overwrite(); }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if i_pressed {
+                self.action_insert_time();
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if d_pressed {
+                if shift_down { self.action_duplicate_insert(); } else { self.action_duplicate_overwrite(); }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            }
         }
 
         // In-place Fret Editing Key Handling
@@ -2326,6 +2313,8 @@ parts:
 
                             if is_final_blank {
                                 // Rule 3: Moving further to the right of a final blank note has no effect.
+                            } else if shift_down {
+                                // DO NOT create measures while multi-selecting
                             } else if let Some(doc) = &self.parsed_mnx {
                                 if let Some(part) = doc.parts.first() {
                                     if let Some(last_measure) = part.measures.last() {
@@ -4089,6 +4078,81 @@ impl MnxEditorApp {
         let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
         let part = match doc.parts.first_mut() { Some(p) => p, None => return };
         
+        // Check if all selected events are empty (rests / blanks)
+        let mut all_empty = true;
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    let item_start = cur_e;
+                    let item_end = cur_e + item_ev_count - 1;
+                    
+                    if item_start <= max_idx && item_end >= min_idx {
+                        match item {
+                            crate::mnx::SequenceItem::Event(ev) => {
+                                if !ev.notes.is_empty() {
+                                    all_empty = false;
+                                }
+                            },
+                            crate::mnx::SequenceItem::Tuplet(t) => {
+                                for sub_ev in &t.content {
+                                    if let crate::mnx::SequenceItem::Event(sev) = sub_ev {
+                                        if !sev.notes.is_empty() {
+                                            all_empty = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cur_e += item_ev_count;
+                }
+            }
+        }
+
+        if all_empty {
+            // Cut Time equivalent without clipboard
+            let mut flat_items = Vec::new();
+            let mut cur_e = 0;
+            
+            for m in &part.measures {
+                for seq in &m.sequences {
+                    for item in &seq.content {
+                        let item_ev_count = match item {
+                            crate::mnx::SequenceItem::Event(_) => 1,
+                            crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        };
+                        let item_start = cur_e;
+                        let item_end = cur_e + item_ev_count - 1;
+                        
+                        if !(item_start <= max_idx && item_end >= min_idx) {
+                            flat_items.push(item.clone());
+                        }
+                        cur_e += item_ev_count;
+                    }
+                }
+            }
+            
+            part.measures.clear();
+            part.measures.push(crate::mnx::Measure {
+                beams: None,
+                sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
+            });
+            crate::rebar::rebar_part(part, &mut doc.global.measures);
+            
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+                self.selection_anchor = None;
+                self.selected_event_idx = Some(min_idx);
+            }
+            return;
+        }
+
         let mut cur_e = 0;
         for m in &mut part.measures {
             for seq in &mut m.sequences {
@@ -4124,11 +4188,15 @@ impl MnxEditorApp {
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
             self.process_and_render();
+            self.selection_anchor = None;
+            self.selected_event_idx = Some(min_idx);
         }
     }
 
     pub fn action_cut_overwrite(&mut self) {
         self.action_copy();
+        let cb_after = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
+        println!("action_copy finished. cb_after: {}", cb_after);
         
         let cursor = match self.selected_event_idx { Some(c) => c, None => return };
         let anchor = self.selection_anchor.unwrap_or(cursor);
@@ -4179,6 +4247,8 @@ impl MnxEditorApp {
 
     pub fn action_cut_time(&mut self) {
         self.action_copy();
+        let cb_after = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
+        println!("action_copy finished. cb_after: {}", cb_after);
         
         let cursor = match self.selected_event_idx { Some(c) => c, None => return };
         let anchor = self.selection_anchor.unwrap_or(cursor);
@@ -4214,7 +4284,7 @@ impl MnxEditorApp {
             beams: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
-        crate::rebar::rebar_part(part, &doc.global.measures);
+        crate::rebar::rebar_part(part, &mut doc.global.measures);
         
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
@@ -4391,7 +4461,7 @@ impl MnxEditorApp {
             beams: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
-        crate::rebar::rebar_part(part, &doc.global.measures);
+        crate::rebar::rebar_part(part, &mut doc.global.measures);
         
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -4425,8 +4495,10 @@ impl MnxEditorApp {
         let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
         let part = match doc.parts.first_mut() { Some(p) => p, None => return };
         
+        let mut cb_items = cb.items.clone();
+        Self::prepare_pasted_items(&mut cb_items);
         let mut cb_beats = 0.0;
-        for item in &cb.items {
+        for item in &cb_items {
             let beats = match item {
                 crate::mnx::SequenceItem::Event(ev) => crate::validate::duration_to_quarter_beats(&ev.duration),
                 crate::mnx::SequenceItem::Tuplet(t) => crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64),
@@ -4505,7 +4577,7 @@ impl MnxEditorApp {
             beams: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
-        crate::rebar::rebar_part(part, &doc.global.measures);
+        crate::rebar::rebar_part(part, &mut doc.global.measures);
         
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -4567,7 +4639,7 @@ impl MnxEditorApp {
             beams: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
-        crate::rebar::rebar_part(part, &doc.global.measures);
+        crate::rebar::rebar_part(part, &mut doc.global.measures);
         
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -4584,6 +4656,8 @@ impl MnxEditorApp {
 
     pub fn action_duplicate_overwrite(&mut self) {
         self.action_copy();
+        let cb_after = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
+        println!("action_copy finished. cb_after: {}", cb_after);
         let max_idx = if let Some(cursor) = self.selected_event_idx {
             let anchor = self.selection_anchor.unwrap_or(cursor);
             cursor.max(anchor)
@@ -4594,7 +4668,11 @@ impl MnxEditorApp {
     }
 
     pub fn action_duplicate_insert(&mut self) {
+        let cb_before = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
+        println!("action_duplicate_insert called. cb_before: {}", cb_before);
         self.action_copy();
+        let cb_after = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
+        println!("action_copy finished. cb_after: {}", cb_after);
         let max_idx = if let Some(cursor) = self.selected_event_idx {
             let anchor = self.selection_anchor.unwrap_or(cursor);
             cursor.max(anchor)

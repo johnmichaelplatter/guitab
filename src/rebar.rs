@@ -6,7 +6,7 @@ pub fn generate_uuid() -> String {
     format!("id-{:x}", random_number)
 }
 
-pub fn rebar_part(part: &mut Part, global_measures: &[crate::mnx::GlobalMeasure]) {
+pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalMeasure>) {
     let mut flat_items = Vec::new();
     for measure in &part.measures {
         for seq in &measure.sequences {
@@ -19,11 +19,27 @@ pub fn rebar_part(part: &mut Part, global_measures: &[crate::mnx::GlobalMeasure]
     let mut item_queue = std::collections::VecDeque::from(flat_items);
     let mut m_idx = 0;
 
-    while !item_queue.is_empty() || m_idx < global_measures.len() {
+    if item_queue.is_empty() {
+        part.measures.push(Measure {
+            beams: None,
+            sequences: vec![Sequence { content: Vec::new(), beams: None }],
+        });
+        global_measures.truncate(1);
+        return;
+    }
+
+    while !item_queue.is_empty() {
         let ts = global_measures
             .get(m_idx)
             .and_then(|gm| gm.time.clone())
             .unwrap_or(TimeSignature { count: 4, unit: 4 });
+
+        if m_idx >= global_measures.len() {
+            global_measures.push(crate::mnx::GlobalMeasure {
+                time: Some(ts.clone()),
+                directions: Vec::new(),
+            });
+        }
 
         let mut remaining_capacity = (ts.count as f64) * 4.0 / (ts.unit as f64);
         let mut current_measure_items = Vec::new();
@@ -71,6 +87,8 @@ pub fn rebar_part(part: &mut Part, global_measures: &[crate::mnx::GlobalMeasure]
 
         m_idx += 1;
     }
+    
+    global_measures.truncate(m_idx);
 }
 
 pub fn split_event_for_capacity(ev: Event, capacity: f64) -> (Vec<Event>, Vec<Event>) {
