@@ -707,6 +707,15 @@ pub fn draw_tablature(
                             painter.rect_filled(text_rect.expand(2.0), 0.0, bg_color);
                         }
                         painter.galley(text_rect.min, galley, text_color);
+                        if event.notes.get(n_idx).and_then(|n| n.tap.as_ref()).is_some() {
+                            painter.text(
+                                Pos2::new(current_x, text_rect.min.y - 3.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                "T",
+                                FontId::proportional(11.0),
+                                note_color,
+                            );
+                        }
                         current_fret_rects.push((text_rect, n_idx));
                     } else if is_selected && is_editing_fret && editing_string == Some(string_num) {
                         // Empty string currently focused for placement in edit mode

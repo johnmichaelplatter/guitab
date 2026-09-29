@@ -3415,31 +3415,9 @@ parts:
             None => return,
         };
 
-        #[derive(Clone, Copy, Debug)]
-        enum AstPath {
-            TopLevel(usize, usize, usize),
-            InTuplet(usize, usize, usize, usize),
-        }
+        
 
-        let mut flattened_events = Vec::new();
-        for (m_idx, measure) in doc.parts[0].measures.iter().enumerate() {
-            for (s_idx, seq) in measure.sequences.iter().enumerate() {
-                for (i_idx, item) in seq.content.iter().enumerate() {
-                    match item {
-                        crate::mnx::SequenceItem::Event(_) => {
-                            flattened_events.push(AstPath::TopLevel(m_idx, s_idx, i_idx));
-                        }
-                        crate::mnx::SequenceItem::Tuplet(t) => {
-                            for (t_idx, inner) in t.content.iter().enumerate() {
-                                if let crate::mnx::SequenceItem::Event(_) = inner {
-                                    flattened_events.push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let flattened_events = doc.get_flattened_event_paths();
 
         if start_idx >= flattened_events.len() || cur_idx >= flattened_events.len() {
             self.pending_slur = None;
@@ -3449,31 +3427,12 @@ parts:
         let start_path = flattened_events[start_idx];
         let cur_path = flattened_events[cur_idx];
 
-        macro_rules! mutate_ev {
-            ($doc:expr, $path:expr, $ev_ident:ident, $block:block) => {
-                match $path {
-                    AstPath::TopLevel(m, s, i) => {
-                        if let crate::mnx::SequenceItem::Event($ev_ident) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
-                            $block
-                        }
-                    }
-                    AstPath::InTuplet(m, s, i, t) => {
-                        if let crate::mnx::SequenceItem::Tuplet(tu) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
-                            if let crate::mnx::SequenceItem::Event($ev_ident) = &mut tu.content[t] {
-                                $block
-                            }
-                        }
-                    }
-                }
-            };
-        }
-
         let mut start_note_id = None;
         let mut target_ev_id = None;
         let mut target_note_id = None;
 
         // Give the target event and note IDs
-        mutate_ev!(doc, cur_path, ev_cur, {
+        if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
             if ev_cur.id.is_none() {
                 ev_cur.id = Some(format!("ev_tgt_{}", start_idx));
             }
@@ -3485,7 +3444,7 @@ parts:
                 }
                 target_note_id = n.id.clone();
             }
-        });
+        }
 
         if target_note_id.is_none() {
             self.pending_slur = None;
@@ -3493,7 +3452,7 @@ parts:
         }
 
         // Give the start note an ID and append the slur
-        mutate_ev!(doc, start_path, ev_start, {
+        if let Some(ev_start) = doc.get_event_mut_at_path(start_path) {
             if let Some(n) = ev_start.notes.iter_mut().find(|n| n.string == Some(slur_str)) {
                 if n.id.is_none() {
                     n.id = Some(format!("note_src_{}_{}", start_idx, cur_idx));
@@ -3512,7 +3471,7 @@ parts:
                     end_note: target_note_id,
                 });
             }
-        });
+        }
 
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
@@ -3598,57 +3557,14 @@ parts:
             None => return,
         };
 
-        #[derive(Clone, Copy, Debug)]
-        enum AstPath {
-            TopLevel(usize, usize, usize),
-            InTuplet(usize, usize, usize, usize),
-        }
-
-        let mut flattened_events = Vec::new();
-        for (m_idx, measure) in doc.parts[0].measures.iter().enumerate() {
-            for (s_idx, seq) in measure.sequences.iter().enumerate() {
-                for (i_idx, item) in seq.content.iter().enumerate() {
-                    match item {
-                        crate::mnx::SequenceItem::Event(_) => {
-                            flattened_events.push(AstPath::TopLevel(m_idx, s_idx, i_idx));
-                        }
-                        crate::mnx::SequenceItem::Tuplet(t) => {
-                            for (t_idx, inner) in t.content.iter().enumerate() {
-                                if let crate::mnx::SequenceItem::Event(_) = inner {
-                                    flattened_events.push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        let flattened_events = doc.get_flattened_event_paths();
         if event_idx >= flattened_events.len() {
             return;
         }
 
         let cur_path = flattened_events[event_idx];
-
-        let get_ev_clone = |doc: &crate::mnx::MnxDocument, path: AstPath| -> Option<crate::mnx::Event> {
-            match path {
-                AstPath::TopLevel(m, s, i) => {
-                    if let crate::mnx::SequenceItem::Event(e) = &doc.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
-                        Some(e.clone())
-                    } else { None }
-                }
-                AstPath::InTuplet(m, s, i, t) => {
-                    if let crate::mnx::SequenceItem::Tuplet(tu) = &doc.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
-                        if let crate::mnx::SequenceItem::Event(e) = tu.content.get(t)? {
-                            Some(e.clone())
-                        } else { None }
-                    } else { None }
-                }
-            }
-        };
-
-        let ev_cur_clone = match get_ev_clone(&doc, cur_path) {
-            Some(e) => e,
+        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+            Some(e) => e.clone(),
             None => return,
         };
 
@@ -3670,27 +3586,8 @@ parts:
             None => return,
         };
 
-        macro_rules! mutate_ev {
-            ($doc:expr, $path:expr, $ev_ident:ident, $block:block) => {
-                match $path {
-                    AstPath::TopLevel(m, s, i) => {
-                        if let crate::mnx::SequenceItem::Event($ev_ident) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
-                            $block
-                        }
-                    }
-                    AstPath::InTuplet(m, s, i, t) => {
-                        if let crate::mnx::SequenceItem::Tuplet(tu) = &mut $doc.parts[0].measures[m].sequences[s].content[i] {
-                            if let crate::mnx::SequenceItem::Event($ev_ident) = &mut tu.content[t] {
-                                $block
-                            }
-                        }
-                    }
-                }
-            };
-        }
-
         let mut toggled_off = false;
-        mutate_ev!(doc, cur_path, ev, {
+        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
             if let Some(slurs) = &mut ev.slurs {
                 let note_cur_id = ev.notes[note_idx].id.clone();
                 let original_len = slurs.len();
@@ -3706,7 +3603,7 @@ parts:
                     ev.slurs = None;
                 }
             }
-        });
+        }
 
         if toggled_off {
             if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -3720,7 +3617,7 @@ parts:
         let mut next_target = None;
         for j in (event_idx + 1)..flattened_events.len() {
             let path_j = flattened_events[j];
-            let ev_j = get_ev_clone(&doc, path_j).unwrap();
+            let ev_j = doc.get_event_at_path(path_j).cloned().unwrap();
             if let Some(n_idx) = ev_j.notes.iter().position(|n| n.string == Some(cur_string)) {
                 next_target = Some((j, path_j, ev_j, n_idx));
                 break;
@@ -3732,7 +3629,7 @@ parts:
             let mut start_note_id = None;
             let mut end_note_id = None;
 
-            mutate_ev!(doc, next_path, ev_next, {
+            if let Some(ev_next) = doc.get_event_mut_at_path(next_path) {
                 if ev_next.id.is_none() {
                     ev_next.id = Some(format!("ev_tgt_{}", event_idx));
                 }
@@ -3743,9 +3640,9 @@ parts:
                     n_tgt.id = Some(format!("note_tgt_{}_{}", event_idx, next_n_idx));
                 }
                 end_note_id = n_tgt.id.clone();
-            });
+            }
 
-            mutate_ev!(doc, cur_path, ev_cur, {
+            if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
                 let n_cur = &mut ev_cur.notes[note_idx];
                 if n_cur.id.is_none() {
                     n_cur.id = Some(format!("note_src_{}_{}", event_idx, note_idx));
@@ -3761,7 +3658,7 @@ parts:
                     start_note: start_note_id,
                     end_note: end_note_id,
                 });
-            });
+            }
 
             if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
                 self.update_yaml(new_yaml);
@@ -3783,90 +3680,20 @@ parts:
             None => return,
         };
 
-        #[derive(Clone, Copy, Debug)]
-        enum AstPath {
-            TopLevel(usize, usize, usize),
-            InTuplet(usize, usize, usize, usize),
-        }
-
-        let mut flattened_events = Vec::new();
-        for (m_idx, measure) in doc.parts[0].measures.iter().enumerate() {
-            for (s_idx, seq) in measure.sequences.iter().enumerate() {
-                for (i_idx, item) in seq.content.iter().enumerate() {
-                    match item {
-                        crate::mnx::SequenceItem::Event(_) => {
-                            flattened_events.push(AstPath::TopLevel(m_idx, s_idx, i_idx));
-                        }
-                        crate::mnx::SequenceItem::Tuplet(t) => {
-                            for (t_idx, inner) in t.content.iter().enumerate() {
-                                if let crate::mnx::SequenceItem::Event(_) = inner {
-                                    flattened_events
-                                        .push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        let flattened_events = doc.get_flattened_event_paths();
         if event_idx >= flattened_events.len() {
             return;
         }
 
         let cur_path = flattened_events[event_idx];
-
-        let (cur_m, cur_s, cur_i) = match cur_path {
-            AstPath::TopLevel(m, s, i) => (m, s, i),
-            AstPath::InTuplet(m, s, i, _) => (m, s, i),
+        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+            Some(e) => e.clone(),
+            None => return,
         };
 
-        // Helper to clone an event out
-        let get_ev_clone =
-            |doc: &crate::mnx::MnxDocument, path: AstPath| -> Option<crate::mnx::Event> {
-                match path {
-                    AstPath::TopLevel(m, s, i) => {
-                        if let crate::mnx::SequenceItem::Event(e) = &doc
-                            .parts
-                            .get(0)?
-                            .measures
-                            .get(m)?
-                            .sequences
-                            .get(s)?
-                            .content
-                            .get(i)?
-                        {
-                            Some(e.clone())
-                        } else {
-                            None
-                        }
-                    }
-                    AstPath::InTuplet(m, s, i, t) => {
-                        if let crate::mnx::SequenceItem::Tuplet(tu) = &doc
-                            .parts
-                            .get(0)?
-                            .measures
-                            .get(m)?
-                            .sequences
-                            .get(s)?
-                            .content
-                            .get(i)?
-                        {
-                            if let crate::mnx::SequenceItem::Event(e) = tu.content.get(t)? {
-                                Some(e.clone())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                }
-            };
-
-        let ev_cur_clone = match get_ev_clone(&doc, cur_path) {
-            Some(e) => e,
-            None => return,
+        let (cur_m, cur_s, cur_i) = match cur_path {
+            crate::mnx::AstPath::TopLevel(m, s, i) => (m, s, i),
+            crate::mnx::AstPath::InTuplet(m, s, i, _) => (m, s, i),
         };
 
         let note_idx = match self.selected_note_idx_in_event {
@@ -3900,32 +3727,8 @@ parts:
             }
         };
 
-        // Mutator macro to make life easy
-        macro_rules! mutate_ev {
-            ($doc:expr, $path:expr, $ev_ident:ident, $block:block) => {
-                match $path {
-                    AstPath::TopLevel(m, s, i) => {
-                        if let crate::mnx::SequenceItem::Event($ev_ident) =
-                            &mut $doc.parts[0].measures[m].sequences[s].content[i]
-                        {
-                            $block
-                        }
-                    }
-                    AstPath::InTuplet(m, s, i, t) => {
-                        if let crate::mnx::SequenceItem::Tuplet(tu) =
-                            &mut $doc.parts[0].measures[m].sequences[s].content[i]
-                        {
-                            if let crate::mnx::SequenceItem::Event($ev_ident) = &mut tu.content[t] {
-                                $block
-                            }
-                        }
-                    }
-                }
-            };
-        }
-
         let mut toggled_off = false;
-        mutate_ev!(doc, cur_path, ev, {
+        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
             let note_cur = &mut ev.notes[note_idx];
             if let Some(ties) = &note_cur.ties {
                 if !ties.is_empty() {
@@ -3933,7 +3736,7 @@ parts:
                     toggled_off = true;
                 }
             }
-        });
+        }
 
         if toggled_off {
             if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -3959,7 +3762,7 @@ parts:
             let mut has_same_string = false;
             let mut diff_fret = false;
 
-            mutate_ev!(doc, next_path, ev_next, {
+            if let Some(ev_next) = doc.get_event_mut_at_path(next_path) {
                 for (n_i, n) in ev_next.notes.iter_mut().enumerate() {
                     if n.string == Some(cur_string) {
                         has_same_string = true;
@@ -3981,14 +3784,14 @@ parts:
                     }
                     target_id = ev_next.id.clone();
                 }
-            });
+            }
 
             if diff_fret {
                 return;
             }
 
             if let Some(tid) = target_id {
-                mutate_ev!(doc, cur_path, ev_cur, {
+                if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
                     let note_cur = &mut ev_cur.notes[note_idx];
                     if note_cur.ties.is_none() {
                         note_cur.ties = Some(Vec::new());
@@ -4006,7 +3809,7 @@ parts:
                             .unwrap()
                             .push(crate::mnx::Tie { target: tid });
                     }
-                });
+                }
 
                 if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
                     self.update_yaml(new_yaml);
@@ -4053,12 +3856,12 @@ parts:
         let available_beats = (measure_total_beats - used_beats).max(0.0);
         let eps = 0.001;
 
-        mutate_ev!(doc, cur_path, ev_cur, {
+        if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
             let note_cur = &mut ev_cur.notes[note_idx];
             if note_cur.id.is_none() {
                 note_cur.id = Some(format!("note_src_{}", event_idx));
             }
-        });
+        }
 
         let mut next_target_id = String::new();
 
@@ -4074,6 +3877,7 @@ parts:
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
+tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4109,6 +3913,7 @@ parts:
                         target: id2.clone(),
                     }]),
                     accidental: None,
+tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4124,6 +3929,7 @@ parts:
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
+tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4176,6 +3982,7 @@ parts:
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
+tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4213,7 +4020,7 @@ parts:
             }
         }
 
-        mutate_ev!(doc, cur_path, ev_cur, {
+        if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
             let note_cur = &mut ev_cur.notes[note_idx];
             if note_cur.ties.is_none() {
                 note_cur.ties = Some(Vec::new());
@@ -4221,7 +4028,7 @@ parts:
             note_cur.ties.as_mut().unwrap().push(crate::mnx::Tie {
                 target: next_target_id,
             });
-        });
+        }
 
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);

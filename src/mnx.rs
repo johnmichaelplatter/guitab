@@ -35,6 +35,74 @@ pub mod flow_seq_req {
 }
 use std::fmt;
 
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AstPath {
+    TopLevel(usize, usize, usize),
+    InTuplet(usize, usize, usize, usize),
+}
+
+impl MnxDocument {
+    pub fn get_flattened_event_paths(&self) -> Vec<AstPath> {
+        let mut flattened_events = Vec::new();
+        if let Some(part) = self.parts.get(0) {
+            for (m_idx, measure) in part.measures.iter().enumerate() {
+                for (s_idx, seq) in measure.sequences.iter().enumerate() {
+                    for (i_idx, item) in seq.content.iter().enumerate() {
+                        match item {
+                            crate::mnx::SequenceItem::Event(_) => {
+                                flattened_events.push(AstPath::TopLevel(m_idx, s_idx, i_idx));
+                            }
+                            crate::mnx::SequenceItem::Tuplet(t) => {
+                                for (t_idx, inner) in t.content.iter().enumerate() {
+                                    if let crate::mnx::SequenceItem::Event(_) = inner {
+                                        flattened_events.push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        flattened_events
+    }
+
+    pub fn get_event_at_path(&self, path: AstPath) -> Option<&Event> {
+        match path {
+            AstPath::TopLevel(m, s, i) => {
+                if let SequenceItem::Event(e) = self.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                    Some(e)
+                } else { None }
+            }
+            AstPath::InTuplet(m, s, i, t) => {
+                if let SequenceItem::Tuplet(tu) = self.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                    if let SequenceItem::Event(e) = tu.content.get(t)? {
+                        Some(e)
+                    } else { None }
+                } else { None }
+            }
+        }
+    }
+
+    pub fn get_event_mut_at_path(&mut self, path: AstPath) -> Option<&mut Event> {
+        match path {
+            AstPath::TopLevel(m, s, i) => {
+                if let SequenceItem::Event(e) = self.parts.get_mut(0)?.measures.get_mut(m)?.sequences.get_mut(s)?.content.get_mut(i)? {
+                    Some(e)
+                } else { None }
+            }
+            AstPath::InTuplet(m, s, i, t) => {
+                if let SequenceItem::Tuplet(tu) = self.parts.get_mut(0)?.measures.get_mut(m)?.sequences.get_mut(s)?.content.get_mut(i)? {
+                    if let SequenceItem::Event(e) = tu.content.get_mut(t)? {
+                        Some(e)
+                    } else { None }
+                } else { None }
+            }
+        }
+    }
+}
+
 impl MnxDocument {
     pub fn clean_dangling_ties(&mut self) {
         let mut all_note_ids = std::collections::HashSet::new();
@@ -261,6 +329,9 @@ pub struct Tie {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Tap {}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -274,6 +345,8 @@ pub struct Note {
     pub accidental: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ties: Option<Vec<Tie>>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
+    pub tap: Option<Tap>,
 }
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632)
@@ -582,5 +655,32 @@ parts:
         } else {
             panic!("Expected Event at index 1");
         }
+    }
+
+    #[test]
+    fn test_parse_and_serialize_tap() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+                    tap: {}
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with tap");
+        let note = &doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes[0];
+        assert!(note.tap.is_some());
+
+        let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with tap");
+        assert!(out.contains("tap: {}"));
     }
 }
