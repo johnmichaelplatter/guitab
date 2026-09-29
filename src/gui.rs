@@ -343,6 +343,40 @@ impl MnxEditorApp {
         false
     }
 
+    pub fn is_selected_note_tapped(&self) -> bool {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return false,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return false,
+        };
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return false,
+        };
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    if cur_e == e_idx {
+                        if let Some(n_idx) = self.selected_note_idx_in_event {
+                            if let Some(n) = ev.notes.get(n_idx) {
+                                return n.tap.is_some();
+                            }
+                        } else if let Some(cur_str) = self.editing_string {
+                            return ev.notes.iter().any(|n| n.string == Some(cur_str) && n.tap.is_some());
+                        }
+                        return ev.notes.iter().any(|n| n.tap.is_some());
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+        false
+    }
+
     
     pub fn update_yaml_and_clean_ties(&mut self, new_yaml: String) {
         if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&new_yaml) {
@@ -1306,6 +1340,8 @@ parts:
                 let mut tuplet_clicked = false;
                 let mut tie_clicked = false;
                 let mut slur_clicked = false;
+                let mut tap_clicked = false;
+                let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
 
                 if let Some(textures) = &self.duration_textures {
                     let icon_size = egui::vec2(24.0, 24.0);
@@ -1416,14 +1452,39 @@ parts:
 
                     // Tie button
                     let is_tie = self.is_selected_event_tied();
-                    if make_svg_btn(ui, include_image!("../assets/tie.svg"), is_tie, "Tie (T)") || ui.input(|i| i.key_pressed(egui::Key::T)) {
+                    if make_svg_btn(ui, include_image!("../assets/tie.svg"), is_tie, "Tie (Shift+T)") || (!has_text_focus && ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::T))) {
                         tie_clicked = true;
                     }
 
                     // Slur button
                     let is_slur = self.is_selected_note_slurred();
-                    if make_svg_btn(ui, include_image!("../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off (S)") || ui.input(|i| i.key_pressed(egui::Key::S)) {
+                    if make_svg_btn(ui, include_image!("../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off (S)") || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::S))) {
                         slur_clicked = true;
+                    }
+
+                    // Tap button
+                    let is_tap = self.is_selected_note_tapped();
+                    let (tap_rect, tap_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(tap_rect) {
+                        let visuals = ui.style().interact_selectable(&tap_resp, is_tap);
+                        ui.painter().rect(
+                            tap_rect,
+                            visuals.corner_radius,
+                            visuals.bg_fill,
+                            visuals.bg_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        let color = visuals.text_color();
+                        ui.painter().text(
+                            tap_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "T",
+                            egui::FontId::proportional(16.0),
+                            color,
+                        );
+                    }
+                    if tap_resp.on_hover_text("Tap (T)").clicked() || (!has_text_focus && !ui.input(|i| i.modifiers.shift) && ui.input(|i| i.key_pressed(egui::Key::T))) {
+                        tap_clicked = true;
                     }
                 }
 
@@ -1445,6 +1506,9 @@ parts:
                 }
                 if slur_clicked {
                     self.action_add_slur();
+                }
+                if tap_clicked {
+                    self.action_toggle_tap();
                 }
 
                 // ── Insert TS Button ─────────────────────────────────────────
@@ -3877,7 +3941,7 @@ parts:
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
-tap: None,
+                    tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -3913,7 +3977,7 @@ tap: None,
                         target: id2.clone(),
                     }]),
                     accidental: None,
-tap: None,
+                    tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -3929,7 +3993,7 @@ tap: None,
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
-tap: None,
+                    tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -3982,7 +4046,7 @@ tap: None,
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
-tap: None,
+                    tap: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4028,6 +4092,94 @@ tap: None,
             note_cur.ties.as_mut().unwrap().push(crate::mnx::Tie {
                 target: next_target_id,
             });
+        }
+
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
+    }
+
+    pub fn action_toggle_tap(&mut self) {
+        if self.is_editing_fret && !self.editing_fret_buf.trim().is_empty() {
+            self.commit_fret_edit();
+            self.editing_fret_buf.clear();
+        }
+
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+
+        let flattened_events = doc.get_flattened_event_paths();
+        if event_idx >= flattened_events.len() {
+            return;
+        }
+
+        let cur_path = flattened_events[event_idx];
+        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+            Some(e) => e.clone(),
+            None => return,
+        };
+
+        if ev_cur_clone.notes.is_empty() {
+            return;
+        }
+
+        let note_idx = match self.selected_note_idx_in_event {
+            Some(idx) => {
+                if idx < ev_cur_clone.notes.len() {
+                    idx
+                } else if ev_cur_clone.notes.len() == 1 {
+                    0
+                } else {
+                    return;
+                }
+            }
+            None => {
+                if let Some(target_str) = self.editing_string {
+                    let mut found = None;
+                    for (i, n) in ev_cur_clone.notes.iter().enumerate() {
+                        if n.string == Some(target_str) {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(idx) => idx,
+                        None => {
+                            if ev_cur_clone.notes.len() == 1 {
+                                0
+                            } else {
+                                return;
+                            }
+                        }
+                    }
+                } else if ev_cur_clone.notes.len() == 1 {
+                    0
+                } else {
+                    return;
+                }
+            }
+        };
+
+        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+            if let Some(note) = ev.notes.get_mut(note_idx) {
+                if note.tap.is_some() {
+                    note.tap = None;
+                } else {
+                    note.tap = Some(crate::mnx::Tap {});
+                }
+            }
+        }
+
+        self.selected_note_idx_in_event = Some(note_idx);
+        if let Some(s) = ev_cur_clone.notes[note_idx].string {
+            self.editing_string = Some(s);
         }
 
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -5782,5 +5934,104 @@ parts:
 
         app.selected_event_idx = None;
         assert!(!app.is_selected_event_tied());
+    }
+
+    #[test]
+    fn test_tap_toggle_and_yaml_writing() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+"#
+        .to_string();
+        app.process_and_render();
+
+        app.selected_event_idx = Some(0);
+        assert!(!app.is_selected_note_tapped());
+
+        // Toggle Tap ON
+        app.action_toggle_tap();
+        assert!(app.is_selected_note_tapped());
+        assert!(app.yaml_text.contains("tap: {}"));
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev.notes[0].tap.is_some());
+
+        // Toggle Tap OFF
+        app.action_toggle_tap();
+        assert!(!app.is_selected_note_tapped());
+        assert!(!app.yaml_text.contains("tap:"));
+
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev2.notes[0].tap.is_none());
+    }
+
+    #[test]
+    fn test_tap_chord_note_selection() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+                  - id: n2
+                    pitch: { step: B, octave: 3 }
+                    string: 2
+                    fret: 12
+"#
+        .to_string();
+        app.process_and_render();
+
+        app.selected_event_idx = Some(0);
+        // Select second note (string 2)
+        app.selected_note_idx_in_event = Some(1);
+        app.editing_string = Some(2);
+
+        app.action_toggle_tap();
+        assert!(app.is_selected_note_tapped());
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev.notes[0].tap.is_none());
+        assert!(ev.notes[1].tap.is_some());
+
+        // Select first note (string 1)
+        app.selected_note_idx_in_event = Some(0);
+        app.editing_string = Some(1);
+        assert!(!app.is_selected_note_tapped());
+
+        app.action_toggle_tap();
+        assert!(app.is_selected_note_tapped());
+
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev2.notes[0].tap.is_some());
+        assert!(ev2.notes[1].tap.is_some());
     }
 }
