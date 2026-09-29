@@ -261,6 +261,9 @@ pub struct Tie {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Tap {}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -274,6 +277,8 @@ pub struct Note {
     pub accidental: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ties: Option<Vec<Tie>>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
+    pub tap: Option<Tap>,
 }
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632)
@@ -582,5 +587,32 @@ parts:
         } else {
             panic!("Expected Event at index 1");
         }
+    }
+
+    #[test]
+    fn test_parse_and_serialize_tap() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+                    tap: {}
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with tap");
+        let note = &doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes[0];
+        assert!(note.tap.is_some());
+
+        let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with tap");
+        assert!(out.contains("tap: {}"));
     }
 }
