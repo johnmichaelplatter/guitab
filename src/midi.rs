@@ -783,14 +783,6 @@ impl MidiPlayer {
                 if !bytes.is_empty() {
                     let _ = conn_out.send(&bytes);
                 }
-                // Reset pitch bend to center (8192)
-                let reset_pb = midly::MidiMessage::PitchBend {
-                    bend: midly::PitchBend(midly::num::u14::from(8192)),
-                };
-                let bytes_pb = serialize_midi_message(n.channel, &reset_pb);
-                if !bytes_pb.is_empty() {
-                    let _ = conn_out.send(&bytes_pb);
-                }
             }
         });
 

@@ -155,7 +155,7 @@ impl MonotonicCurveEditor {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, rect: Rect) -> Response {
+    pub fn ui(&mut self, ui: &mut Ui, rect: Rect, pitch_bend_range: u8, micro_fret_divisions: u32) -> Response {
         if let Some(last) = self.last_rect {
             if last != rect {
                 // Remap all nodes to new rect
@@ -203,10 +203,42 @@ impl MonotonicCurveEditor {
         
         // Draw grid
         painter.rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 30));
-        let num_lines = 4;
-        for i in 0..=num_lines {
-            let y = rect.min.y + (rect.height() * i as f32 / num_lines as f32);
-            painter.line_segment([Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)], Stroke::new(1.0, Color32::from_rgb(60, 60, 60)));
+        
+        let pb_semitones = pitch_bend_range.max(1) as f32;
+        let step_semitones = 12.0 / micro_fret_divisions as f32;
+        
+        // Number of steps that fit in the pitch bend range
+        let total_steps = pb_semitones / step_semitones;
+        
+        let max_step = total_steps.floor() as u32;
+        
+        // Draw top line and bottom line always
+        painter.line_segment([Pos2::new(rect.min.x, rect.min.y), Pos2::new(rect.max.x, rect.min.y)], Stroke::new(1.0, Color32::from_rgb(100, 100, 100)));
+        painter.line_segment([Pos2::new(rect.min.x, rect.max.y), Pos2::new(rect.max.x, rect.max.y)], Stroke::new(1.0, Color32::from_rgb(100, 100, 100)));
+
+        // Draw horizontal guide lines for each step
+        for i in 1..=max_step {
+            // Calculate y position:
+            // rect.max.y is 0 bend, rect.min.y is max bend.
+            // step i represents i * step_semitones
+            // The fraction of the box height is (i * step_semitones) / pb_semitones
+            let fraction = (i as f32 * step_semitones) / pb_semitones;
+            let y = rect.max.y - fraction * rect.height();
+            
+            // Draw a slightly brighter line for integer steps
+            painter.line_segment(
+                [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)], 
+                Stroke::new(1.0, Color32::from_rgb(60, 60, 60))
+            );
+            
+            // Draw step number label on the left
+            painter.text(
+                Pos2::new(rect.min.x + 4.0, y - 6.0),
+                eframe::egui::Align2::LEFT_BOTTOM,
+                format!("+{} step{}", i, if i == 1 { "" } else { "s" }),
+                eframe::egui::FontId::proportional(10.0),
+                Color32::from_rgb(120, 120, 120),
+            );
         }
         
         let curve_stroke = Stroke::new(3.0, Color32::LIGHT_BLUE);

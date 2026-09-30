@@ -3047,7 +3047,9 @@ parts:
                         ui.add_space(8.0);
                         
                         let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(400.0, 200.0));
-                        curve_editor.ui(ui, rect);
+                        let pb_range = self.pitch_bend_range;
+                        let mfd = self.parsed_mnx.as_ref().and_then(|d| d.parts.first()).and_then(|p| p.instrument.as_ref()).and_then(|i| i.micro_fret_divisions).unwrap_or(12) as u32;
+                        curve_editor.ui(ui, rect, pb_range, mfd);
                         
                         ui.add_space(20.0); // manual space since ui() allocates manually
                         ui.horizontal(|ui| {
