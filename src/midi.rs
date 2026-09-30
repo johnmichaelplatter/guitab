@@ -266,6 +266,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         semitone_diff,
                                         self.options.pitch_bend_range,
                                     );
+                                    
+                                    let bend_editor = if let Some(bend_str) = &note.bend {
+                                        Some(crate::curve_editor::parse_bend_string(bend_str, eframe::egui::Rect::from_min_size(eframe::egui::pos2(0.0, 0.0), eframe::egui::vec2(100.0, 100.0))))
+                                    } else {
+                                        None
+                                    };
 
                                     let is_tied = note
                                         .id
@@ -287,6 +293,37 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                                 },
                                             },
                                         });
+                                        
+                                        if let Some(editor) = &bend_editor {
+                                            let num_samples = 32;
+                                            for i in 1..=num_samples {
+                                                let progress = i as f32 / num_samples as f32;
+                                                let tick_offset = ((duration_ticks as f32) * progress) as u32;
+                                                // Normalized X is 0.0 to 100.0 for the evaluator
+                                                // sample_y_at_x returns 0.0 (top) to 100.0 (bottom) because the editor rect was 0.0 to 100.0
+                                                let y_screen = editor.sample_y_at_x(progress * 100.0);
+                                                let y_norm = (100.0 - y_screen).clamp(0.0, 100.0); // invert so 100.0 is MAX bend
+                                                let bend_semitones = (y_norm / 100.0) * (self.options.pitch_bend_range as f32);
+                                                
+                                                let total_bend_val = calculate_pitch_bend(
+                                                    semitone_diff + bend_semitones,
+                                                    self.options.pitch_bend_range,
+                                                );
+                                                
+                                                self.abs_events.push(InternalAbsoluteEvent {
+                                                    time_ticks: event_start_ticks + tick_offset,
+                                                    kind: InternalEventKind::Midi {
+                                                        channel,
+                                                        message: MidiMessage::PitchBend {
+                                                            bend: midly::PitchBend(midly::num::u14::from(
+                                                                total_bend_val,
+                                                            )),
+                                                        },
+                                                    },
+                                                });
+                                            }
+                                        }
+
 
                                         self.abs_events.push(InternalAbsoluteEvent {
                                             time_ticks: event_start_ticks,

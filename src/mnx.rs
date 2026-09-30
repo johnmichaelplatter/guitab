@@ -347,6 +347,8 @@ pub struct Note {
     pub ties: Option<Vec<Tie>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub tap: Option<Tap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bend: Option<String>,
 }
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632)
