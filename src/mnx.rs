@@ -274,6 +274,8 @@ pub struct Note {
     pub accidental: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ties: Option<Vec<Tie>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bend: Option<String>,
 }
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632)

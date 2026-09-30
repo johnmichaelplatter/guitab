@@ -1264,3 +1264,91 @@ parts:
         assert!(res.contains("duration: {base: quarter}"));
     }
 }
+
+
+pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_str: &str) -> String {
+    let event_ranges = find_all_event_ranges(yaml);
+    if let Some(er) = event_ranges.get(event_idx) {
+        // Find the note that corresponds to this string_val
+        let mut target_note_idx = None;
+        let mut target_range_val = None;
+        for (i, r) in er.note_ranges.iter().enumerate() {
+            let note_text = &yaml[r.clone()];
+            if let Some(s) = get_note_string_from_text(note_text) {
+                if s == string_val {
+                    target_note_idx = Some(i);
+                    target_range_val = Some(r.clone());
+                    break;
+                }
+            }
+        }
+        
+        let range_to_use = target_range_val.unwrap_or(er.total_range.clone());
+        let mut result = yaml.to_string();
+        let note_text = &result[range_to_use.clone()];
+        
+        // Remove existing bend if it exists
+        let mut text_without_bend = note_text.to_string();
+        if let Some(bend_start) = text_without_bend.find("bend: ") {
+            let mut bend_end = if let Some(end_idx) = text_without_bend[bend_start..].find('\n') {
+                bend_start + end_idx + 1
+            } else {
+                text_without_bend.len()
+            };
+            // Also consume any indentation spaces on the next line so we don't leave a dangling indent before the next property
+            while bend_end < text_without_bend.len() && text_without_bend.as_bytes()[bend_end] == b' ' {
+                bend_end += 1;
+            }
+            text_without_bend.replace_range(bend_start..bend_end, "");
+        }
+        
+        // Add new bend
+        if !bend_str.is_empty() {
+            let insert_point = if let Some(pos) = text_without_bend.find("pitch: ") {
+                pos
+            } else if let Some(pos) = text_without_bend.find("string: ") {
+                pos
+            } else {
+                0
+            };
+            
+            // Find exact indentation of the line where we're inserting
+            let mut indent = "";
+            if let Some(newline_pos) = text_without_bend[..insert_point].rfind('\n') {
+                let indent_str = &text_without_bend[newline_pos + 1..insert_point];
+                // if it contains a dash, we want to align after the dash
+                if let Some(dash_pos) = indent_str.find("- ") {
+                    // indent should be spaces equivalent to length of indent_str up to and including dash_pos + 2
+                    indent = &indent_str[dash_pos + 2..];
+                    // wait, we can just use spaces equal to the visual offset
+                    // let's just generate spaces
+                }
+            }
+            
+            // Simpler robust approach: just count spaces immediately preceding `insert_point`
+            let mut spaces_count = 0;
+            let mut cursor = insert_point;
+            while cursor > 0 {
+                cursor -= 1;
+                let c = text_without_bend.chars().nth(cursor).unwrap();
+                if c == ' ' {
+                    spaces_count += 1;
+                } else if c == '-' {
+                    spaces_count += 1;
+                } else if c == '\n' {
+                    break;
+                } else {
+                    break;
+                }
+            }
+            let indent_str = " ".repeat(spaces_count);
+            
+            
+            text_without_bend.insert_str(insert_point, &format!("bend: \"{}\"\n{}", bend_str, indent_str));
+        }
+        
+        result.replace_range(range_to_use, &text_without_bend);
+        return result;
+    }
+    yaml.to_string()
+}

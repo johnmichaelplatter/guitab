@@ -1,3 +1,4 @@
+pub mod curve_editor;
 mod edo;
 mod gui;
 pub mod midi;

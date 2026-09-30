@@ -137,6 +137,12 @@ pub enum ActiveDialog {
         new_num_strings: u8,
         new_tunings: Vec<crate::mnx::StringTuning>,
     },
+    BendEditor {
+        event_idx: usize,
+        string: u8,
+        curve_editor: crate::curve_editor::MonotonicCurveEditor,
+        bend_range_steps: u32,
+    },
 }
 
 impl Default for MnxEditorApp {
@@ -268,6 +274,74 @@ impl MnxEditorApp {
             None => return false,
         };
         doc.find_event_tuplet_info(e_idx).is_some()
+    }
+
+    pub fn is_selected_note_bent(&self) -> bool {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(part) = doc.parts.first() {
+                if let Some(e_idx) = self.selected_event_idx {
+                    if let Some(n_idx) = self.selected_note_idx_in_event {
+                        let mut count = 0;
+                        for m in &part.measures {
+                            for seq in &m.sequences {
+                                for ev in seq.flattened_events() {
+                                    if count == e_idx {
+                                        if let Some(note) = ev.notes.get(n_idx) {
+                                            return note.bend.is_some();
+                                        }
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+    
+    pub fn action_edit_bend(&mut self) {
+        if let Some(e_idx) = self.selected_event_idx {
+            if let Some(n_idx) = self.selected_note_idx_in_event {
+                let mut existing_bend = None;
+                let mut target_str = 1;
+                
+                if let Some(doc) = &self.parsed_mnx {
+                    if let Some(part) = doc.parts.first() {
+                        let mut count = 0;
+                        for m in &part.measures {
+                            for seq in &m.sequences {
+                                for ev in seq.flattened_events() {
+                                    if count == e_idx {
+                                        if let Some(note) = ev.notes.get(n_idx) {
+                                            existing_bend = note.bend.clone();
+                                            target_str = note.string.unwrap_or(1);
+                                        }
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 150.0));
+                let editor = if let Some(bend_str) = existing_bend {
+                    crate::curve_editor::parse_bend_string(&bend_str, rect)
+                } else {
+                    crate::curve_editor::MonotonicCurveEditor::new(rect)
+                };
+                let max_steps = self.pitch_bend_range as u32;
+                
+                self.active_dialog = ActiveDialog::BendEditor {
+                    event_idx: e_idx,
+                    string: target_str,
+                    curve_editor: editor,
+                    bend_range_steps: max_steps,
+                };
+            }
+        }
     }
 
     pub fn is_selected_note_slurred(&self) -> bool {
@@ -1306,6 +1380,7 @@ parts:
                 let mut tuplet_clicked = false;
                 let mut tie_clicked = false;
                 let mut slur_clicked = false;
+                let mut bend_clicked = false;
 
                 if let Some(textures) = &self.duration_textures {
                     let icon_size = egui::vec2(24.0, 24.0);
@@ -1425,6 +1500,12 @@ parts:
                     if make_svg_btn(ui, include_image!("../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off (S)") || ui.input(|i| i.key_pressed(egui::Key::S)) {
                         slur_clicked = true;
                     }
+                    
+                    // Bend button
+                    let is_bend = self.is_selected_note_bent();
+                    if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("Bnd").size(11.0)).selected(is_bend)).on_hover_text("Bend (B)").clicked() || ui.input(|i| i.key_pressed(egui::Key::B)) {
+                        bend_clicked = true;
+                    }
                 }
 
                 if let Some(action) = clicked_action {
@@ -1445,6 +1526,9 @@ parts:
                 }
                 if slur_clicked {
                     self.action_add_slur();
+                }
+                if bend_clicked {
+                    self.action_edit_bend();
                 }
 
                 // ── Insert TS Button ─────────────────────────────────────────
@@ -1884,6 +1968,7 @@ parts:
                                 editing_fret_text: &self.editing_fret_buf,
                                 editing_string: self.editing_string,
                                 scroll_to_selected: self.needs_scroll,
+                                pitch_bend_range: self.pitch_bend_range,
                             },
                         );
                         self.needs_scroll = false;
@@ -2525,6 +2610,11 @@ parts:
 
     fn render_dialogs(&mut self, ctx: &egui::Context) {
         enum DialogAction {
+            ApplyBend {
+                event_idx: usize,
+                string: u8,
+                bend_str: String,
+            },
             InsertTimeSignature {
                 count: u32,
                 unit: u32,
@@ -2881,6 +2971,37 @@ parts:
                         });
                     });
             }
+            ActiveDialog::BendEditor { event_idx, string, curve_editor, bend_range_steps: _ } => {
+                egui::Window::new(format!("Bend Editor - Note {} on String {}", *event_idx + 1, string))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Max Bend ({} semitones, set via MIDI config)", self.pitch_bend_range));
+                        });
+                        ui.add_space(8.0);
+                        
+                        let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(400.0, 200.0));
+                        curve_editor.ui(ui, rect);
+                        
+                        ui.add_space(20.0); // manual space since ui() allocates manually
+                        ui.horizontal(|ui| {
+                            if ui.button("Apply").clicked() {
+                                let bend_str = curve_editor.to_svg_path_normalized();
+                                apply_action = Some(DialogAction::ApplyBend { event_idx: *event_idx, string: *string, bend_str });
+                                close_dialog = true;
+                            }
+                            if ui.button("Clear Bend").clicked() {
+                                apply_action = Some(DialogAction::ApplyBend { event_idx: *event_idx, string: *string, bend_str: String::new() });
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
             ActiveDialog::ConfirmTuningChange {
                 new_num_strings,
                 new_tunings,
@@ -2928,6 +3049,10 @@ parts:
 
         if let Some(action) = apply_action {
             match action {
+                DialogAction::ApplyBend { event_idx, string, bend_str } => {
+                    self.update_yaml(crate::yaml_editor::set_note_bend_in_yaml(&self.yaml_text, event_idx, string, &bend_str));
+                    self.process_and_render();
+                }
                 DialogAction::InsertTimeSignature { count, unit, m_idx, rebar_mode } => {
                     self.insert_time_signature(m_idx, count, unit, rebar_mode);
                 }
@@ -4074,7 +4199,8 @@ parts:
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
-                }],
+                bend: None,
+}],
                 rest: None,
                 slurs: None,
             };
@@ -4109,7 +4235,8 @@ parts:
                         target: id2.clone(),
                     }]),
                     accidental: None,
-                }],
+                bend: None,
+}],
                 rest: None,
                 slurs: None,
             };
@@ -4124,7 +4251,8 @@ parts:
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
-                }],
+                bend: None,
+}],
                 rest: None,
                 slurs: None,
             };
@@ -4176,7 +4304,8 @@ parts:
                     fret: cur_fret,
                     ties: None,
                     accidental: None,
-                }],
+                bend: None,
+}],
                 rest: None,
                 slurs: None,
             };

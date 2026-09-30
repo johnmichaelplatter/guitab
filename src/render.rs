@@ -239,6 +239,7 @@ pub struct TablatureOptions<'a> {
     pub editing_fret_text: &'a str,
     pub editing_string: Option<u8>,
     pub scroll_to_selected: bool,
+    pub pitch_bend_range: u8,
 }
 
 pub fn draw_tablature(
@@ -253,6 +254,7 @@ pub fn draw_tablature(
     let is_editing_fret = opts.is_editing_fret;
     let editing_fret_text = opts.editing_fret_text;
     let editing_string = opts.editing_string;
+    let pitch_bend_range = opts.pitch_bend_range;
 
     let num_strings = part.num_strings();
     if num_strings == 0 {
@@ -708,6 +710,113 @@ pub fn draw_tablature(
                         }
                         painter.galley(text_rect.min, galley, text_color);
                         current_fret_rects.push((text_rect, n_idx));
+                        
+                        // Draw bend shape
+                        if let Some(note) = event.notes.get(n_idx) {
+                            if let Some(bend_str) = &note.bend {
+                                let mut max_y_text = 0.0_f32;
+                                let mut path_nodes = Vec::new();
+                                let tokens: Vec<&str> = bend_str.split_whitespace().collect();
+                                let mut t_idx = 0;
+                                while t_idx < tokens.len() {
+                                    if tokens[t_idx] == "M" && t_idx + 2 < tokens.len() {
+                                        let x = tokens[t_idx+1].parse::<f32>().unwrap_or(0.0);
+                                        let y = tokens[t_idx+2].parse::<f32>().unwrap_or(0.0);
+                                        if y > max_y_text { max_y_text = y; }
+                                        path_nodes.push((x, y));
+                                        t_idx += 3;
+                                    } else if tokens[t_idx] == "C" && t_idx + 6 < tokens.len() {
+                                        let lx = tokens[t_idx+1].trim_matches(',').parse::<f32>().unwrap_or(0.0);
+                                        let ly = tokens[t_idx+2].trim_matches(',').parse::<f32>().unwrap_or(0.0);
+                                        let rx = tokens[t_idx+3].trim_matches(',').parse::<f32>().unwrap_or(0.0);
+                                        let ry = tokens[t_idx+4].trim_matches(',').parse::<f32>().unwrap_or(0.0);
+                                        let nx = tokens[t_idx+5].trim_matches(',').parse::<f32>().unwrap_or(0.0);
+                                        let ny = tokens[t_idx+6].trim_matches(',').parse::<f32>().unwrap_or(0.0);
+                                        if ny > max_y_text { max_y_text = ny; }
+                                        path_nodes.push((lx, ly));
+                                        path_nodes.push((rx, ry));
+                                        path_nodes.push((nx, ny));
+                                        t_idx += 7;
+                                    } else {
+                                        t_idx += 1;
+                                    }
+                                }
+                                
+                                let cents = (max_y_text * pitch_bend_range as f32).round() as i32;
+                                
+                                if cents > 0 && !path_nodes.is_empty() {
+                                    let mut spacing = duration_spacing(&event.duration, event_spacing);
+                                    spacing = spacing.max(55.0); // Match the push we do below
+                                    
+                                    let start_pos = Pos2::new(text_rect.max.x + 2.0, text_rect.center().y);
+                                    
+                                    let available_w = (current_x + spacing - 14.0) - start_pos.x;
+                                    let max_w = (spacing * 0.5).clamp(10.0, 30.0).min(available_w.max(10.0));
+                                    let max_h = 24.0; // More vertical space (about 1 string spacing)
+                                    
+                                    let map_pt = |nx: f32, ny: f32| -> Pos2 {
+                                        Pos2::new(
+                                            start_pos.x + (nx / 100.0) * max_w,
+                                            start_pos.y - (ny / 100.0) * max_h
+                                        )
+                                    };
+                                    
+                                    let mut p0 = map_pt(path_nodes[0].0, path_nodes[0].1);
+                                    let mut last_p2 = p0;
+                                    let mut last_p3 = p0;
+                                    
+                                    let mut i = 1;
+                                    while i + 2 < path_nodes.len() {
+                                        let p1 = map_pt(path_nodes[i].0, path_nodes[i].1);
+                                        let p2 = map_pt(path_nodes[i+1].0, path_nodes[i+1].1);
+                                        let p3 = map_pt(path_nodes[i+2].0, path_nodes[i+2].1);
+                                        
+                                        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                                            [p0, p1, p2, p3],
+                                            false,
+                                            Color32::TRANSPARENT,
+                                            Stroke::new(1.0, note_color)
+                                        ));
+                                        
+                                        p0 = p3;
+                                        last_p2 = p2;
+                                        last_p3 = p3;
+                                        i += 3;
+                                    }
+                                    
+                                    // Draw arrowhead at the end
+                                    let dir = (last_p3 - last_p2).normalized();
+                                    let dir = if dir.x.is_nan() || dir.y.is_nan() { egui::vec2(1.0, -1.0).normalized() } else { dir };
+                                    
+                                    // Arrowhead wings
+                                    let arrow_len = 4.0;
+                                    let right_wing = egui::vec2(-dir.x + dir.y, -dir.x - dir.y).normalized() * arrow_len;
+                                    let left_wing = egui::vec2(-dir.x - dir.y, dir.x - dir.y).normalized() * arrow_len;
+                                    
+                                    painter.line_segment([last_p3, last_p3 + right_wing], Stroke::new(1.0, note_color));
+                                    painter.line_segment([last_p3, last_p3 + left_wing], Stroke::new(1.0, note_color));
+                                    
+                                    // Draw cents text above the max point
+                                    let peak_y = start_pos.y - (max_y_text / 100.0) * max_h;
+                                    let mut peak_x = last_p3.x; // approximate near end
+                                    
+                                    // Prevent text from overlapping the next note
+                                    let text_w = 26.0; 
+                                    let next_note_x = current_x + spacing - 8.0;
+                                    if peak_x + text_w / 2.0 > next_note_x {
+                                        peak_x = next_note_x - text_w / 2.0;
+                                    }
+                                    
+                                    painter.text(
+                                        Pos2::new(peak_x, peak_y - 3.0),
+                                        egui::Align2::CENTER_BOTTOM,
+                                        format!("+{} ¢", cents),
+                                        FontId::proportional(10.0),
+                                        note_color,
+                                    );
+                                }
+                            }
+                        }
                     } else if is_selected && is_editing_fret && editing_string == Some(string_num) {
                         // Empty string currently focused for placement in edit mode
                         let display_text = if editing_fret_text.is_empty() {
@@ -746,7 +855,11 @@ pub fn draw_tablature(
                     end_beat,
                 });
 
-                let spacing = duration_spacing(&event.duration, event_spacing);
+                let mut spacing = duration_spacing(&event.duration, event_spacing);
+                if event.notes.iter().any(|n| n.bend.is_some()) {
+                    spacing = spacing.max(55.0); // Give bends enough horizontal room to draw arrowhead and text
+                }
+                
                 flat_event_idx += 1;
                 e_idx += 1;
                 current_x += spacing;
