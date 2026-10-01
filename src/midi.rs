@@ -218,6 +218,31 @@ impl<'a> PlaybackTrackGenerator<'a> {
         start_tick_offset: u32,
     ) {
         let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
+        let mut string_notes_timeline: std::collections::HashMap<u8, Vec<(u32, f64)>> = std::collections::HashMap::new();
+        let mut sim_time = 0;
+        for measure in &part.measures {
+            let mut max_seq_dur = 0;
+            for seq in &measure.sequences {
+                let mut seq_time_ticks = sim_time;
+                let mut events_scaled = Vec::new();
+                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                for (event, scale) in events_scaled {
+                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
+                    let duration_ticks = ((beats * scale) * (self.ppq as f64)).round() as u32;
+                    for note in &event.notes {
+                        if let (Some(string), Some(fret)) = (note.string, note.fret) {
+                            if let Some(pos_state) = freq_table.get(string, fret) {
+                                string_notes_timeline.entry(string).or_default().push((seq_time_ticks, pos_state.midi_note_number));
+                            }
+                        }
+                    }
+                    seq_time_ticks += duration_ticks;
+                }
+                max_seq_dur = max_seq_dur.max(seq_time_ticks - sim_time);
+            }
+            sim_time += max_seq_dur;
+        }
+
         let mut current_time_ticks: u32 = 0;
         let mut current_event_idx = 0;
 
@@ -272,6 +297,20 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                     } else {
                                         None
                                     };
+                                    
+                                    let mut has_forward_slide = false;
+                                    let mut slide_target_midi_frac = 0.0;
+                                    if note.slide.is_some() {
+                                        has_forward_slide = true;
+                                        if let Some(timeline) = string_notes_timeline.get(&string) {
+                                            for &(t, midi_frac) in timeline {
+                                                if t > seq_time_ticks {
+                                                    slide_target_midi_frac = midi_frac;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     let is_tied = note
                                         .id
@@ -322,6 +361,45 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                                     },
                                                 });
                                             }
+                                        } else if has_forward_slide && slide_target_midi_frac != 0.0 {
+                                            let num_samples = 32;
+                                            let total_dist = (slide_target_midi_frac - midi_note_frac) as f32;
+                                            let clipped_dist = total_dist.clamp(-(self.options.pitch_bend_range as f32), self.options.pitch_bend_range as f32);
+                                            
+                                            // Instantiate the exact curve from the user's screenshot for the slide
+                                            // Starts flat at bottom-left (0,0), handle pulled 50% to the right (50,0). Ends top-right (100,100).
+                                            let slide_editor = crate::curve_editor::MonotonicCurveEditor::from_svg_path_normalized(
+                                                "M 0.0 0.0 C 50.0 0.0 100.0 100.0 100.0 100.0",
+                                                eframe::egui::Rect::from_min_max(eframe::egui::pos2(0.0, 0.0), eframe::egui::pos2(100.0, 100.0))
+                                            );
+                                            
+                                            for i in 1..=num_samples {
+                                                let progress = i as f32 / num_samples as f32;
+                                                let tick_offset = ((duration_ticks as f32) * progress) as u32;
+                                                
+                                                // Evaluate the bezier curve
+                                                let y_screen = slide_editor.sample_y_at_x(progress * 100.0);
+                                                // y_screen goes from 100.0 (bottom) to 0.0 (top)
+                                                // We want normalized progression from 0.0 to 1.0
+                                                let curve_progress = (100.0 - y_screen) / 100.0;
+                                                let curve_progress = curve_progress.clamp(0.0, 1.0);
+                                                
+                                                let bend_semitones = clipped_dist * curve_progress;
+                                                let total_bend_val = calculate_pitch_bend(
+                                                    semitone_diff + bend_semitones,
+                                                    self.options.pitch_bend_range,
+                                                );
+                                                
+                                                self.abs_events.push(InternalAbsoluteEvent {
+                                                    time_ticks: event_start_ticks + tick_offset,
+                                                    kind: InternalEventKind::Midi {
+                                                        channel,
+                                                        message: MidiMessage::PitchBend {
+                                                            bend: midly::PitchBend(midly::num::u14::from(total_bend_val)),
+                                                        },
+                                                    },
+                                                });
+                                            }
                                         }
 
 
@@ -350,8 +428,8 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         let target = note.ties.as_ref().unwrap()[0].target.clone();
                                         pending_ties.insert(target, (ch, note_val));
                                     } else {
-                                        // Legato overlap: if slur, delay NoteOff by ~5% of a quarter note
-                                        let overlap = if has_forward_slur { (self.ppq as f64 * 0.05) as u32 } else { 0 };
+                                        // Legato overlap: if slur or slide, delay NoteOff by ~5% of a quarter note
+                                        let overlap = if has_forward_slur || has_forward_slide { (self.ppq as f64 * 0.05) as u32 } else { 0 };
                                         
                                         self.abs_events.push(InternalAbsoluteEvent {
                                             time_ticks: event_start_ticks + duration_ticks + overlap,

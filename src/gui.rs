@@ -417,6 +417,143 @@ impl MnxEditorApp {
         false
     }
 
+    pub fn is_selected_note_sliding(&self) -> bool {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return false,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return false,
+        };
+        let flat = doc.get_flattened_event_paths();
+        if e_idx >= flat.len() {
+            return false;
+        }
+        let ev = match doc.get_event_at_path(flat[e_idx]) {
+            Some(e) => e,
+            None => return false,
+        };
+        if ev.notes.is_empty() {
+            return false;
+        }
+        if let Some(n_idx) = self.selected_note_idx_in_event {
+            if n_idx < ev.notes.len() {
+                return ev.notes[n_idx].slide.is_some();
+            }
+        }
+        false
+    }
+
+    pub fn action_toggle_slide(&mut self) {
+        if self.is_editing_fret && !self.editing_fret_buf.trim().is_empty() {
+            self.commit_fret_edit();
+            self.editing_fret_buf.clear();
+        }
+
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+
+        let flattened_events = doc.get_flattened_event_paths();
+        if event_idx >= flattened_events.len() {
+            return;
+        }
+
+        let cur_path = flattened_events[event_idx];
+        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+            Some(e) => e.clone(),
+            None => return,
+        };
+
+        if ev_cur_clone.notes.is_empty() {
+            return;
+        }
+
+        let note_idx = match self.selected_note_idx_in_event {
+            Some(idx) => {
+                if idx < ev_cur_clone.notes.len() {
+                    idx
+                } else if ev_cur_clone.notes.len() == 1 {
+                    0
+                } else {
+                    return;
+                }
+            }
+            None => {
+                if let Some(target_str) = self.editing_string {
+                    let mut found = None;
+                    for (i, n) in ev_cur_clone.notes.iter().enumerate() {
+                        if n.string == Some(target_str) {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(idx) => idx,
+                        None => {
+                            if ev_cur_clone.notes.len() == 1 {
+                                0
+                            } else {
+                                return;
+                            }
+                        }
+                    }
+                } else if ev_cur_clone.notes.len() == 1 {
+                    0
+                } else {
+                    return;
+                }
+            }
+        };
+
+        let mut is_removing = false;
+        if let Some(note) = ev_cur_clone.notes.get(note_idx) {
+            is_removing = note.slide.is_some();
+        }
+
+        if !is_removing {
+            let mut slide_valid = false;
+            if let Some(s) = ev_cur_clone.notes[note_idx].string {
+                if event_idx + 1 < flattened_events.len() {
+                    if let Some(next_ev) = doc.get_event_at_path(flattened_events[event_idx + 1]) {
+                        if next_ev.notes.iter().any(|n| n.string == Some(s)) {
+                            slide_valid = true;
+                        }
+                    }
+                }
+            }
+            if !slide_valid {
+                return;
+            }
+        }
+
+        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+            if let Some(note) = ev.notes.get_mut(note_idx) {
+                if note.slide.is_some() {
+                    note.slide = None;
+                } else {
+                    note.slide = Some(crate::mnx::Slide {});
+                }
+            }
+        }
+
+        self.selected_note_idx_in_event = Some(note_idx);
+        if let Some(s) = ev_cur_clone.notes[note_idx].string {
+            self.editing_string = Some(s);
+        }
+
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
+    }
+
     pub fn is_selected_note_tapped(&self) -> bool {
         let e_idx = match self.selected_event_idx {
             Some(i) => i,
@@ -1416,6 +1553,7 @@ parts:
                 let mut slur_clicked = false;
                 let mut tap_clicked = false;
                 let mut bend_clicked = false;
+                let mut slide_clicked = false;
                 let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
 
                 if let Some(textures) = &self.duration_textures {
@@ -1562,6 +1700,32 @@ parts:
                         tap_clicked = true;
                     }
                     
+                    // Slide button
+                    let is_slide = self.is_selected_note_sliding();
+                    let (slide_rect, slide_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(slide_rect) {
+                        let visuals = ui.style().interact_selectable(&slide_resp, is_slide);
+                        ui.painter().rect(
+                            slide_rect,
+                            visuals.corner_radius,
+                            visuals.bg_fill,
+                            visuals.bg_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        let color = visuals.text_color();
+                        let pad = 8.0;
+                        ui.painter().line_segment(
+                            [
+                                slide_rect.left_bottom() + egui::vec2(pad, -pad),
+                                slide_rect.right_top() + egui::vec2(-pad, pad),
+                            ],
+                            egui::Stroke::new(2.0, color),
+                        );
+                    }
+                    if slide_resp.on_hover_text("Slide (L)").clicked() || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::L))) {
+                        slide_clicked = true;
+                    }
+                    
                     // Bend button
                     let is_bend = self.is_selected_note_bent();
                     if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("Bnd").size(11.0)).selected(is_bend)).on_hover_text("Bend (B)").clicked() || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::B))) {
@@ -1590,6 +1754,9 @@ parts:
                 }
                 if tap_clicked {
                     self.action_toggle_tap();
+                }
+                if slide_clicked {
+                    self.action_toggle_slide();
                 }
                 if bend_clicked {
                     self.action_edit_bend();
@@ -4070,6 +4237,7 @@ parts:
                     accidental: None,
                     tap: None,
                     bend: None,
+                    slide: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4107,6 +4275,7 @@ parts:
                     accidental: None,
                     tap: None,
                     bend: None,
+                    slide: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4124,6 +4293,7 @@ parts:
                     accidental: None,
                     tap: None,
                     bend: None,
+                    slide: None,
                 }],
                 rest: None,
                 slurs: None,
@@ -4178,6 +4348,7 @@ parts:
                     accidental: None,
                     tap: None,
                     bend: None,
+                    slide: None,
                 }],
                 rest: None,
                 slurs: None,

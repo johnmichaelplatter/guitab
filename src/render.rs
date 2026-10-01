@@ -481,6 +481,8 @@ pub fn draw_tablature(
     let mut collected_ties: Vec<(Pos2, u8, i32, String)> = Vec::new();
     let mut collected_slurs: Vec<(crate::mnx::Slur, Vec<(Option<String>, u8, i32, Pos2)>)> =
         Vec::new();
+    let mut string_timeline: std::collections::HashMap<u8, Vec<(usize, i32, Pos2)>> = std::collections::HashMap::new();
+    let mut collected_slides: Vec<(usize, u8, i32, Pos2)> = Vec::new();
 
     let mut flat_event_idx = 0;
     let mut last_event_spacing = event_spacing;
@@ -639,10 +641,15 @@ pub fn draw_tablature(
                             if let Some(nid) = &note.id {
                                 note_id_map.insert(nid.clone(), (note_pos, s, f));
                             }
+                            string_timeline.entry(s).or_default().push((flat_event_idx, f, note_pos));
+                            
                             if let Some(ties) = &note.ties {
                                 for tie in ties {
                                     collected_ties.push((note_pos, s, f, tie.target.clone()));
                                 }
+                            }
+                            if note.slide.is_some() {
+                                collected_slides.push((flat_event_idx, s, f, note_pos));
                             }
                         }
                     }
@@ -962,6 +969,35 @@ pub fn draw_tablature(
                         "l.r.",
                         FontId::proportional(10.0),
                         Color32::from_gray(160),
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Draw Slides ─────────────────────────────────────────────────────────────
+    for (start_idx, string_num, start_fret, start_pos) in &collected_slides {
+        if let Some(timeline) = string_timeline.get(string_num) {
+            // Find the next note on this string
+            if let Some(pos_in_timeline) = timeline.iter().position(|(idx, _, _)| *idx == *start_idx) {
+                if pos_in_timeline + 1 < timeline.len() {
+                    let (_, next_fret, next_pos) = timeline[pos_in_timeline + 1];
+                    let up = next_fret > *start_fret;
+                    
+                    let start_x = start_pos.x + 8.0;
+                    let mut end_x = start_x + 12.0; // small diagonal segment
+                    let start_y = start_pos.y;
+                    
+                    // In screen space, smaller Y is "up" visually.
+                    // "up" (higher pitch/fret) should mean smaller Y
+                    let end_y = if up { start_pos.y - 6.0 } else { start_pos.y + 6.0 };
+                    
+                    // Don't draw past the next note if it's very close!
+                    end_x = end_x.min(next_pos.x - 4.0);
+                    
+                    painter.line_segment(
+                        [eframe::egui::Pos2::new(start_x, start_y), eframe::egui::Pos2::new(end_x, end_y)],
+                        eframe::egui::Stroke::new(2.0, note_color)
                     );
                 }
             }

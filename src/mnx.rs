@@ -332,6 +332,9 @@ pub struct Tie {
 pub struct Tap {}
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Slide {}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -347,6 +350,8 @@ pub struct Note {
     pub ties: Option<Vec<Tie>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub tap: Option<Tap>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
+    pub slide: Option<Slide>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bend: Option<String>,
 }
