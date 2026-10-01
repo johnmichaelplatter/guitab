@@ -943,7 +943,7 @@ pub fn draw_tablature(
                     painter.add(shape);
                 }
             }
-        } else if let Some(&(rest_x, is_rest)) = event_id_map.get(target_id) {
+        } else if let Some(&(rest_x, _is_rest)) = event_id_map.get(target_id) {
             // Note tied to a rest -> "let ring"
             if rest_x > start_pos.x {
                 let x1 = start_pos.x + 9.0;

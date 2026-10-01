@@ -52,7 +52,7 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
         let mut current_measure_items = Vec::new();
 
         while remaining_capacity > eps {
-            if let Some(mut item) = item_queue.pop_front() {
+            if let Some(item) = item_queue.pop_front() {
                 let item_beats = match &item {
                     SequenceItem::Event(ev) => duration_to_quarter_beats(&ev.duration),
                     SequenceItem::Tuplet(t) => {

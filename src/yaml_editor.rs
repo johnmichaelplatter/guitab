@@ -1270,13 +1270,11 @@ pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_
     let event_ranges = find_all_event_ranges(yaml);
     if let Some(er) = event_ranges.get(event_idx) {
         // Find the note that corresponds to this string_val
-        let mut target_note_idx = None;
         let mut target_range_val = None;
-        for (i, r) in er.note_ranges.iter().enumerate() {
+        for (_i, r) in er.note_ranges.iter().enumerate() {
             let note_text = &yaml[r.clone()];
             if let Some(s) = get_note_string_from_text(note_text) {
                 if s == string_val {
-                    target_note_idx = Some(i);
                     target_range_val = Some(r.clone());
                     break;
                 }
@@ -1313,13 +1311,11 @@ pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_
             };
             
             // Find exact indentation of the line where we're inserting
-            let mut indent = "";
             if let Some(newline_pos) = text_without_bend[..insert_point].rfind('\n') {
                 let indent_str = &text_without_bend[newline_pos + 1..insert_point];
                 // if it contains a dash, we want to align after the dash
-                if let Some(dash_pos) = indent_str.find("- ") {
+                if let Some(_dash_pos) = indent_str.find("- ") {
                     // indent should be spaces equivalent to length of indent_str up to and including dash_pos + 2
-                    indent = &indent_str[dash_pos + 2..];
                     // wait, we can just use spaces equal to the visual offset
                     // let's just generate spaces
                 }

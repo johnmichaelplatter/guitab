@@ -1215,24 +1215,7 @@ impl MnxEditorApp {
         false
     }
 
-    fn event_has_any_notes(&self, e_idx: usize) -> bool {
-        if let Some(doc) = &self.parsed_mnx {
-            if let Some(part) = doc.parts.first() {
-                let mut cur_e = 0;
-                for m in &part.measures {
-                    for seq in &m.sequences {
-                        for ev in seq.flattened_events() {
-                            if cur_e == e_idx {
-                                return !ev.notes.is_empty();
-                            }
-                            cur_e += 1;
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
+
 
     pub fn add_measure_to_end(&mut self) {
         let last_duration = self
@@ -2875,7 +2858,6 @@ parts:
                 new_step_multiplier: u8,
             },
             TranslateTuning {
-                new_num_strings: u8,
                 new_tunings: Vec<crate::mnx::StringTuning>,
             },
             StartNewTab {
@@ -3250,7 +3232,6 @@ parts:
                         ui.horizontal(|ui| {
                             if ui.button("Convert to new string tuning").clicked() {
                                 apply_action = Some(DialogAction::TranslateTuning {
-                                    new_num_strings: *new_num_strings,
                                     new_tunings: new_tunings.clone(),
                                 });
                                 close_dialog = true;
@@ -3566,7 +3547,6 @@ parts:
                     }
                 }
                 DialogAction::TranslateTuning {
-                    new_num_strings: _,
                     new_tunings,
                 } => {
                     let mut doc = self.parsed_mnx.clone().unwrap();
@@ -3857,7 +3837,7 @@ parts:
         } else if rebar_mode == 1 {
             // Truncate content in this bar only
             let capacity = (count as f64) * 4.0 / (unit as f64);
-            let mut part = doc.parts.first_mut().unwrap();
+            let part = doc.parts.first_mut().unwrap();
             if let Some(measure) = part.measures.get_mut(m_idx) {
                 let mut new_seq = Vec::new();
                 let mut current_beats = 0.0;
@@ -3882,7 +3862,7 @@ parts:
                                         new_seq.push(crate::mnx::SequenceItem::Event(c));
                                     }
                                 },
-                                crate::mnx::SequenceItem::Tuplet(t) => {
+                                crate::mnx::SequenceItem::Tuplet(_t) => {
                                     new_seq.push(item.clone());
                                 }
                             }
@@ -3896,8 +3876,8 @@ parts:
             }
         }
         
-        let mut part = doc.parts.first_mut().unwrap();
-        crate::rebar::rebar_part(&mut part, &mut doc.global.measures);
+        let part = doc.parts.first_mut().unwrap();
+        crate::rebar::rebar_part(part, &mut doc.global.measures);
         
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
@@ -3984,7 +3964,6 @@ parts:
 
         if let Some((_, next_path, _, next_n_idx)) = next_target {
             let mut target_ev_id = None;
-            let mut start_note_id = None;
             let mut end_note_id = None;
 
             if let Some(ev_next) = doc.get_event_mut_at_path(next_path) {
@@ -4005,7 +3984,7 @@ parts:
                 if n_cur.id.is_none() {
                     n_cur.id = Some(format!("note_src_{}_{}", event_idx, note_idx));
                 }
-                start_note_id = n_cur.id.clone();
+                let start_note_id = n_cur.id.clone();
 
                 if ev_cur.slurs.is_none() {
                     ev_cur.slurs = Some(Vec::new());
@@ -4221,7 +4200,7 @@ parts:
             }
         }
 
-        let mut next_target_id = String::new();
+        let next_target_id;
 
         if available_beats >= new_note_duration_beats - eps {
             let id = format!("note_new_1_{}", event_idx);
@@ -4775,7 +4754,7 @@ impl MnxEditorApp {
         let mut id_map = HashMap::new();
         
         // Pass 1: Generate new IDs for everything and build a map
-        let mut collect_ids = |items: &mut [crate::mnx::SequenceItem]| {
+        let _collect_ids = |items: &mut [crate::mnx::SequenceItem]| {
             let mut stack = vec![items];
             while let Some(slice) = stack.pop() {
                 for item in slice {
@@ -5027,7 +5006,7 @@ impl MnxEditorApp {
                                         flat_items.push(crate::mnx::SequenceItem::Event(c));
                                     }
                                 },
-                                crate::mnx::SequenceItem::Tuplet(t) => {
+                                crate::mnx::SequenceItem::Tuplet(_t) => {
                                     flat_items.push(item.clone());
                                 }
                             }
