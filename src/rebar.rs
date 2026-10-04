@@ -22,6 +22,7 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
     if item_queue.is_empty() {
         part.measures.push(Measure {
             beams: None,
+            arpeggios: None,
             sequences: vec![Sequence { content: Vec::new(), beams: None }],
         });
         global_measures.truncate(1);
@@ -89,6 +90,7 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
 
         part.measures.push(Measure {
             beams: None,
+            arpeggios: None,
             sequences: vec![Sequence { content: current_measure_items, beams: None }],
         });
 

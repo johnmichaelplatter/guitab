@@ -1537,6 +1537,8 @@ parts:
                 let mut tap_clicked = false;
                 let mut bend_clicked = false;
                 let mut slide_clicked = false;
+                let mut strum_up_clicked = false;
+                let mut strum_down_clicked = false;
                 let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
 
                 if let Some(textures) = &self.duration_textures {
@@ -1714,6 +1716,34 @@ parts:
                     if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("Bnd").size(11.0)).selected(is_bend)).on_hover_text("Bend (B)").clicked() || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::B))) {
                         bend_clicked = true;
                     }
+                    
+                    // Strum Up button
+                    let is_strum_up = self.is_selected_event_strummed("up");
+                    let (sup_rect, sup_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(sup_rect) {
+                        let visuals = ui.style().interact_selectable(&sup_resp, is_strum_up);
+                        ui.painter().rect(sup_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(sup_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E634}", font_id, color);
+                    }
+                    if sup_resp.on_hover_text("Strum Up (low to high)").clicked() {
+                        strum_up_clicked = true;
+                    }
+
+                    // Strum Down button
+                    let is_strum_down = self.is_selected_event_strummed("down");
+                    let (sdown_rect, sdown_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(sdown_rect) {
+                        let visuals = ui.style().interact_selectable(&sdown_resp, is_strum_down);
+                        ui.painter().rect(sdown_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(sdown_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E635}", font_id, color);
+                    }
+                    if sdown_resp.on_hover_text("Strum Down (high to low)").clicked() {
+                        strum_down_clicked = true;
+                    }
                 }
 
                 if let Some(action) = clicked_action {
@@ -1743,6 +1773,12 @@ parts:
                 }
                 if bend_clicked {
                     self.action_edit_bend();
+                }
+                if strum_up_clicked {
+                    self.action_toggle_strum("up");
+                }
+                if strum_down_clicked {
+                    self.action_toggle_strum("down");
                 }
 
                 // ── Insert TS Button ─────────────────────────────────────────
@@ -3885,6 +3921,141 @@ parts:
         }
     }
 
+    
+    pub fn is_selected_event_strummed(&self, dir: &str) -> bool {
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let doc = match self.parsed_mnx.as_ref() {
+            Some(d) => d,
+            None => return false,
+        };
+        let flattened_events = doc.get_flattened_event_paths();
+        if event_idx >= flattened_events.len() {
+            return false;
+        }
+        let cur_path = flattened_events[event_idx];
+        let m_idx = cur_path.m_idx();
+        
+        let ev = match doc.get_event_at_path(cur_path) {
+            Some(e) => e,
+            None => return false,
+        };
+        if ev.notes.len() < 2 {
+            return false;
+        }
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return false,
+        };
+        let measure = match part.measures.get(m_idx) {
+            Some(m) => m,
+            None => return false,
+        };
+        if let Some(arpeggios) = &measure.arpeggios {
+            let first_id = ev.notes.first().and_then(|n| n.id.as_deref()).unwrap_or("");
+            let last_id = ev.notes.last().and_then(|n| n.id.as_deref()).unwrap_or("");
+            for arp in arpeggios {
+                if arp.span.start == first_id && arp.span.end == last_id {
+                    if arp.direction.as_deref() == Some(dir) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn action_toggle_strum(&mut self, dir: &str) {
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+        let flattened_events = doc.get_flattened_event_paths();
+        if event_idx >= flattened_events.len() {
+            return;
+        }
+        let cur_path = flattened_events[event_idx];
+        let m_idx = cur_path.m_idx();
+        let mut first_id = String::new();
+        let mut last_id = String::new();
+        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+            if ev.notes.len() < 2 {
+                return;
+            }
+            let f_note = ev.notes.first_mut().unwrap();
+            if f_note.id.is_none() {
+                f_note.id = Some(format!("strum_{}_start", event_idx));
+            }
+            first_id = f_note.id.clone().unwrap();
+            let l_note = ev.notes.last_mut().unwrap();
+            if l_note.id.is_none() {
+                l_note.id = Some(format!("strum_{}_end", event_idx));
+            }
+            last_id = l_note.id.clone().unwrap();
+        }
+        let part = doc.parts.first_mut().unwrap();
+        let measure = part.measures.get_mut(m_idx).unwrap();
+        let mut existing_idx = None;
+        if let Some(arpeggios) = &mut measure.arpeggios {
+            for (i, arp) in arpeggios.iter().enumerate() {
+                if arp.span.start == first_id && arp.span.end == last_id {
+                    existing_idx = Some(i);
+                    break;
+                }
+            }
+        }
+        if let Some(idx) = existing_idx {
+            let arpeggios = measure.arpeggios.as_mut().unwrap();
+            if arpeggios[idx].direction.as_deref() == Some(dir) {
+                arpeggios.remove(idx);
+                if arpeggios.is_empty() {
+                    measure.arpeggios = None;
+                }
+            } else {
+                arpeggios[idx].direction = Some(dir.to_string());
+            }
+        } else {
+            if measure.arpeggios.is_none() {
+                measure.arpeggios = Some(Vec::new());
+            }
+            measure.arpeggios.as_mut().unwrap().push(crate::mnx::Arpeggio {
+                position: None,
+                span: crate::mnx::Span {
+                    start: first_id,
+                    end: last_id,
+                },
+                direction: Some(dir.to_string()),
+                arrow: true,
+            });
+        }
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
+    }
+
+
+
+        #[allow(dead_code)]
+    pub fn event_has_any_notes(&self, event_idx: usize) -> bool {
+        let doc = match self.parsed_mnx.as_ref() {
+            Some(d) => d,
+            None => return false,
+        };
+        let flattened = doc.get_flattened_event_paths();
+        if event_idx >= flattened.len() { return false; }
+        if let Some(ev) = doc.get_event_at_path(flattened[event_idx]) {
+            return !ev.notes.is_empty();
+        }
+        false
+    }
+
     pub fn action_add_slur(&mut self) {
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
@@ -4287,7 +4458,8 @@ parts:
             let next_m = cur_m + 1;
             if next_m >= doc.parts[0].measures.len() {
                 let mut new_m = crate::mnx::Measure {
-                    sequences: vec![crate::mnx::Sequence {
+                    arpeggios: None,
+            sequences: vec![crate::mnx::Sequence {
                         content: Vec::new(),
                         beams: None,
                     }],
@@ -4337,7 +4509,8 @@ parts:
             let next_m = cur_m + 1;
             if next_m >= doc.parts[0].measures.len() {
                 let mut new_m = crate::mnx::Measure {
-                    sequences: vec![crate::mnx::Sequence {
+                    arpeggios: None,
+            sequences: vec![crate::mnx::Sequence {
                         content: Vec::new(),
                         beams: None,
                     }],
@@ -4594,7 +4767,8 @@ impl MnxEditorApp {
             part.measures.clear();
             part.measures.push(crate::mnx::Measure {
                 beams: None,
-                sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
+                arpeggios: None,
+            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
             });
             crate::rebar::rebar_part(part, &mut doc.global.measures);
             
@@ -4736,6 +4910,7 @@ impl MnxEditorApp {
         part.measures.clear();
         part.measures.push(crate::mnx::Measure {
             beams: None,
+            arpeggios: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
         crate::rebar::rebar_part(part, &mut doc.global.measures);
@@ -4913,6 +5088,7 @@ impl MnxEditorApp {
         part.measures.clear();
         part.measures.push(crate::mnx::Measure {
             beams: None,
+            arpeggios: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
         crate::rebar::rebar_part(part, &mut doc.global.measures);
@@ -5029,6 +5205,7 @@ impl MnxEditorApp {
         part.measures.clear();
         part.measures.push(crate::mnx::Measure {
             beams: None,
+            arpeggios: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
         crate::rebar::rebar_part(part, &mut doc.global.measures);
@@ -5091,6 +5268,7 @@ impl MnxEditorApp {
         part.measures.clear();
         part.measures.push(crate::mnx::Measure {
             beams: None,
+            arpeggios: None,
             sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
         });
         crate::rebar::rebar_part(part, &mut doc.global.measures);

@@ -268,8 +268,46 @@ impl<'a> PlaybackTrackGenerator<'a> {
                             kind: InternalEventKind::EventMarker(current_event_idx),
                         });
 
-                        for note in &event.notes {
-                            if let (Some(string), Some(fret)) = (note.string, note.fret) {
+                        let mut strum_dir = None;
+                        if let Some(arpeggios) = &measure.arpeggios {
+                            let first_id = event.notes.first().and_then(|n| n.id.as_deref()).unwrap_or("");
+                            let last_id = event.notes.last().and_then(|n| n.id.as_deref()).unwrap_or("");
+                            for arp in arpeggios {
+                                if arp.span.start == first_id && arp.span.end == last_id {
+                                    strum_dir = arp.direction.clone();
+                                    break;
+                                }
+                            }
+                        }
+
+                        let num_notes = event.notes.iter().filter(|n| n.string.is_some() && n.fret.is_some()).count();
+                        let total_strum_delay_ticks = (0.125 * (self.ppq as f64)).round() as u32; // 32nd note
+                        let strum_delay_per_note = if num_notes > 1 {
+                            total_strum_delay_ticks.min(duration_ticks / 2) / (num_notes as u32 - 1)
+                        } else {
+                            0
+                        };
+
+                        let mut ordered_notes = Vec::new();
+                        for (i, note) in event.notes.iter().enumerate() {
+                            if let (Some(string), Some(_fret)) = (note.string, note.fret) {
+                                ordered_notes.push((i, note, string));
+                            }
+                        }
+                        if strum_dir.as_deref() == Some("up") {
+                            ordered_notes.sort_by(|a, b| b.2.cmp(&a.2));
+                        } else if strum_dir.as_deref() == Some("down") {
+                            ordered_notes.sort_by(|a, b| a.2.cmp(&b.2));
+                        }
+
+                        for (strum_idx, (_idx, note, string)) in ordered_notes.into_iter().enumerate() {
+                            let mut note_start_ticks = event_start_ticks;
+                            if strum_dir.is_some() {
+                                note_start_ticks += (strum_idx as u32) * strum_delay_per_note;
+                            }
+                            
+                            let fret = note.fret.unwrap();
+                            if true {
                                 let default_ch = if self.options.is_mpe {
                                     u4::from(((string - 1) % 15 + 1) as u8)
                                 } else {
@@ -322,7 +360,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         pending_ties.remove(id).unwrap()
                                     } else {
                                         self.abs_events.push(InternalAbsoluteEvent {
-                                            time_ticks: event_start_ticks,
+                                            time_ticks: note_start_ticks,
                                             kind: InternalEventKind::Midi {
                                                 channel,
                                                 message: MidiMessage::PitchBend {
@@ -350,7 +388,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                                 );
                                                 
                                                 self.abs_events.push(InternalAbsoluteEvent {
-                                                    time_ticks: event_start_ticks + tick_offset,
+                                                    time_ticks: note_start_ticks + tick_offset,
                                                     kind: InternalEventKind::Midi {
                                                         channel,
                                                         message: MidiMessage::PitchBend {
@@ -391,7 +429,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                                 );
                                                 
                                                 self.abs_events.push(InternalAbsoluteEvent {
-                                                    time_ticks: event_start_ticks + tick_offset,
+                                                    time_ticks: note_start_ticks + tick_offset,
                                                     kind: InternalEventKind::Midi {
                                                         channel,
                                                         message: MidiMessage::PitchBend {
@@ -404,7 +442,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
 
 
                                         self.abs_events.push(InternalAbsoluteEvent {
-                                            time_ticks: event_start_ticks,
+                                            time_ticks: note_start_ticks,
                                             kind: InternalEventKind::Midi {
                                                 channel,
                                                 message: MidiMessage::NoteOn {

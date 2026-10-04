@@ -42,6 +42,15 @@ pub enum AstPath {
     InTuplet(usize, usize, usize, usize),
 }
 
+impl AstPath {
+    pub fn m_idx(&self) -> usize {
+        match self {
+            AstPath::TopLevel(m, _, _) => *m,
+            AstPath::InTuplet(m, _, _, _) => *m,
+        }
+    }
+}
+
 impl MnxDocument {
     pub fn get_flattened_event_paths(&self) -> Vec<AstPath> {
         let mut flattened_events = Vec::new();
@@ -235,6 +244,28 @@ pub struct StringTuning {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Position {
+    pub fraction: [u32; 2],
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Span {
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Arpeggio {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<Position>,
+    pub span: Span,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub arrow: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct BeamGroup {
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "flow_seq_req")]
     pub events: Vec<String>,
@@ -248,6 +279,8 @@ pub struct BeamGroup {
 pub struct Measure {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beams: Option<Vec<BeamGroup>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arpeggios: Option<Vec<Arpeggio>>,
     pub sequences: Vec<Sequence>,
 }
 

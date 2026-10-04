@@ -123,7 +123,9 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
                     || trimmed.starts_with("sequences:")
                     || trimmed.starts_with("parts:")
                     || trimmed.starts_with("- sequences:")
-                    || trimmed.starts_with("- measures:"))
+                    || trimmed.starts_with("- measures:")
+                    || trimmed.starts_with("arpeggios:")
+                    || trimmed.starts_with("- arpeggios:"))
             {
                 if let Some(start_line) = current_event_start_line {
                     let end_line = i.saturating_sub(1);

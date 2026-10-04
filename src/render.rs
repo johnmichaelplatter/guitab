@@ -632,7 +632,16 @@ pub fn draw_tablature(
                 // Fret numbers on strings: store (fret, note_idx)
                 let mut step_frets: Vec<Option<(i32, usize)>> = vec![None; num_strings];
                 let mut this_event_notes: Vec<(Option<String>, u8, i32, Pos2)> = Vec::new();
+                let mut min_string_y = f32::MAX;
+                let mut max_string_y = f32::MIN;
                 for (n_idx, note) in event.notes.iter().enumerate() {
+                    if let Some(s) = note.string {
+                        if s >= 1 && (s as usize) <= num_strings {
+                            let y = string_y_coords[(s - 1) as usize];
+                            min_string_y = min_string_y.min(y);
+                            max_string_y = max_string_y.max(y);
+                        }
+                    }
                     if let (Some(s), Some(f)) = (note.string, note.fret) {
                         if s >= 1 && (s as usize) <= num_strings {
                             step_frets[(s - 1) as usize] = Some((f, n_idx));
@@ -661,6 +670,86 @@ pub fn draw_tablature(
                 }
                 if let Some(ev_id) = &event.id {
                     event_notes_map.insert(ev_id.clone(), this_event_notes);
+                }
+                
+                // Draw Strum (Arpeggio)
+                let mut strum_dir = None;
+                if let Some(arpeggios) = &measure.arpeggios {
+                    let first_id = event.notes.first().and_then(|n| n.id.as_deref()).unwrap_or("");
+                    let last_id = event.notes.last().and_then(|n| n.id.as_deref()).unwrap_or("");
+                    for arp in arpeggios {
+                        if arp.span.start == first_id && arp.span.end == last_id {
+                            strum_dir = arp.direction.clone();
+                            break;
+                        }
+                    }
+                }
+                
+                if let Some(dir) = strum_dir {
+                    if min_string_y < max_string_y {
+                        
+                        
+                        
+                        // We scale the font size to roughly match the chord height. 
+                        // Typically, 1em = 4 spaces, so chord_height * 1.5 is a good guess.
+                        let font_size = 28.0;
+                        let strum_font_id = FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
+                        let strum_x = current_x - 12.0; 
+                        
+                        // Calculate step size based on a test render
+                        let _test_rect = painter.text(
+                            Pos2::new(-1000.0, -1000.0),
+                            egui::Align2::CENTER_CENTER,
+                            "\u{E636}",
+                            strum_font_id.clone(),
+                            Color32::TRANSPARENT,
+                        );
+                        // The actual visual step is usually a fraction of the bounding box, about 0.25 em for 1 staff space
+                        let step_y = font_size * 0.25; 
+                        
+                        let num_steps = ((max_string_y - min_string_y) / step_y).ceil() as i32;
+                        let num_steps = num_steps.max(1);
+
+                        let total_h = (num_steps as f32) * step_y;
+                        let center_y = (min_string_y + max_string_y) / 2.0 + font_size*0.2; // slight adjustment for visual centering
+                        let start_y = center_y - total_h / 2.0;
+
+                        for i in 0..=num_steps {
+                            let y = start_y + (i as f32) * step_y;
+                            let char_to_draw = if dir == "up" {
+                                if i == 0 { "\u{EAAD}" } else { "\u{EAA9}" } // top arrow
+                            } else {
+                                if i == num_steps { "\u{EAAE}" } else { "\u{EAAA}" } // bottom arrow
+                            };
+                            
+                            // We must rotate the horizontal multi-segment glyphs -90 degrees CCW
+                            let galley = ui.painter().layout_no_wrap(
+                                char_to_draw.to_string(),
+                                strum_font_id.clone(),
+                                note_color,
+                            );
+                            
+                            // To rotate -90 degrees, we use TextShape
+                            // A CCW rotation (-90 deg) maps X -> -Y, and Y -> X.
+                            // The galley's original dimensions are width and height.
+                            let size = galley.size();
+                            
+                            // We want to center the rotated glyph horizontally at `strum_x`.
+                            // After rotation, the original Y axis becomes the new X axis (pointing right).
+                            // So the original height becomes the new width.
+                            // We shift X by -size.y / 2.0.
+                            // We place it at Y, and it will extend upwards.
+                            let pos = Pos2::new(strum_x - size.y / 2.0, y);
+
+                            let mut text_shape = egui::epaint::TextShape::new(
+                                pos,
+                                galley,
+                                note_color
+                            );
+                            text_shape.angle = -std::f32::consts::FRAC_PI_2;
+                            painter.add(text_shape);
+                        }
+                    }
                 }
 
                 let mut current_fret_rects = Vec::new();
