@@ -95,6 +95,7 @@ pub struct MnxEditorApp {
 pub struct ClipboardData {
     pub items: Vec<crate::mnx::SequenceItem>,
     pub time_signature: Option<crate::mnx::TimeSignature>,
+    pub arpeggios: Vec<crate::mnx::Arpeggio>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4645,7 +4646,7 @@ parts:
 
 
 impl MnxEditorApp {
-    pub fn extract_selected_items(&self) -> Option<(Vec<crate::mnx::SequenceItem>, Option<crate::mnx::TimeSignature>)> {
+    pub fn extract_selected_items(&self) -> Option<(Vec<crate::mnx::SequenceItem>, Option<crate::mnx::TimeSignature>, Vec<crate::mnx::Arpeggio>)> {
         let cursor = self.selected_event_idx?;
         let anchor = self.selection_anchor.unwrap_or(cursor);
         let min_idx = cursor.min(anchor);
@@ -4684,14 +4685,41 @@ impl MnxEditorApp {
             }
         }
         
-        if items.is_empty() { None } else { Some((items, captured_ts)) }
+        let mut all_selected_note_ids = std::collections::HashSet::new();
+        fn extract_note_ids(item: &crate::mnx::SequenceItem, ids: &mut std::collections::HashSet<String>) {
+            match item {
+                crate::mnx::SequenceItem::Event(ev) => {
+                    for n in &ev.notes { if let Some(id) = &n.id { ids.insert(id.clone()); } }
+                },
+                crate::mnx::SequenceItem::Tuplet(t) => {
+                    for i in &t.content { extract_note_ids(i, ids); }
+                }
+            }
+        }
+        for item in &items {
+            extract_note_ids(item, &mut all_selected_note_ids);
+        }
+        
+        let mut copied_arpeggios = Vec::new();
+        for m in &part.measures {
+            if let Some(arps) = &m.arpeggios {
+                for arp in arps {
+                    if all_selected_note_ids.contains(&arp.span.start) && all_selected_note_ids.contains(&arp.span.end) {
+                        copied_arpeggios.push(arp.clone());
+                    }
+                }
+            }
+        }
+        
+        if items.is_empty() { None } else { Some((items, captured_ts, copied_arpeggios)) }
     }
 
     pub fn action_copy(&mut self) {
-        if let Some((items, ts)) = self.extract_selected_items() {
+        if let Some((items, ts, arps)) = self.extract_selected_items() {
             self.clipboard = Some(ClipboardData {
                 items,
                 time_signature: ts,
+                arpeggios: arps,
             });
         }
     }
@@ -4821,6 +4849,57 @@ impl MnxEditorApp {
         }
     }
 
+    fn rebuild_part_with_rebar(part: &mut crate::mnx::Part, global_measures: &mut Vec<crate::mnx::GlobalMeasure>, flat_items: Vec<crate::mnx::SequenceItem>, arpeggios_to_add: Vec<crate::mnx::Arpeggio>) {
+        let mut all_arpeggios = Vec::new();
+        for m in &part.measures {
+            if let Some(arps) = &m.arpeggios {
+                all_arpeggios.extend(arps.clone());
+            }
+        }
+        all_arpeggios.extend(arpeggios_to_add);
+
+        part.measures.clear();
+        part.measures.push(crate::mnx::Measure {
+            beams: None,
+            arpeggios: None,
+            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
+        });
+        crate::rebar::rebar_part(part, global_measures);
+
+        let mut note_to_measure = std::collections::HashMap::new();
+        for (m_idx, m) in part.measures.iter().enumerate() {
+            fn map_notes(items: &[crate::mnx::SequenceItem], m_idx: usize, map: &mut std::collections::HashMap<String, usize>) {
+                for item in items {
+                    match item {
+                        crate::mnx::SequenceItem::Event(ev) => {
+                            for n in &ev.notes {
+                                if let Some(id) = &n.id {
+                                    map.insert(id.clone(), m_idx);
+                                }
+                            }
+                        },
+                        crate::mnx::SequenceItem::Tuplet(t) => {
+                            map_notes(&t.content, m_idx, map);
+                        }
+                    }
+                }
+            }
+            for seq in &m.sequences {
+                map_notes(&seq.content, m_idx, &mut note_to_measure);
+            }
+        }
+
+        for arp in all_arpeggios {
+            if let Some(&m_idx) = note_to_measure.get(&arp.span.start) {
+                if note_to_measure.contains_key(&arp.span.end) {
+                    let m = &mut part.measures[m_idx];
+                    if m.arpeggios.is_none() { m.arpeggios = Some(Vec::new()); }
+                    m.arpeggios.as_mut().unwrap().push(arp);
+                }
+            }
+        }
+    }
+
     pub fn action_cut_overwrite(&mut self) {
         self.action_copy();
         let cb_after = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
@@ -4907,13 +4986,7 @@ impl MnxEditorApp {
             }
         }
         
-        part.measures.clear();
-        part.measures.push(crate::mnx::Measure {
-            beams: None,
-            arpeggios: None,
-            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
-        });
-        crate::rebar::rebar_part(part, &mut doc.global.measures);
+        Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, vec![]);
         
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
@@ -4924,7 +4997,7 @@ impl MnxEditorApp {
         }
     }
 
-    pub fn prepare_pasted_items(items: &mut [crate::mnx::SequenceItem]) {
+    pub fn prepare_pasted_items(items: &mut [crate::mnx::SequenceItem], arps: &mut [crate::mnx::Arpeggio]) {
         use std::collections::HashMap;
         let mut id_map = HashMap::new();
         
@@ -5039,6 +5112,10 @@ impl MnxEditorApp {
             }
         }
         update_refs(items, &id_map);
+        for arp in arps {
+            if let Some(new_id) = id_map.get(&arp.span.start) { arp.span.start = new_id.clone(); }
+            if let Some(new_id) = id_map.get(&arp.span.end) { arp.span.end = new_id.clone(); }
+        }
     }
 
     pub fn action_paste_insert(&mut self) {
@@ -5048,6 +5125,7 @@ impl MnxEditorApp {
         let part = match doc.parts.first_mut() { Some(p) => p, None => return };
         
         let mut flat_items = Vec::new();
+        let mut all_pasted_arps: Vec<crate::mnx::Arpeggio> = Vec::new();
         let mut cur_e = 0;
         let mut inserted = false;
         
@@ -5065,8 +5143,10 @@ impl MnxEditorApp {
                         }
                         
                         let mut pasted_items = cb.items.clone();
-                        Self::prepare_pasted_items(&mut pasted_items);
+                        let mut pasted_arps = cb.arpeggios.clone();
+                        Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
                         flat_items.extend(pasted_items);
+                        all_pasted_arps.extend(pasted_arps);
                         inserted = true;
                     }
                     flat_items.push(item.clone());
@@ -5081,17 +5161,13 @@ impl MnxEditorApp {
         
         if !inserted {
             let mut pasted_items = cb.items.clone();
-            Self::prepare_pasted_items(&mut pasted_items);
+            let mut pasted_arps = cb.arpeggios.clone();
+            Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
             flat_items.extend(pasted_items);
+            all_pasted_arps.extend(pasted_arps);
         }
         
-        part.measures.clear();
-        part.measures.push(crate::mnx::Measure {
-            beams: None,
-            arpeggios: None,
-            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
-        });
-        crate::rebar::rebar_part(part, &mut doc.global.measures);
+        Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, all_pasted_arps);
         
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -5126,7 +5202,7 @@ impl MnxEditorApp {
         let part = match doc.parts.first_mut() { Some(p) => p, None => return };
         
         let mut cb_items = cb.items.clone();
-        Self::prepare_pasted_items(&mut cb_items);
+        Self::prepare_pasted_items(&mut cb_items, &mut []);
         let mut cb_beats = 0.0;
         for item in &cb_items {
             let beats = match item {
@@ -5137,6 +5213,7 @@ impl MnxEditorApp {
         }
         
         let mut flat_items = Vec::new();
+        let mut all_pasted_arps: Vec<crate::mnx::Arpeggio> = Vec::new();
         let mut cur_e = 0;
         let mut absorbed_beats = 0.0;
         let mut inserted = false;
@@ -5155,8 +5232,10 @@ impl MnxEditorApp {
                         }
                         
                         let mut pasted_items = cb.items.clone();
-                        Self::prepare_pasted_items(&mut pasted_items);
+                        let mut pasted_arps = cb.arpeggios.clone();
+                        Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
                         flat_items.extend(pasted_items);
+                        all_pasted_arps.extend(pasted_arps);
                         inserted = true;
                     }
                     
@@ -5198,17 +5277,13 @@ impl MnxEditorApp {
         
         if !inserted {
             let mut pasted_items = cb.items.clone();
-            Self::prepare_pasted_items(&mut pasted_items);
+            let mut pasted_arps = cb.arpeggios.clone();
+            Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
             flat_items.extend(pasted_items);
+            all_pasted_arps.extend(pasted_arps);
         }
         
-        part.measures.clear();
-        part.measures.push(crate::mnx::Measure {
-            beams: None,
-            arpeggios: None,
-            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
-        });
-        crate::rebar::rebar_part(part, &mut doc.global.measures);
+        Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, all_pasted_arps);
         
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -5231,7 +5306,6 @@ impl MnxEditorApp {
         let mut flat_items = Vec::new();
         let mut cur_e = 0;
         let mut inserted = false;
-        
         for m in &part.measures {
             for seq in &m.sequences {
                 for item in &seq.content {
@@ -5265,13 +5339,7 @@ impl MnxEditorApp {
             flat_items.push(crate::mnx::SequenceItem::Event(rest_ev));
         }
         
-        part.measures.clear();
-        part.measures.push(crate::mnx::Measure {
-            beams: None,
-            arpeggios: None,
-            sequences: vec![crate::mnx::Sequence { content: flat_items, beams: None }]
-        });
-        crate::rebar::rebar_part(part, &mut doc.global.measures);
+        Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, vec![]);
         
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
