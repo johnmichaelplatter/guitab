@@ -6,6 +6,20 @@ pub struct EdoTuning {
     pub step_semitones: f64,
 }
 
+
+fn nominal_generators_from_d(nom: char) -> i32 {
+    match nom {
+        'F' => -3,
+        'C' => -2,
+        'G' => -1,
+        'D' => 0,
+        'A' => 1,
+        'E' => 2,
+        'B' => 3,
+        _ => 0,
+    }
+}
+
 impl EdoTuning {
     pub fn new(edo: u32) -> Self {
         let e = edo as f64;
@@ -67,7 +81,11 @@ impl EdoTuning {
 
             for sharps in -2..=2 {
                 let ups = dist - sharps * self.sharp_steps;
-                let score = sharps.abs() * 2 + ups.abs() * 3;
+                let gen_coord = nominal_generators_from_d(nom_char) + sharps * 7;
+                // We use a Manhattan-like distance on the (generator, ups) lattice.
+                // We weight `ups` by a factor (e.g. 5) to penalize microtonal accidentals slightly
+                // compared to moving along the circle of fifths, but still allow `vE` to beat `Fb` in 41 EDO.
+                let score = gen_coord.abs() + ups.abs() * 5;
 
                 if score < best_score {
                     best_score = score;
@@ -175,11 +193,11 @@ mod tests {
         // Fret 12 with multiplier 2 produces 136 + 24 = step 160.
         let tuning = EdoTuning::new(41);
         let pitch = tuning.steps_to_pitch(160);
-        assert_eq!(pitch.step, "C");
-        assert_eq!(pitch.octave, 4);
+        assert_eq!(pitch.step, "B");
+        assert_eq!(pitch.octave, 3);
         assert_eq!(
             pitch.alter.as_ref().map(|a| a.to_string()),
-            Some("-4\\41".to_string())
+            Some("-1\\41".to_string())
         );
         assert_eq!(tuning.pitch_to_steps(&pitch), 160);
     }
@@ -208,7 +226,8 @@ pub fn generate_edo_scale(edo: u32) -> Vec<(i32, String, f64, f64)> {
 
             for sharps in -2..=2 {
                 let ups = dist - sharps * tuning.sharp_steps;
-                let score = sharps.abs() * 2 + ups.abs() * 3;
+                let gen_coord = nominal_generators_from_d(*nom_char) + sharps * 7;
+                let score = gen_coord.abs() + ups.abs() * 5;
 
                 if score < best_score {
                     best_score = score;
