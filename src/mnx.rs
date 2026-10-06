@@ -3,13 +3,18 @@ use serde_saphyr::{FlowMap, FlowSeq};
 
 pub mod flow_opt {
     use super::*;
-    pub fn serialize<T: Serialize, S: Serializer>(val: &Option<T>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<T: Serialize, S: Serializer>(
+        val: &Option<T>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
         match val {
             Some(v) => FlowMap(v).serialize(s),
             None => s.serialize_none(),
         }
     }
-    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<T>, D::Error> {
         Option::<T>::deserialize(d)
     }
 }
@@ -19,7 +24,9 @@ pub mod flow_req {
     pub fn serialize<T: Serialize, S: Serializer>(val: &T, s: S) -> Result<S::Ok, S::Error> {
         FlowMap(val).serialize(s)
     }
-    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<T, D::Error> {
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<T, D::Error> {
         T::deserialize(d)
     }
 }
@@ -29,12 +36,13 @@ pub mod flow_seq_req {
     pub fn serialize<T: Serialize, S: Serializer>(val: &T, s: S) -> Result<S::Ok, S::Error> {
         FlowSeq(val).serialize(s)
     }
-    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<T, D::Error> {
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<T, D::Error> {
         T::deserialize(d)
     }
 }
 use std::fmt;
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AstPath {
@@ -65,7 +73,8 @@ impl MnxDocument {
                             crate::mnx::SequenceItem::Tuplet(t) => {
                                 for (t_idx, inner) in t.content.iter().enumerate() {
                                     if let crate::mnx::SequenceItem::Event(_) = inner {
-                                        flattened_events.push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
+                                        flattened_events
+                                            .push(AstPath::InTuplet(m_idx, s_idx, i_idx, t_idx));
                                     }
                                 }
                             }
@@ -80,16 +89,40 @@ impl MnxDocument {
     pub fn get_event_at_path(&self, path: AstPath) -> Option<&Event> {
         match path {
             AstPath::TopLevel(m, s, i) => {
-                if let SequenceItem::Event(e) = self.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                if let SequenceItem::Event(e) = self
+                    .parts
+                    .get(0)?
+                    .measures
+                    .get(m)?
+                    .sequences
+                    .get(s)?
+                    .content
+                    .get(i)?
+                {
                     Some(e)
-                } else { None }
+                } else {
+                    None
+                }
             }
             AstPath::InTuplet(m, s, i, t) => {
-                if let SequenceItem::Tuplet(tu) = self.parts.get(0)?.measures.get(m)?.sequences.get(s)?.content.get(i)? {
+                if let SequenceItem::Tuplet(tu) = self
+                    .parts
+                    .get(0)?
+                    .measures
+                    .get(m)?
+                    .sequences
+                    .get(s)?
+                    .content
+                    .get(i)?
+                {
                     if let SequenceItem::Event(e) = tu.content.get(t)? {
                         Some(e)
-                    } else { None }
-                } else { None }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
         }
     }
@@ -97,16 +130,40 @@ impl MnxDocument {
     pub fn get_event_mut_at_path(&mut self, path: AstPath) -> Option<&mut Event> {
         match path {
             AstPath::TopLevel(m, s, i) => {
-                if let SequenceItem::Event(e) = self.parts.get_mut(0)?.measures.get_mut(m)?.sequences.get_mut(s)?.content.get_mut(i)? {
+                if let SequenceItem::Event(e) = self
+                    .parts
+                    .get_mut(0)?
+                    .measures
+                    .get_mut(m)?
+                    .sequences
+                    .get_mut(s)?
+                    .content
+                    .get_mut(i)?
+                {
                     Some(e)
-                } else { None }
+                } else {
+                    None
+                }
             }
             AstPath::InTuplet(m, s, i, t) => {
-                if let SequenceItem::Tuplet(tu) = self.parts.get_mut(0)?.measures.get_mut(m)?.sequences.get_mut(s)?.content.get_mut(i)? {
+                if let SequenceItem::Tuplet(tu) = self
+                    .parts
+                    .get_mut(0)?
+                    .measures
+                    .get_mut(m)?
+                    .sequences
+                    .get_mut(s)?
+                    .content
+                    .get_mut(i)?
+                {
                     if let SequenceItem::Event(e) = tu.content.get_mut(t)? {
                         Some(e)
-                    } else { None }
-                } else { None }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
         }
     }
@@ -115,7 +172,7 @@ impl MnxDocument {
 impl MnxDocument {
     pub fn clean_dangling_ties(&mut self) {
         let mut all_note_ids = std::collections::HashSet::new();
-        
+
         for part in &self.parts {
             for measure in &part.measures {
                 for seq in &measure.sequences {
@@ -129,10 +186,13 @@ impl MnxDocument {
                 }
             }
         }
-        
+
         macro_rules! traverse_mut {
             ($content:expr) => {
-                fn walk(content: &mut Vec<SequenceItem>, all_note_ids: &std::collections::HashSet<String>) {
+                fn walk(
+                    content: &mut Vec<SequenceItem>,
+                    all_note_ids: &std::collections::HashSet<String>,
+                ) {
                     for item in content {
                         match item {
                             SequenceItem::Event(ev) => {
@@ -333,6 +393,8 @@ pub struct Slur {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markings: Option<EventMarkings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(with = "flow_req")]
     pub duration: Duration,
@@ -369,6 +431,8 @@ pub struct Slide {}
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Note {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(with = "flow_req")]
@@ -716,11 +780,32 @@ parts:
                     fret: 12
                     tap: {}
 "#;
-        let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with tap");
+        let doc: MnxDocument =
+            serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with tap");
         let note = &doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes[0];
         assert!(note.tap.is_some());
 
         let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with tap");
         assert!(out.contains("tap: {}"));
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct EventMarkings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<Accent>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "bowDirection"
+    )]
+    pub bow_direction: Option<BowDirection>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Accent {}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct BowDirection {
+    pub direction: String,
 }

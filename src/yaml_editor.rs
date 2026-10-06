@@ -858,27 +858,27 @@ pub fn insert_blank_note_after_tuplet(
 /// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
 pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
-    
+
     if doc.parts.is_empty() {
         return None;
     }
-    
+
     let last_measure_idx = doc.parts[0].measures.len().saturating_sub(1);
     if doc.parts[0].measures.is_empty() {
         return None;
     }
-    
+
     let measure = &mut doc.parts[0].measures[last_measure_idx];
     if measure.sequences.is_empty() {
         return None;
     }
-    
+
     let seq = &mut measure.sequences[0];
-    
+
     if seq.content.is_empty() {
         return None;
     }
-    
+
     fn remove_last_blank(items: &mut Vec<crate::mnx::SequenceItem>) -> bool {
         if let Some(last_item) = items.last_mut() {
             match last_item {
@@ -900,19 +900,19 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
         }
         false
     }
-    
+
     let removed = remove_last_blank(&mut seq.content);
     if !removed {
         return None;
     }
-    
+
     if seq.content.is_empty() {
         doc.parts[0].measures.pop();
         if doc.global.measures.len() > last_measure_idx {
             doc.global.measures.remove(last_measure_idx);
         }
     }
-    
+
     serde_saphyr::to_string(&doc).ok()
 }
 
@@ -1229,7 +1229,6 @@ pub fn fill_tuplet_rests_and_add_blank(yaml: &str, event_idx: usize) -> Option<(
     Some((current_yaml, new_event_idx))
 }
 
-
 #[cfg(test)]
 mod tuplet_delete_tests {
     use super::*;
@@ -1267,8 +1266,12 @@ parts:
     }
 }
 
-
-pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_str: &str) -> String {
+pub fn set_note_bend_in_yaml(
+    yaml: &str,
+    event_idx: usize,
+    string_val: u8,
+    bend_str: &str,
+) -> String {
     let event_ranges = find_all_event_ranges(yaml);
     if let Some(er) = event_ranges.get(event_idx) {
         // Find the note that corresponds to this string_val
@@ -1282,11 +1285,11 @@ pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_
                 }
             }
         }
-        
+
         let range_to_use = target_range_val.unwrap_or(er.total_range.clone());
         let mut result = yaml.to_string();
         let note_text = &result[range_to_use.clone()];
-        
+
         // Remove existing bend if it exists
         let mut text_without_bend = note_text.to_string();
         if let Some(bend_start) = text_without_bend.find("bend: ") {
@@ -1296,12 +1299,14 @@ pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_
                 text_without_bend.len()
             };
             // Also consume any indentation spaces on the next line so we don't leave a dangling indent before the next property
-            while bend_end < text_without_bend.len() && text_without_bend.as_bytes()[bend_end] == b' ' {
+            while bend_end < text_without_bend.len()
+                && text_without_bend.as_bytes()[bend_end] == b' '
+            {
                 bend_end += 1;
             }
             text_without_bend.replace_range(bend_start..bend_end, "");
         }
-        
+
         // Add new bend
         if !bend_str.is_empty() {
             let insert_point = if let Some(pos) = text_without_bend.find("pitch: ") {
@@ -1311,7 +1316,7 @@ pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_
             } else {
                 0
             };
-            
+
             // Find exact indentation of the line where we're inserting
             if let Some(newline_pos) = text_without_bend[..insert_point].rfind('\n') {
                 let indent_str = &text_without_bend[newline_pos + 1..insert_point];
@@ -1322,7 +1327,7 @@ pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_
                     // let's just generate spaces
                 }
             }
-            
+
             // Simpler robust approach: just count spaces immediately preceding `insert_point`
             let mut spaces_count = 0;
             let mut cursor = insert_point;
@@ -1340,11 +1345,13 @@ pub fn set_note_bend_in_yaml(yaml: &str, event_idx: usize, string_val: u8, bend_
                 }
             }
             let indent_str = " ".repeat(spaces_count);
-            
-            
-            text_without_bend.insert_str(insert_point, &format!("bend: \"{}\"\n{}", bend_str, indent_str));
+
+            text_without_bend.insert_str(
+                insert_point,
+                &format!("bend: \"{}\"\n{}", bend_str, indent_str),
+            );
         }
-        
+
         result.replace_range(range_to_use, &text_without_bend);
         return result;
     }

@@ -1,6 +1,6 @@
 use super::*;
-use eframe::egui::{self, Color32};
 use crate::yaml_editor::*;
+use eframe::egui::{self, Color32};
 
 impl MnxEditorApp {
     pub(crate) fn render_top_panel(
@@ -93,8 +93,11 @@ impl MnxEditorApp {
                 let mut tap_clicked = false;
                 let mut bend_clicked = false;
                 let mut slide_clicked = false;
+                let mut accent_clicked = false;
                 let mut strum_up_clicked = false;
                 let mut strum_down_clicked = false;
+                let mut arpeggio_up_clicked = false;
+                let mut arpeggio_down_clicked = false;
                 let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
 
                 if let Some(textures) = &self.duration_textures {
@@ -274,16 +277,57 @@ impl MnxEditorApp {
                     }
                     
                     // Strum Up button
+                    // Accent button
+                    let is_accent = self.is_selected_event_accented();
+                    let (acc_rect, acc_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(acc_rect) {
+                        let visuals = ui.style().interact_selectable(&acc_resp, is_accent);
+                        ui.painter().rect(acc_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(acc_rect.center(), egui::Align2::CENTER_CENTER, "\u{E4A0}", font_id, color);
+                    }
+                    if acc_resp.on_hover_text("Accent").clicked() {
+                        accent_clicked = true;
+                    }
+                    // Arpeggio Up button
+                    let is_arpeggio_up = self.is_selected_event_arpeggiated("up");
+                    let (arpu_rect, arpu_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(arpu_rect) {
+                        let visuals = ui.style().interact_selectable(&arpu_resp, is_arpeggio_up);
+                        ui.painter().rect(arpu_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(arpu_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E634}", font_id, color);
+                    }
+                    if arpu_resp.on_hover_text("Roll chord (low to high)").clicked() {
+                        arpeggio_up_clicked = true;
+                    }
+
+                    // Arpeggio Down button
+                    let is_arpeggio_down = self.is_selected_event_arpeggiated("down");
+                    let (arpd_rect, arpd_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(arpd_rect) {
+                        let visuals = ui.style().interact_selectable(&arpd_resp, is_arpeggio_down);
+                        ui.painter().rect(arpd_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(arpd_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E635}", font_id, color);
+                    }
+                    if arpd_resp.on_hover_text("Roll chord (high to low)").clicked() {
+                        arpeggio_down_clicked = true;
+                    }
+
                     let is_strum_up = self.is_selected_event_strummed("up");
                     let (sup_rect, sup_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
                     if ui.is_rect_visible(sup_rect) {
                         let visuals = ui.style().interact_selectable(&sup_resp, is_strum_up);
                         ui.painter().rect(sup_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
                         let color = visuals.text_color();
-                        let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
-                        ui.painter().text(sup_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E634}", font_id, color);
+                        let font_id = egui::FontId::new(24.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(sup_rect.center() + egui::vec2(0.0, 7.5), egui::Align2::CENTER_CENTER, "\u{EB70}", font_id, color);
                     }
-                    if sup_resp.on_hover_text("Strum Up (low to high)").clicked() {
+                    if sup_resp.on_hover_text("Up Strum").clicked() {
                         strum_up_clicked = true;
                     }
 
@@ -294,10 +338,10 @@ impl MnxEditorApp {
                         let visuals = ui.style().interact_selectable(&sdown_resp, is_strum_down);
                         ui.painter().rect(sdown_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
                         let color = visuals.text_color();
-                        let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
-                        ui.painter().text(sdown_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E635}", font_id, color);
+                        let font_id = egui::FontId::new(24.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(sdown_rect.center() + egui::vec2(0.0, 7.5), egui::Align2::CENTER_CENTER, "\u{EB74}", font_id, color);
                     }
-                    if sdown_resp.on_hover_text("Strum Down (high to low)").clicked() {
+                    if sdown_resp.on_hover_text("Down Strum").clicked() {
                         strum_down_clicked = true;
                     }
                 }
@@ -329,6 +373,15 @@ impl MnxEditorApp {
                 }
                 if bend_clicked {
                     self.action_edit_bend();
+                }
+                if accent_clicked {
+                    self.action_toggle_accent();
+                }
+                if arpeggio_up_clicked {
+                    self.action_toggle_arpeggio("up");
+                }
+                if arpeggio_down_clicked {
+                    self.action_toggle_arpeggio("down");
                 }
                 if strum_up_clicked {
                     self.action_toggle_strum("up");
@@ -830,5 +883,4 @@ impl MnxEditorApp {
             });
         });
     }
-
 }

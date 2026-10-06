@@ -84,7 +84,12 @@ impl MnxEditorApp {
                         });
                     });
             }
-            ActiveDialog::InsertTimeSignature { count, unit, m_idx, warning } => {
+            ActiveDialog::InsertTimeSignature {
+                count,
+                unit,
+                m_idx,
+                warning,
+            } => {
                 egui::Window::new("Insert Time Signature")
                     .collapsible(false)
                     .resizable(false)
@@ -364,38 +369,64 @@ impl MnxEditorApp {
                         });
                     });
             }
-            ActiveDialog::BendEditor { event_idx, string, curve_editor, bend_range_steps: _ } => {
-                egui::Window::new(format!("Bend Editor - Note {} on String {}", *event_idx + 1, string))
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                    .show(ctx, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Max Bend ({} semitones, set via MIDI config)", self.pitch_bend_range));
-                        });
-                        ui.add_space(8.0);
-                        
-                        let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(400.0, 200.0));
-                        let pb_range = self.pitch_bend_range;
-                        let mfd = self.parsed_mnx.as_ref().and_then(|d| d.parts.first()).and_then(|p| p.instrument.as_ref()).and_then(|i| i.micro_fret_divisions).unwrap_or(12) as u32;
-                        curve_editor.ui(ui, rect, pb_range, mfd);
-                        
-                        ui.add_space(20.0); // manual space since ui() allocates manually
-                        ui.horizontal(|ui| {
-                            if ui.button("Apply").clicked() {
-                                let bend_str = curve_editor.to_svg_path_normalized();
-                                apply_action = Some(DialogAction::ApplyBend { event_idx: *event_idx, string: *string, bend_str });
-                                close_dialog = true;
-                            }
-                            if ui.button("Clear Bend").clicked() {
-                                apply_action = Some(DialogAction::ApplyBend { event_idx: *event_idx, string: *string, bend_str: String::new() });
-                                close_dialog = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                close_dialog = true;
-                            }
-                        });
+            ActiveDialog::BendEditor {
+                event_idx,
+                string,
+                curve_editor,
+                bend_range_steps: _,
+            } => {
+                egui::Window::new(format!(
+                    "Bend Editor - Note {} on String {}",
+                    *event_idx + 1,
+                    string
+                ))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Max Bend ({} semitones, set via MIDI config)",
+                            self.pitch_bend_range
+                        ));
                     });
+                    ui.add_space(8.0);
+
+                    let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(400.0, 200.0));
+                    let pb_range = self.pitch_bend_range;
+                    let mfd = self
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.parts.first())
+                        .and_then(|p| p.instrument.as_ref())
+                        .and_then(|i| i.micro_fret_divisions)
+                        .unwrap_or(12) as u32;
+                    curve_editor.ui(ui, rect, pb_range, mfd);
+
+                    ui.add_space(20.0); // manual space since ui() allocates manually
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() {
+                            let bend_str = curve_editor.to_svg_path_normalized();
+                            apply_action = Some(DialogAction::ApplyBend {
+                                event_idx: *event_idx,
+                                string: *string,
+                                bend_str,
+                            });
+                            close_dialog = true;
+                        }
+                        if ui.button("Clear Bend").clicked() {
+                            apply_action = Some(DialogAction::ApplyBend {
+                                event_idx: *event_idx,
+                                string: *string,
+                                bend_str: String::new(),
+                            });
+                            close_dialog = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_dialog = true;
+                        }
+                    });
+                });
             }
             ActiveDialog::ConfirmTuningChange {
                 new_num_strings,
@@ -443,11 +474,25 @@ impl MnxEditorApp {
 
         if let Some(action) = apply_action {
             match action {
-                DialogAction::ApplyBend { event_idx, string, bend_str } => {
-                    self.update_yaml(crate::yaml_editor::set_note_bend_in_yaml(&self.yaml_text, event_idx, string, &bend_str));
+                DialogAction::ApplyBend {
+                    event_idx,
+                    string,
+                    bend_str,
+                } => {
+                    self.update_yaml(crate::yaml_editor::set_note_bend_in_yaml(
+                        &self.yaml_text,
+                        event_idx,
+                        string,
+                        &bend_str,
+                    ));
                     self.process_and_render();
                 }
-                DialogAction::InsertTimeSignature { count, unit, m_idx, rebar_mode } => {
+                DialogAction::InsertTimeSignature {
+                    count,
+                    unit,
+                    m_idx,
+                    rebar_mode,
+                } => {
                     self.insert_time_signature(m_idx, count, unit, rebar_mode);
                 }
                 DialogAction::CreateTuplet {
@@ -576,7 +621,7 @@ impl MnxEditorApp {
                                                 let new_target_steps =
                                                     (old_hz / new_tuning.step_semitones).round()
                                                         as i32;
-                                                note.pitch =
+                                                note.pitch = 
                                                     new_tuning.steps_to_pitch(new_target_steps);
 
                                                 if let Some(st_pitch) =
@@ -651,7 +696,7 @@ impl MnxEditorApp {
                                                             / new_tuning.step_semitones)
                                                             .round()
                                                             as i32;
-                                                        note.pitch = new_tuning
+                                                        note.pitch =  new_tuning
                                                             .steps_to_pitch(new_target_steps);
 
                                                         if let Some(st_pitch) =
@@ -726,9 +771,7 @@ impl MnxEditorApp {
                         self.process_and_render();
                     }
                 }
-                DialogAction::TranslateTuning {
-                    new_tunings,
-                } => {
+                DialogAction::TranslateTuning { new_tunings } => {
                     let mut doc = self.parsed_mnx.clone().unwrap();
                     let edo = doc.parts[0].edo() as u32;
                     let step_mult = doc.parts[0].step_multiplier() as i32;
@@ -908,5 +951,4 @@ impl MnxEditorApp {
             }
         }
     }
-
 }

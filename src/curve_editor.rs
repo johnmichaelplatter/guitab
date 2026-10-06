@@ -19,7 +19,7 @@ impl MonotonicCurveEditor {
         let top_right = rect.right_top();
 
         let delta = top_right - bottom_left;
-        
+
         Self {
             nodes: vec![
                 CurveNode {
@@ -36,24 +36,24 @@ impl MonotonicCurveEditor {
             last_rect: Some(rect),
         }
     }
-    
+
     pub fn from_svg_path_normalized(path_str: &str, rect: Rect) -> Self {
         if path_str.trim().is_empty() {
             return Self::new(rect);
         }
-        
+
         let mut nodes = Vec::new();
         let tokens: Vec<&str> = path_str.split_whitespace().collect();
         let mut i = 0;
-        
+
         let map_x = |nx: f32| -> f32 { rect.min.x + (nx / 100.0) * rect.width() };
         let map_y = |ny: f32| -> f32 { rect.max.y - (ny / 100.0) * rect.height() };
-        
+
         while i < tokens.len() {
             if tokens[i] == "M" {
                 if i + 2 < tokens.len() {
-                    let nx = tokens[i+1].parse::<f32>().unwrap_or(0.0);
-                    let ny = tokens[i+2].parse::<f32>().unwrap_or(0.0);
+                    let nx = tokens[i + 1].parse::<f32>().unwrap_or(0.0);
+                    let ny = tokens[i + 2].parse::<f32>().unwrap_or(0.0);
                     let pos = Pos2::new(map_x(nx), map_y(ny));
                     nodes.push(CurveNode {
                         anchor: pos,
@@ -61,20 +61,40 @@ impl MonotonicCurveEditor {
                         right_handle: pos, // Will be updated by next C if it exists
                     });
                     i += 3;
-                } else { break; }
+                } else {
+                    break;
+                }
             } else if tokens[i] == "C" {
                 if i + 6 < tokens.len() {
-                    let lx = tokens[i+1].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                    let ly = tokens[i+2].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                    let rx = tokens[i+3].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                    let ry = tokens[i+4].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                    let nx = tokens[i+5].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                    let ny = tokens[i+6].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                    
+                    let lx = tokens[i + 1]
+                        .trim_matches(',')
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+                    let ly = tokens[i + 2]
+                        .trim_matches(',')
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+                    let rx = tokens[i + 3]
+                        .trim_matches(',')
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+                    let ry = tokens[i + 4]
+                        .trim_matches(',')
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+                    let nx = tokens[i + 5]
+                        .trim_matches(',')
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+                    let ny = tokens[i + 6]
+                        .trim_matches(',')
+                        .parse::<f32>()
+                        .unwrap_or(0.0);
+
                     if let Some(last) = nodes.last_mut() {
                         last.right_handle = Pos2::new(map_x(lx), map_y(ly));
                     }
-                    
+
                     let pos = Pos2::new(map_x(nx), map_y(ny));
                     nodes.push(CurveNode {
                         anchor: pos,
@@ -82,19 +102,24 @@ impl MonotonicCurveEditor {
                         right_handle: pos, // default right handle
                     });
                     i += 7;
-                } else { break; }
+                } else {
+                    break;
+                }
             } else {
                 i += 1;
             }
         }
-        
+
         if nodes.len() >= 2 {
-            Self { nodes, last_rect: Some(rect) }
+            Self {
+                nodes,
+                last_rect: Some(rect),
+            }
         } else {
             Self::new(rect)
         }
     }
-    
+
     pub fn to_svg_path_normalized(&self) -> String {
         let rect = self.last_rect.unwrap();
         // Output normalized 0.0 to 100.0 coords
@@ -102,18 +127,25 @@ impl MonotonicCurveEditor {
         for (i, node) in self.nodes.iter().enumerate() {
             let nx = ((node.anchor.x - rect.min.x) / rect.width() * 100.0).clamp(0.0, 100.0);
             let ny = ((rect.max.y - node.anchor.y) / rect.height() * 100.0).clamp(0.0, 100.0);
-            
+
             if i == 0 {
                 path.push_str(&format!("M {:.1} {:.1} ", nx, ny));
             } else {
                 let prev = &self.nodes[i - 1];
-                let lx = ((prev.right_handle.x - rect.min.x) / rect.width() * 100.0).clamp(0.0, 100.0);
-                let ly = ((rect.max.y - prev.right_handle.y) / rect.height() * 100.0).clamp(0.0, 100.0);
-                
-                let rx = ((node.left_handle.x - rect.min.x) / rect.width() * 100.0).clamp(0.0, 100.0);
-                let ry = ((rect.max.y - node.left_handle.y) / rect.height() * 100.0).clamp(0.0, 100.0);
-                
-                path.push_str(&format!("C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} ", lx, ly, rx, ry, nx, ny));
+                let lx =
+                    ((prev.right_handle.x - rect.min.x) / rect.width() * 100.0).clamp(0.0, 100.0);
+                let ly =
+                    ((rect.max.y - prev.right_handle.y) / rect.height() * 100.0).clamp(0.0, 100.0);
+
+                let rx =
+                    ((node.left_handle.x - rect.min.x) / rect.width() * 100.0).clamp(0.0, 100.0);
+                let ry =
+                    ((rect.max.y - node.left_handle.y) / rect.height() * 100.0).clamp(0.0, 100.0);
+
+                path.push_str(&format!(
+                    "C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} ",
+                    lx, ly, rx, ry, nx, ny
+                ));
             }
         }
         path.trim().to_string()
@@ -137,7 +169,7 @@ impl MonotonicCurveEditor {
 
     fn handle_x_bounds(&self, index: usize, is_right_handle: bool) -> (f32, f32) {
         let anchor_x = self.nodes[index].anchor.x;
-        
+
         if is_right_handle {
             let next_x = if index < self.nodes.len() - 1 {
                 self.nodes[index + 1].anchor.x
@@ -155,7 +187,13 @@ impl MonotonicCurveEditor {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, rect: Rect, pitch_bend_range: u8, micro_fret_divisions: u32) -> Response {
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        pitch_bend_range: u8,
+        micro_fret_divisions: u32,
+    ) -> Response {
         if let Some(last) = self.last_rect {
             if last != rect {
                 // Remap all nodes to new rect
@@ -163,7 +201,10 @@ impl MonotonicCurveEditor {
                     let map_pos = |p: Pos2| -> Pos2 {
                         let nx = (p.x - last.min.x) / last.width();
                         let ny = (p.y - last.min.y) / last.height();
-                        Pos2::new(rect.min.x + nx * rect.width(), rect.min.y + ny * rect.height())
+                        Pos2::new(
+                            rect.min.x + nx * rect.width(),
+                            rect.min.y + ny * rect.height(),
+                        )
                     };
                     node.anchor = map_pos(node.anchor);
                     node.left_handle = map_pos(node.left_handle);
@@ -177,44 +218,57 @@ impl MonotonicCurveEditor {
 
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
         let painter = ui.painter().clone();
-        
+
         // Enforce bounds globally every frame to handle anchor dragging invalidating adjacent handles
         for i in 0..self.nodes.len() {
             let (l_min, l_max) = self.handle_x_bounds(i, false);
             self.nodes[i].left_handle.x = self.nodes[i].left_handle.x.clamp(l_min, l_max);
             self.nodes[i].left_handle.y = self.nodes[i].left_handle.y.clamp(rect.min.y, rect.max.y);
-            
+
             let (r_min, r_max) = self.handle_x_bounds(i, true);
             self.nodes[i].right_handle.x = self.nodes[i].right_handle.x.clamp(r_min, r_max);
-            self.nodes[i].right_handle.y = self.nodes[i].right_handle.y.clamp(rect.min.y, rect.max.y);
-            
+            self.nodes[i].right_handle.y =
+                self.nodes[i].right_handle.y.clamp(rect.min.y, rect.max.y);
+
             // Also clamp anchors to rect Y bounds
             self.nodes[i].anchor.y = self.nodes[i].anchor.y.clamp(rect.min.y, rect.max.y);
         }
-        
+
         // Ensure handles between adjacent nodes never cross (which breaks monotonicity)
         for i in 0..self.nodes.len().saturating_sub(1) {
-            if self.nodes[i].right_handle.x > self.nodes[i+1].left_handle.x {
-                let mid = (self.nodes[i].right_handle.x + self.nodes[i+1].left_handle.x) / 2.0;
+            if self.nodes[i].right_handle.x > self.nodes[i + 1].left_handle.x {
+                let mid = (self.nodes[i].right_handle.x + self.nodes[i + 1].left_handle.x) / 2.0;
                 self.nodes[i].right_handle.x = mid;
-                self.nodes[i+1].left_handle.x = mid;
+                self.nodes[i + 1].left_handle.x = mid;
             }
         }
-        
+
         // Draw grid
         painter.rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 30));
-        
+
         let pb_semitones = pitch_bend_range.max(1) as f32;
         let step_semitones = 12.0 / micro_fret_divisions as f32;
-        
+
         // Number of steps that fit in the pitch bend range
         let total_steps = pb_semitones / step_semitones;
-        
+
         let max_step = total_steps.floor() as u32;
-        
+
         // Draw top line and bottom line always
-        painter.line_segment([Pos2::new(rect.min.x, rect.min.y), Pos2::new(rect.max.x, rect.min.y)], Stroke::new(1.0, Color32::from_rgb(100, 100, 100)));
-        painter.line_segment([Pos2::new(rect.min.x, rect.max.y), Pos2::new(rect.max.x, rect.max.y)], Stroke::new(1.0, Color32::from_rgb(100, 100, 100)));
+        painter.line_segment(
+            [
+                Pos2::new(rect.min.x, rect.min.y),
+                Pos2::new(rect.max.x, rect.min.y),
+            ],
+            Stroke::new(1.0, Color32::from_rgb(100, 100, 100)),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(rect.min.x, rect.max.y),
+                Pos2::new(rect.max.x, rect.max.y),
+            ],
+            Stroke::new(1.0, Color32::from_rgb(100, 100, 100)),
+        );
 
         // Draw horizontal guide lines for each step
         for i in 1..=max_step {
@@ -224,13 +278,13 @@ impl MonotonicCurveEditor {
             // The fraction of the box height is (i * step_semitones) / pb_semitones
             let fraction = (i as f32 * step_semitones) / pb_semitones;
             let y = rect.max.y - fraction * rect.height();
-            
+
             // Draw a slightly brighter line for integer steps
             painter.line_segment(
-                [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)], 
-                Stroke::new(1.0, Color32::from_rgb(60, 60, 60))
+                [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
+                Stroke::new(1.0, Color32::from_rgb(60, 60, 60)),
             );
-            
+
             // Draw step number label on the left
             painter.text(
                 Pos2::new(rect.min.x + 4.0, y - 6.0),
@@ -240,7 +294,7 @@ impl MonotonicCurveEditor {
                 Color32::from_rgb(120, 120, 120),
             );
         }
-        
+
         let curve_stroke = Stroke::new(3.0, Color32::LIGHT_BLUE);
         let handle_line_stroke = Stroke::new(1.5, Color32::GRAY);
         let point_radius = 6.0;
@@ -267,35 +321,64 @@ impl MonotonicCurveEditor {
         }
 
         for i in 0..self.nodes.len() {
-            let anchor_rect = Rect::from_center_size(self.nodes[i].anchor, Vec2::splat(point_radius * 3.0));
+            let anchor_rect =
+                Rect::from_center_size(self.nodes[i].anchor, Vec2::splat(point_radius * 3.0));
             let anchor_resp = ui.interact(anchor_rect, ui.id().with(("anchor", i)), Sense::drag());
-            
+
             if anchor_resp.dragged() {
                 let delta = anchor_resp.drag_delta();
                 let bounds = self.anchor_x_bounds(i, rect);
-                
-                self.nodes[i].anchor.x = (self.nodes[i].anchor.x + delta.x).clamp(bounds.0, bounds.1);
+
+                self.nodes[i].anchor.x =
+                    (self.nodes[i].anchor.x + delta.x).clamp(bounds.0, bounds.1);
                 // Clamp Y bounds strictly! (Guitar strings only bend up, so y is clamped to rect bounds)
-                self.nodes[i].anchor.y = (self.nodes[i].anchor.y + delta.y).clamp(rect.min.y, rect.max.y);
-                
+                self.nodes[i].anchor.y =
+                    (self.nodes[i].anchor.y + delta.y).clamp(rect.min.y, rect.max.y);
+
                 self.nodes[i].left_handle += delta;
                 self.nodes[i].right_handle += delta;
             }
             painter.circle_filled(self.nodes[i].anchor, point_radius, Color32::WHITE);
-            painter.circle_stroke(self.nodes[i].anchor, point_radius, Stroke::new(1.0, Color32::BLACK));
+            painter.circle_stroke(
+                self.nodes[i].anchor,
+                point_radius,
+                Stroke::new(1.0, Color32::BLACK),
+            );
 
             if i < self.nodes.len() - 1 {
-                self.draw_and_interact_handle(ui, &painter, i, true, handle_line_stroke, point_radius);
+                self.draw_and_interact_handle(
+                    ui,
+                    &painter,
+                    i,
+                    true,
+                    handle_line_stroke,
+                    point_radius,
+                );
             }
             if i > 0 {
-                self.draw_and_interact_handle(ui, &painter, i, false, handle_line_stroke, point_radius);
+                self.draw_and_interact_handle(
+                    ui,
+                    &painter,
+                    i,
+                    false,
+                    handle_line_stroke,
+                    point_radius,
+                );
             }
         }
 
         response
     }
 
-    fn draw_and_interact_handle(&mut self, ui: &mut Ui, painter: &eframe::egui::Painter, index: usize, is_right: bool, stroke: Stroke, radius: f32) {
+    fn draw_and_interact_handle(
+        &mut self,
+        ui: &mut Ui,
+        painter: &eframe::egui::Painter,
+        index: usize,
+        is_right: bool,
+        stroke: Stroke,
+        radius: f32,
+    ) {
         let (handle_pos, anchor_pos) = if is_right {
             (self.nodes[index].right_handle, self.nodes[index].anchor)
         } else {
@@ -303,15 +386,19 @@ impl MonotonicCurveEditor {
         };
 
         painter.line_segment([anchor_pos, handle_pos], stroke);
-        
+
         let rect = Rect::from_center_size(handle_pos, Vec2::splat(radius * 3.0));
         let id = ui.id().with(("handle", index, is_right));
         let resp = ui.interact(rect, id, Sense::drag());
 
         if resp.dragged() {
             let bounds = self.handle_x_bounds(index, is_right);
-            let target = if is_right { &mut self.nodes[index].right_handle } else { &mut self.nodes[index].left_handle };
-            
+            let target = if is_right {
+                &mut self.nodes[index].right_handle
+            } else {
+                &mut self.nodes[index].left_handle
+            };
+
             target.x = (target.x + resp.drag_delta().x).clamp(bounds.0, bounds.1);
             target.y += resp.drag_delta().y;
         }
@@ -322,13 +409,13 @@ impl MonotonicCurveEditor {
 
     fn insert_node_at_x(&mut self, pos: Pos2) {
         let insert_idx = self.nodes.partition_point(|n| n.anchor.x < pos.x);
-        
+
         let new_node = CurveNode {
             anchor: pos,
             left_handle: pos + Vec2::new(-20.0, 0.0),
             right_handle: pos + Vec2::new(20.0, 0.0),
         };
-        
+
         self.nodes.insert(insert_idx, new_node);
     }
 }
@@ -348,15 +435,15 @@ impl MonotonicCurveEditor {
         if target_x >= self.nodes.last().unwrap().anchor.x {
             return self.nodes.last().unwrap().anchor.y;
         }
-        
+
         // Find segment
         for i in 0..self.nodes.len() - 1 {
             let p0 = self.nodes[i].anchor;
-            let p3 = self.nodes[i+1].anchor;
+            let p3 = self.nodes[i + 1].anchor;
             if target_x >= p0.x && target_x <= p3.x {
                 let p1 = self.nodes[i].right_handle;
-                let p2 = self.nodes[i+1].left_handle;
-                
+                let p2 = self.nodes[i + 1].left_handle;
+
                 // Binary search for t
                 let mut t_low = 0.0;
                 let mut t_high = 1.0;
@@ -364,7 +451,10 @@ impl MonotonicCurveEditor {
                 for _ in 0..20 {
                     t = (t_low + t_high) / 2.0;
                     let u = 1.0 - t;
-                    let current_x = u*u*u*p0.x + 3.0*u*u*t*p1.x + 3.0*u*t*t*p2.x + t*t*t*p3.x;
+                    let current_x = u * u * u * p0.x
+                        + 3.0 * u * u * t * p1.x
+                        + 3.0 * u * t * t * p2.x
+                        + t * t * t * p3.x;
                     if current_x < target_x {
                         t_low = t;
                     } else {
@@ -372,7 +462,10 @@ impl MonotonicCurveEditor {
                     }
                 }
                 let u = 1.0 - t;
-                let current_y = u*u*u*p0.y + 3.0*u*u*t*p1.y + 3.0*u*t*t*p2.y + t*t*t*p3.y;
+                let current_y = u * u * u * p0.y
+                    + 3.0 * u * u * t * p1.y
+                    + 3.0 * u * t * t * p2.y
+                    + t * t * t * p3.y;
                 return current_y;
             }
         }

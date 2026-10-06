@@ -1,6 +1,6 @@
 use super::*;
-use eframe::egui::{self};
 use crate::yaml_editor::*;
+use eframe::egui::{self};
 
 impl MnxEditorApp {
     pub fn get_selected_event_duration(&self) -> Option<crate::mnx::Duration> {
@@ -84,13 +84,13 @@ impl MnxEditorApp {
         }
         false
     }
-    
+
     pub fn action_edit_bend(&mut self) {
         if let Some(e_idx) = self.selected_event_idx {
             if let Some(n_idx) = self.selected_note_idx_in_event {
                 let mut existing_bend = None;
                 let mut target_str = 1;
-                
+
                 if let Some(doc) = &self.parsed_mnx {
                     if let Some(part) = doc.parts.first() {
                         let mut count = 0;
@@ -109,15 +109,16 @@ impl MnxEditorApp {
                         }
                     }
                 }
-                
-                let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 150.0));
+
+                let rect =
+                    egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 150.0));
                 let editor = if let Some(bend_str) = existing_bend {
                     crate::curve_editor::parse_bend_string(&bend_str, rect)
                 } else {
                     crate::curve_editor::MonotonicCurveEditor::new(rect)
                 };
                 let max_steps = self.pitch_bend_range as u32;
-                
+
                 self.active_dialog = ActiveDialog::BendEditor {
                     event_idx: e_idx,
                     string: target_str,
@@ -150,7 +151,9 @@ impl MnxEditorApp {
                             if let Some(n_idx) = self.selected_note_idx_in_event {
                                 if let Some(n) = ev.notes.get(n_idx) {
                                     if let Some(id) = &n.id {
-                                        return slurs.iter().any(|s| s.start_note.as_ref() == Some(id));
+                                        return slurs
+                                            .iter()
+                                            .any(|s| s.start_note.as_ref() == Some(id));
                                     }
                                 }
                             } else {
@@ -361,7 +364,10 @@ impl MnxEditorApp {
                                 return n.tap.is_some();
                             }
                         } else if let Some(cur_str) = self.editing_string {
-                            return ev.notes.iter().any(|n| n.string == Some(cur_str) && n.tap.is_some());
+                            return ev
+                                .notes
+                                .iter()
+                                .any(|n| n.string == Some(cur_str) && n.tap.is_some());
                         }
                         return ev.notes.iter().any(|n| n.tap.is_some());
                     }
@@ -372,7 +378,6 @@ impl MnxEditorApp {
         false
     }
 
-    
     pub fn update_yaml_and_clean_ties(&mut self, new_yaml: String) {
         if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&new_yaml) {
             doc.clean_dangling_ties();
@@ -531,18 +536,26 @@ impl MnxEditorApp {
     }
 
     pub fn insert_time_signature(&mut self, m_idx: usize, count: u32, unit: u32, rebar_mode: u8) {
-        let mut doc = match self.parsed_mnx.as_ref() { Some(d) => d.clone(), None => return };
-        
+        let mut doc = match self.parsed_mnx.as_ref() {
+            Some(d) => d.clone(),
+            None => return,
+        };
+
         while doc.global.measures.len() <= m_idx {
-            let ts = doc.global.measures.last().and_then(|gm| gm.time.clone()).unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
+            let ts = doc
+                .global
+                .measures
+                .last()
+                .and_then(|gm| gm.time.clone())
+                .unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
             doc.global.measures.push(crate::mnx::GlobalMeasure {
                 time: Some(ts),
                 directions: Vec::new(),
             });
         }
-        
+
         doc.global.measures[m_idx].time = Some(crate::mnx::TimeSignature { count, unit });
-        
+
         if rebar_mode == 0 {
             // Re-bar all following
             for i in (m_idx + 1)..doc.global.measures.len() {
@@ -555,14 +568,19 @@ impl MnxEditorApp {
             if let Some(measure) = part.measures.get_mut(m_idx) {
                 let mut new_seq = Vec::new();
                 let mut current_beats = 0.0;
-                
+
                 for seq in &measure.sequences {
                     for item in &seq.content {
                         let item_beats = match item {
-                            crate::mnx::SequenceItem::Event(ev) => crate::validate::duration_to_quarter_beats(&ev.duration),
-                            crate::mnx::SequenceItem::Tuplet(t) => crate::validate::duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64),
+                            crate::mnx::SequenceItem::Event(ev) => {
+                                crate::validate::duration_to_quarter_beats(&ev.duration)
+                            }
+                            crate::mnx::SequenceItem::Tuplet(t) => {
+                                crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                                    * (t.outer.multiple as f64)
+                            }
                         };
-                        
+
                         if current_beats + item_beats <= capacity + 0.001 {
                             new_seq.push(item.clone());
                             current_beats += item_beats;
@@ -571,11 +589,14 @@ impl MnxEditorApp {
                             let keep_beats = item_beats - excess;
                             match item {
                                 crate::mnx::SequenceItem::Event(ev) => {
-                                    let chunks = crate::rebar::greedy_split_event_duration(ev.clone(), keep_beats);
+                                    let chunks = crate::rebar::greedy_split_event_duration(
+                                        ev.clone(),
+                                        keep_beats,
+                                    );
                                     for c in chunks {
                                         new_seq.push(crate::mnx::SequenceItem::Event(c));
                                     }
-                                },
+                                }
                                 crate::mnx::SequenceItem::Tuplet(_t) => {
                                     new_seq.push(item.clone());
                                 }
@@ -589,55 +610,43 @@ impl MnxEditorApp {
                 }
             }
         }
-        
+
         let part = doc.parts.first_mut().unwrap();
         crate::rebar::rebar_part(part, &mut doc.global.measures);
-        
+
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
             self.process_and_render();
         }
     }
 
-    
     pub fn is_selected_event_strummed(&self, dir: &str) -> bool {
-        let event_idx = match self.selected_event_idx {
-            Some(idx) => idx,
-            None => return false,
-        };
-        let doc = match self.parsed_mnx.as_ref() {
-            Some(d) => d,
-            None => return false,
-        };
-        let flattened_events = doc.get_flattened_event_paths();
-        if event_idx >= flattened_events.len() {
-            return false;
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(idx) = self.selected_event_idx {
+                let flattened = doc.get_flattened_event_paths();
+                if idx < flattened.len() {
+                    if let Some(ev) = doc.get_event_at_path(flattened[idx]) {
+                        if let Some(markings) = &ev.markings {
+                            if let Some(bow) = &markings.bow_direction {
+                                return bow.direction == dir;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        let cur_path = flattened_events[event_idx];
-        let m_idx = cur_path.m_idx();
-        
-        let ev = match doc.get_event_at_path(cur_path) {
-            Some(e) => e,
-            None => return false,
-        };
-        if ev.notes.len() < 2 {
-            return false;
-        }
-        let part = match doc.parts.first() {
-            Some(p) => p,
-            None => return false,
-        };
-        let measure = match part.measures.get(m_idx) {
-            Some(m) => m,
-            None => return false,
-        };
-        if let Some(arpeggios) = &measure.arpeggios {
-            let first_id = ev.notes.first().and_then(|n| n.id.as_deref()).unwrap_or("");
-            let last_id = ev.notes.last().and_then(|n| n.id.as_deref()).unwrap_or("");
-            for arp in arpeggios {
-                if arp.span.start == first_id && arp.span.end == last_id {
-                    if arp.direction.as_deref() == Some(dir) {
-                        return true;
+        false
+    }
+
+    pub fn is_selected_event_accented(&self) -> bool {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(idx) = self.selected_event_idx {
+                let flattened = doc.get_flattened_event_paths();
+                if idx < flattened.len() {
+                    if let Some(ev) = doc.get_event_at_path(flattened[idx]) {
+                        if let Some(markings) = &ev.markings {
+                            return markings.accent.is_some();
+                        }
                     }
                 }
             }
@@ -654,63 +663,37 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let flattened_events = doc.get_flattened_event_paths();
-        if event_idx >= flattened_events.len() {
+        let flattened = doc.get_flattened_event_paths();
+        if event_idx >= flattened.len() {
             return;
         }
-        let cur_path = flattened_events[event_idx];
-        let m_idx = cur_path.m_idx();
-        let mut first_id = String::new();
-        let mut last_id = String::new();
-        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
-            if ev.notes.len() < 2 {
-                return;
-            }
-            let f_note = ev.notes.first_mut().unwrap();
-            if f_note.id.is_none() {
-                f_note.id = Some(format!("strum_{}_start", event_idx));
-            }
-            first_id = f_note.id.clone().unwrap();
-            let l_note = ev.notes.last_mut().unwrap();
-            if l_note.id.is_none() {
-                l_note.id = Some(format!("strum_{}_end", event_idx));
-            }
-            last_id = l_note.id.clone().unwrap();
-        }
-        let part = doc.parts.first_mut().unwrap();
-        let measure = part.measures.get_mut(m_idx).unwrap();
-        let mut existing_idx = None;
-        if let Some(arpeggios) = &mut measure.arpeggios {
-            for (i, arp) in arpeggios.iter().enumerate() {
-                if arp.span.start == first_id && arp.span.end == last_id {
-                    existing_idx = Some(i);
-                    break;
+        if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
+            let mut cur_dir = None;
+            if let Some(m) = &ev.markings {
+                if let Some(b) = &m.bow_direction {
+                    cur_dir = Some(b.direction.clone());
                 }
             }
-        }
-        if let Some(idx) = existing_idx {
-            let arpeggios = measure.arpeggios.as_mut().unwrap();
-            if arpeggios[idx].direction.as_deref() == Some(dir) {
-                arpeggios.remove(idx);
-                if arpeggios.is_empty() {
-                    measure.arpeggios = None;
+            if cur_dir.as_deref() == Some(dir) {
+                if let Some(m) = &mut ev.markings {
+                    m.bow_direction = None;
+                    if m.accent.is_none() {
+                        ev.markings = None;
+                    }
                 }
             } else {
-                arpeggios[idx].direction = Some(dir.to_string());
+                if ev.markings.is_none() {
+                    ev.markings = Some(crate::mnx::EventMarkings {
+                        accent: None,
+                        bow_direction: None,
+                    });
+                }
+                if let Some(m) = &mut ev.markings {
+                    m.bow_direction = Some(crate::mnx::BowDirection {
+                        direction: dir.to_string(),
+                    });
+                }
             }
-        } else {
-            if measure.arpeggios.is_none() {
-                measure.arpeggios = Some(Vec::new());
-            }
-            measure.arpeggios.as_mut().unwrap().push(crate::mnx::Arpeggio {
-                position: None,
-                span: crate::mnx::Span {
-                    start: first_id,
-                    end: last_id,
-                },
-                direction: Some(dir.to_string()),
-                arrow: true,
-            });
         }
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
@@ -718,22 +701,45 @@ impl MnxEditorApp {
         }
     }
 
-
-
-        #[allow(dead_code)]
-    pub fn event_has_any_notes(&self, event_idx: usize) -> bool {
-        let doc = match self.parsed_mnx.as_ref() {
+    pub fn action_toggle_accent(&mut self) {
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
             Some(d) => d,
-            None => return false,
+            None => return,
         };
         let flattened = doc.get_flattened_event_paths();
-        if event_idx >= flattened.len() { return false; }
-        if let Some(ev) = doc.get_event_at_path(flattened[event_idx]) {
-            return !ev.notes.is_empty();
+        if event_idx >= flattened.len() {
+            return;
         }
-        false
+        if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
+            let has_accent = ev.markings.as_ref().map_or(false, |m| m.accent.is_some());
+            if has_accent {
+                if let Some(m) = &mut ev.markings {
+                    m.accent = None;
+                    if m.bow_direction.is_none() {
+                        ev.markings = None;
+                    }
+                }
+            } else {
+                if ev.markings.is_none() {
+                    ev.markings = Some(crate::mnx::EventMarkings {
+                        accent: None,
+                        bow_direction: None,
+                    });
+                }
+                if let Some(m) = &mut ev.markings {
+                    m.accent = Some(crate::mnx::Accent {});
+                }
+            }
+        }
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
     }
-
     pub fn action_add_slur(&mut self) {
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
@@ -768,7 +774,11 @@ impl MnxEditorApp {
         };
 
         // Find the note on cur_string
-        let note_idx = match ev_cur_clone.notes.iter().position(|n| n.string == Some(cur_string)) {
+        let note_idx = match ev_cur_clone
+            .notes
+            .iter()
+            .position(|n| n.string == Some(cur_string))
+        {
             Some(idx) => idx,
             None => return,
         };
@@ -1065,10 +1075,12 @@ impl MnxEditorApp {
                     accidental: None,
                     tap: None,
                     bend: None,
+                    muted: None,
                     slide: None,
                 }],
                 rest: None,
                 slurs: None,
+                markings: None,
             };
             next_target_id = id;
             doc.parts[0].measures[cur_m].sequences[cur_s]
@@ -1103,10 +1115,12 @@ impl MnxEditorApp {
                     accidental: None,
                     tap: None,
                     bend: None,
+                    muted: None,
                     slide: None,
                 }],
                 rest: None,
                 slurs: None,
+                markings: None,
             };
 
             let ev2 = crate::mnx::Event {
@@ -1121,10 +1135,12 @@ impl MnxEditorApp {
                     accidental: None,
                     tap: None,
                     bend: None,
+                    muted: None,
                     slide: None,
                 }],
                 rest: None,
                 slurs: None,
+                markings: None,
             };
 
             next_target_id = id1;
@@ -1137,7 +1153,7 @@ impl MnxEditorApp {
             if next_m >= doc.parts[0].measures.len() {
                 let mut new_m = crate::mnx::Measure {
                     arpeggios: None,
-            sequences: vec![crate::mnx::Sequence {
+                    sequences: vec![crate::mnx::Sequence {
                         content: Vec::new(),
                         beams: None,
                     }],
@@ -1177,10 +1193,12 @@ impl MnxEditorApp {
                     accidental: None,
                     tap: None,
                     bend: None,
+                    muted: None,
                     slide: None,
                 }],
                 rest: None,
                 slurs: None,
+                markings: None,
             };
 
             next_target_id = id2;
@@ -1188,7 +1206,7 @@ impl MnxEditorApp {
             if next_m >= doc.parts[0].measures.len() {
                 let mut new_m = crate::mnx::Measure {
                     arpeggios: None,
-            sequences: vec![crate::mnx::Sequence {
+                    sequences: vec![crate::mnx::Sequence {
                         content: Vec::new(),
                         beams: None,
                     }],
@@ -1321,6 +1339,168 @@ impl MnxEditorApp {
     }
 }
 
+impl MnxEditorApp {}
 
-impl MnxEditorApp {
+impl crate::gui::MnxEditorApp {
+    pub fn action_toggle_mute(&mut self) {
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let note_idx = match self.selected_note_idx_in_event {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+        let flattened = doc.get_flattened_event_paths();
+        if event_idx >= flattened.len() {
+            return;
+        }
+        if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
+            if note_idx < ev.notes.len() {
+                let note = &mut ev.notes[note_idx];
+                let is_muted = note.muted.unwrap_or(false);
+                note.muted = if is_muted { None } else { Some(true) };
+            }
+        }
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
+    }
+}
+
+impl crate::gui::MnxEditorApp {
+    #[allow(dead_code)]
+    pub fn event_has_any_notes(&self, event_idx: usize) -> bool {
+        let doc = match self.parsed_mnx.as_ref() {
+            Some(d) => d,
+            None => return false,
+        };
+        let flattened = doc.get_flattened_event_paths();
+        if event_idx >= flattened.len() {
+            return false;
+        }
+        if let Some(ev) = doc.get_event_at_path(flattened[event_idx]) {
+            return !ev.notes.is_empty();
+        }
+        false
+    }
+}
+
+impl crate::gui::MnxEditorApp {
+    pub fn is_selected_event_arpeggiated(&self, dir: &str) -> bool {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(idx) = self.selected_event_idx {
+                let flattened = doc.get_flattened_event_paths();
+                if idx < flattened.len() {
+                    let path = flattened[idx];
+                    let m_idx = path.m_idx();
+                    if let Some(part) = doc.parts.first() {
+                        if let Some(m) = part.measures.get(m_idx) {
+                            if let Some(ev) = doc.get_event_at_path(path) {
+                                let first_id =
+                                    ev.notes.first().and_then(|n| n.id.as_deref()).unwrap_or("");
+                                let last_id =
+                                    ev.notes.last().and_then(|n| n.id.as_deref()).unwrap_or("");
+                                if let Some(arps) = &m.arpeggios {
+                                    for arp in arps {
+                                        if arp.span.start == first_id && arp.span.end == last_id {
+                                            return arp.direction.as_deref() == Some(dir);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn action_toggle_arpeggio(&mut self, dir: &str) {
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+        let flattened = doc.get_flattened_event_paths();
+        if event_idx >= flattened.len() {
+            return;
+        }
+        let path = flattened[event_idx];
+        let m_idx = path.m_idx();
+
+        let mut first_id = String::new();
+        let mut last_id = String::new();
+        if let Some(ev) = doc.get_event_mut_at_path(path) {
+            if ev.notes.len() < 2 {
+                return;
+            }
+            let f_note = ev.notes.first_mut().unwrap();
+            if f_note.id.is_none() {
+                f_note.id = Some(format!("arp_{}_start", event_idx));
+            }
+            first_id = f_note.id.clone().unwrap();
+
+            let l_note = ev.notes.last_mut().unwrap();
+            if l_note.id.is_none() {
+                l_note.id = Some(format!("arp_{}_end", event_idx));
+            }
+            last_id = l_note.id.clone().unwrap();
+        }
+
+        let part = doc.parts.first_mut().unwrap();
+        let measure = part.measures.get_mut(m_idx).unwrap();
+        let mut existing_idx = None;
+        if let Some(arps) = &mut measure.arpeggios {
+            for (i, arp) in arps.iter().enumerate() {
+                if arp.span.start == first_id && arp.span.end == last_id {
+                    existing_idx = Some(i);
+                    break;
+                }
+            }
+        }
+
+        if let Some(idx) = existing_idx {
+            let arps = measure.arpeggios.as_mut().unwrap();
+            if arps[idx].direction.as_deref() == Some(dir) {
+                arps.remove(idx);
+                if arps.is_empty() {
+                    measure.arpeggios = None;
+                }
+            } else {
+                arps[idx].direction = Some(dir.to_string());
+            }
+        } else {
+            if measure.arpeggios.is_none() {
+                measure.arpeggios = Some(Vec::new());
+            }
+            measure
+                .arpeggios
+                .as_mut()
+                .unwrap()
+                .push(crate::mnx::Arpeggio {
+                    position: None,
+                    span: crate::mnx::Span {
+                        start: first_id,
+                        end: last_id,
+                    },
+                    direction: Some(dir.to_string()),
+                    arrow: true,
+                });
+        }
+
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+        }
+    }
 }

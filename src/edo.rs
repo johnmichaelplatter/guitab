@@ -6,7 +6,6 @@ pub struct EdoTuning {
     pub step_semitones: f64,
 }
 
-
 fn nominal_generators_from_d(nom: char) -> i32 {
     match nom {
         'F' => -3,
@@ -229,7 +228,11 @@ pub fn generate_edo_scale(edo: u32) -> Vec<(i32, String, f64, f64)> {
             for sharps in -2..=2 {
                 let ups = dist - sharps * tuning.sharp_steps;
                 let gen_coord = nominal_generators_from_d(*nom_char) + sharps * 7;
-                let up_weight = if tuning.sharp_steps.abs() == 1 { 1000 } else { 5 };
+                let up_weight = if tuning.sharp_steps.abs() == 1 {
+                    1000
+                } else {
+                    5
+                };
                 let score = gen_coord.abs() + ups.abs() * up_weight;
 
                 if score < best_score {

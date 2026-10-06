@@ -83,18 +83,18 @@ pub struct MnxEditorApp {
     pub(crate) selected_note_idx_in_event: Option<usize>, // Selected sub-note within chord/event (None = all)
     pub(crate) is_editing_fret: bool,                     // In-place fret number editing mode
     pub(crate) editing_fret_buf: String,                  // Text buffer for the new fret number
-    pub(crate) editing_string: Option<u8>,                // Currently focused string row in edit mode
-    pub(crate) pending_slur: Option<(usize, u8)>,         // (start_event_idx, string) waiting for note entry
+    pub(crate) editing_string: Option<u8>, // Currently focused string row in edit mode
+    pub(crate) pending_slur: Option<(usize, u8)>, // (start_event_idx, string) waiting for note entry
     pub(crate) duration_textures: Option<DurationTextures>, // Note duration icons
-    pub(crate) bpm_buf: String,                           // Text buffer for BPM input
+    pub(crate) bpm_buf: String,                   // Text buffer for BPM input
     pub(crate) midi_ports: Vec<crate::midi::MidiPortInfo>, // Available MIDI output devices
-    pub(crate) selected_midi_port: Option<usize>,         // Selected MIDI port id
-    pub(crate) pitch_bend_range: u8,                      // Pitchbend range (1-48, default 2)
+    pub(crate) selected_midi_port: Option<usize>, // Selected MIDI port id
+    pub(crate) pitch_bend_range: u8,              // Pitchbend range (1-48, default 2)
     pub(crate) string_channel_map: std::collections::HashMap<u8, u8>, // String (1..n) -> MIDI channel (1..16)
-    pub(crate) is_mpe_mode: bool,                         // Toggle button for multi-timbral vs MPE output
-    pub(crate) midi_player: crate::midi::MidiPlayer,      // Real-time MIDI sequencer playback engine
-    pub(crate) midi_status_msg: Option<String>,           // Status or error message from MIDI playback
-    pub active_dialog: ActiveDialog,           // Active modal dialog
+    pub(crate) is_mpe_mode: bool, // Toggle button for multi-timbral vs MPE output
+    pub(crate) midi_player: crate::midi::MidiPlayer, // Real-time MIDI sequencer playback engine
+    pub(crate) midi_status_msg: Option<String>, // Status or error message from MIDI playback
+    pub active_dialog: ActiveDialog, // Active modal dialog
     pub(crate) undo_stack: Vec<String>,
     pub(crate) redo_stack: Vec<String>,
     pub(crate) clipboard: Option<ClipboardData>,
@@ -594,7 +594,6 @@ parts:
             false
         }
     }
-
 }
 
 impl eframe::App for MnxEditorApp {
@@ -657,4 +656,3 @@ impl eframe::App for MnxEditorApp {
         self.render_dialogs(ui.ctx());
     }
 }
-

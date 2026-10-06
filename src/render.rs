@@ -481,7 +481,8 @@ pub fn draw_tablature(
     let mut collected_ties: Vec<(Pos2, u8, i32, String)> = Vec::new();
     let mut collected_slurs: Vec<(crate::mnx::Slur, Vec<(Option<String>, u8, i32, Pos2)>)> =
         Vec::new();
-    let mut string_timeline: std::collections::HashMap<u8, Vec<(usize, i32, Pos2)>> = std::collections::HashMap::new();
+    let mut string_timeline: std::collections::HashMap<u8, Vec<(usize, i32, Pos2)>> =
+        std::collections::HashMap::new();
     let mut collected_slides: Vec<(usize, u8, i32, Pos2)> = Vec::new();
 
     let mut flat_event_idx = 0;
@@ -588,7 +589,9 @@ pub fn draw_tablature(
                         Color32::from_rgba_unmultiplied(100, 180, 255, 35)
                     };
                     painter.rect_filled(col_rect, 4.0, col_color);
-                    if opts.scroll_to_selected { ui.scroll_to_rect(col_rect, None); }
+                    if opts.scroll_to_selected {
+                        ui.scroll_to_rect(col_rect, None);
+                    }
                 }
 
                 if event.rest.is_some() {
@@ -650,8 +653,12 @@ pub fn draw_tablature(
                             if let Some(nid) = &note.id {
                                 note_id_map.insert(nid.clone(), (note_pos, s, f));
                             }
-                            string_timeline.entry(s).or_default().push((flat_event_idx, f, note_pos));
-                            
+                            string_timeline.entry(s).or_default().push((
+                                flat_event_idx,
+                                f,
+                                note_pos,
+                            ));
+
                             if let Some(ties) = &note.ties {
                                 for tie in ties {
                                     collected_ties.push((note_pos, s, f, tie.target.clone()));
@@ -671,84 +678,105 @@ pub fn draw_tablature(
                 if let Some(ev_id) = &event.id {
                     event_notes_map.insert(ev_id.clone(), this_event_notes);
                 }
-                
-                // Draw Strum (Arpeggio)
-                let mut strum_dir = None;
+
+                // Draw Event Markings (Accent, Strum)
+                // Draw Strum (Arpeggio Wiggly Line)
+                let mut arp_dir = None;
                 if let Some(arpeggios) = &measure.arpeggios {
-                    let first_id = event.notes.first().and_then(|n| n.id.as_deref()).unwrap_or("");
-                    let last_id = event.notes.last().and_then(|n| n.id.as_deref()).unwrap_or("");
+                    let first_id = event
+                        .notes
+                        .first()
+                        .and_then(|n| n.id.as_deref())
+                        .unwrap_or("");
+                    let last_id = event
+                        .notes
+                        .last()
+                        .and_then(|n| n.id.as_deref())
+                        .unwrap_or("");
                     for arp in arpeggios {
                         if arp.span.start == first_id && arp.span.end == last_id {
-                            strum_dir = arp.direction.clone();
+                            arp_dir = arp.direction.clone();
                             break;
                         }
                     }
                 }
-                
-                if let Some(dir) = strum_dir {
+
+                if let Some(dir) = arp_dir {
                     if min_string_y < max_string_y {
-                        
-                        
-                        
-                        // We scale the font size to roughly match the chord height. 
-                        // Typically, 1em = 4 spaces, so chord_height * 1.5 is a good guess.
                         let font_size = 28.0;
-                        let strum_font_id = FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
-                        let strum_x = current_x - 12.0; 
-                        
-                        // Calculate step size based on a test render
-                        let _test_rect = painter.text(
-                            Pos2::new(-1000.0, -1000.0),
-                            egui::Align2::CENTER_CENTER,
-                            "\u{E636}",
-                            strum_font_id.clone(),
-                            Color32::TRANSPARENT,
-                        );
-                        // The actual visual step is usually a fraction of the bounding box, about 0.25 em for 1 staff space
-                        let step_y = font_size * 0.25; 
-                        
+                        let arp_font_id =
+                            FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
+                        let arp_x = current_x - 12.0;
+
+                        let step_y = font_size * 0.25;
                         let num_steps = ((max_string_y - min_string_y) / step_y).ceil() as i32;
                         let num_steps = num_steps.max(1);
 
                         let total_h = (num_steps as f32) * step_y;
-                        let center_y = (min_string_y + max_string_y) / 2.0 + font_size*0.2; // slight adjustment for visual centering
+                        let center_y = (min_string_y + max_string_y) / 2.0 + font_size * 0.2;
                         let start_y = center_y - total_h / 2.0;
 
                         for i in 0..=num_steps {
                             let y = start_y + (i as f32) * step_y;
                             let char_to_draw = if dir == "up" {
-                                if i == 0 { "\u{EAAD}" } else { "\u{EAA9}" } // top arrow
+                                if i == 0 { "\u{EAAD}" } else { "\u{EAA9}" }
                             } else {
-                                if i == num_steps { "\u{EAAE}" } else { "\u{EAAA}" } // bottom arrow
+                                if i == num_steps {
+                                    "\u{EAAE}"
+                                } else {
+                                    "\u{EAAA}"
+                                }
                             };
-                            
-                            // We must rotate the horizontal multi-segment glyphs -90 degrees CCW
+
                             let galley = ui.painter().layout_no_wrap(
                                 char_to_draw.to_string(),
-                                strum_font_id.clone(),
+                                arp_font_id.clone(),
                                 note_color,
                             );
-                            
-                            // To rotate -90 degrees, we use TextShape
-                            // A CCW rotation (-90 deg) maps X -> -Y, and Y -> X.
-                            // The galley's original dimensions are width and height.
-                            let size = galley.size();
-                            
-                            // We want to center the rotated glyph horizontally at `strum_x`.
-                            // After rotation, the original Y axis becomes the new X axis (pointing right).
-                            // So the original height becomes the new width.
-                            // We shift X by -size.y / 2.0.
-                            // We place it at Y, and it will extend upwards.
-                            let pos = Pos2::new(strum_x - size.y / 2.0, y);
 
-                            let mut text_shape = egui::epaint::TextShape::new(
-                                pos,
-                                galley,
-                                note_color
-                            );
+                            let size = galley.size();
+                            let pos = Pos2::new(arp_x - size.y / 2.0, y);
+
+                            let mut text_shape =
+                                egui::epaint::TextShape::new(pos, galley, note_color);
                             text_shape.angle = -std::f32::consts::FRAC_PI_2;
                             painter.add(text_shape);
                         }
+                    }
+                }
+
+                if let Some(markings) = &event.markings {
+                    let font_size = 28.0;
+                    let markings_font_id =
+                        FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
+                    let mut marking_y = min_string_y - 20.0; // Place above the chord
+
+                    if markings.accent.is_some() {
+                        let galley = painter.layout_no_wrap(
+                            "\u{E4A0}".to_string(), // articAccentAbove
+                            markings_font_id.clone(),
+                            note_color,
+                        );
+                        let rect =
+                            Rect::from_center_size(Pos2::new(current_x, marking_y), galley.size());
+                        painter.galley(rect.min, galley, note_color);
+                        marking_y -= 15.0;
+                    }
+
+                    if let Some(bow) = &markings.bow_direction {
+                        let glyph = if bow.direction == "up" {
+                            "\u{EB70}"
+                        } else {
+                            "\u{EB74}"
+                        };
+                        let galley = painter.layout_no_wrap(
+                            glyph.to_string(),
+                            markings_font_id.clone(),
+                            note_color,
+                        );
+                        let rect =
+                            Rect::from_center_size(Pos2::new(current_x, marking_y), galley.size());
+                        painter.galley(rect.min, galley, note_color);
                     }
                 }
 
@@ -775,14 +803,23 @@ pub fn draw_tablature(
                             note_color
                         };
 
+                        let is_muted = event.notes[n_idx].muted.unwrap_or(false);
                         let display_text = if is_this_string_editing {
                             if editing_fret_text.is_empty() {
-                                fret.to_string()
+                                if is_muted {
+                                    "X".to_string()
+                                } else {
+                                    fret.to_string()
+                                }
                             } else {
                                 editing_fret_text.to_string()
                             }
                         } else {
-                            fret.to_string()
+                            if is_muted {
+                                "X".to_string()
+                            } else {
+                                fret.to_string()
+                            }
                         };
 
                         let galley =
@@ -805,7 +842,12 @@ pub fn draw_tablature(
                             painter.rect_filled(text_rect.expand(2.0), 0.0, bg_color);
                         }
                         painter.galley(text_rect.min, galley, text_color);
-                        if event.notes.get(n_idx).and_then(|n| n.tap.as_ref()).is_some() {
+                        if event
+                            .notes
+                            .get(n_idx)
+                            .and_then(|n| n.tap.as_ref())
+                            .is_some()
+                        {
                             painter.text(
                                 Pos2::new(current_x, text_rect.min.y - 3.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -815,7 +857,7 @@ pub fn draw_tablature(
                             );
                         }
                         current_fret_rects.push((text_rect, n_idx));
-                        
+
                         // Draw bend shape
                         if let Some(note) = event.notes.get(n_idx) {
                             if let Some(bend_str) = &note.bend {
@@ -825,19 +867,41 @@ pub fn draw_tablature(
                                 let mut t_idx = 0;
                                 while t_idx < tokens.len() {
                                     if tokens[t_idx] == "M" && t_idx + 2 < tokens.len() {
-                                        let x = tokens[t_idx+1].parse::<f32>().unwrap_or(0.0);
-                                        let y = tokens[t_idx+2].parse::<f32>().unwrap_or(0.0);
-                                        if y > max_y_text { max_y_text = y; }
+                                        let x = tokens[t_idx + 1].parse::<f32>().unwrap_or(0.0);
+                                        let y = tokens[t_idx + 2].parse::<f32>().unwrap_or(0.0);
+                                        if y > max_y_text {
+                                            max_y_text = y;
+                                        }
                                         path_nodes.push((x, y));
                                         t_idx += 3;
                                     } else if tokens[t_idx] == "C" && t_idx + 6 < tokens.len() {
-                                        let lx = tokens[t_idx+1].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                                        let ly = tokens[t_idx+2].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                                        let rx = tokens[t_idx+3].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                                        let ry = tokens[t_idx+4].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                                        let nx = tokens[t_idx+5].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                                        let ny = tokens[t_idx+6].trim_matches(',').parse::<f32>().unwrap_or(0.0);
-                                        if ny > max_y_text { max_y_text = ny; }
+                                        let lx = tokens[t_idx + 1]
+                                            .trim_matches(',')
+                                            .parse::<f32>()
+                                            .unwrap_or(0.0);
+                                        let ly = tokens[t_idx + 2]
+                                            .trim_matches(',')
+                                            .parse::<f32>()
+                                            .unwrap_or(0.0);
+                                        let rx = tokens[t_idx + 3]
+                                            .trim_matches(',')
+                                            .parse::<f32>()
+                                            .unwrap_or(0.0);
+                                        let ry = tokens[t_idx + 4]
+                                            .trim_matches(',')
+                                            .parse::<f32>()
+                                            .unwrap_or(0.0);
+                                        let nx = tokens[t_idx + 5]
+                                            .trim_matches(',')
+                                            .parse::<f32>()
+                                            .unwrap_or(0.0);
+                                        let ny = tokens[t_idx + 6]
+                                            .trim_matches(',')
+                                            .parse::<f32>()
+                                            .unwrap_or(0.0);
+                                        if ny > max_y_text {
+                                            max_y_text = ny;
+                                        }
                                         path_nodes.push((lx, ly));
                                         path_nodes.push((rx, ry));
                                         path_nodes.push((nx, ny));
@@ -846,72 +910,92 @@ pub fn draw_tablature(
                                         t_idx += 1;
                                     }
                                 }
-                                
+
                                 let cents = (max_y_text * pitch_bend_range as f32).round() as i32;
-                                
+
                                 if cents > 0 && !path_nodes.is_empty() {
-                                    let mut spacing = duration_spacing(&event.duration, event_spacing);
+                                    let mut spacing =
+                                        duration_spacing(&event.duration, event_spacing);
                                     spacing = spacing.max(55.0); // Match the push we do below
-                                    
-                                    let start_pos = Pos2::new(text_rect.max.x + 2.0, text_rect.center().y);
-                                    
+
+                                    let start_pos =
+                                        Pos2::new(text_rect.max.x + 2.0, text_rect.center().y);
+
                                     let available_w = (current_x + spacing - 14.0) - start_pos.x;
-                                    let max_w = (spacing * 0.5).clamp(10.0, 30.0).min(available_w.max(10.0));
+                                    let max_w = (spacing * 0.5)
+                                        .clamp(10.0, 30.0)
+                                        .min(available_w.max(10.0));
                                     let max_h = 24.0; // More vertical space (about 1 string spacing)
-                                    
+
                                     let map_pt = |nx: f32, ny: f32| -> Pos2 {
                                         Pos2::new(
                                             start_pos.x + (nx / 100.0) * max_w,
-                                            start_pos.y - (ny / 100.0) * max_h
+                                            start_pos.y - (ny / 100.0) * max_h,
                                         )
                                     };
-                                    
+
                                     let mut p0 = map_pt(path_nodes[0].0, path_nodes[0].1);
                                     let mut last_p2 = p0;
                                     let mut last_p3 = p0;
-                                    
+
                                     let mut i = 1;
                                     while i + 2 < path_nodes.len() {
                                         let p1 = map_pt(path_nodes[i].0, path_nodes[i].1);
-                                        let p2 = map_pt(path_nodes[i+1].0, path_nodes[i+1].1);
-                                        let p3 = map_pt(path_nodes[i+2].0, path_nodes[i+2].1);
-                                        
-                                        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                                            [p0, p1, p2, p3],
-                                            false,
-                                            Color32::TRANSPARENT,
-                                            Stroke::new(1.0, note_color)
-                                        ));
-                                        
+                                        let p2 = map_pt(path_nodes[i + 1].0, path_nodes[i + 1].1);
+                                        let p3 = map_pt(path_nodes[i + 2].0, path_nodes[i + 2].1);
+
+                                        painter.add(
+                                            egui::epaint::CubicBezierShape::from_points_stroke(
+                                                [p0, p1, p2, p3],
+                                                false,
+                                                Color32::TRANSPARENT,
+                                                Stroke::new(1.0, note_color),
+                                            ),
+                                        );
+
                                         p0 = p3;
                                         last_p2 = p2;
                                         last_p3 = p3;
                                         i += 3;
                                     }
-                                    
+
                                     // Draw arrowhead at the end
                                     let dir = (last_p3 - last_p2).normalized();
-                                    let dir = if dir.x.is_nan() || dir.y.is_nan() { egui::vec2(1.0, -1.0).normalized() } else { dir };
-                                    
+                                    let dir = if dir.x.is_nan() || dir.y.is_nan() {
+                                        egui::vec2(1.0, -1.0).normalized()
+                                    } else {
+                                        dir
+                                    };
+
                                     // Arrowhead wings
                                     let arrow_len = 4.0;
-                                    let right_wing = egui::vec2(-dir.x + dir.y, -dir.x - dir.y).normalized() * arrow_len;
-                                    let left_wing = egui::vec2(-dir.x - dir.y, dir.x - dir.y).normalized() * arrow_len;
-                                    
-                                    painter.line_segment([last_p3, last_p3 + right_wing], Stroke::new(1.0, note_color));
-                                    painter.line_segment([last_p3, last_p3 + left_wing], Stroke::new(1.0, note_color));
-                                    
+                                    let right_wing = egui::vec2(-dir.x + dir.y, -dir.x - dir.y)
+                                        .normalized()
+                                        * arrow_len;
+                                    let left_wing = egui::vec2(-dir.x - dir.y, dir.x - dir.y)
+                                        .normalized()
+                                        * arrow_len;
+
+                                    painter.line_segment(
+                                        [last_p3, last_p3 + right_wing],
+                                        Stroke::new(1.0, note_color),
+                                    );
+                                    painter.line_segment(
+                                        [last_p3, last_p3 + left_wing],
+                                        Stroke::new(1.0, note_color),
+                                    );
+
                                     // Draw cents text above the max point
                                     let peak_y = start_pos.y - (max_y_text / 100.0) * max_h;
                                     let mut peak_x = last_p3.x; // approximate near end
-                                    
+
                                     // Prevent text from overlapping the next note
-                                    let text_w = 26.0; 
+                                    let text_w = 26.0;
                                     let next_note_x = current_x + spacing - 8.0;
                                     if peak_x + text_w / 2.0 > next_note_x {
                                         peak_x = next_note_x - text_w / 2.0;
                                     }
-                                    
+
                                     painter.text(
                                         Pos2::new(peak_x, peak_y - 3.0),
                                         egui::Align2::CENTER_BOTTOM,
@@ -964,7 +1048,7 @@ pub fn draw_tablature(
                 if event.notes.iter().any(|n| n.bend.is_some()) {
                     spacing = spacing.max(55.0); // Give bends enough horizontal room to draw arrowhead and text
                 }
-                
+
                 flat_event_idx += 1;
                 e_idx += 1;
                 current_x += spacing;
@@ -1068,25 +1152,34 @@ pub fn draw_tablature(
     for (start_idx, string_num, start_fret, start_pos) in &collected_slides {
         if let Some(timeline) = string_timeline.get(string_num) {
             // Find the next note on this string
-            if let Some(pos_in_timeline) = timeline.iter().position(|(idx, _, _)| *idx == *start_idx) {
+            if let Some(pos_in_timeline) =
+                timeline.iter().position(|(idx, _, _)| *idx == *start_idx)
+            {
                 if pos_in_timeline + 1 < timeline.len() {
                     let (_, next_fret, next_pos) = timeline[pos_in_timeline + 1];
                     let up = next_fret > *start_fret;
-                    
+
                     let start_x = start_pos.x + 8.0;
                     let mut end_x = start_x + 12.0; // small diagonal segment
                     let start_y = start_pos.y;
-                    
+
                     // In screen space, smaller Y is "up" visually.
                     // "up" (higher pitch/fret) should mean smaller Y
-                    let end_y = if up { start_pos.y - 6.0 } else { start_pos.y + 6.0 };
-                    
+                    let end_y = if up {
+                        start_pos.y - 6.0
+                    } else {
+                        start_pos.y + 6.0
+                    };
+
                     // Don't draw past the next note if it's very close!
                     end_x = end_x.min(next_pos.x - 4.0);
-                    
+
                     painter.line_segment(
-                        [eframe::egui::Pos2::new(start_x, start_y), eframe::egui::Pos2::new(end_x, end_y)],
-                        eframe::egui::Stroke::new(2.0, note_color)
+                        [
+                            eframe::egui::Pos2::new(start_x, start_y),
+                            eframe::egui::Pos2::new(end_x, end_y),
+                        ],
+                        eframe::egui::Stroke::new(2.0, note_color),
                     );
                 }
             }

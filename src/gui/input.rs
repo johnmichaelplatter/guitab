@@ -1,6 +1,6 @@
 use super::*;
-use eframe::egui::{self};
 use crate::yaml_editor::*;
+use eframe::egui::{self};
 
 impl MnxEditorApp {
     pub(crate) fn select_note_on_string(&mut self, e_idx: usize, string_num: u8) {
@@ -32,7 +32,13 @@ impl MnxEditorApp {
         let mut committed = false;
         if let Some(e_idx) = self.selected_event_idx {
             if let Some(cur_str) = self.editing_string {
-                if let Ok(new_fret) = self.editing_fret_buf.parse::<i32>() {
+                let is_x = self.editing_fret_buf.to_lowercase() == "x";
+                let parsed = if is_x {
+                    Ok(0)
+                } else {
+                    self.editing_fret_buf.parse::<i32>()
+                };
+                if let Ok(new_fret) = parsed {
                     let new_pitch = self
                         .parsed_mnx
                         .as_ref()
@@ -52,6 +58,9 @@ impl MnxEditorApp {
                         self.preview_selected_sound();
                         self.resolve_pending_slur();
                         self.process_and_render();
+                        if is_x {
+                            self.action_toggle_mute();
+                        }
                         committed = true;
                     }
                 }
@@ -60,7 +69,11 @@ impl MnxEditorApp {
         committed
     }
 
-    pub(crate) fn handle_tuplet_right_arrow(&mut self, e_idx: usize, _total_events: usize) -> Option<usize> {
+    pub(crate) fn handle_tuplet_right_arrow(
+        &mut self,
+        e_idx: usize,
+        _total_events: usize,
+    ) -> Option<usize> {
         let doc = self.parsed_mnx.as_ref()?;
         let info = doc.find_event_tuplet_info(e_idx)?;
 
@@ -150,7 +163,11 @@ impl MnxEditorApp {
         None
     }
 
-    pub(crate) fn advance_to_next_note_in_edit_mode(&mut self, cur_str: Option<u8>, total_events: usize) {
+    pub(crate) fn advance_to_next_note_in_edit_mode(
+        &mut self,
+        cur_str: Option<u8>,
+        total_events: usize,
+    ) {
         if let Some(e_idx) = self.selected_event_idx {
             let mut is_cur_blank = false;
             if let Some(doc) = &self.parsed_mnx {
@@ -335,8 +352,6 @@ impl MnxEditorApp {
         false
     }
 
-
-
     pub(crate) fn handle_keyboard_input(
         &mut self,
         ui: &mut egui::Ui,
@@ -347,8 +362,10 @@ impl MnxEditorApp {
         if self.active_dialog != ActiveDialog::None {
             return;
         }
-        
-        if ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor"))) {
+
+        if ui.memory(|m| {
+            m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor"))
+        }) {
             return;
         }
 
@@ -394,16 +411,28 @@ impl MnxEditorApp {
                 return;
             } else if is_copy || c_pressed {
                 self.action_copy();
-        let cb_after = self.clipboard.as_ref().map(|cb| cb.items.len()).unwrap_or(0);
-        println!("action_copy finished. cb_after: {}", cb_after);
+                let cb_after = self
+                    .clipboard
+                    .as_ref()
+                    .map(|cb| cb.items.len())
+                    .unwrap_or(0);
+                println!("action_copy finished. cb_after: {}", cb_after);
                 ui.input_mut(|i| i.events.clear());
                 return;
             } else if is_cut || x_pressed {
-                if shift_down { self.action_cut_time(); } else { self.action_cut_overwrite(); }
+                if shift_down {
+                    self.action_cut_time();
+                } else {
+                    self.action_cut_overwrite();
+                }
                 ui.input_mut(|i| i.events.clear());
                 return;
             } else if is_paste || v_pressed {
-                if shift_down { self.action_paste_insert(); } else { self.action_paste_overwrite(); }
+                if shift_down {
+                    self.action_paste_insert();
+                } else {
+                    self.action_paste_overwrite();
+                }
                 ui.input_mut(|i| i.events.clear());
                 return;
             } else if i_pressed {
@@ -411,7 +440,11 @@ impl MnxEditorApp {
                 ui.input_mut(|i| i.events.clear());
                 return;
             } else if d_pressed {
-                if shift_down { self.action_duplicate_insert(); } else { self.action_duplicate_overwrite(); }
+                if shift_down {
+                    self.action_duplicate_insert();
+                } else {
+                    self.action_duplicate_overwrite();
+                }
                 ui.input_mut(|i| i.events.clear());
                 return;
             }
@@ -427,7 +460,9 @@ impl MnxEditorApp {
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
             let left_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
-            if up_pressed || down_pressed || left_pressed || right_pressed { self.needs_scroll = true; }
+            if up_pressed || down_pressed || left_pressed || right_pressed {
+                self.needs_scroll = true;
+            }
             let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
             let num_strings = self
@@ -458,7 +493,7 @@ impl MnxEditorApp {
                 if !self.editing_fret_buf.trim().is_empty() {
                     self.commit_fret_edit();
                 }
-                
+
                 if let (Some(e_idx), Some(s)) = (e_idx_opt, cur_str) {
                     if is_current_str_existing {
                         self.select_note_on_string(e_idx, s);
@@ -519,7 +554,9 @@ impl MnxEditorApp {
                 for ev in events {
                     if let egui::Event::Text(t) = ev {
                         for c in t.chars() {
-                            if c.is_ascii_digit() && self.editing_fret_buf.len() < 3 {
+                            if (c.is_ascii_digit() || c == 'x' || c == 'X')
+                                && self.editing_fret_buf.len() < 3
+                            {
                                 self.editing_fret_buf.push(c);
                             }
                         }
@@ -540,9 +577,13 @@ impl MnxEditorApp {
             let key_4 = ui.input(|i| i.key_pressed(egui::Key::Num4));
             let key_3 = ui.input(|i| i.key_pressed(egui::Key::Num3));
             let key_dot = ui.input(|i| i.key_pressed(egui::Key::Period));
+            let key_x = ui.input(|i| i.key_pressed(egui::Key::X));
 
             if key_8 {
                 self.change_selected_duration_base("whole");
+                if key_x {
+                    self.action_toggle_mute();
+                }
             } else if key_7 {
                 self.change_selected_duration_base("half");
             } else if key_6 {
@@ -579,7 +620,9 @@ impl MnxEditorApp {
             let right_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
             let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
             let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
-            if up_pressed || down_pressed || left_pressed || right_pressed { self.needs_scroll = true; }
+            if up_pressed || down_pressed || left_pressed || right_pressed {
+                self.needs_scroll = true;
+            }
             let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
             let delete_pressed = ui.input(|i| i.key_pressed(egui::Key::Delete));
@@ -592,22 +635,24 @@ impl MnxEditorApp {
                     self.action_delete_overwrite();
                     return;
                 }
-                
+
                 if let Some(n_idx) = self.selected_note_idx_in_event {
                     if let Some(s) = self.get_string_for_note(e_idx, n_idx) {
                         if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
                             self.update_yaml_and_clean_ties(new_yaml);
                             self.selected_note_idx_in_event = None;
-                            return; 
+                            return;
                         }
                     }
                 } else if self.is_selected_event_rest() {
-                    if let Some(new_yaml) = crate::yaml_editor::convert_rest_to_blank(&self.yaml_text, e_idx) {
+                    if let Some(new_yaml) =
+                        crate::yaml_editor::convert_rest_to_blank(&self.yaml_text, e_idx)
+                    {
                         self.update_yaml_and_clean_ties(new_yaml);
                         return;
                     }
                 }
-                
+
                 let at_final_event = e_idx >= total_events.saturating_sub(1);
                 let is_final_blank = at_final_event
                     && self
@@ -716,7 +761,7 @@ impl MnxEditorApp {
                         self.selection_anchor = None;
                     }
                 }
-                
+
                 // Left / Right arrow navigation: moves between events, always selecting all notes in target event
                 if left_pressed {
                     let at_final_event =
@@ -944,8 +989,6 @@ impl MnxEditorApp {
             None => return,
         };
 
-        
-
         let flattened_events = doc.get_flattened_event_paths();
 
         if start_idx >= flattened_events.len() || cur_idx >= flattened_events.len() {
@@ -982,7 +1025,11 @@ impl MnxEditorApp {
 
         // Give the start note an ID and append the slur
         if let Some(ev_start) = doc.get_event_mut_at_path(start_path) {
-            if let Some(n) = ev_start.notes.iter_mut().find(|n| n.string == Some(slur_str)) {
+            if let Some(n) = ev_start
+                .notes
+                .iter_mut()
+                .find(|n| n.string == Some(slur_str))
+            {
                 if n.id.is_none() {
                     n.id = Some(format!("note_src_{}_{}", start_idx, cur_idx));
                 }
