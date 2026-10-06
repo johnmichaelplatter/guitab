@@ -1,0 +1,660 @@
+//! GUI Module for MNX Tablature Editor
+pub mod actions;
+pub mod clipboard;
+pub mod dialogs;
+pub mod input;
+pub mod panels;
+#[cfg(test)]
+mod tests;
+
+use crate::yaml_editor::*;
+use eframe::egui::{self, include_image};
+
+use crate::mnx::MnxDocument;
+use crate::render;
+use crate::validate;
+use std::fs;
+
+const WHOLE_PNG: &[u8] = include_bytes!("../../assets/whole.png");
+const HALF_PNG: &[u8] = include_bytes!("../../assets/half.png");
+const QUARTER_PNG: &[u8] = include_bytes!("../../assets/quarter.png");
+const EIGHTH_PNG: &[u8] = include_bytes!("../../assets/eighth.png");
+const SIXTEENTH_PNG: &[u8] = include_bytes!("../../assets/16th.png");
+const THIRTYSECOND_PNG: &[u8] = include_bytes!("../../assets/32nd.png");
+const DOT_PNG: &[u8] = include_bytes!("../../assets/dot.png");
+
+pub struct DurationTextures {
+    pub whole: egui::TextureHandle,
+    pub half: egui::TextureHandle,
+    pub quarter: egui::TextureHandle,
+    pub eighth: egui::TextureHandle,
+    pub sixteenth: egui::TextureHandle,
+    pub thirty_second: egui::TextureHandle,
+    pub dot: egui::TextureHandle,
+}
+
+fn load_texture_from_bytes(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
+    let img = image::load_from_memory(bytes).expect("Failed to decode embedded png icon");
+    let rgba = img.to_rgba8();
+    let (orig_w, orig_h) = (rgba.width(), rgba.height());
+    let max_dim = orig_w.max(orig_h).max(200);
+
+    let mut square_img = image::RgbaImage::new(max_dim, max_dim);
+    let offset_x = (max_dim - orig_w) / 2;
+    let offset_y = (max_dim - orig_h) / 2;
+
+    for y in 0..orig_h {
+        for x in 0..orig_w {
+            let pixel = rgba.get_pixel(x, y);
+            square_img.put_pixel(offset_x + x, offset_y + y, *pixel);
+        }
+    }
+
+    let size = [max_dim as usize, max_dim as usize];
+    let pixels = square_img.into_raw();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR)
+}
+
+impl DurationTextures {
+    pub fn load(ctx: &egui::Context) -> Self {
+        Self {
+            whole: load_texture_from_bytes(ctx, "icon_whole", WHOLE_PNG),
+            half: load_texture_from_bytes(ctx, "icon_half", HALF_PNG),
+            quarter: load_texture_from_bytes(ctx, "icon_quarter", QUARTER_PNG),
+            eighth: load_texture_from_bytes(ctx, "icon_eighth", EIGHTH_PNG),
+            sixteenth: load_texture_from_bytes(ctx, "icon_sixteenth", SIXTEENTH_PNG),
+            thirty_second: load_texture_from_bytes(ctx, "icon_thirty_second", THIRTYSECOND_PNG),
+            dot: load_texture_from_bytes(ctx, "icon_dot", DOT_PNG),
+        }
+    }
+}
+
+pub struct MnxEditorApp {
+    pub needs_scroll: bool,
+    pub(crate) yaml_text: String,
+    pub(crate) saved_yaml: String,
+    pub(crate) parsed_mnx: Option<MnxDocument>,
+    pub(crate) parsed_errors: Vec<validate::ValidationError>,
+    pub(crate) validation_errors: Vec<String>,
+    pub(crate) current_file_path: Option<std::path::PathBuf>, // Tracks the active file
+    pub(crate) selected_event_idx: Option<usize>,             // Selected note/beat index
+    pub(crate) selection_anchor: Option<usize>,               // Anchor for shift-select
+    pub(crate) selected_note_idx_in_event: Option<usize>, // Selected sub-note within chord/event (None = all)
+    pub(crate) is_editing_fret: bool,                     // In-place fret number editing mode
+    pub(crate) editing_fret_buf: String,                  // Text buffer for the new fret number
+    pub(crate) editing_string: Option<u8>,                // Currently focused string row in edit mode
+    pub(crate) pending_slur: Option<(usize, u8)>,         // (start_event_idx, string) waiting for note entry
+    pub(crate) duration_textures: Option<DurationTextures>, // Note duration icons
+    pub(crate) bpm_buf: String,                           // Text buffer for BPM input
+    pub(crate) midi_ports: Vec<crate::midi::MidiPortInfo>, // Available MIDI output devices
+    pub(crate) selected_midi_port: Option<usize>,         // Selected MIDI port id
+    pub(crate) pitch_bend_range: u8,                      // Pitchbend range (1-48, default 2)
+    pub(crate) string_channel_map: std::collections::HashMap<u8, u8>, // String (1..n) -> MIDI channel (1..16)
+    pub(crate) is_mpe_mode: bool,                         // Toggle button for multi-timbral vs MPE output
+    pub(crate) midi_player: crate::midi::MidiPlayer,      // Real-time MIDI sequencer playback engine
+    pub(crate) midi_status_msg: Option<String>,           // Status or error message from MIDI playback
+    pub active_dialog: ActiveDialog,           // Active modal dialog
+    pub(crate) undo_stack: Vec<String>,
+    pub(crate) redo_stack: Vec<String>,
+    pub(crate) clipboard: Option<ClipboardData>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipboardData {
+    pub items: Vec<crate::mnx::SequenceItem>,
+    pub time_signature: Option<crate::mnx::TimeSignature>,
+    pub arpeggios: Vec<crate::mnx::Arpeggio>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActiveDialog {
+    None,
+    InsertTimeSignature {
+        count: u32,
+        unit: u32,
+        m_idx: usize,
+        warning: Option<String>,
+    },
+    Message {
+        title: String,
+        text: String,
+    },
+    ConfirmDiscardChanges,
+    CreateTuplet {
+        inner_multiple: u32,
+        outer_multiple: u32,
+        base: String,
+        from_select_mode: bool,
+        event_idx: usize,
+    },
+    ConfirmRemoveTuplet {
+        event_idx: usize,
+    },
+    InstrumentSetup {
+        num_strings: u8,
+        edo: u8,
+        step_multiplier: u8,
+        tunings_text: Vec<String>, // text input for step
+        tunings_octave: Vec<i32>,  // octave
+        is_new_tab: bool,
+    },
+    ConfirmEdoChange {
+        new_edo: u8,
+        new_step_multiplier: u8,
+    },
+    ConfirmTuningChange {
+        new_num_strings: u8,
+        new_tunings: Vec<crate::mnx::StringTuning>,
+    },
+    BendEditor {
+        event_idx: usize,
+        string: u8,
+        curve_editor: crate::curve_editor::MonotonicCurveEditor,
+        bend_range_steps: u32,
+    },
+}
+
+impl Default for MnxEditorApp {
+    fn default() -> Self {
+        let initial_yaml = fs::read_to_string("example.yaml")
+            .unwrap_or_else(|_| String::from("# Could not load example.yaml"));
+
+        let ports = crate::midi::get_midi_output_ports();
+        let selected_port = ports.first().map(|p| p.id);
+
+        let mut app = Self {
+            yaml_text: initial_yaml.clone(),
+            saved_yaml: initial_yaml,
+            parsed_mnx: None,
+            parsed_errors: Vec::new(),
+            needs_scroll: true,
+            validation_errors: Vec::new(),
+            current_file_path: None,
+            selected_event_idx: None,
+            selection_anchor: None,
+            selected_note_idx_in_event: None,
+            is_editing_fret: false,
+            editing_fret_buf: String::new(),
+            editing_string: None,
+            pending_slur: None,
+            duration_textures: None,
+            bpm_buf: String::from("120"),
+            midi_ports: ports,
+            selected_midi_port: selected_port,
+            pitch_bend_range: 2,
+            string_channel_map: std::collections::HashMap::new(),
+            is_mpe_mode: false,
+            midi_player: crate::midi::MidiPlayer::new(),
+            midi_status_msg: None,
+            active_dialog: ActiveDialog::None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            clipboard: None,
+        };
+
+        app.process_and_render();
+        app
+    }
+}
+
+impl MnxEditorApp {
+    pub fn push_undo_state(&mut self) {
+        if self.undo_stack.last() != Some(&self.yaml_text) {
+            self.undo_stack.push(self.yaml_text.clone());
+            self.redo_stack.clear();
+        }
+    }
+
+    pub fn update_yaml(&mut self, new_yaml: String) {
+        if self.yaml_text != new_yaml {
+            self.push_undo_state();
+            self.yaml_text = new_yaml;
+        }
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.yaml_text.clone());
+            self.yaml_text = prev;
+            self.process_and_render();
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.yaml_text.clone());
+            self.yaml_text = next;
+            self.process_and_render();
+        }
+    }
+    pub fn start_midi_playback(&mut self, start_from_selected: bool) {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(port_idx) = self.selected_midi_port {
+                let mut string_to_channel = std::collections::HashMap::new();
+                let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6) as u8;
+                for s in 1..=num_strings {
+                    let default_ch = if self.is_mpe_mode { s + 1 } else { s };
+                    let ch_1_based = self
+                        .string_channel_map
+                        .get(&s)
+                        .copied()
+                        .unwrap_or(default_ch);
+                    let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
+                    string_to_channel.insert(s, midly::num::u4::from(ch_0_based));
+                }
+
+                let start_event = if start_from_selected {
+                    self.selected_event_idx
+                } else {
+                    Some(0)
+                };
+
+                let options = crate::midi::MidiOptions {
+                    pitch_bend_range: self.pitch_bend_range,
+                    string_to_channel,
+                    default_bpm: 120.0,
+                    ppq: midly::num::u15::from(480),
+                    start_event_idx: start_event,
+                    is_mpe: self.is_mpe_mode,
+                };
+
+                match self.midi_player.play(doc, options, port_idx) {
+                    Ok(_) => {
+                        let port_name = self
+                            .midi_ports
+                            .iter()
+                            .find(|p| p.id == port_idx)
+                            .map(|p| p.name.as_str())
+                            .unwrap_or("MIDI device");
+                        let mode_str = if self.is_mpe_mode { " (MPE)" } else { "" };
+                        if let Some(start_idx) = start_event {
+                            if start_idx > 0 {
+                                self.midi_status_msg = Some(format!(
+                                    "Playing from note {}{} on {}",
+                                    start_idx + 1,
+                                    mode_str,
+                                    port_name
+                                ));
+                            } else {
+                                self.midi_status_msg = Some(format!(
+                                    "Playing from start{} on {}",
+                                    mode_str, port_name
+                                ));
+                            }
+                        } else {
+                            self.midi_status_msg =
+                                Some(format!("Playing{} on {}", mode_str, port_name));
+                        }
+                    }
+                    Err(e) => {
+                        self.midi_status_msg = Some(format!("Playback error: {}", e));
+                    }
+                }
+            } else {
+                self.midi_status_msg = Some("No MIDI output device selected.".to_string());
+            }
+        } else {
+            self.midi_status_msg = Some("No valid document parsed to play.".to_string());
+        }
+    }
+
+    pub fn preview_selected_sound(&mut self) {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return,
+        };
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return,
+        };
+        let port_idx = match self.selected_midi_port {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Find the event
+        let mut cur_e = 0;
+        let mut target_event = None;
+        'find_ev: for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    if cur_e == e_idx {
+                        target_event = Some(ev);
+                        break 'find_ev;
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+
+        let event = match target_event {
+            Some(ev) => ev,
+            None => return,
+        };
+
+        if event.notes.is_empty() {
+            self.midi_player.stop();
+            return;
+        }
+
+        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
+        let mut notes_to_play = Vec::new();
+
+        let target_notes: Vec<&crate::mnx::Note> =
+            if let Some(n_idx) = self.selected_note_idx_in_event {
+                if let Some(n) = event.notes.get(n_idx) {
+                    vec![n]
+                } else {
+                    event.notes.iter().collect()
+                }
+            } else {
+                event.notes.iter().collect()
+            };
+
+        for note in target_notes {
+            if let (Some(string), Some(fret)) = (note.string, note.fret) {
+                let default_ch = if self.is_mpe_mode { string + 1 } else { string };
+                let ch_1_based = self
+                    .string_channel_map
+                    .get(&string)
+                    .copied()
+                    .unwrap_or(default_ch);
+                let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
+                let channel = midly::num::u4::from(ch_0_based);
+
+                if let Some(pos_state) = freq_table.get(string, fret) {
+                    let midi_note_frac = pos_state.midi_note_number;
+                    let base_note = midi_note_frac.round() as u8;
+                    let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+
+                    let pitch_bend_val =
+                        crate::midi::calculate_pitch_bend(semitone_diff, self.pitch_bend_range);
+
+                    notes_to_play.push(crate::midi::NotePreview {
+                        channel,
+                        key: midly::num::u7::from(base_note.min(127)),
+                        pitch_bend: Some(pitch_bend_val),
+                        velocity: midly::num::u7::from(100),
+                    });
+                }
+            }
+        }
+
+        if !notes_to_play.is_empty() {
+            let num_strings = part.num_strings() as u8;
+            let _ = self.midi_player.play_preview(
+                notes_to_play,
+                port_idx,
+                400,
+                self.is_mpe_mode,
+                num_strings,
+                self.pitch_bend_range,
+            );
+        }
+    }
+
+    pub fn process_and_render(&mut self) {
+        match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
+            Ok(doc) => {
+                let errors = validate::validate_mnx(&doc);
+
+                // Store formatted error strings for the bottom panel UI
+                self.validation_errors = errors
+                    .iter()
+                    .map(|err| {
+                        if err.string > 0 {
+                            format!(
+                                "Measure {}, Event {}: {}",
+                                err.measure_idx,
+                                err.event_idx + 1,
+                                err.message
+                            )
+                        } else {
+                            format!("Measure {}: {}", err.measure_idx, err.message)
+                        }
+                    })
+                    .collect();
+
+                // Sync BPM from YAML if a tempo directive is present
+                let yaml_bpm = doc
+                    .global
+                    .measures
+                    .iter()
+                    .flat_map(|m| m.directions.iter())
+                    .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
+                if let Some(bpm) = yaml_bpm {
+                    let formatted = if bpm.fract() == 0.0 {
+                        format!("{:.0}", bpm)
+                    } else {
+                        format!("{}", bpm)
+                    };
+                    // Only update the text buf when it differs in value, to avoid overwriting while user types
+                    if self.bpm_buf.trim().parse::<f64>().ok() != Some(bpm) {
+                        self.bpm_buf = formatted;
+                    }
+                }
+
+                self.parsed_errors = errors;
+                self.parsed_mnx = Some(doc);
+            }
+            Err(e) => {
+                self.parsed_mnx = None;
+                self.parsed_errors = Vec::new();
+                self.validation_errors = vec![format!("YAML PARSE ERROR:\n{}", e)];
+            }
+        }
+    }
+    pub fn is_modified(&self) -> bool {
+        self.yaml_text != self.saved_yaml
+    }
+
+    pub fn prompt_new_tab_instrument_setup(&mut self) {
+        let mut tunings_text = Vec::new();
+        let mut tunings_octave = Vec::new();
+        for s in 1..=15 {
+            let (step, octave) = match s {
+                1 => ("E", 4),
+                2 => ("B", 3),
+                3 => ("G", 3),
+                4 => ("D", 3),
+                5 => ("A", 2),
+                6 => ("E", 2),
+                7 => ("B", 1),
+                8 => ("F#", 1),
+                _ => ("", 0),
+            };
+            tunings_text.push(step.to_string());
+            tunings_octave.push(octave);
+        }
+        self.active_dialog = ActiveDialog::InstrumentSetup {
+            num_strings: 6,
+            edo: 12,
+            step_multiplier: 1,
+            tunings_text,
+            tunings_octave,
+            is_new_tab: true,
+        };
+    }
+
+    pub fn start_new_tab(
+        &mut self,
+        _num_strings: u8,
+        edo: u8,
+        step_multiplier: u8,
+        tunings: Vec<crate::mnx::StringTuning>,
+    ) {
+        let mut tunings_str = String::new();
+        for t in &tunings {
+            tunings_str.push_str(&format!(
+                "        - string: {}\n          pitch: {{ step: \"{}\", octave: {} }}\n",
+                t.string, t.pitch.step, t.pitch.octave
+            ));
+        }
+
+        let new_yaml = format!(
+            r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: {{ count: 4, unit: 4 }}
+parts:
+  - instrument:
+      name: "Guitar"
+      microFretDivisions: {}
+      fretStepMultiplier: {}
+      tuning:
+{}    measures:
+      - sequences:
+          - content:
+              - duration: {{ base: quarter }}
+                rest: {{}}
+"#,
+            edo, step_multiplier, tunings_str
+        );
+
+        self.update_yaml(new_yaml.clone());
+        self.saved_yaml = new_yaml;
+        self.current_file_path = None;
+        self.selected_event_idx = Some(0);
+        self.selected_note_idx_in_event = None;
+        self.is_editing_fret = false;
+        self.editing_fret_buf.clear();
+        self.editing_string = None;
+        self.process_and_render();
+    }
+
+    pub fn new_file(&mut self) {
+        if self.is_modified() {
+            self.active_dialog = ActiveDialog::ConfirmDiscardChanges;
+        } else {
+            self.prompt_new_tab_instrument_setup();
+        }
+    }
+
+    pub(crate) fn open_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("YAML Documents", &["yaml", "yml"])
+            .pick_file()
+        {
+            match fs::read_to_string(&path) {
+                Ok(content) => {
+                    self.update_yaml(content.clone());
+                    self.saved_yaml = content;
+                    self.current_file_path = Some(path);
+                    self.selected_event_idx = None;
+                    self.selected_note_idx_in_event = None;
+                    self.is_editing_fret = false;
+                    self.editing_fret_buf.clear();
+                    self.editing_string = None;
+                    self.process_and_render();
+                }
+                Err(e) => {
+                    self.validation_errors = vec![format!("Failed to read file: {}", e)];
+                }
+            }
+        }
+    }
+
+    pub(crate) fn save_file(&mut self) -> bool {
+        // If we have a known file path, save to it. Otherwise, trigger "Save As".
+        if let Some(path) = self.current_file_path.clone() {
+            if let Err(e) = fs::write(&path, &self.yaml_text) {
+                self.validation_errors = vec![format!("Failed to save file: {}", e)];
+                false
+            } else {
+                self.saved_yaml = self.yaml_text.clone();
+                true
+            }
+        } else {
+            self.save_as_file()
+        }
+    }
+
+    pub(crate) fn save_as_file(&mut self) -> bool {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("YAML Documents", &["yaml", "yml"])
+            .set_file_name("untitled.yaml")
+            .save_file()
+        {
+            if let Err(e) = fs::write(&path, &self.yaml_text) {
+                self.validation_errors = vec![format!("Failed to save file: {}", e)];
+                false
+            } else {
+                // Update the current path so subsequent "Saves" go here
+                self.current_file_path = Some(path);
+                self.saved_yaml = self.yaml_text.clone();
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+}
+
+impl eframe::App for MnxEditorApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui_extras::install_image_loaders(ui.ctx());
+
+        if self.duration_textures.is_none() {
+            self.duration_textures = Some(DurationTextures::load(ui.ctx()));
+        }
+
+        // Synchronize MIDI playback progress with the score selection bar
+        let is_midi_playing = self.midi_player.is_playing();
+        if is_midi_playing {
+            ui.ctx().request_repaint();
+            if let Some(playing_idx) = self.midi_player.current_event_idx() {
+                if self.selected_event_idx != Some(playing_idx) {
+                    self.selected_event_idx = Some(playing_idx);
+                    self.selected_note_idx_in_event = None;
+                    self.is_editing_fret = false;
+                    self.editing_fret_buf.clear();
+                    self.editing_string = None;
+                }
+            }
+        }
+
+        let event_ranges = find_all_event_ranges(&self.yaml_text);
+        let total_events = event_ranges.len();
+        let text_edit_id = egui::Id::new("yaml_source_editor");
+
+        // Clamp selection if document changed
+        if let Some(idx) = self.selected_event_idx {
+            if total_events == 0 {
+                self.selected_event_idx = None;
+                self.selected_note_idx_in_event = None;
+                self.is_editing_fret = false;
+            } else if idx >= total_events {
+                self.selected_event_idx = Some(total_events - 1);
+                self.selected_note_idx_in_event = None;
+                self.is_editing_fret = false;
+            }
+        }
+
+        let editor_focused = ui.memory(|m| m.has_focus(text_edit_id));
+
+        self.handle_keyboard_input(ui, editor_focused, &event_ranges, total_events);
+
+        // 1. Top Menu Bar (Updated with file operations & Duration Toolbar)
+        self.render_top_panel(ui, &event_ranges, total_events);
+
+        // 2. Bottom Panel for Errors (only shown if errors exist)
+        self.render_error_panel(ui);
+
+        // 3. Right Pane: YAML Text Editor
+        self.render_yaml_panel(ui, text_edit_id, &event_ranges);
+
+        // 4. Left Pane: Render Output
+        self.render_central_panel(ui);
+
+        // 5. Modal Dialogs (Create Tuplet, Confirm Remove Tuplet)
+        self.render_dialogs(ui.ctx());
+    }
+}
+
