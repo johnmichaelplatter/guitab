@@ -85,7 +85,9 @@ impl EdoTuning {
                 // We use a Manhattan-like distance on the (generator, ups) lattice.
                 // We weight `ups` by a factor (e.g. 5) to penalize microtonal accidentals slightly
                 // compared to moving along the circle of fifths, but still allow `vE` to beat `Fb` in 41 EDO.
-                let score = gen_coord.abs() + ups.abs() * 5;
+                // If sharp_steps is 1 (like 12 EDO, 19 EDO, etc...), we want standard notation to always win.
+                let up_weight = if self.sharp_steps.abs() == 1 { 1000 } else { 5 };
+                let score = gen_coord.abs() + ups.abs() * up_weight;
 
                 if score < best_score {
                     best_score = score;
@@ -227,7 +229,8 @@ pub fn generate_edo_scale(edo: u32) -> Vec<(i32, String, f64, f64)> {
             for sharps in -2..=2 {
                 let ups = dist - sharps * tuning.sharp_steps;
                 let gen_coord = nominal_generators_from_d(*nom_char) + sharps * 7;
-                let score = gen_coord.abs() + ups.abs() * 5;
+                let up_weight = if tuning.sharp_steps.abs() == 1 { 1000 } else { 5 };
+                let score = gen_coord.abs() + ups.abs() * up_weight;
 
                 if score < best_score {
                     best_score = score;
