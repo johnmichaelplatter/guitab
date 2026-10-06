@@ -55,7 +55,9 @@ impl MnxEditorApp {
                         self.update_yaml(new_yaml);
                         self.process_and_render();
                         self.select_note_on_string(e_idx, cur_str);
-                        self.preview_selected_sound();
+                        if !is_x {
+                            self.preview_selected_sound();
+                        }
                         self.resolve_pending_slur();
                         self.process_and_render();
                         if is_x {

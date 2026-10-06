@@ -357,6 +357,9 @@ impl MnxEditorApp {
             };
 
         for note in target_notes {
+            if note.muted.unwrap_or(false) {
+                continue;
+            }
             if let (Some(string), Some(fret)) = (note.string, note.fret) {
                 let default_ch = if self.is_mpe_mode { string + 1 } else { string };
                 let ch_1_based = self
