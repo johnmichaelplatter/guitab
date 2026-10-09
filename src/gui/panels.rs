@@ -67,6 +67,25 @@ impl MnxEditorApp {
             ui.separator();
 
             // Horizontal Duration Toolbar
+            enum DurationAction {
+                Base(&'static str),
+                ToggleDot,
+            }
+            let mut clicked_action: Option<DurationAction> = None;
+            let mut rest_clicked = false;
+            let mut tuplet_clicked = false;
+            let mut tie_clicked = false;
+            let mut slur_clicked = false;
+            let mut tap_clicked = false;
+            let mut bend_clicked = false;
+            let mut slide_clicked = false;
+            let mut accent_clicked = false;
+            let mut strum_up_clicked = false;
+            let mut strum_down_clicked = false;
+            let mut arpeggio_up_clicked = false;
+            let mut arpeggio_down_clicked = false;
+            let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
+
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Duration:").strong());
 
@@ -80,25 +99,6 @@ impl MnxEditorApp {
                 let is_eighth = current_base.contains("eighth") || current_base == "8th" || current_base == "1/8";
                 let is_16th = current_base.contains("16th") || current_base.contains("sixteenth") || current_base == "1/16";
                 let is_32nd = current_base.contains("32nd") || current_base.contains("thirtysecond") || current_base == "1/32";
-
-                enum DurationAction {
-                    Base(&'static str),
-                    ToggleDot,
-                }
-                let mut clicked_action: Option<DurationAction> = None;
-                let mut rest_clicked = false;
-                let mut tuplet_clicked = false;
-                let mut tie_clicked = false;
-                let mut slur_clicked = false;
-                let mut tap_clicked = false;
-                let mut bend_clicked = false;
-                let mut slide_clicked = false;
-                let mut accent_clicked = false;
-                let mut strum_up_clicked = false;
-                let mut strum_down_clicked = false;
-                let mut arpeggio_up_clicked = false;
-                let mut arpeggio_down_clicked = false;
-                let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
 
                 if let Some(textures) = &self.duration_textures {
                     let icon_size = egui::vec2(24.0, 24.0);
@@ -213,6 +213,195 @@ impl MnxEditorApp {
                         tie_clicked = true;
                     }
 
+                }
+                // ── Insert TS Button ─────────────────────────────────────────
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                
+                let btn_size = egui::vec2(30.0, 30.0);
+                let (rect, mut ts_btn) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                let visuals = ui.style().interact(&ts_btn);
+                
+                if ui.is_rect_visible(rect) {
+                    ui.painter().rect(
+                        rect,
+                        visuals.corner_radius,
+                        visuals.bg_fill,
+                        visuals.bg_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    
+                    let font_id = egui::FontId::new(25.0, egui::FontFamily::Name("Bravura".into()));
+                    let center = rect.center();
+                    
+                    // Draw numerals manually to fix the massive baseline offset in SMuFL fonts
+                    ui.painter().text(
+                        center - egui::vec2(0.0, 6.0), // push top number up
+                        egui::Align2::CENTER_CENTER,
+                        "\u{E083}",
+                        font_id.clone(),
+                        visuals.text_color(),
+                    );
+                    ui.painter().text(
+                        center + egui::vec2(0.0, 5.0), // push bottom number down
+                        egui::Align2::CENTER_CENTER,
+                        "\u{E084}",
+                        font_id,
+                        visuals.text_color(),
+                    );
+                }
+                
+                ts_btn = ts_btn.on_hover_text("Insert Time Signature");
+                
+                if ts_btn.clicked() {
+                    let mut m_idx = 0;
+                    if let Some(doc) = &self.parsed_mnx {
+                        if let Some(part) = doc.parts.first() {
+                            if let Some(e_idx) = self.selected_event_idx {
+                                let mut count = 0;
+                                'find_m: for (i, m) in part.measures.iter().enumerate() {
+                                    for seq in &m.sequences {
+                                        for _ in seq.flattened_events() {
+                                            if count == e_idx {
+                                                m_idx = i;
+                                                break 'find_m;
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.active_dialog = ActiveDialog::InsertTimeSignature {
+                        count: 4,
+                        unit: 4,
+                        m_idx,
+                        warning: None,
+                    };
+                }
+
+                // ── Tempo Input ───────────────────────────────────────────────
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                if ui.button("Insert tempo").clicked() {
+                    let start_event_idx = self.selected_event_idx.unwrap_or(0);
+                    self.active_dialog = ActiveDialog::InsertTempo {
+                        bpm_str: "120".to_string(),
+                        duration_value: "quarter".to_string(),
+                        dots: 0,
+                        event_idx: start_event_idx,
+                    };
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                let bravura_font = egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
+                if ui.button(egui::RichText::new("\u{E040}").font(bravura_font.clone())).on_hover_text("Start Repeat").clicked() {
+                    let mut m_idx = 0;
+                    if let Some(doc) = &self.parsed_mnx {
+                        if let Some(part) = doc.parts.first() {
+                            if let Some(e_idx) = self.selected_event_idx {
+                                let mut count = 0;
+                                'find_m2: for (i, m) in part.measures.iter().enumerate() {
+                                    for seq in &m.sequences {
+                                        for _ in seq.flattened_events() {
+                                            if count == e_idx {
+                                                m_idx = i;
+                                                break 'find_m2;
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let new_yaml = crate::yaml_editor::set_global_measure_property(
+                        &self.yaml_text,
+                        m_idx,
+                        "repeatStart",
+                        "{}"
+                    );
+                    self.update_yaml(new_yaml);
+                    self.process_and_render();
+                }
+
+                if ui.button(egui::RichText::new("\u{E041}").font(bravura_font.clone())).on_hover_text("End Repeat").clicked() {
+                    let mut m_idx = 0;
+                    if let Some(doc) = &self.parsed_mnx {
+                        if let Some(part) = doc.parts.first() {
+                            if let Some(e_idx) = self.selected_event_idx {
+                                let mut count = 0;
+                                'find_m3: for (i, m) in part.measures.iter().enumerate() {
+                                    for seq in &m.sequences {
+                                        for _ in seq.flattened_events() {
+                                            if count == e_idx {
+                                                m_idx = i;
+                                                break 'find_m3;
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let new_yaml = crate::yaml_editor::set_global_measure_property(
+                        &self.yaml_text,
+                        m_idx,
+                        "repeatEnd",
+                        "{ times: 2 }"
+                    );
+                    self.update_yaml(new_yaml);
+                    self.process_and_render();
+                }
+
+                if ui.button(egui::RichText::new("\u{E031}").font(bravura_font.clone())).on_hover_text("Double Barline").clicked() {
+                    let mut m_idx = 0;
+                    if let Some(doc) = &self.parsed_mnx {
+                        if let Some(part) = doc.parts.first() {
+                            if let Some(e_idx) = self.selected_event_idx {
+                                let mut count = 0;
+                                'find_m4: for (i, m) in part.measures.iter().enumerate() {
+                                    for seq in &m.sequences {
+                                        for _ in seq.flattened_events() {
+                                            if count == e_idx {
+                                                m_idx = i;
+                                                break 'find_m4;
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let new_yaml = crate::yaml_editor::set_global_measure_property(
+                        &self.yaml_text,
+                        m_idx,
+                        "barline",
+                        "{ type: double }"
+                    );
+                    self.update_yaml(new_yaml);
+                    self.process_and_render();
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Technique:").strong());
+                let btn_size = egui::vec2(30.0, 30.0);
+                let icon_size = egui::vec2(24.0, 24.0);
+                let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
+                    let img = egui::Image::new(source).fit_to_exact_size(icon_size);
+                    let btn = egui::Button::image(img).selected(is_active);
+                    ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
+                };
                     // Slur button
                     let is_slur = self.is_selected_note_slurred();
                     if make_svg_btn(ui, include_image!("../../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off (S)") || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::S))) {
@@ -344,8 +533,7 @@ impl MnxEditorApp {
                     if sdown_resp.on_hover_text("Down Strum").clicked() {
                         strum_down_clicked = true;
                     }
-                }
-
+            });
                 if let Some(action) = clicked_action {
                     match action {
                         DurationAction::Base(b) => self.change_selected_duration_base(b),
@@ -390,89 +578,6 @@ impl MnxEditorApp {
                     self.action_toggle_strum("down");
                 }
 
-                // ── Insert TS Button ─────────────────────────────────────────
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                
-                let btn_size = egui::vec2(30.0, 30.0);
-                let (rect, mut ts_btn) = ui.allocate_exact_size(btn_size, egui::Sense::click());
-                let visuals = ui.style().interact(&ts_btn);
-                
-                if ui.is_rect_visible(rect) {
-                    ui.painter().rect(
-                        rect,
-                        visuals.corner_radius,
-                        visuals.bg_fill,
-                        visuals.bg_stroke,
-                        egui::StrokeKind::Inside,
-                    );
-                    
-                    let font_id = egui::FontId::new(25.0, egui::FontFamily::Name("Bravura".into()));
-                    let center = rect.center();
-                    
-                    // Draw numerals manually to fix the massive baseline offset in SMuFL fonts
-                    ui.painter().text(
-                        center - egui::vec2(0.0, 6.0), // push top number up
-                        egui::Align2::CENTER_CENTER,
-                        "\u{E083}",
-                        font_id.clone(),
-                        visuals.text_color(),
-                    );
-                    ui.painter().text(
-                        center + egui::vec2(0.0, 5.0), // push bottom number down
-                        egui::Align2::CENTER_CENTER,
-                        "\u{E084}",
-                        font_id,
-                        visuals.text_color(),
-                    );
-                }
-                
-                ts_btn = ts_btn.on_hover_text("Insert Time Signature");
-                
-                if ts_btn.clicked() {
-                    let mut m_idx = 0;
-                    if let Some(doc) = &self.parsed_mnx {
-                        if let Some(part) = doc.parts.first() {
-                            if let Some(e_idx) = self.selected_event_idx {
-                                let mut count = 0;
-                                'find_m: for (i, m) in part.measures.iter().enumerate() {
-                                    for seq in &m.sequences {
-                                        for _ in seq.flattened_events() {
-                                            if count == e_idx {
-                                                m_idx = i;
-                                                break 'find_m;
-                                            }
-                                            count += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    self.active_dialog = ActiveDialog::InsertTimeSignature {
-                        count: 4,
-                        unit: 4,
-                        m_idx,
-                        warning: None,
-                    };
-                }
-
-                // ── Tempo Input ───────────────────────────────────────────────
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-
-                if ui.button("Insert tempo").clicked() {
-                    let start_event_idx = self.selected_event_idx.unwrap_or(0);
-                    self.active_dialog = ActiveDialog::InsertTempo {
-                        bpm_str: "120".to_string(),
-                        duration_value: "quarter".to_string(),
-                        dots: 0,
-                        event_idx: start_event_idx,
-                    };
-                }
-            });
 
             ui.separator();
 

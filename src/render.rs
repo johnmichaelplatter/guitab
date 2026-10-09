@@ -426,20 +426,46 @@ pub fn draw_tablature(
 
     // ── Opening barline ───────────────────────────────────────────────────────
 
-    painter.line_segment(
-        [
-            Pos2::new(first_barline_x, string_y_coords[0]),
-            Pos2::new(first_barline_x, last_string_y),
-        ],
-        Stroke::new(2.0, Color32::from_gray(150)),
-    );
-
     let bg_color = ui.visuals().panel_fill;
     let note_color = ui.visuals().text_color();
     let highlight_color = Color32::from_rgb(100, 180, 255); // Light blue
     let edit_color = Color32::from_rgb(255, 175, 75); // Light orange
 
     let mut current_x = first_barline_x;
+
+    let m0_repeat_start = global.and_then(|g| g.measures.first()).and_then(|m| m.repeat_start.as_ref()).is_some();
+    if m0_repeat_start {
+        let staff_mid = string_y_coords[0] + (last_string_y - string_y_coords[0]) / 2.0;
+        let string_spacing = if string_y_coords.len() > 1 { string_y_coords[1] - string_y_coords[0] } else { 10.0 };
+        let mid_y1 = staff_mid - string_spacing * 0.5;
+        let mid_y2 = staff_mid + string_spacing * 0.5;
+
+        painter.line_segment(
+            [
+                Pos2::new(current_x, string_y_coords[0]),
+                Pos2::new(current_x, last_string_y),
+            ],
+            Stroke::new(3.0, Color32::from_gray(150)),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(current_x + 4.0, string_y_coords[0]),
+                Pos2::new(current_x + 4.0, last_string_y),
+            ],
+            Stroke::new(1.0, Color32::from_gray(150)),
+        );
+        painter.circle_filled(Pos2::new(current_x + 8.0, mid_y1), 2.0, Color32::from_gray(150));
+        painter.circle_filled(Pos2::new(current_x + 8.0, mid_y2), 2.0, Color32::from_gray(150));
+        current_x += 12.0;
+    } else {
+        painter.line_segment(
+            [
+                Pos2::new(current_x, string_y_coords[0]),
+                Pos2::new(current_x, last_string_y),
+            ],
+            Stroke::new(2.0, Color32::from_gray(150)),
+        );
+    }
     let mut current_time_sig: Option<TimeSignature> = None;
 
     // Render time signature at start of measure 0 if specified
@@ -1104,13 +1130,121 @@ pub fn draw_tablature(
         }
 
         // Barline at end of measure (spans staff only — rhythms are outside)
-        painter.line_segment(
-            [
-                Pos2::new(current_x, string_y_coords[0]),
-                Pos2::new(current_x, last_string_y),
-            ],
-            Stroke::new(1.0, Color32::from_gray(150)),
-        );
+        let mut drawn_end_barline = false;
+        if let Some(g) = global {
+            if let Some(gm) = g.measures.get(m_idx) {
+                if let Some(b) = &gm.barline {
+                    if b.barline_type == "double" {
+                        painter.line_segment(
+                            [
+                                Pos2::new(current_x - 4.0, string_y_coords[0]),
+                                Pos2::new(current_x - 4.0, last_string_y),
+                            ],
+                            Stroke::new(1.0, Color32::from_gray(150)),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(current_x, string_y_coords[0]),
+                                Pos2::new(current_x, last_string_y),
+                            ],
+                            Stroke::new(1.0, Color32::from_gray(150)),
+                        );
+                        drawn_end_barline = true;
+                    }
+                }
+                
+                if gm.repeat_end.is_some() {
+                    let staff_mid = string_y_coords[0] + (last_string_y - string_y_coords[0]) / 2.0;
+                    let string_spacing = if string_y_coords.len() > 1 { string_y_coords[1] - string_y_coords[0] } else { 10.0 };
+                    let mid_y1 = staff_mid - string_spacing * 0.5;
+                    let mid_y2 = staff_mid + string_spacing * 0.5;
+
+                    painter.circle_filled(Pos2::new(current_x - 10.0, mid_y1), 2.0, Color32::from_gray(150));
+                    painter.circle_filled(Pos2::new(current_x - 10.0, mid_y2), 2.0, Color32::from_gray(150));
+                    painter.line_segment(
+                        [
+                            Pos2::new(current_x - 6.0, string_y_coords[0]),
+                            Pos2::new(current_x - 6.0, last_string_y),
+                        ],
+                        Stroke::new(1.0, Color32::from_gray(150)),
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(current_x - 2.0, string_y_coords[0]),
+                            Pos2::new(current_x - 2.0, last_string_y),
+                        ],
+                        Stroke::new(3.0, Color32::from_gray(150)),
+                    );
+                    drawn_end_barline = true;
+                }
+            }
+        }
+        
+        let mut next_has_repeat_start = false;
+        if let Some(g) = global {
+            if let Some(gm) = g.measures.get(m_idx + 1) {
+                if gm.repeat_start.is_some() {
+                    next_has_repeat_start = true;
+                }
+            }
+        }
+
+        if next_has_repeat_start {
+            let staff_mid = string_y_coords[0] + (last_string_y - string_y_coords[0]) / 2.0;
+            let string_spacing = if string_y_coords.len() > 1 { string_y_coords[1] - string_y_coords[0] } else { 10.0 };
+            let mid_y1 = staff_mid - string_spacing * 0.5;
+            let mid_y2 = staff_mid + string_spacing * 0.5;
+            
+            if drawn_end_barline {
+                // E.g., it was an end repeat. The thick line is at current_x - 2.0.
+                // Draw start repeat starting from current_x + 2.0
+                painter.line_segment(
+                    [
+                        Pos2::new(current_x + 2.0, string_y_coords[0]),
+                        Pos2::new(current_x + 2.0, last_string_y),
+                    ],
+                    Stroke::new(3.0, Color32::from_gray(150)),
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(current_x + 6.0, string_y_coords[0]),
+                        Pos2::new(current_x + 6.0, last_string_y),
+                    ],
+                    Stroke::new(1.0, Color32::from_gray(150)),
+                );
+                painter.circle_filled(Pos2::new(current_x + 10.0, mid_y1), 2.0, Color32::from_gray(150));
+                painter.circle_filled(Pos2::new(current_x + 10.0, mid_y2), 2.0, Color32::from_gray(150));
+            } else {
+                // It was NOT an end repeat. Replace the thin line at current_x with the start repeat.
+                painter.line_segment(
+                    [
+                        Pos2::new(current_x, string_y_coords[0]),
+                        Pos2::new(current_x, last_string_y),
+                    ],
+                    Stroke::new(3.0, Color32::from_gray(150)),
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(current_x + 4.0, string_y_coords[0]),
+                        Pos2::new(current_x + 4.0, last_string_y),
+                    ],
+                    Stroke::new(1.0, Color32::from_gray(150)),
+                );
+                painter.circle_filled(Pos2::new(current_x + 8.0, mid_y1), 2.0, Color32::from_gray(150));
+                painter.circle_filled(Pos2::new(current_x + 8.0, mid_y2), 2.0, Color32::from_gray(150));
+                drawn_end_barline = true; // prevents the normal thin line from being drawn
+            }
+        }
+
+        if !drawn_end_barline {
+            painter.line_segment(
+                [
+                    Pos2::new(current_x, string_y_coords[0]),
+                    Pos2::new(current_x, last_string_y),
+                ],
+                Stroke::new(1.0, Color32::from_gray(150)),
+            );
+        }
 
         if m_idx + 1 < part.measures.len() {
             let next_ts = global

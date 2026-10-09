@@ -1353,3 +1353,84 @@ pub fn set_note_bend_in_yaml(
     }
     yaml.to_string()
 }
+pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &str, prop_value: &str) -> String {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut in_global_section = false;
+    let mut in_global_measures = false;
+    let mut m_idx = -1;
+    let mut measure_indent = 0usize;
+    
+    let mut first_measure_line = None;
+    let mut last_measure_line = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+
+        if trimmed == "global:" {
+            in_global_section = true;
+        } else if in_global_section && trimmed == "measures:" {
+            in_global_measures = true;
+        } else if in_global_measures && trimmed.starts_with("- ") {
+            if measure_indent == 0 { measure_indent = indent; }
+            if indent == measure_indent {
+                m_idx += 1;
+                if m_idx == target_m_idx as i32 {
+                    first_measure_line = Some(i);
+                    last_measure_line = Some(i);
+                } else if m_idx > target_m_idx as i32 {
+                    break;
+                }
+            } else if m_idx == target_m_idx as i32 {
+                last_measure_line = Some(i);
+            }
+        } else if m_idx == target_m_idx as i32 {
+            if !trimmed.is_empty() && indent > measure_indent {
+                last_measure_line = Some(i);
+            } else if !trimmed.is_empty() && indent <= measure_indent {
+                break;
+            }
+        }
+    }
+
+    if let Some(start) = first_measure_line {
+        let end = last_measure_line.unwrap_or(start);
+        
+        let mut existing_idx = None;
+        for i in start..=end {
+            let trimmed = lines[i].trim();
+            if trimmed.starts_with(&format!("{}:", prop_name)) {
+                existing_idx = Some(i);
+                break;
+            }
+        }
+        
+        let child_indent = " ".repeat(measure_indent + 2);
+        let prop_line = format!("{}{}: {}", child_indent, prop_name, prop_value);
+        
+        let mut result = String::new();
+        if let Some(e_idx) = existing_idx {
+            // Replace existing
+            for i in 0..e_idx {
+                result.push_str(lines[i]); result.push('\n');
+            }
+            result.push_str(&prop_line); result.push('\n');
+            for i in (e_idx + 1)..lines.len() {
+                result.push_str(lines[i]); result.push('\n');
+            }
+        } else {
+            // Insert after the start line
+            for i in 0..=start {
+                result.push_str(lines[i]); result.push('\n');
+            }
+            result.push_str(&prop_line); result.push('\n');
+            for i in (start + 1)..lines.len() {
+                result.push_str(lines[i]); result.push('\n');
+            }
+        }
+        return result.trim_end_matches('\n').to_string() + if yaml.ends_with('\n') { "\n" } else { "" };
+    }
+    
+    // If measure not found, we could try to create global measures, but let's assume it exists.
+    yaml.to_string()
+}
