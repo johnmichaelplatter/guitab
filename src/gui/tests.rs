@@ -419,8 +419,8 @@ parts:
             .global
             .measures
             .iter()
-            .flat_map(|m| m.directions.iter())
-            .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
+            .flat_map(|m| m.tempos.iter())
+            .find_map(|t| Some(t.bpm));
         assert_eq!(bpm, Some(140.0), "BPM should be 140 after insert");
     }
 
@@ -435,15 +435,15 @@ parts:
             .global
             .measures
             .iter()
-            .flat_map(|m| m.directions.iter())
-            .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
+            .flat_map(|m| m.tempos.iter())
+            .find_map(|t| Some(t.bpm));
         assert_eq!(bpm, Some(200.0), "BPM should be updated to 200");
         let tempo_count = doc
             .global
             .measures
             .iter()
-            .flat_map(|m| m.directions.iter())
-            .filter(|d| d.tempo.is_some())
+            .flat_map(|m| m.tempos.iter())
+            
             .count();
         assert_eq!(tempo_count, 1, "Should only have one tempo directive");
     }

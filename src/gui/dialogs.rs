@@ -4,6 +4,12 @@ use eframe::egui::{self};
 impl MnxEditorApp {
     pub(crate) fn render_dialogs(&mut self, ctx: &egui::Context) {
         enum DialogAction {
+            InsertTempo {
+                bpm: f64,
+                duration_value: String,
+                dots: u32,
+                event_idx: usize,
+            },
             ApplyBend {
                 event_idx: usize,
                 string: u8,
@@ -56,6 +62,75 @@ impl MnxEditorApp {
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
+            ActiveDialog::InsertTempo {
+                bpm_str,
+                duration_value,
+                dots,
+                event_idx,
+            } => {
+                let mut close_dialog = false;
+                
+                let event_idx_val = *event_idx;
+                let dots_val = *dots;
+
+                egui::Window::new("Insert Tempo")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("tempo_dur")
+                                .width(40.0)
+                                .selected_text(
+                                    egui::RichText::new(match duration_value.as_str() {
+                                        "eighth" => "\u{ECA7}",
+                                        "16th" | "sixteenth" => "\u{ECA9}",
+                                        _ => "\u{ECA5}",
+                                    })
+                                    .family(egui::FontFamily::Name("BravuraText".into()))
+                                    .size(20.0)
+                                )
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(duration_value, "quarter".to_string(), egui::RichText::new("\u{ECA5}").family(egui::FontFamily::Name("BravuraText".into())).size(20.0));
+                                    ui.selectable_value(duration_value, "eighth".to_string(), egui::RichText::new("\u{ECA7}").family(egui::FontFamily::Name("BravuraText".into())).size(20.0));
+                                    ui.selectable_value(duration_value, "16th".to_string(), egui::RichText::new("\u{ECA9}").family(egui::FontFamily::Name("BravuraText".into())).size(20.0));
+                                });
+                                
+                            let mut is_dotted = *dots > 0;
+                            if ui.checkbox(&mut is_dotted, "Dotted").changed() {
+                                *dots = if is_dotted { 1 } else { 0 };
+                            }
+
+                            ui.label("=");
+
+                            ui.add(
+                                egui::TextEdit::singleline(bpm_str)
+                                    .desired_width(40.0)
+                            );
+                        });
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Insert").clicked() {
+                                if let Ok(bpm) = bpm_str.parse::<f64>() {
+                                    apply_action = Some(DialogAction::InsertTempo {
+                                        bpm,
+                                        duration_value: duration_value.clone(),
+                                        dots: dots_val,
+                                        event_idx: event_idx_val,
+                                    });
+                                    close_dialog = true;
+                                }
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+
+                if close_dialog {
+                    self.active_dialog = ActiveDialog::None;
+                }
+            }
+
             ActiveDialog::ConfirmDiscardChanges => {
                 egui::Window::new("Discard changes?")
                     .collapsible(false)
@@ -474,6 +549,10 @@ impl MnxEditorApp {
 
         if let Some(action) = apply_action {
             match action {
+                DialogAction::InsertTempo { bpm, duration_value, dots, event_idx } => {
+                    self.insert_tempo(bpm, &duration_value, dots, event_idx);
+                    self.process_and_render();
+                }
                 DialogAction::ApplyBend {
                     event_idx,
                     string,

@@ -51,7 +51,7 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
         if m_idx >= global_measures.len() {
             global_measures.push(crate::mnx::GlobalMeasure {
                 time: Some(ts.clone()),
-                directions: Vec::new(),
+                repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
             });
         }
 

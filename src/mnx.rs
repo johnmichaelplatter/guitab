@@ -247,19 +247,44 @@ pub struct Global {
 pub struct GlobalMeasure {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub time: Option<TimeSignature>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "repeatStart"
+    )]
+    pub repeat_start: Option<RepeatStart>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "repeatEnd"
+    )]
+    pub repeat_end: Option<RepeatEnd>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barline: Option<Barline>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub directions: Vec<Direction>,
+    pub tempos: Vec<Tempo>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct Direction {
-    pub tempo: Option<Tempo>,
+pub struct RepeatStart {}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct RepeatEnd {
+    pub times: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Barline {
+    #[serde(rename = "type")]
+    pub barline_type: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Tempo {
     pub bpm: f64,
-    pub value: Option<String>, // e.g. "quarter"
+    pub value: Duration,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

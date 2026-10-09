@@ -109,24 +109,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
         }
     }
 
-    fn setup_tempo(&mut self) -> f64 {
-        let mut current_bpm = self.options.default_bpm;
-        if !self.doc.global.measures.is_empty() {
-            if let Some(first_measure) = self.doc.global.measures.first() {
-                for dir in &first_measure.directions {
-                    if let Some(tempo) = &dir.tempo {
-                        current_bpm = tempo.bpm;
-                    }
-                }
-            }
-        }
-        let micros_per_beat = (60_000_000.0 / current_bpm).round() as u32;
-        self.abs_events.push(InternalAbsoluteEvent {
-            time_ticks: 0,
-            kind: InternalEventKind::Tempo(micros_per_beat),
-        });
-        current_bpm
-    }
+
 
     fn setup_channels_and_mpe(&mut self, num_strings: u8) {
         if self.options.string_to_channel.is_empty() {
@@ -191,20 +174,26 @@ impl<'a> PlaybackTrackGenerator<'a> {
         }
     }
 
-    fn find_start_offset(&self, part: &crate::mnx::Part, start_event: usize) -> u32 {
+    fn find_start_offset(
+        &self,
+        part: &crate::mnx::Part,
+        start_event: usize,
+        flattened_measures: &[usize],
+        raw_event_idx_map: &[Vec<Vec<usize>>],
+    ) -> u32 {
         let mut start_tick_offset = 0;
-        let mut current_event_idx = 0;
-        for measure in &part.measures {
-            for seq in &measure.sequences {
+        for &m_idx in flattened_measures {
+            let measure = &part.measures[m_idx];
+            for (s_idx, seq) in measure.sequences.iter().enumerate() {
                 let mut events_scaled = Vec::new();
                 walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
-                for (event, scale) in events_scaled {
-                    if current_event_idx == start_event {
+                for (e_idx, (event, scale)) in events_scaled.into_iter().enumerate() {
+                    let raw_idx = raw_event_idx_map[m_idx][s_idx][e_idx];
+                    if raw_idx == start_event {
                         return start_tick_offset;
                     }
                     let beats = crate::validate::duration_to_quarter_beats(&event.duration);
                     start_tick_offset += ((beats * scale) * self.ppq).round() as u32;
-                    current_event_idx += 1;
                 }
             }
         }
@@ -214,14 +203,16 @@ impl<'a> PlaybackTrackGenerator<'a> {
     fn process_events(
         &mut self,
         part: &crate::mnx::Part,
-        start_event: usize,
         start_tick_offset: u32,
+        flattened_measures: &[usize],
+        raw_event_idx_map: &[Vec<Vec<usize>>]
     ) {
         let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
         let mut string_notes_timeline: std::collections::HashMap<u8, Vec<(u32, f64)>> =
             std::collections::HashMap::new();
         let mut sim_time = 0;
-        for measure in &part.measures {
+        for &m_idx in flattened_measures {
+            let measure = &part.measures[m_idx];
             let mut max_seq_dur = 0;
             for seq in &measure.sequences {
                 let mut seq_time_ticks = sim_time;
@@ -251,28 +242,82 @@ impl<'a> PlaybackTrackGenerator<'a> {
         }
 
         let mut current_time_ticks: u32 = 0;
-        let mut current_event_idx = 0;
 
         let mut pending_ties: std::collections::HashMap<String, (midly::num::u4, u8)> =
             std::collections::HashMap::new();
         let mut final_ticks = 0;
+        let mut current_bpm;
 
-        for measure in &part.measures {
+        let mut tempo_at_start = self.options.default_bpm;
+        
+        // Scan to find tempo at start_tick_offset
+        let mut scan_time = 0;
+        for &m_idx in flattened_measures {
+            if m_idx < self.doc.global.measures.len() {
+                let gm = &self.doc.global.measures[m_idx];
+                for tempo in &gm.tempos {
+                    if scan_time <= start_tick_offset {
+                        tempo_at_start = tempo.bpm * crate::validate::duration_to_quarter_beats(&tempo.value);
+                    }
+                }
+            }
+            let measure = &part.measures[m_idx];
+            let mut max_seq_dur = 0;
             for seq in &measure.sequences {
-                let mut seq_time_ticks = current_time_ticks;
+                let mut seq_time = scan_time;
                 let mut events_scaled = Vec::new();
                 walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
                 for (event, scale) in events_scaled {
                     let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    let duration_ticks = ((beats * scale) * (self.ppq as f64)).round() as u32;
+                    seq_time += ((beats * scale) * (self.ppq as f64)).round() as u32;
+                }
+                max_seq_dur = max_seq_dur.max(seq_time - scan_time);
+            }
+            scan_time += max_seq_dur;
+        }
 
-                    if current_event_idx >= start_event {
+        self.abs_events.push(InternalAbsoluteEvent {
+            time_ticks: 0,
+            kind: InternalEventKind::Tempo((60_000_000.0 / tempo_at_start).round() as u32),
+        });
+        current_bpm = tempo_at_start;
+
+        for &m_idx in flattened_measures {
+            let measure = &part.measures[m_idx];
+            
+            if m_idx < self.doc.global.measures.len() {
+                let gm = &self.doc.global.measures[m_idx];
+                for tempo in &gm.tempos {
+                    let eff_bpm = tempo.bpm * crate::validate::duration_to_quarter_beats(&tempo.value);
+                    // Only emit if we are strictly past start_tick_offset, because we already emitted the initial tempo at tick 0
+                    if current_time_ticks > start_tick_offset && eff_bpm != current_bpm {
+                        current_bpm = eff_bpm;
+                        let event_start_ticks = current_time_ticks.saturating_sub(start_tick_offset);
+                        let micros_per_beat = (60_000_000.0 / current_bpm).round() as u32;
+                        self.abs_events.push(InternalAbsoluteEvent {
+                            time_ticks: event_start_ticks,
+                            kind: InternalEventKind::Tempo(micros_per_beat),
+                        });
+                    }
+                }
+            }
+
+            for (s_idx, seq) in measure.sequences.iter().enumerate() {
+                let mut seq_time_ticks = current_time_ticks;
+                let mut events_scaled = Vec::new();
+                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                for (e_idx, (event, scale)) in events_scaled.into_iter().enumerate() {
+                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
+                    let duration_ticks = ((beats * scale) * (self.ppq as f64)).round() as u32;
+                    let raw_idx = raw_event_idx_map[m_idx][s_idx][e_idx];
+
+                    if seq_time_ticks >= start_tick_offset {
                         let event_start_ticks = seq_time_ticks.saturating_sub(start_tick_offset);
                         final_ticks = final_ticks.max(event_start_ticks + duration_ticks);
 
                         self.abs_events.push(InternalAbsoluteEvent {
                             time_ticks: event_start_ticks,
-                            kind: InternalEventKind::EventMarker(current_event_idx),
+                            kind: InternalEventKind::EventMarker(raw_idx),
                         });
 
                         let mut arp_dir = None;
@@ -555,7 +600,6 @@ impl<'a> PlaybackTrackGenerator<'a> {
                         }
                     }
                     seq_time_ticks += duration_ticks;
-                    current_event_idx += 1;
                 }
                 current_time_ticks = current_time_ticks.max(seq_time_ticks);
             }
@@ -607,14 +651,65 @@ impl<'a> PlaybackTrackGenerator<'a> {
     }
 
     pub fn generate(mut self) -> (Vec<PlaybackEvent>, f64) {
-        let _bpm = self.setup_tempo();
+        
+        let mut flattened_measures = Vec::new();
+        let mut active_repeat_start = 0;
+        let num_measures = self.doc.global.measures.len();
+        let mut m = 0;
+        
+        if num_measures == 0 {
+            if let Some(part) = self.doc.parts.first() {
+                for i in 0..part.measures.len() {
+                    flattened_measures.push(i);
+                }
+            }
+        } else {
+            while m < num_measures {
+                let gm = &self.doc.global.measures[m];
+                if gm.repeat_start.is_some() {
+                    active_repeat_start = m;
+                }
+                flattened_measures.push(m);
+                
+                if let Some(repeat_end) = &gm.repeat_end {
+                    let times = repeat_end.times.max(1);
+                    if times > 1 {
+                        for _ in 1..times {
+                            for rep_m in active_repeat_start..=m {
+                                flattened_measures.push(rep_m);
+                            }
+                        }
+                    }
+                    active_repeat_start = m + 1;
+                }
+                m += 1;
+            }
+        }
+
         if let Some(part) = self.doc.parts.first() {
             let num_strings = part.num_strings() as u8;
             self.setup_channels_and_mpe(num_strings);
+            
+            let mut raw_event_idx_map = Vec::new();
+            let mut current_raw_idx = 0;
+            for measure in &part.measures {
+                let mut seq_map = Vec::new();
+                for seq in &measure.sequences {
+                    let mut ev_map = Vec::new();
+                    let mut events_scaled = Vec::new();
+                    walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                    for _ in events_scaled {
+                        ev_map.push(current_raw_idx);
+                        current_raw_idx += 1;
+                    }
+                    seq_map.push(ev_map);
+                }
+                raw_event_idx_map.push(seq_map);
+            }
 
             let start_event = self.options.start_event_idx.unwrap_or(0);
-            let start_tick_offset = self.find_start_offset(part, start_event);
-            self.process_events(part, start_event, start_tick_offset);
+            let start_tick_offset = self.find_start_offset(part, start_event, &flattened_measures, &raw_event_idx_map);
+            self.process_events(part, start_tick_offset, &flattened_measures, &raw_event_idx_map);
         }
         let ppq = self.ppq;
         (self.resolve_deltas(), ppq)
@@ -1226,7 +1321,7 @@ mod tests {
     }
 }
 
-fn walk_events_with_scaling<'a>(
+pub fn walk_events_with_scaling<'a>(
     content: &'a [crate::mnx::SequenceItem],
     out: &mut Vec<(&'a crate::mnx::Event, f64)>,
     scale: f64,

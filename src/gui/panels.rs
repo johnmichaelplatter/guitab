@@ -458,35 +458,20 @@ impl MnxEditorApp {
                     };
                 }
 
-                // ── BPM Input ─────────────────────────────────────────────────
+                // ── Tempo Input ───────────────────────────────────────────────
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("♩ =").strong());
 
-                let bpm_id = egui::Id::new("bpm_input");
-                let bpm_resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.bpm_buf)
-                        .id(bpm_id)
-                        .desired_width(48.0)
-                        .hint_text("120"),
-                );
-
-                // Commit when user presses Enter or loses focus after typing
-                let commit_bpm = bpm_resp.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let commit_bpm = commit_bpm || (bpm_resp.lost_focus() && !bpm_resp.has_focus());
-
-                if commit_bpm {
-                    if let Ok(new_bpm) = self.bpm_buf.trim().parse::<f64>() {
-                        if new_bpm > 0.0 {
-                            self.update_yaml(set_bpm_in_yaml(&self.yaml_text, new_bpm));
-                            self.process_and_render();
-                        }
-                    }
+                if ui.button("Insert tempo").clicked() {
+                    let start_event_idx = self.selected_event_idx.unwrap_or(0);
+                    self.active_dialog = ActiveDialog::InsertTempo {
+                        bpm_str: "120".to_string(),
+                        duration_value: "quarter".to_string(),
+                        dots: 0,
+                        event_idx: start_event_idx,
+                    };
                 }
-
-                ui.label("BPM").on_hover_text("Beats per minute (written into global/measures[0]/directions)");
             });
 
             ui.separator();

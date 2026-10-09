@@ -116,6 +116,12 @@ pub enum ActiveDialog {
         m_idx: usize,
         warning: Option<String>,
     },
+    InsertTempo {
+        bpm_str: String,
+        duration_value: String,
+        dots: u32,
+        event_idx: usize,
+    },
     Message {
         title: String,
         text: String,
@@ -428,8 +434,8 @@ impl MnxEditorApp {
                     .global
                     .measures
                     .iter()
-                    .flat_map(|m| m.directions.iter())
-                    .find_map(|d| d.tempo.as_ref().map(|t| t.bpm));
+                    .flat_map(|m| m.tempos.iter())
+                    .find_map(|t| Some(t.bpm));
                 if let Some(bpm) = yaml_bpm {
                     let formatted = if bpm.fract() == 0.0 {
                         format!("{:.0}", bpm)

@@ -340,7 +340,7 @@ pub fn draw_tablature(
 
     let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
     let rhythm_row_h = rhythm_gap + stem_height + 10.0; // stem + flags/dots + pad
-    let top_pad = 56.0_f32; // room for name + EDO label + slurs on top string
+    let top_pad = 96.0_f32; // room for name + EDO label + tempos + slurs on top string
     let total_height = top_pad + staff_height + rhythm_row_h + 10.0; // top pad + staff + rhythm + bottom pad
     let total_width = start_offset_x
         + total_events_width
@@ -564,6 +564,53 @@ pub fn draw_tablature(
                 let start_beat = current_measure_beat;
                 let end_beat = current_measure_beat + event_beats;
                 current_measure_beat = end_beat;
+
+                if let Some(g) = global {
+                    if let Some(gm) = g.measures.get(m_idx) {
+                        for tempo in &gm.tempos {
+                            let tempo_beat = if let Some(s) = &tempo.location {
+                                if let Some((n, d)) = s.split_once('/') {
+                                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                                        if den > 0.0 {
+                                            (num / den) * 4.0
+                                        } else { 0.0 }
+                                    } else { 0.0 }
+                                } else { 0.0 }
+                            } else {
+                                0.0
+                            };
+                            if (tempo_beat - start_beat).abs() < 0.001 {
+                                let glyph = match tempo.value.base.as_str() {
+                                    "16th" | "sixteenth" => "\u{ECA9}",
+                                    "eighth" => "\u{ECA7}",
+                                    "quarter" => "\u{ECA5}",
+                                    "half" => "\u{ECA3}",
+                                    "whole" => "\u{ECA2}",
+                                    _ => "\u{ECA5}",
+                                };
+                                
+                                let dots_str = (0..tempo.value.dots.unwrap_or(0)).map(|_| ".").collect::<String>();
+                                let text = format!("{} = {}", dots_str, tempo.bpm);
+                                
+                                let glyph_rect = painter.text(
+                                    Pos2::new(current_x, string_y_coords[0] - 45.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    glyph,
+                                    egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into())),
+                                    note_color,
+                                );
+                                
+                                painter.text(
+                                    Pos2::new(glyph_rect.max.x + 2.0, string_y_coords[0] - 45.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    text,
+                                    egui::FontId::proportional(16.0),
+                                    note_color,
+                                );
+                            }
+                        }
+                    }
+                }
 
                 if let Some(ev_id) = &event.id {
                     event_id_map.insert(ev_id.clone(), (current_x, event.rest.is_some()));

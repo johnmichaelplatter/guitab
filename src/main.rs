@@ -17,11 +17,20 @@ fn setup_custom_fonts(ctx: &egui::Context) {
         "Bravura".to_owned(),
         egui::FontData::from_static(include_bytes!("../assets/Bravura.otf")).into(),
     );
+    fonts.font_data.insert(
+        "BravuraText".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/BravuraText.otf")).into(),
+    );
     fonts
         .families
         .entry(egui::FontFamily::Name("Bravura".into()))
         .or_default()
         .insert(0, "Bravura".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Name("BravuraText".into()))
+        .or_default()
+        .insert(0, "BravuraText".to_owned());
     ctx.set_fonts(fonts);
 }
 

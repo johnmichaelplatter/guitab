@@ -482,8 +482,8 @@ pub fn update_event_duration_in_yaml(
 
 /// Sets or updates the BPM tempo directive in the first global measure's directions block.
 ///
-/// If `global/measures[0]/directions:` with a `tempo:` entry already exists, it updates the
-/// `bpm:` field in-place.  Otherwise it inserts the `directions:` block under the first
+/// If `global/measures[0]/tempos:` with a `` entry already exists, it updates the
+/// `bpm:` field in-place.  Otherwise it inserts the `tempos:` block under the first
 /// global measure entry (after the `time:` line if present, otherwise right after the `- ` list
 /// marker of the first measure entry).
 pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
@@ -495,11 +495,11 @@ pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
 
     let lines: Vec<&str> = yaml.lines().collect();
 
-    // 1. Try to find an existing `bpm:` line inside a tempo directive and update it in-place.
+    // 1. Try to find an existing `bpm:` line inside a tempos directive and update it in-place.
     {
         let mut in_global_measures = false;
         let mut first_measure_seen = false;
-        let mut in_directions = false;
+        let mut in_tempos = false;
         let mut in_tempo = false;
         let mut base_indent = 0usize;
 
@@ -518,36 +518,32 @@ pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
             if in_global_measures && !first_measure_seen && trimmed.starts_with("- ") {
                 first_measure_seen = true;
                 base_indent = indent;
-                in_directions = false;
+                in_tempos = false;
                 in_tempo = false;
             }
             if first_measure_seen
                 && indent <= base_indent
                 && trimmed.starts_with("- ")
                 && !trimmed.starts_with("- time")
-                && !trimmed.starts_with("- directions")
+                && !trimmed.starts_with("- tempos")
             {
                 // We've moved past the first measure entry without finding BPM.
                 break;
             }
-            if first_measure_seen && trimmed.starts_with("directions:") {
-                in_directions = true;
+            if first_measure_seen && trimmed.starts_with("tempos:") {
+                in_tempos = true;
             }
-            if in_directions && (trimmed.starts_with("- tempo:") || trimmed.starts_with("tempo:")) {
+            if in_tempos && trimmed.starts_with("-") {
                 if trimmed.contains("bpm:") {
-                    // Inline format like `- tempo: { bpm: 140 }` or `tempo: { bpm: 140 }`
+                    // Inline format like `- { bpm: 140, value: quarter }`
                     let leading = &line[..indent];
                     let mut result = lines[..i].join("\n");
                     if !result.is_empty() {
                         result.push('\n');
                     }
-                    // Recreate inline tempo entry preserving '-' if present
-                    let prefix = if trimmed.starts_with("- ") { "- " } else { "" };
                     result.push_str(&format!(
-                        "{}{}{}tempo: {{ bpm: {} }}",
+                        "{}- {{ bpm: {}, value: {{ base: quarter }} }}",
                         leading,
-                        prefix,
-                        if prefix.is_empty() { "" } else { "" },
                         bpm_str
                     ));
                     result.push('\n');
@@ -584,7 +580,7 @@ pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
         }
     }
 
-    // 2. No existing bpm: found. Find the first global measure list item and append directions block.
+    // 2. No existing bpm: found. Find the first global measure list item and append tempos block.
     let mut in_global_section = false;
     let mut in_global_measures = false;
     let mut first_measure_line: Option<usize> = None;
@@ -629,7 +625,7 @@ pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
         let child_indent = " ".repeat(first_measure_indent + 2);
 
         let directions_block = format!(
-            "{}directions:\n{}  - tempo: {{ bpm: {} }}",
+            "{}tempos:\n{}  - {{ bpm: {}, value: {{ base: quarter }} }}",
             child_indent, child_indent, bpm_str
         );
 

@@ -3,6 +3,96 @@ use crate::yaml_editor::*;
 use eframe::egui::{self};
 
 impl MnxEditorApp {
+    pub(crate) fn insert_tempo(&mut self, bpm: f64, duration_value: &str, dots: u32, event_idx: usize) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            let mut target_m_idx = 0;
+            let mut sum_quarter_beats = 0.0;
+            let mut found = false;
+            
+            if let Some(part) = doc.parts.first() {
+                let mut current_idx = 0;
+                for (m_idx, measure) in part.measures.iter().enumerate() {
+                    if let Some(seq) = measure.sequences.first() {
+                        let mut events_scaled = Vec::new();
+                        crate::midi::walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                        
+                        sum_quarter_beats = 0.0;
+                        
+                        for (e, scale) in events_scaled {
+                            if current_idx == event_idx {
+                                target_m_idx = m_idx;
+                                found = true;
+                                break;
+                            }
+                            let beats = crate::validate::duration_to_quarter_beats(&e.duration);
+                            sum_quarter_beats += beats * scale;
+                            current_idx += 1;
+                        }
+                        if found { break; }
+                    }
+                }
+            }
+            
+            if !found && event_idx > 0 {
+                target_m_idx = doc.parts.first().map(|p| p.measures.len().saturating_sub(1)).unwrap_or(0);
+                sum_quarter_beats = 0.0;
+            }
+
+            while doc.global.measures.len() <= target_m_idx {
+                doc.global.measures.push(crate::mnx::GlobalMeasure {
+                    time: None,
+                    repeat_start: None,
+                    repeat_end: None,
+                    barline: None,
+                    tempos: Vec::new(),
+                });
+            }
+
+            let location = if sum_quarter_beats > 0.001 {
+                let num = (sum_quarter_beats * 1000.0).round() as u32;
+                let den = 4000;
+                
+                let mut a = num;
+                let mut b = den;
+                while b != 0 {
+                    let t = b;
+                    b = a % b;
+                    a = t;
+                }
+                let s_num = num / a;
+                let s_den = den / a;
+                Some(format!("{}/{}", s_num, s_den))
+            } else {
+                None
+            };
+            
+            let tempo = crate::mnx::Tempo {
+                bpm,
+                value: crate::mnx::Duration {
+                    base: duration_value.to_string(),
+                    dots: if dots > 0 { Some(dots) } else { None },
+                    multiple: None,
+                },
+                location: location.clone(),
+            };
+            
+            let tempos = &mut doc.global.measures[target_m_idx].tempos;
+            if let Some(pos) = tempos.iter().position(|t| t.location == tempo.location) {
+                tempos[pos] = tempo;
+            } else {
+                tempos.push(tempo);
+            }
+            
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+            }
+        }
+    }
+
+
+    
+
+
     pub fn get_selected_event_duration(&self) -> Option<crate::mnx::Duration> {
         let e_idx = self.selected_event_idx?;
         let doc = self.parsed_mnx.as_ref()?;
@@ -550,7 +640,7 @@ impl MnxEditorApp {
                 .unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
             doc.global.measures.push(crate::mnx::GlobalMeasure {
                 time: Some(ts),
-                directions: Vec::new(),
+                repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
             });
         }
 
@@ -1170,7 +1260,7 @@ impl MnxEditorApp {
                             count: time_sig_count,
                             unit: time_sig_unit,
                         }),
-                        directions: Vec::new(),
+                        repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
                     };
                     doc.global.measures.push(gm);
                 }
@@ -1223,7 +1313,7 @@ impl MnxEditorApp {
                             count: time_sig_count,
                             unit: time_sig_unit,
                         }),
-                        directions: Vec::new(),
+                        repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
                     };
                     doc.global.measures.push(gm);
                 }
@@ -1339,7 +1429,10 @@ impl MnxEditorApp {
     }
 }
 
-impl MnxEditorApp {}
+impl MnxEditorApp {
+    
+
+}
 
 impl crate::gui::MnxEditorApp {
     pub fn action_toggle_mute(&mut self) {
