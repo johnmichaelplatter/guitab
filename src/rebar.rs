@@ -52,6 +52,7 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
             global_measures.push(crate::mnx::GlobalMeasure {
                 time: Some(ts.clone()),
                 repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
+                            tempo_changes: Vec::new(),
             });
         }
 

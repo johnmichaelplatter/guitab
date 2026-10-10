@@ -263,6 +263,8 @@ pub struct GlobalMeasure {
     pub barline: Option<Barline>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempos: Vec<Tempo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "tempoChange")]
+    pub tempo_changes: Vec<TempoChange>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -279,8 +281,21 @@ pub struct Barline {
     pub barline_type: String,
 }
 
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct TempoChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Tempo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub bpm: f64,
     pub value: Duration,
     #[serde(default, skip_serializing_if = "Option::is_none")]

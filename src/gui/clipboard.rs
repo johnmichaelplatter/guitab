@@ -8,6 +8,8 @@ impl MnxEditorApp {
         Vec<crate::mnx::SequenceItem>,
         Option<crate::mnx::TimeSignature>,
         Vec<crate::mnx::Arpeggio>,
+        Vec<crate::mnx::Tempo>,
+        Vec<crate::mnx::TempoChange>,
     )> {
         let cursor = self.selected_event_idx?;
         let anchor = self.selection_anchor.unwrap_or(cursor);
@@ -20,31 +22,68 @@ impl MnxEditorApp {
         let mut items = Vec::new();
         let mut cur_e = 0;
         let mut captured_ts = None;
+        let mut copied_tempos = Vec::new();
+        let mut copied_tcs = Vec::new();
 
+        let parse_loc = |loc: &Option<String>| -> f64 {
+            if let Some(s) = loc {
+                if let Some((n, d)) = s.split_once('/') {
+                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                        if den > 0.0 { return (num / den) * 4.0; }
+                    }
+                }
+            }
+            0.0
+        };
+
+        let mut global_measure_beat = 0.0;
         for (m_idx, m) in part.measures.iter().enumerate() {
             let measure_start_e = cur_e;
+            let mut measure_beats = 0.0;
             for seq in &m.sequences {
+                let mut current_beat = 0.0;
                 for item in &seq.content {
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
                     };
+                    
+                    let item_beats = item.total_beats();
 
                     let item_start = cur_e;
                     let item_end = cur_e + item_ev_count - 1;
 
                     if item_start <= max_idx && item_end >= min_idx {
-                        if items.is_empty() && item_start == measure_start_e {
+                        let is_first = items.is_empty();
+                        if is_first && item_start == measure_start_e {
                             if let Some(gm) = doc.global.measures.get(m_idx) {
                                 captured_ts = gm.time.clone();
                             }
                         }
                         items.push(item.clone());
+
+                        if let Some(gm) = doc.global.measures.get(m_idx) {
+                            for tempo in &gm.tempos {
+                                let offset_beats = parse_loc(&tempo.location);
+                                if offset_beats >= current_beat - 0.001 && offset_beats < current_beat + item_beats - 0.001 {
+                                    copied_tempos.push((tempo.clone(), global_measure_beat + offset_beats));
+                                }
+                            }
+                            for tc in &gm.tempo_changes {
+                                let offset_beats = parse_loc(&tc.location);
+                                if offset_beats >= current_beat - 0.001 && offset_beats < current_beat + item_beats - 0.001 {
+                                    copied_tcs.push((tc.clone(), global_measure_beat + offset_beats));
+                                }
+                            }
+                        }
                     }
 
+                    current_beat += item_beats;
                     cur_e += item_ev_count;
                 }
+                measure_beats = f64::max(measure_beats, current_beat);
             }
+            global_measure_beat += measure_beats;
         }
 
         let mut all_selected_note_ids = std::collections::HashSet::new();
@@ -84,19 +123,82 @@ impl MnxEditorApp {
             }
         }
 
+        // Calculate start beat of selection to make locations relative
+        let mut selection_start_beat = 0.0;
+        let mut cur_beat = 0.0;
+        let mut cur_e2 = 0;
+        'outer: for m in &part.measures {
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    let item_ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                    };
+                    if cur_e2 == min_idx {
+                        selection_start_beat = cur_beat;
+                        break 'outer;
+                    }
+                    cur_beat += item.total_beats();
+                    cur_e2 += item_ev_count;
+                }
+            }
+        }
+        
+        let mut final_copied_tempos: Vec<crate::mnx::Tempo> = copied_tempos.into_iter().map(|(mut t, abs_beat)| {
+            let rel = abs_beat - selection_start_beat;
+            t.location = Some(format!("{}/16", (rel * 4.0).round() as i32));
+            t
+        }).collect();
+        
+        let mut final_copied_tcs: Vec<crate::mnx::TempoChange> = copied_tcs.into_iter().map(|(mut tc, abs_beat)| {
+            let rel = abs_beat - selection_start_beat;
+            tc.location = Some(format!("{}/16", (rel * 4.0).round() as i32));
+            tc
+        }).collect();
+
+        // Enforce constraint on tempo and tempoChange pairing
+        final_copied_tcs.retain(|tc| {
+            if let Some(t_id) = &tc.target {
+                final_copied_tempos.iter().any(|t| t.id.as_ref() == Some(t_id))
+            } else {
+                false
+            }
+        });
+
+        let mut all_tcs_in_doc = Vec::new();
+        for gm in &doc.global.measures {
+            all_tcs_in_doc.extend(gm.tempo_changes.clone());
+        }
+
+        final_copied_tempos.retain(|t| {
+            if let Some(t_id) = &t.id {
+                let is_targeted = all_tcs_in_doc.iter().any(|tc| tc.target.as_ref() == Some(t_id));
+                if is_targeted {
+                    // It must be in final_copied_tcs
+                    final_copied_tcs.iter().any(|tc| tc.target.as_ref() == Some(t_id))
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        });
+
         if items.is_empty() {
             None
         } else {
-            Some((items, captured_ts, copied_arpeggios))
+            Some((items, captured_ts, copied_arpeggios, final_copied_tempos, final_copied_tcs))
         }
     }
 
     pub fn action_copy(&mut self) {
-        if let Some((items, ts, arps)) = self.extract_selected_items() {
+        if let Some((items, ts, arps, tempos, tempo_changes)) = self.extract_selected_items() {
             self.clipboard = Some(ClipboardData {
                 items,
                 time_signature: ts,
                 arpeggios: arps,
+                tempos,
+                tempo_changes,
             });
         }
     }
@@ -426,9 +528,89 @@ impl MnxEditorApp {
         }
     }
 
+    fn distribute_tempos(
+        global_measures: &mut Vec<crate::mnx::GlobalMeasure>,
+        part: &crate::mnx::Part,
+        pasted_tempos: Vec<(crate::mnx::Tempo, f64)>,
+        pasted_tcs: Vec<(crate::mnx::TempoChange, f64)>,
+    ) {
+        // Calculate measure boundaries
+        let mut measure_start_beats = Vec::new();
+        let mut cur_beat = 0.0;
+        for m in &part.measures {
+            measure_start_beats.push(cur_beat);
+            let mut measure_beats = 0.0;
+            for seq in &m.sequences {
+                let mut seq_beats = 0.0;
+                for item in &seq.content {
+                    seq_beats += item.total_beats();
+                }
+                measure_beats = f64::max(measure_beats, seq_beats);
+            }
+            cur_beat += measure_beats;
+        }
+
+        // Expand global_measures if needed
+        while global_measures.len() < part.measures.len() {
+            let last_ts = global_measures.last().and_then(|g| g.time.clone()).unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
+            global_measures.push(crate::mnx::GlobalMeasure {
+                time: Some(last_ts),
+                repeat_start: None,
+                repeat_end: None,
+                barline: None,
+                tempos: Vec::new(),
+                tempo_changes: Vec::new(),
+            });
+        }
+
+        let parse_loc = |loc: &Option<String>| -> f64 {
+            if let Some(s) = loc {
+                if let Some((n, d)) = s.split_once('/') {
+                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                        if den > 0.0 { return (num / den) * 4.0; }
+                    }
+                }
+            }
+            0.0
+        };
+
+        for (mut t, abs_beat) in pasted_tempos {
+            // Find which measure it belongs to
+            let mut m_idx = 0;
+            for (i, &start) in measure_start_beats.iter().enumerate() {
+                if abs_beat >= start - 0.001 {
+                    m_idx = i;
+                } else {
+                    break;
+                }
+            }
+            let measure_start = measure_start_beats[m_idx];
+            let rel = abs_beat - measure_start;
+            t.location = Some(format!("{}/16", (rel * 4.0).round() as i32));
+            global_measures[m_idx].tempos.push(t);
+        }
+
+        for (mut tc, abs_beat) in pasted_tcs {
+            let mut m_idx = 0;
+            for (i, &start) in measure_start_beats.iter().enumerate() {
+                if abs_beat >= start - 0.001 {
+                    m_idx = i;
+                } else {
+                    break;
+                }
+            }
+            let measure_start = measure_start_beats[m_idx];
+            let rel = abs_beat - measure_start;
+            tc.location = Some(format!("{}/16", (rel * 4.0).round() as i32));
+            global_measures[m_idx].tempo_changes.push(tc);
+        }
+    }
+
     pub fn prepare_pasted_items(
         items: &mut [crate::mnx::SequenceItem],
         arps: &mut [crate::mnx::Arpeggio],
+        tempos: &mut [crate::mnx::Tempo],
+        tcs: &mut [crate::mnx::TempoChange],
     ) {
         let mut id_map = HashMap::new();
 
@@ -555,6 +737,23 @@ impl MnxEditorApp {
                 arp.span.end = new_id.clone();
             }
         }
+
+        // Map tempo IDs
+        let mut tempo_id_map = HashMap::new();
+        for t in tempos.iter_mut() {
+            if let Some(old_id) = &t.id {
+                let new_id = crate::rebar::generate_uuid();
+                tempo_id_map.insert(old_id.clone(), new_id.clone());
+                t.id = Some(new_id);
+            }
+        }
+        for tc in tcs.iter_mut() {
+            if let Some(old_target) = &tc.target {
+                if let Some(new_target) = tempo_id_map.get(old_target) {
+                    tc.target = Some(new_target.clone());
+                }
+            }
+        }
     }
 
     pub fn action_paste_insert(&mut self) {
@@ -579,11 +778,27 @@ impl MnxEditorApp {
         let mut all_pasted_arps: Vec<crate::mnx::Arpeggio> = Vec::new();
         let mut cur_e = 0;
         let mut inserted = false;
+        
+        let mut dest_beat = 0.0;
+        let mut found_dest_beat = false;
+        let mut cur_beat = 0.0;
+
+        let mut pasted_tempos = cb.tempos.clone();
+        let mut pasted_tcs = cb.tempo_changes.clone();
+        let mut pasted_items = cb.items.clone();
+        let mut pasted_arps = cb.arpeggios.clone();
+        Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps, &mut pasted_tempos, &mut pasted_tcs);
 
         for (m_idx, m) in part.measures.iter().enumerate() {
             let measure_start_e = cur_e;
+            let mut measure_beats = 0.0;
             for seq in &m.sequences {
+                let mut seq_beat = 0.0;
                 for item in &seq.content {
+                    if cur_e == cursor && !found_dest_beat {
+                        dest_beat = cur_beat + seq_beat;
+                        found_dest_beat = true;
+                    }
                     if cur_e == cursor {
                         if cur_e == measure_start_e {
                             if let Some(ts) = &cb.time_signature {
@@ -593,11 +808,8 @@ impl MnxEditorApp {
                             }
                         }
 
-                        let mut pasted_items = cb.items.clone();
-                        let mut pasted_arps = cb.arpeggios.clone();
-                        Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
-                        flat_items.extend(pasted_items);
-                        all_pasted_arps.extend(pasted_arps);
+                        flat_items.extend(pasted_items.clone());
+                        all_pasted_arps.extend(pasted_arps.clone());
                         inserted = true;
                     }
                     flat_items.push(item.clone());
@@ -606,19 +818,42 @@ impl MnxEditorApp {
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
                     };
                     cur_e += item_ev_count;
+                    seq_beat += item.total_beats();
                 }
+                measure_beats = f64::max(measure_beats, seq_beat);
             }
+            cur_beat += measure_beats;
         }
 
         if !inserted {
-            let mut pasted_items = cb.items.clone();
-            let mut pasted_arps = cb.arpeggios.clone();
-            Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
-            flat_items.extend(pasted_items);
-            all_pasted_arps.extend(pasted_arps);
+            dest_beat = cur_beat;
+            flat_items.extend(pasted_items.clone());
+            all_pasted_arps.extend(pasted_arps.clone());
         }
 
         Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, all_pasted_arps);
+        
+        let parse_loc = |loc: &Option<String>| -> f64 {
+            if let Some(s) = loc {
+                if let Some((n, d)) = s.split_once('/') {
+                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                        if den > 0.0 { return (num / den) * 4.0; }
+                    }
+                }
+            }
+            0.0
+        };
+
+        let pasted_tempos_abs: Vec<_> = pasted_tempos.into_iter().map(|t| {
+            let rel = parse_loc(&t.location);
+            (t, dest_beat + rel)
+        }).collect();
+        let pasted_tcs_abs: Vec<_> = pasted_tcs.into_iter().map(|tc| {
+            let rel = parse_loc(&tc.location);
+            (tc, dest_beat + rel)
+        }).collect();
+
+        Self::distribute_tempos(&mut doc.global.measures, part, pasted_tempos_abs, pasted_tcs_abs);
 
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
@@ -664,8 +899,10 @@ impl MnxEditorApp {
             None => return,
         };
 
+        let mut pasted_tempos = cb.tempos.clone();
+        let mut pasted_tcs = cb.tempo_changes.clone();
         let mut cb_items = cb.items.clone();
-        Self::prepare_pasted_items(&mut cb_items, &mut []);
+        Self::prepare_pasted_items(&mut cb_items, &mut [], &mut pasted_tempos, &mut pasted_tcs);
         let mut cb_beats = 0.0;
         for item in &cb_items {
             let beats = match item {
@@ -685,11 +922,23 @@ impl MnxEditorApp {
         let mut cur_e = 0;
         let mut absorbed_beats = 0.0;
         let mut inserted = false;
+        
+        let mut dest_beat = 0.0;
+        let mut cur_beat = 0.0;
+        let mut found_dest_beat = false;
+        let mut pasted_arps = cb.arpeggios.clone();
+        Self::prepare_pasted_items(&mut [], &mut pasted_arps, &mut [], &mut []);
 
         for (m_idx, m) in part.measures.iter().enumerate() {
             let measure_start_e = cur_e;
+            let mut measure_beats = 0.0;
             for seq in &m.sequences {
+                let mut seq_beat = 0.0;
                 for item in &seq.content {
+                    if cur_e == cursor && !found_dest_beat {
+                        dest_beat = cur_beat + seq_beat;
+                        found_dest_beat = true;
+                    }
                     if cur_e == cursor && !inserted {
                         if cur_e == measure_start_e {
                             if let Some(ts) = &cb.time_signature {
@@ -699,11 +948,8 @@ impl MnxEditorApp {
                             }
                         }
 
-                        let mut pasted_items = cb.items.clone();
-                        let mut pasted_arps = cb.arpeggios.clone();
-                        Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
-                        flat_items.extend(pasted_items);
-                        all_pasted_arps.extend(pasted_arps);
+                        flat_items.extend(cb_items.clone());
+                        all_pasted_arps.extend(pasted_arps.clone());
                         inserted = true;
                     }
 
@@ -747,19 +993,42 @@ impl MnxEditorApp {
                     }
 
                     cur_e += item_ev_count;
+                    seq_beat += item_beats;
                 }
+                measure_beats = f64::max(measure_beats, seq_beat);
             }
+            cur_beat += measure_beats;
         }
 
         if !inserted {
-            let mut pasted_items = cb.items.clone();
-            let mut pasted_arps = cb.arpeggios.clone();
-            Self::prepare_pasted_items(&mut pasted_items, &mut pasted_arps);
-            flat_items.extend(pasted_items);
-            all_pasted_arps.extend(pasted_arps);
+            dest_beat = cur_beat;
+            flat_items.extend(cb_items.clone());
+            all_pasted_arps.extend(pasted_arps.clone());
         }
 
         Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, all_pasted_arps);
+        
+        let parse_loc = |loc: &Option<String>| -> f64 {
+            if let Some(s) = loc {
+                if let Some((n, d)) = s.split_once('/') {
+                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                        if den > 0.0 { return (num / den) * 4.0; }
+                    }
+                }
+            }
+            0.0
+        };
+
+        let pasted_tempos_abs: Vec<_> = pasted_tempos.into_iter().map(|t| {
+            let rel = parse_loc(&t.location);
+            (t, dest_beat + rel)
+        }).collect();
+        let pasted_tcs_abs: Vec<_> = pasted_tcs.into_iter().map(|tc| {
+            let rel = parse_loc(&tc.location);
+            (tc, dest_beat + rel)
+        }).collect();
+
+        Self::distribute_tempos(&mut doc.global.measures, part, pasted_tempos_abs, pasted_tcs_abs);
 
         let cb_count = self.clipboard_event_count();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {

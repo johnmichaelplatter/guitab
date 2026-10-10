@@ -3,6 +3,147 @@ use crate::yaml_editor::*;
 use eframe::egui::{self};
 
 impl MnxEditorApp {
+
+    pub(crate) fn action_remove_tempo_change(&mut self, target_id: &str) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            for measure in &mut doc.global.measures {
+                measure.tempo_changes.retain(|tc| tc.target.as_deref() != Some(target_id));
+                measure.tempos.retain(|t| t.id.as_deref() != Some(target_id));
+            }
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+            }
+        }
+    }
+
+    pub(crate) fn action_insert_tempo_change(&mut self, event_idx: usize, end_bpm: f64, dur_beats: f64, bend_str: &str, existing_target_id: Option<String>) {
+        if let Some(tid) = existing_target_id {
+            self.action_remove_tempo_change(&tid);
+        }
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            let mut start_m_idx = 0;
+            let mut start_offset = 0.0;
+            let mut found = false;
+            
+            // Find start
+            if let Some(part) = doc.parts.first() {
+                let mut current_idx = 0;
+                for (m_idx, measure) in part.measures.iter().enumerate() {
+                    if let Some(seq) = measure.sequences.first() {
+                        let mut events_scaled = Vec::new();
+                        crate::midi::walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                        start_offset = 0.0;
+                        for (e, scale) in events_scaled {
+                            if current_idx == event_idx {
+                                start_m_idx = m_idx;
+                                found = true;
+                                break;
+                            }
+                            let beats = crate::validate::duration_to_quarter_beats(&e.duration);
+                            start_offset += beats * scale;
+                            current_idx += 1;
+                        }
+                        if found { break; }
+                    }
+                }
+            }
+            if !found && event_idx > 0 {
+                start_m_idx = doc.parts.first().map(|p| p.measures.len().saturating_sub(1)).unwrap_or(0);
+                start_offset = 0.0;
+            }
+
+            // Calculate location fraction
+            let get_fraction = |offset: f64| -> Option<String> {
+                if offset > 0.001 {
+                    let num = (offset * 1000.0).round() as u32;
+                    let den = 4000;
+                    let mut a = num;
+                    let mut b = den;
+                    while b != 0 { let t = b; b = a % b; a = t; }
+                    Some(format!("{}/{}", num / a, den / a))
+                } else {
+                    None
+                }
+            };
+
+            let start_location = get_fraction(start_offset);
+
+            // Now find end location by accumulating beats
+            let mut end_m_idx = start_m_idx;
+            let mut end_offset = start_offset + dur_beats;
+            
+            // We need to advance measures if end_offset > measure duration.
+            // But we might not know measure duration unless we parse the time signature.
+            // For simplicity, we can calculate the duration of the current measure by summing its events.
+            if let Some(part) = doc.parts.first() {
+                while end_m_idx < part.measures.len() {
+                    let measure = &part.measures[end_m_idx];
+                    let mut m_duration = 0.0;
+                    if let Some(seq) = measure.sequences.first() {
+                        let mut events_scaled = Vec::new();
+                        crate::midi::walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                        for (e, scale) in events_scaled {
+                            m_duration += crate::validate::duration_to_quarter_beats(&e.duration) * scale;
+                        }
+                    }
+                    if m_duration == 0.0 { m_duration = 4.0; } // fallback
+                    
+                    if end_offset <= m_duration + 0.001 {
+                        // It ends in this measure
+                        break;
+                    } else {
+                        end_offset -= m_duration;
+                        end_m_idx += 1;
+                    }
+                }
+            }
+
+            let end_location = get_fraction(end_offset);
+            
+            // Ensure global measures exist up to end_m_idx
+            while doc.global.measures.len() <= end_m_idx.max(start_m_idx) {
+                doc.global.measures.push(crate::mnx::GlobalMeasure {
+                    time: None,
+                    repeat_start: None,
+                    repeat_end: None,
+                    barline: None,
+                    tempos: Vec::new(),
+                    tempo_changes: Vec::new(),
+                });
+            }
+
+            // Create target tempo object
+            let tempo_id = format!("tempo{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            
+            // Wait, we need to know what 'duration_value' is for the end_bpm.
+            // We can just use "quarter" as a standard default for the target tempo.
+            let target_tempo = crate::mnx::Tempo {
+                id: Some(tempo_id.clone()),
+                bpm: end_bpm,
+                value: crate::mnx::Duration {
+                    base: "quarter".to_string(),
+                    dots: None,
+                    multiple: None,
+                },
+                location: end_location,
+            };
+            
+            doc.global.measures[end_m_idx].tempos.push(target_tempo);
+            
+            // Create tempoChange object
+            let tempo_change = crate::mnx::TempoChange {
+                location: start_location,
+                bend: Some(bend_str.to_string()),
+                target: Some(tempo_id),
+            };
+            
+            doc.global.measures[start_m_idx].tempo_changes.push(tempo_change);
+
+            let new_yaml = serde_saphyr::to_string(&doc).unwrap();
+            self.update_yaml(new_yaml);
+        }
+    }
+
     pub(crate) fn insert_tempo(&mut self, bpm: f64, duration_value: &str, dots: u32, event_idx: usize) {
         if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
             let mut target_m_idx = 0;
@@ -45,6 +186,7 @@ impl MnxEditorApp {
                     repeat_end: None,
                     barline: None,
                     tempos: Vec::new(),
+                    tempo_changes: Vec::new(),
                 });
             }
 
@@ -67,6 +209,7 @@ impl MnxEditorApp {
             };
             
             let tempo = crate::mnx::Tempo {
+                id: None,
                 bpm,
                 value: crate::mnx::Duration {
                     base: duration_value.to_string(),
@@ -641,6 +784,7 @@ impl MnxEditorApp {
             doc.global.measures.push(crate::mnx::GlobalMeasure {
                 time: Some(ts),
                 repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
+                    tempo_changes: Vec::new(),
             });
         }
 
@@ -1261,6 +1405,7 @@ impl MnxEditorApp {
                             unit: time_sig_unit,
                         }),
                         repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
+                    tempo_changes: Vec::new(),
                     };
                     doc.global.measures.push(gm);
                 }
@@ -1314,6 +1459,7 @@ impl MnxEditorApp {
                             unit: time_sig_unit,
                         }),
                         repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
+                    tempo_changes: Vec::new(),
                     };
                     doc.global.measures.push(gm);
                 }

@@ -504,7 +504,17 @@ pub fn draw_tablature(
     > = std::collections::HashMap::new();
     let mut event_id_to_idx: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
+
     let mut collected_ties: Vec<(Pos2, u8, i32, String)> = Vec::new();
+    
+    struct ActiveTempoChange {
+        label: String,
+        start_x: f32,
+        y: f32,
+        target_id: String,
+    }
+    let mut active_tempo_changes: Vec<ActiveTempoChange> = Vec::new();
+
     let mut collected_slurs: Vec<(crate::mnx::Slur, Vec<(Option<String>, u8, i32, Pos2)>)> =
         Vec::new();
     let mut string_timeline: std::collections::HashMap<u8, Vec<(usize, i32, Pos2)>> =
@@ -529,6 +539,7 @@ pub fn draw_tablature(
             for item in &seq.content {
                 item.to_layout_items(&mut layout_items);
             }
+            let num_events = seq.flattened_events().len();
             let mut e_idx = 0;
             for l_item in layout_items {
                 let event = match l_item {
@@ -593,7 +604,81 @@ pub fn draw_tablature(
 
                 if let Some(g) = global {
                     if let Some(gm) = g.measures.get(m_idx) {
+
+                        // Check for tempo_changes
+                        for tc in &gm.tempo_changes {
+                            let tc_beat = if let Some(s) = &tc.location {
+                                if let Some((n, d)) = s.split_once('/') {
+                                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                                        if den > 0.0 { (num / den) * 4.0 } else { 0.0 }
+                                    } else { 0.0 }
+                                } else { 0.0 }
+                            } else { 0.0 };
+                            
+                            let is_last = e_idx == num_events - 1;
+                            let in_range = if is_last {
+                                tc_beat >= start_beat - 0.001 && tc_beat <= end_beat + 0.001
+                            } else {
+                                tc_beat >= start_beat - 0.001 && tc_beat < end_beat - 0.001
+                            };
+                            
+                            if in_range {
+                                // Find end bpm to know if rit or accel
+                                let mut end_bpm = 120.0;
+                                if let Some(tid) = &tc.target {
+                                    for gm2 in &g.measures {
+                                        for t in &gm2.tempos {
+                                            if t.id.as_ref() == Some(tid) {
+                                                end_bpm = t.bpm;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // get current bpm (just find the most recent tempo BEFORE this tc, or default to 120)
+                                let mut current_bpm = 120.0;
+                                for m_i in 0..=m_idx {
+                                    if let Some(gm_prev) = g.measures.get(m_i) {
+                                        for t in &gm_prev.tempos {
+                                            let t_beat = if let Some(s) = &t.location {
+                                                if let Some((n, d)) = s.split_once('/') {
+                                                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                                                        if den > 0.0 { (num / den) * 4.0 } else { 0.0 }
+                                                    } else { 0.0 }
+                                                } else { 0.0 }
+                                            } else { 0.0 };
+                                            if m_i < m_idx || t_beat <= tc_beat + 0.001 {
+                                                if Some(t.id.clone().unwrap_or_default()) != tc.target {
+                                                    current_bpm = t.bpm;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                let label = if end_bpm > current_bpm { "accel." } else { "rit." };
+                                
+                                let y = string_y_coords[0] - 45.0;
+                                
+                                let text_rect = painter.text(
+                                    Pos2::new(current_x, y),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    label,
+                                    egui::FontId::new(16.0, egui::FontFamily::Proportional).clone(),
+                                    note_color,
+                                );
+                                
+                                active_tempo_changes.push(ActiveTempoChange {
+                                    label: label.to_string(),
+                                    start_x: text_rect.max.x + 5.0,
+                                    y,
+                                    target_id: tc.target.clone().unwrap_or_default(),
+                                });
+                            }
+                        }
+
                         for tempo in &gm.tempos {
+
                             let tempo_beat = if let Some(s) = &tempo.location {
                                 if let Some((n, d)) = s.split_once('/') {
                                     if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
@@ -605,7 +690,13 @@ pub fn draw_tablature(
                             } else {
                                 0.0
                             };
-                            if (tempo_beat - start_beat).abs() < 0.001 {
+                            let is_last = e_idx == num_events - 1;
+                            let in_range = if is_last {
+                                tempo_beat >= start_beat - 0.001 && tempo_beat <= end_beat + 0.001
+                            } else {
+                                tempo_beat >= start_beat - 0.001 && tempo_beat < end_beat - 0.001
+                            };
+                            if in_range {
                                 let glyph = match tempo.value.base.as_str() {
                                     "16th" | "sixteenth" => "\u{ECA9}",
                                     "eighth" => "\u{ECA7}",
@@ -626,6 +717,7 @@ pub fn draw_tablature(
                                     note_color,
                                 );
                                 
+
                                 painter.text(
                                     Pos2::new(glyph_rect.max.x + 2.0, string_y_coords[0] - 45.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -633,6 +725,26 @@ pub fn draw_tablature(
                                     egui::FontId::proportional(16.0),
                                     note_color,
                                 );
+                                
+                                // Check if this tempo is a target for any active tempo change
+                                if let Some(tid) = &tempo.id {
+                                    active_tempo_changes.retain(|atc| {
+                                        if &atc.target_id == tid {
+                                            // Draw dashed line
+                                            let p1 = Pos2::new(atc.start_x, atc.y - 6.0);
+                                            let p2 = Pos2::new(current_x - 5.0, atc.y - 6.0);
+                                            let mut x = p1.x;
+                                            while x < p2.x {
+                                                painter.line_segment([Pos2::new(x, p1.y), Pos2::new((x + 5.0).min(p2.x), p1.y)], egui::Stroke::new(1.0, note_color));
+                                                x += 10.0;
+                                            }
+                                            false // remove
+                                        } else {
+                                            true // keep
+                                        }
+                                    });
+                                }
+
                             }
                         }
                     }

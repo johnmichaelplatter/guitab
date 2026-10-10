@@ -255,8 +255,20 @@ impl<'a> PlaybackTrackGenerator<'a> {
         for &m_idx in flattened_measures {
             if m_idx < self.doc.global.measures.len() {
                 let gm = &self.doc.global.measures[m_idx];
+                let parse_loc = |loc: &Option<String>| -> f64 {
+                    if let Some(s) = loc {
+                        if let Some((n, d)) = s.split_once('/') {
+                            if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                                if den > 0.0 { return (num / den) * 4.0; }
+                            }
+                        }
+                    }
+                    0.0
+                };
                 for tempo in &gm.tempos {
-                    if scan_time <= start_tick_offset {
+                    let offset_beats = parse_loc(&tempo.location);
+                    let tempo_ticks = scan_time + (offset_beats * self.options.ppq.as_int() as f64) as u32;
+                    if tempo_ticks <= start_tick_offset {
                         tempo_at_start = tempo.bpm * crate::validate::duration_to_quarter_beats(&tempo.value);
                     }
                 }
@@ -287,17 +299,112 @@ impl<'a> PlaybackTrackGenerator<'a> {
             
             if m_idx < self.doc.global.measures.len() {
                 let gm = &self.doc.global.measures[m_idx];
+                
+                // Helper to parse location
+                let parse_loc = |loc: &Option<String>| -> f64 {
+                    if let Some(s) = loc {
+                        if let Some((n, d)) = s.split_once('/') {
+                            if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                                if den > 0.0 { return (num / den) * 4.0; }
+                            }
+                        }
+                    }
+                    0.0
+                };
+
                 for tempo in &gm.tempos {
+                    let offset_beats = parse_loc(&tempo.location);
+                    let tempo_ticks = current_time_ticks + (offset_beats * self.options.ppq.as_int() as f64) as u32;
                     let eff_bpm = tempo.bpm * crate::validate::duration_to_quarter_beats(&tempo.value);
-                    // Only emit if we are strictly past start_tick_offset, because we already emitted the initial tempo at tick 0
-                    if current_time_ticks > start_tick_offset && eff_bpm != current_bpm {
+                    
+                    if tempo_ticks > start_tick_offset && eff_bpm != current_bpm {
                         current_bpm = eff_bpm;
-                        let event_start_ticks = current_time_ticks.saturating_sub(start_tick_offset);
+                        let event_start_ticks = tempo_ticks.saturating_sub(start_tick_offset);
                         let micros_per_beat = (60_000_000.0 / current_bpm).round() as u32;
                         self.abs_events.push(InternalAbsoluteEvent {
                             time_ticks: event_start_ticks,
                             kind: InternalEventKind::Tempo(micros_per_beat),
                         });
+                    }
+                }
+
+                for tc in &gm.tempo_changes {
+                    let start_offset = parse_loc(&tc.location);
+                    let start_ticks = current_time_ticks + (start_offset * self.options.ppq.as_int() as f64) as u32;
+                    
+                    if start_ticks >= start_tick_offset {
+                        // find target
+                        let mut target_bpm = current_bpm;
+                        let mut target_ticks = start_ticks + self.options.ppq.as_int() as u32; // fallback 1 beat
+                        if let Some(tid) = &tc.target {
+                            let mut found = false;
+                            let mut scan_time = 0;
+                            for &m2 in flattened_measures {
+                                if m2 < self.doc.global.measures.len() {
+                                    for t in &self.doc.global.measures[m2].tempos {
+                                        if t.id.as_ref() == Some(tid) {
+                                            let off = parse_loc(&t.location);
+                                            target_ticks = scan_time + (off * self.options.ppq.as_int() as f64) as u32;
+                                            target_bpm = t.bpm * crate::validate::duration_to_quarter_beats(&t.value);
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if found { break; }
+                                // add measure duration to scan_time
+                                let mut m_beats = 0.0;
+                                if let Some(p) = self.doc.parts.first() {
+                                    if let Some(s) = p.measures[m2].sequences.first() {
+                                        let mut evs = Vec::new();
+                                        crate::midi::walk_events_with_scaling(&s.content, &mut evs, 1.0);
+                                        for (e, scale) in evs { m_beats += crate::validate::duration_to_quarter_beats(&e.duration) * scale; }
+                                    }
+                                }
+                                if m_beats == 0.0 { m_beats = 4.0; }
+                                scan_time += (m_beats * self.options.ppq.as_int() as f64) as u32;
+                            }
+                        }
+                        
+                        let duration_ticks = target_ticks.saturating_sub(start_ticks).max(1);
+                        let start_bpm = current_bpm;
+                        let bpm_diff = target_bpm - start_bpm;
+                        
+                        let curve_editor = if let Some(bend_str) = &tc.bend {
+                            Some(crate::curve_editor::parse_bend_string(
+                                bend_str,
+                                eframe::egui::Rect::from_min_size(
+                                    eframe::egui::pos2(0.0, 0.0),
+                                    eframe::egui::vec2(100.0, 100.0),
+                                ),
+                            ))
+                        } else { None };
+                        
+                        let num_samples = 32.min(duration_ticks as usize);
+                        for i in 1..=num_samples {
+                            let progress = i as f64 / num_samples as f64;
+                            let tick_offset = ((duration_ticks as f64) * progress) as u32;
+                            let ev_ticks = start_ticks + tick_offset;
+                            
+                            let mut interp_prog = progress;
+                            if let Some(ce) = &curve_editor {
+                                let y_screen = ce.sample_y_at_x((progress * 100.0) as f32);
+                                let y_norm = (100.0 - y_screen).clamp(0.0, 100.0);
+                                interp_prog = (y_norm / 100.0) as f64;
+                            }
+                            
+                            let cur_bpm = start_bpm + bpm_diff * interp_prog;
+                            if ev_ticks > start_tick_offset {
+                                let ev_start = ev_ticks.saturating_sub(start_tick_offset);
+                                let micros_per_beat = (60_000_000.0 / cur_bpm).round() as u32;
+                                self.abs_events.push(InternalAbsoluteEvent {
+                                    time_ticks: ev_start,
+                                    kind: InternalEventKind::Tempo(micros_per_beat),
+                                });
+                            }
+                        }
+                        // Set current_bpm to target
+                        current_bpm = target_bpm;
                     }
                 }
             }

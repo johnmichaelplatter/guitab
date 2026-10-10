@@ -15,6 +15,9 @@ impl MnxEditorApp {
                 string: u8,
                 bend_str: String,
             },
+
+            InsertTempoChange { event_idx: usize, end_bpm: f64, dur_beats: f64, bend_str: String, existing_target_id: Option<String> },
+            RemoveTempoChange { target_id: String },
             InsertTimeSignature {
                 count: u32,
                 unit: u32,
@@ -121,6 +124,93 @@ impl MnxEditorApp {
                                 }
                             }
                             if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+
+                if close_dialog {
+                    self.active_dialog = ActiveDialog::None;
+                }
+            }
+
+
+            ActiveDialog::InsertTempoChange {
+                event_idx,
+                ending_tempo,
+                duration_beats,
+                curve_editor,
+                existing_target_id,
+            } => {
+                let mut close_dialog = false;
+                let event_idx_val = *event_idx;
+
+                egui::Window::new("Insert Ritardando / Accelerando")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Ending Tempo:");
+                            let response = ui.text_edit_singleline(ending_tempo);
+                            if response.changed() {
+                                if let Ok(bpm) = ending_tempo.parse::<f64>() {
+                                    let current_bpm = 120.0;
+                                    
+                                    let rect = curve_editor.last_rect.unwrap_or(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0)));
+                                    if bpm > current_bpm {
+                                        let top_right = rect.right_top();
+                                        let bottom_left = rect.left_bottom();
+                                        let delta = top_right - bottom_left;
+                                        curve_editor.nodes = vec![
+                                            crate::curve_editor::CurveNode { anchor: bottom_left, left_handle: bottom_left, right_handle: bottom_left + delta * 0.33 },
+                                            crate::curve_editor::CurveNode { anchor: top_right, left_handle: bottom_left + delta * 0.66, right_handle: top_right },
+                                        ];
+                                    } else {
+                                        let top_left = rect.left_top();
+                                        let bottom_right = rect.right_bottom();
+                                        let delta = bottom_right - top_left;
+                                        curve_editor.nodes = vec![
+                                            crate::curve_editor::CurveNode { anchor: top_left, left_handle: top_left, right_handle: top_left + delta * 0.33 },
+                                            crate::curve_editor::CurveNode { anchor: bottom_right, left_handle: top_left + delta * 0.66, right_handle: bottom_right },
+                                        ];
+                                    }
+
+                                }
+                            }
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Duration (in beats):");
+                            ui.text_edit_singleline(duration_beats);
+                        });
+                        
+                        ui.label("Tempo Curve:");
+                        let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(300.0, 150.0));
+                        curve_editor.ui(ui, rect, 1, 1);
+                        ui.add_space(8.0);
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button("OK").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                if let (Ok(end_bpm), Ok(dur_beats)) = (ending_tempo.parse::<f64>(), duration_beats.parse::<f64>()) {
+                                    
+                                    let bend_str = curve_editor.to_svg_path_normalized();
+                                    apply_action = Some(DialogAction::InsertTempoChange { 
+                                        event_idx: event_idx_val, 
+                                        end_bpm, 
+                                        dur_beats, 
+                                        bend_str,
+                                        existing_target_id: existing_target_id.clone(),
+                                    });
+                                    close_dialog = true;
+                                }
+                            }
+                            if let Some(tid) = existing_target_id {
+                                if ui.button("Remove rit/accel").clicked() {
+                                    apply_action = Some(DialogAction::RemoveTempoChange { target_id: tid.clone() });
+                                    close_dialog = true;
+                                }
+                            }
+                            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                                 close_dialog = true;
                             }
                         });
@@ -549,6 +639,15 @@ impl MnxEditorApp {
 
         if let Some(action) = apply_action {
             match action {
+
+                DialogAction::InsertTempoChange { event_idx, end_bpm, dur_beats, bend_str, existing_target_id } => {
+                    self.action_insert_tempo_change(event_idx, end_bpm, dur_beats, &bend_str, existing_target_id);
+                    self.process_and_render();
+                }
+                DialogAction::RemoveTempoChange { target_id } => {
+                    self.action_remove_tempo_change(&target_id);
+                    self.process_and_render();
+                }
                 DialogAction::InsertTempo { bpm, duration_value, dots, event_idx } => {
                     self.insert_tempo(bpm, &duration_value, dots, event_idx);
                     self.process_and_render();

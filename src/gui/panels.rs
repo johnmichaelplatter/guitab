@@ -297,6 +297,129 @@ impl MnxEditorApp {
                     };
                 }
 
+                if ui.button("rit. / accel.").clicked() {
+                    let mut start_event_idx = if let (Some(anchor), Some(current)) = (self.selection_anchor, self.selected_event_idx) {
+                        anchor.min(current)
+                    } else {
+                        self.selected_event_idx.unwrap_or(0)
+                    };
+                    
+                    // calculate default duration beats based on selected range
+                    let mut default_beats = 4.0;
+                    if let (Some(_anchor), Some(_current)) = (self.selection_anchor, self.selected_event_idx) {
+                        if let Some((items, _, _, _, _)) = self.extract_selected_items() {
+                            let mut total = 0.0;
+                            for item in &items {
+                                total += item.total_beats();
+                            }
+                            if total > 0.0 {
+                                default_beats = total;
+                            }
+                        }
+                    }
+
+                    
+                    let mut ce = crate::curve_editor::MonotonicCurveEditor::new(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0)));
+ // high to low by default
+                    let mut existing_target = None;
+                    let mut start_bpm = "120".to_string();
+                    if let Some(doc) = &self.parsed_mnx {
+                        let mut event_beats = Vec::new();
+                        let mut cur_beat = 0.0;
+                        if let Some(part) = doc.parts.first() {
+                            for m in &part.measures {
+                                let mut measure_beats: f64 = 0.0;
+                                for seq in &m.sequences {
+                                    let mut seq_beat: f64 = 0.0;
+                                    for item in &seq.content {
+                                        event_beats.push(cur_beat + seq_beat);
+                                        seq_beat += item.total_beats();
+                                    }
+                                    measure_beats = measure_beats.max(seq_beat);
+                                }
+                                cur_beat += measure_beats;
+                            }
+                        }
+                        let cursor_beat = event_beats.get(start_event_idx).copied().unwrap_or(0.0);
+                        
+                        let parse_loc = |loc: &Option<String>| -> f64 {
+                            if let Some(s) = loc {
+                                if let Some((n, d)) = s.split_once('/') {
+                                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
+                                        if den > 0.0 { return (num / den) * 4.0; }
+                                    }
+                                }
+                            }
+                            0.0
+                        };
+
+                        let mut measure_start_beats = Vec::new();
+                        let mut cb = 0.0;
+                        if let Some(part) = doc.parts.first() {
+                            for m in &part.measures {
+                                measure_start_beats.push(cb);
+                                let mut mb = 0.0;
+                                for seq in &m.sequences {
+                                    let mut sb = 0.0;
+                                    for item in &seq.content {
+                                        sb += item.total_beats();
+                                    }
+                                    mb = f64::max(mb, sb);
+                                }
+                                cb += mb;
+                            }
+                        }
+
+                        'tc_search: for (m_idx, gm) in doc.global.measures.iter().enumerate() {
+                            let m_start = measure_start_beats.get(m_idx).copied().unwrap_or(0.0);
+                            for tc in &gm.tempo_changes {
+                                let tc_beat = m_start + parse_loc(&tc.location);
+                                if cursor_beat >= tc_beat - 0.001 {
+                                    if let Some(tid) = &tc.target {
+                                        for (m_idx2, gm2) in doc.global.measures.iter().enumerate() {
+                                            let m_start2 = measure_start_beats.get(m_idx2).copied().unwrap_or(0.0);
+                                            for t in &gm2.tempos {
+                                                if t.id.as_ref() == Some(tid) {
+                                                    let t_beat = m_start2 + parse_loc(&t.location);
+                                                    if cursor_beat <= t_beat + 0.001 {
+                                                        existing_target = Some(tid.clone());
+                                                        start_bpm = t.bpm.to_string();
+                                                        default_beats = t_beat - tc_beat;
+                                                        if let Some(bend) = &tc.bend {
+                                                            ce = crate::curve_editor::parse_bend_string(bend, egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0)));
+                                                        }
+                                                        
+                                                        let mut best_idx = 0;
+                                                        let mut best_diff = f64::MAX;
+                                                        for (idx, &eb) in event_beats.iter().enumerate() {
+                                                            let diff = (eb - tc_beat).abs();
+                                                            if diff < best_diff {
+                                                                best_diff = diff;
+                                                                best_idx = idx;
+                                                            }
+                                                        }
+                                                        start_event_idx = best_idx;
+                                                        
+                                                        break 'tc_search;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    self.active_dialog = ActiveDialog::InsertTempoChange {
+                        event_idx: start_event_idx,
+                        ending_tempo: start_bpm,
+                        duration_beats: default_beats.to_string(),
+                        curve_editor: ce,
+                        existing_target_id: existing_target,
+                    };
+                }
+
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);

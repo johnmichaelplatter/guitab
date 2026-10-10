@@ -105,6 +105,8 @@ pub struct ClipboardData {
     pub items: Vec<crate::mnx::SequenceItem>,
     pub time_signature: Option<crate::mnx::TimeSignature>,
     pub arpeggios: Vec<crate::mnx::Arpeggio>,
+    pub tempos: Vec<crate::mnx::Tempo>,
+    pub tempo_changes: Vec<crate::mnx::TempoChange>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +129,14 @@ pub enum ActiveDialog {
         text: String,
     },
     ConfirmDiscardChanges,
+    InsertTempoChange {
+        event_idx: usize,
+        ending_tempo: String,
+        duration_beats: String,
+        curve_editor: crate::curve_editor::MonotonicCurveEditor,
+        existing_target_id: Option<String>,
+    },
+
     CreateTuplet {
         inner_multiple: u32,
         outer_multiple: u32,
