@@ -398,6 +398,41 @@ impl MnxEditorApp {
             }
         });
 
+        let mut handled = false;
+        if is_copy || (cmd && c_pressed) {
+            self.action_copy();
+            let cb_after = self
+                .clipboard
+                .as_ref()
+                .map(|cb| cb.items.len())
+                .unwrap_or(0);
+            println!("action_copy finished. cb_after: {}", cb_after);
+            ui.ctx().copy_text("mnx_tab_cli_data".to_string());
+            ui.input_mut(|i| i.events.clear());
+            handled = true;
+        } else if is_cut || (cmd && x_pressed) {
+            if shift_down {
+                self.action_cut_time();
+            } else {
+                self.action_cut_overwrite();
+            }
+            ui.ctx().copy_text("mnx_tab_cli_data".to_string());
+            ui.input_mut(|i| i.events.clear());
+            handled = true;
+        } else if is_paste || (cmd && v_pressed) {
+            if shift_down {
+                self.action_paste_insert();
+            } else {
+                self.action_paste_overwrite();
+            }
+            ui.input_mut(|i| i.events.clear());
+            handled = true;
+        }
+
+        if handled {
+            return;
+        }
+
         if cmd {
             if y_pressed {
                 self.redo();
@@ -410,32 +445,6 @@ impl MnxEditorApp {
                     self.undo();
                 }
                 ui.input_mut(|i| i.events.clear()); // consume
-                return;
-            } else if is_copy || c_pressed {
-                self.action_copy();
-                let cb_after = self
-                    .clipboard
-                    .as_ref()
-                    .map(|cb| cb.items.len())
-                    .unwrap_or(0);
-                println!("action_copy finished. cb_after: {}", cb_after);
-                ui.input_mut(|i| i.events.clear());
-                return;
-            } else if is_cut || x_pressed {
-                if shift_down {
-                    self.action_cut_time();
-                } else {
-                    self.action_cut_overwrite();
-                }
-                ui.input_mut(|i| i.events.clear());
-                return;
-            } else if is_paste || v_pressed {
-                if shift_down {
-                    self.action_paste_insert();
-                } else {
-                    self.action_paste_overwrite();
-                }
-                ui.input_mut(|i| i.events.clear());
                 return;
             } else if i_pressed {
                 self.action_insert_time();

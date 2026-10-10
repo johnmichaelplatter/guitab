@@ -882,6 +882,7 @@ impl MnxEditorApp {
     }
 
     pub fn action_paste_overwrite(&mut self) {
+        println!("action_paste_overwrite CALLED! cursor: {:?}, cb_is_some: {}", self.selected_event_idx, self.clipboard.is_some());
         let cursor = match self.selected_event_idx {
             Some(c) => c,
             None => return,
