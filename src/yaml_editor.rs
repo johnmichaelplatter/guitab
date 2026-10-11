@@ -33,7 +33,13 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
         let total_end = line_starts[end_line] + lines[end_line].len();
 
         let event_text = &yaml[total_start..total_end];
-        if event_text.contains("type: tuplet") {
+        if event_text.contains("type: tuplet")
+            || event_text.contains("type: \"tuplet\"")
+            || event_text.contains("type: 'tuplet'")
+            || event_text.contains("type: grace")
+            || event_text.contains("type: \"grace\"")
+            || event_text.contains("type: 'grace'")
+        {
             return;
         }
 
@@ -892,6 +898,13 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
                     }
                     return removed;
                 }
+                crate::mnx::SequenceItem::Grace(g) => {
+                    let removed = remove_last_blank(&mut g.content);
+                    if g.content.is_empty() {
+                        items.pop();
+                    }
+                    return removed;
+                }
             }
         }
         false
@@ -1433,4 +1446,68 @@ pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &
     
     // If measure not found, we could try to create global measures, but let's assume it exists.
     yaml.to_string()
+}
+pub fn insert_grace_before_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {
+    if let Ok(doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml) {
+        if doc.find_event_grace_info(event_idx).is_some() {
+            return None;
+        }
+        if event_idx > 0 {
+            if let Some(prev_info) = doc.find_event_grace_info(event_idx - 1) {
+                if prev_info.event_range.end == event_idx {
+                    return None;
+                }
+            }
+        }
+    }
+    let event_ranges = find_all_event_ranges(yaml);
+    let er = event_ranges.get(event_idx)?;
+    let event_text = yaml.get(er.total_range.clone())?;
+
+    let first_line_start = event_text.find('-').unwrap_or(0);
+    let before_dash = &event_text[..first_line_start];
+    let indent_len = before_dash
+        .rfind('\n')
+        .map(|p| before_dash.len() - p - 1)
+        .unwrap_or(before_dash.len());
+    
+    let dash_indent = " ".repeat(indent_len);
+    let prop_indent = " ".repeat(indent_len + 2);
+    let inner_dash_indent = " ".repeat(indent_len + 4);
+
+    let mut grace_yaml = String::new();
+    grace_yaml.push_str(&format!("{}- type: grace\n", dash_indent));
+    grace_yaml.push_str(&format!("{}content:\n", prop_indent));
+    grace_yaml.push_str(&format!("{}- duration: {{ base: eighth }}\n", inner_dash_indent));
+    grace_yaml.push_str(&format!("{}  rest: {{}}\n", inner_dash_indent));
+    
+    let mut result = yaml.to_string();
+    result.insert_str(er.total_range.start, &grace_yaml);
+    Some(result)
+}
+pub fn append_blank_note_to_grace_block_in_yaml(yaml: &str, e_idx: usize) -> Option<String> {
+    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    let info = doc.find_event_grace_info(e_idx)?;
+    let event_ranges = find_all_event_ranges(yaml);
+    
+    // We want to append to the end of the grace block's content array.
+    // The last event in the grace block is at info.event_range.end - 1.
+    let last_er = event_ranges.get(info.event_range.end - 1)?;
+    let last_event_text = yaml.get(last_er.total_range.clone())?;
+    
+    let first_line_start = last_event_text.find('-').unwrap_or(0);
+    let before_dash = &last_event_text[..first_line_start];
+    let indent_len = before_dash
+        .rfind('\n')
+        .map(|p| before_dash.len() - p - 1)
+        .unwrap_or(before_dash.len());
+    let inner_dash_indent = " ".repeat(indent_len);
+    
+    let mut new_event_yaml = String::new();
+    new_event_yaml.push_str(&format!("\n{}- duration: {{ base: eighth }}\n", inner_dash_indent));
+    new_event_yaml.push_str(&format!("{}  rest: {{}}", inner_dash_indent));
+    
+    let mut result = yaml.to_string();
+    result.insert_str(last_er.total_range.end, &new_event_yaml);
+    Some(result)
 }

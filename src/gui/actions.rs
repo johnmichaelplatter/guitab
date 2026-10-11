@@ -813,6 +813,7 @@ impl MnxEditorApp {
                                 crate::validate::duration_to_quarter_beats(&t.outer.duration)
                                     * (t.outer.multiple as f64)
                             }
+                            crate::mnx::SequenceItem::Grace(_) => 0.0,
                         };
 
                         if current_beats + item_beats <= capacity + 0.001 {
@@ -832,6 +833,9 @@ impl MnxEditorApp {
                                     }
                                 }
                                 crate::mnx::SequenceItem::Tuplet(_t) => {
+                                    new_seq.push(item.clone());
+                                }
+                                crate::mnx::SequenceItem::Grace(_) => {
                                     new_seq.push(item.clone());
                                 }
                             }
@@ -1263,6 +1267,9 @@ impl MnxEditorApp {
                 crate::mnx::SequenceItem::Tuplet(tu) => {
                     used_beats += crate::validate::duration_to_quarter_beats(&tu.outer.duration)
                         * (tu.outer.multiple as f64);
+                }
+                crate::mnx::SequenceItem::Grace(_) => {
+                    // Grace notes have 0.0 beats duration
                 }
             }
         }
@@ -1740,6 +1747,113 @@ impl crate::gui::MnxEditorApp {
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
             self.process_and_render();
+        }
+    }
+}
+
+impl crate::gui::MnxEditorApp {
+    pub fn action_toggle_grace(&mut self) {
+        if let (Some(e_idx), Some(doc)) = (self.selected_event_idx, &self.parsed_mnx) {
+            if let Some(info) = doc.find_event_grace_info(e_idx) {
+                // We are in a grace block. Pop out.
+                // Move selection to the event after the grace block.
+                self.selected_event_idx = Some(info.event_range.end);
+            } else {
+                // Not in a grace block.
+                // If the immediately preceding event is a grace block leading into this note,
+                // toggle back into that grace block instead of inserting a duplicate!
+                if e_idx > 0 {
+                    if let Some(prev_info) = doc.find_event_grace_info(e_idx - 1) {
+                        if prev_info.event_range.end == e_idx {
+                            self.selected_event_idx = Some(prev_info.event_range.end - 1);
+                            return;
+                        }
+                    }
+                }
+                if let Some(new_yaml) = crate::yaml_editor::insert_grace_before_in_yaml(&self.yaml_text, e_idx) {
+                    self.update_yaml(new_yaml);
+                    self.process_and_render();
+                }
+            }
+        }
+    }
+
+    pub fn action_delete_grace_event(&mut self, e_idx: usize) {
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+        let info = match doc.find_event_grace_info(e_idx) {
+            Some(i) => i,
+            None => return,
+        };
+
+        let target_start = info.event_range.start;
+        let inner_idx = info.inner_event_idx;
+        let count = info.event_range.end - target_start;
+
+        let part = match doc.parts.first_mut() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let mut cur_e = 0;
+        let mut removed = false;
+        'outer: for m in &mut part.measures {
+            for seq in &mut m.sequences {
+                let mut i = 0;
+                while i < seq.content.len() {
+                    let item = &mut seq.content[i];
+                    if let crate::mnx::SequenceItem::Grace(g) = item {
+                        let g_count = g.content.len();
+                        if cur_e == target_start {
+                            if count <= 1 || g.content.len() <= 1 {
+                                seq.content.remove(i);
+                            } else if inner_idx < g.content.len() {
+                                g.content.remove(inner_idx);
+                            }
+                            removed = true;
+                            break 'outer;
+                        }
+                        cur_e += g_count;
+                        i += 1;
+                    } else {
+                        let item_ev_count = match item {
+                            crate::mnx::SequenceItem::Event(_) => 1,
+                            crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                            _ => 1,
+                        };
+                        cur_e += item_ev_count;
+                        i += 1;
+                    }
+                }
+            }
+        }
+
+        if !removed {
+            return;
+        }
+
+        doc.clean_dangling_ties();
+
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+
+            let total_events = crate::yaml_editor::find_all_event_ranges(&self.yaml_text).len();
+            if total_events == 0 {
+                self.selected_event_idx = None;
+            } else if e_idx < total_events {
+                self.selected_event_idx = Some(e_idx);
+            } else {
+                self.selected_event_idx = Some(total_events - 1);
+            }
+
+            self.is_editing_fret = false;
+            self.editing_fret_buf.clear();
+            self.selected_note_idx_in_event = None;
+            self.editing_string = None;
+            self.selection_anchor = None;
         }
     }
 }

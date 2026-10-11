@@ -174,30 +174,189 @@ impl<'a> PlaybackTrackGenerator<'a> {
         }
     }
 
+    fn compute_event_schedule(
+        &self,
+        part: &crate::mnx::Part,
+        flattened_measures: &[usize],
+    ) -> (Vec<u32>, HashMap<(usize, usize, usize), (u32, u32)>) {
+        let mut measure_start_ticks = Vec::with_capacity(flattened_measures.len());
+        let mut cur_measure_start = 0;
+        for &m_idx in flattened_measures {
+            measure_start_ticks.push(cur_measure_start);
+            let measure = &part.measures[m_idx];
+            let mut max_seq_dur = 0;
+            for seq in &measure.sequences {
+                let mut seq_dur = 0;
+                let mut events_scaled = Vec::new();
+                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                for (event, scale) in events_scaled {
+                    if scale > 0.0 {
+                        let beats = crate::validate::duration_to_quarter_beats(&event.duration);
+                        seq_dur += ((beats * scale) * self.ppq).round() as u32;
+                    }
+                }
+                max_seq_dur = max_seq_dur.max(seq_dur);
+            }
+            cur_measure_start += max_seq_dur;
+        }
+
+        struct VoiceEvent {
+            fm_idx: usize,
+            s_idx: usize,
+            e_idx: usize,
+            is_grace: bool,
+            nominal_start: u32,
+            nominal_dur: u32,
+        }
+
+        let max_seqs = part
+            .measures
+            .iter()
+            .map(|m| m.sequences.len())
+            .max()
+            .unwrap_or(0);
+        let mut schedule_map = HashMap::new();
+
+        for s_idx in 0..max_seqs {
+            let mut voice_events: Vec<VoiceEvent> = Vec::new();
+            for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
+                let measure = &part.measures[m_idx];
+                if let Some(seq) = measure.sequences.get(s_idx) {
+                    let m_start = measure_start_ticks[fm_idx];
+                    let mut seq_offset = 0;
+                    let mut events_scaled = Vec::new();
+                    walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                    for (e_idx, (event, scale)) in events_scaled.into_iter().enumerate() {
+                        let is_grace = scale == 0.0;
+                        let nominal_dur = if is_grace {
+                            40
+                        } else {
+                            let beats = crate::validate::duration_to_quarter_beats(&event.duration);
+                            ((beats * scale) * self.ppq).round() as u32
+                        };
+                        let nominal_start = m_start + seq_offset;
+                        if !is_grace {
+                            seq_offset += nominal_dur;
+                        }
+                        voice_events.push(VoiceEvent {
+                            fm_idx,
+                            s_idx,
+                            e_idx,
+                            is_grace,
+                            nominal_start,
+                            nominal_dur,
+                        });
+                    }
+                }
+            }
+
+            let n = voice_events.len();
+            let mut actual_start: Vec<u32> = voice_events.iter().map(|e| e.nominal_start).collect();
+            let mut actual_dur: Vec<u32> = voice_events.iter().map(|e| e.nominal_dur).collect();
+
+            let mut i = 0;
+            while i < n {
+                if voice_events[i].is_grace {
+                    let g_start = i;
+                    while i < n && voice_events[i].is_grace {
+                        i += 1;
+                    }
+                    let g_end = i;
+                    let grace_count = (g_end - g_start) as u32;
+                    let total_grace = grace_count * 40;
+
+                    if g_end < n {
+                        let target_nominal_start = voice_events[g_end].nominal_start;
+                        let target_nominal_end =
+                            target_nominal_start + voice_events[g_end].nominal_dur;
+
+                        let (grace_start, target_start, target_dur) = if g_start > 0 {
+                            let prior_idx = g_start - 1;
+                            let prior_start = actual_start[prior_idx];
+                            let prior_dur = actual_dur[prior_idx];
+                            let min_prior_dur = 20.min(prior_dur);
+                            let desired_grace_start =
+                                target_nominal_start.saturating_sub(total_grace);
+
+                            if desired_grace_start >= prior_start + min_prior_dur {
+                                actual_dur[prior_idx] =
+                                    (desired_grace_start - prior_start).min(prior_dur);
+                                (
+                                    desired_grace_start,
+                                    target_nominal_start,
+                                    voice_events[g_end].nominal_dur,
+                                )
+                            } else {
+                                actual_dur[prior_idx] = min_prior_dur;
+                                let g_st = prior_start + min_prior_dur;
+                                let t_st = g_st + total_grace;
+                                let t_dur = target_nominal_end
+                                    .saturating_sub(t_st)
+                                    .max(20.min(voice_events[g_end].nominal_dur));
+                                (g_st, t_st, t_dur)
+                            }
+                        } else {
+                            let g_st = target_nominal_start;
+                            let t_st = g_st + total_grace;
+                            let t_dur = target_nominal_end
+                                .saturating_sub(t_st)
+                                .max(20.min(voice_events[g_end].nominal_dur));
+                            (g_st, t_st, t_dur)
+                        };
+
+                        for (k, g_idx) in (g_start..g_end).enumerate() {
+                            actual_start[g_idx] = grace_start + (k as u32) * 40;
+                            actual_dur[g_idx] = 40;
+                        }
+                        actual_start[g_end] = target_start;
+                        actual_dur[g_end] = target_dur;
+                    } else {
+                        for (k, g_idx) in (g_start..g_end).enumerate() {
+                            actual_start[g_idx] =
+                                voice_events[g_idx].nominal_start + (k as u32) * 40;
+                            actual_dur[g_idx] = 40;
+                        }
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+
+            for (idx, ev) in voice_events.iter().enumerate() {
+                schedule_map.insert(
+                    (ev.fm_idx, ev.s_idx, ev.e_idx),
+                    (actual_start[idx], actual_dur[idx]),
+                );
+            }
+        }
+
+        (measure_start_ticks, schedule_map)
+    }
+
     fn find_start_offset(
         &self,
         part: &crate::mnx::Part,
         start_event: usize,
         flattened_measures: &[usize],
         raw_event_idx_map: &[Vec<Vec<usize>>],
+        schedule_map: &HashMap<(usize, usize, usize), (u32, u32)>,
     ) -> u32 {
-        let mut start_tick_offset = 0;
-        for &m_idx in flattened_measures {
+        for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
             let measure = &part.measures[m_idx];
             for (s_idx, seq) in measure.sequences.iter().enumerate() {
                 let mut events_scaled = Vec::new();
                 walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
-                for (e_idx, (event, scale)) in events_scaled.into_iter().enumerate() {
+                for (e_idx, _) in events_scaled.into_iter().enumerate() {
                     let raw_idx = raw_event_idx_map[m_idx][s_idx][e_idx];
                     if raw_idx == start_event {
-                        return start_tick_offset;
+                        if let Some(&(st, _dur)) = schedule_map.get(&(fm_idx, s_idx, e_idx)) {
+                            return st;
+                        }
                     }
-                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    start_tick_offset += ((beats * scale) * self.ppq).round() as u32;
                 }
             }
         }
-        start_tick_offset
+        0
     }
 
     fn process_events(
@@ -205,22 +364,23 @@ impl<'a> PlaybackTrackGenerator<'a> {
         part: &crate::mnx::Part,
         start_tick_offset: u32,
         flattened_measures: &[usize],
-        raw_event_idx_map: &[Vec<Vec<usize>>]
+        raw_event_idx_map: &[Vec<Vec<usize>>],
+        measure_start_ticks: &[u32],
+        schedule_map: &HashMap<(usize, usize, usize), (u32, u32)>,
     ) {
         let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
         let mut string_notes_timeline: std::collections::HashMap<u8, Vec<(u32, f64)>> =
             std::collections::HashMap::new();
-        let mut sim_time = 0;
-        for &m_idx in flattened_measures {
+        for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
             let measure = &part.measures[m_idx];
-            let mut max_seq_dur = 0;
-            for seq in &measure.sequences {
-                let mut seq_time_ticks = sim_time;
+            for (s_idx, seq) in measure.sequences.iter().enumerate() {
                 let mut events_scaled = Vec::new();
                 walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
-                for (event, scale) in events_scaled {
-                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    let duration_ticks = ((beats * scale) * (self.ppq as f64)).round() as u32;
+                for (e_idx, (event, _scale)) in events_scaled.into_iter().enumerate() {
+                    let event_start = schedule_map
+                        .get(&(fm_idx, s_idx, e_idx))
+                        .map(|&(st, _)| st)
+                        .unwrap_or(0);
                     for note in &event.notes {
                         if note.muted.unwrap_or(false) {
                             continue;
@@ -230,18 +390,13 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 string_notes_timeline
                                     .entry(string)
                                     .or_default()
-                                    .push((seq_time_ticks, pos_state.midi_note_number));
+                                    .push((event_start, pos_state.midi_note_number));
                             }
                         }
                     }
-                    seq_time_ticks += duration_ticks;
                 }
-                max_seq_dur = max_seq_dur.max(seq_time_ticks - sim_time);
             }
-            sim_time += max_seq_dur;
         }
-
-        let mut current_time_ticks: u32 = 0;
 
         let mut pending_ties: std::collections::HashMap<String, (midly::num::u4, u8)> =
             std::collections::HashMap::new();
@@ -251,8 +406,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let mut tempo_at_start = self.options.default_bpm;
         
         // Scan to find tempo at start_tick_offset
-        let mut scan_time = 0;
-        for &m_idx in flattened_measures {
+        for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
             if m_idx < self.doc.global.measures.len() {
                 let gm = &self.doc.global.measures[m_idx];
                 let parse_loc = |loc: &Option<String>| -> f64 {
@@ -265,27 +419,15 @@ impl<'a> PlaybackTrackGenerator<'a> {
                     }
                     0.0
                 };
+                let m_start = measure_start_ticks[fm_idx];
                 for tempo in &gm.tempos {
                     let offset_beats = parse_loc(&tempo.location);
-                    let tempo_ticks = scan_time + (offset_beats * self.options.ppq.as_int() as f64) as u32;
+                    let tempo_ticks = m_start + (offset_beats * self.options.ppq.as_int() as f64) as u32;
                     if tempo_ticks <= start_tick_offset {
                         tempo_at_start = tempo.bpm * crate::validate::duration_to_quarter_beats(&tempo.value);
                     }
                 }
             }
-            let measure = &part.measures[m_idx];
-            let mut max_seq_dur = 0;
-            for seq in &measure.sequences {
-                let mut seq_time = scan_time;
-                let mut events_scaled = Vec::new();
-                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
-                for (event, scale) in events_scaled {
-                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    seq_time += ((beats * scale) * (self.ppq as f64)).round() as u32;
-                }
-                max_seq_dur = max_seq_dur.max(seq_time - scan_time);
-            }
-            scan_time += max_seq_dur;
         }
 
         self.abs_events.push(InternalAbsoluteEvent {
@@ -294,8 +436,9 @@ impl<'a> PlaybackTrackGenerator<'a> {
         });
         current_bpm = tempo_at_start;
 
-        for &m_idx in flattened_measures {
+        for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
             let measure = &part.measures[m_idx];
+            let current_time_ticks = measure_start_ticks[fm_idx];
             
             if m_idx < self.doc.global.measures.len() {
                 let gm = &self.doc.global.measures[m_idx];
@@ -338,13 +481,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
                         let mut target_ticks = start_ticks + self.options.ppq.as_int() as u32; // fallback 1 beat
                         if let Some(tid) = &tc.target {
                             let mut found = false;
-                            let mut scan_time = 0;
-                            for &m2 in flattened_measures {
+                            for (fm2, &m2) in flattened_measures.iter().enumerate() {
                                 if m2 < self.doc.global.measures.len() {
                                     for t in &self.doc.global.measures[m2].tempos {
                                         if t.id.as_ref() == Some(tid) {
                                             let off = parse_loc(&t.location);
-                                            target_ticks = scan_time + (off * self.options.ppq.as_int() as f64) as u32;
+                                            target_ticks = measure_start_ticks[fm2] + (off * self.options.ppq.as_int() as f64) as u32;
                                             target_bpm = t.bpm * crate::validate::duration_to_quarter_beats(&t.value);
                                             found = true;
                                             break;
@@ -352,17 +494,6 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                     }
                                 }
                                 if found { break; }
-                                // add measure duration to scan_time
-                                let mut m_beats = 0.0;
-                                if let Some(p) = self.doc.parts.first() {
-                                    if let Some(s) = p.measures[m2].sequences.first() {
-                                        let mut evs = Vec::new();
-                                        crate::midi::walk_events_with_scaling(&s.content, &mut evs, 1.0);
-                                        for (e, scale) in evs { m_beats += crate::validate::duration_to_quarter_beats(&e.duration) * scale; }
-                                    }
-                                }
-                                if m_beats == 0.0 { m_beats = 4.0; }
-                                scan_time += (m_beats * self.options.ppq.as_int() as f64) as u32;
                             }
                         }
                         
@@ -410,16 +541,16 @@ impl<'a> PlaybackTrackGenerator<'a> {
             }
 
             for (s_idx, seq) in measure.sequences.iter().enumerate() {
-                let mut seq_time_ticks = current_time_ticks;
                 let mut events_scaled = Vec::new();
                 walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
-                for (e_idx, (event, scale)) in events_scaled.into_iter().enumerate() {
-                    let beats = crate::validate::duration_to_quarter_beats(&event.duration);
-                    let duration_ticks = ((beats * scale) * (self.ppq as f64)).round() as u32;
+                for (e_idx, (event, _scale)) in events_scaled.into_iter().enumerate() {
+                    let &(effective_start_ticks, duration_ticks) = schedule_map
+                        .get(&(fm_idx, s_idx, e_idx))
+                        .unwrap_or(&(0, 0));
                     let raw_idx = raw_event_idx_map[m_idx][s_idx][e_idx];
 
-                    if seq_time_ticks >= start_tick_offset {
-                        let event_start_ticks = seq_time_ticks.saturating_sub(start_tick_offset);
+                    if effective_start_ticks >= start_tick_offset {
+                        let event_start_ticks = effective_start_ticks.saturating_sub(start_tick_offset);
                         final_ticks = final_ticks.max(event_start_ticks + duration_ticks);
 
                         self.abs_events.push(InternalAbsoluteEvent {
@@ -523,7 +654,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         has_forward_slide = true;
                                         if let Some(timeline) = string_notes_timeline.get(&string) {
                                             for &(t, midi_frac) in timeline {
-                                                if t > seq_time_ticks {
+                                                if t > effective_start_ticks {
                                                     slide_target_midi_frac = midi_frac;
                                                     break;
                                                 }
@@ -706,9 +837,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                             }
                         }
                     }
-                    seq_time_ticks += duration_ticks;
                 }
-                current_time_ticks = current_time_ticks.max(seq_time_ticks);
             }
         }
 
@@ -814,9 +943,25 @@ impl<'a> PlaybackTrackGenerator<'a> {
                 raw_event_idx_map.push(seq_map);
             }
 
+            let (measure_start_ticks, schedule_map) =
+                self.compute_event_schedule(part, &flattened_measures);
+
             let start_event = self.options.start_event_idx.unwrap_or(0);
-            let start_tick_offset = self.find_start_offset(part, start_event, &flattened_measures, &raw_event_idx_map);
-            self.process_events(part, start_tick_offset, &flattened_measures, &raw_event_idx_map);
+            let start_tick_offset = self.find_start_offset(
+                part,
+                start_event,
+                &flattened_measures,
+                &raw_event_idx_map,
+                &schedule_map,
+            );
+            self.process_events(
+                part,
+                start_tick_offset,
+                &flattened_measures,
+                &raw_event_idx_map,
+                &measure_start_ticks,
+                &schedule_map,
+            );
         }
         let ppq = self.ppq;
         (self.resolve_deltas(), ppq)
@@ -1426,6 +1571,221 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_playback_track_grace_notes_timing() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - id: part1
+    name: Guitar
+    measures:
+      - sequences:
+          - content:
+              - type: grace
+                content:
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: G, octave: 4 }
+                        string: 1
+                        fret: 3
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: A, octave: 4 }
+                        string: 1
+                        fret: 5
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: B, octave: 4 }
+                    string: 1
+                    fret: 7
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: C, octave: 5 }
+                    string: 1
+                    fret: 8
+"#;
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
+        assert_eq!(ppq, 480.0);
+
+        let mut marker_ticks: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+        let mut curr_tick = 0;
+        for ev in &track {
+            curr_tick += ev.delta_ticks;
+            if let PlaybackEventKind::EventMarker(idx) = ev.kind {
+                marker_ticks.insert(idx, curr_tick);
+            }
+        }
+
+        assert_eq!(marker_ticks.get(&0), Some(&0), "Grace 1 at tick 0");
+        assert_eq!(marker_ticks.get(&1), Some(&40), "Grace 2 at tick 40");
+        assert_eq!(marker_ticks.get(&2), Some(&80), "Quarter 1 at tick 80");
+        assert_eq!(marker_ticks.get(&3), Some(&480), "Quarter 2 at tick 480 - unaffected by grace notes!");
+    }
+
+    #[test]
+    fn test_playback_track_grace_notes_steals_from_prior_note() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - id: part1
+    name: Guitar
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 0
+              - type: grace
+                content:
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: G, octave: 4 }
+                        string: 1
+                        fret: 3
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: A, octave: 4 }
+                        string: 1
+                        fret: 5
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: B, octave: 4 }
+                    string: 1
+                    fret: 7
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: C, octave: 5 }
+                    string: 1
+                    fret: 8
+"#;
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
+        assert_eq!(ppq, 480.0);
+
+        let mut marker_ticks: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+        let mut curr_tick = 0;
+        let mut note_offs: Vec<(u32, u8)> = Vec::new();
+        for ev in &track {
+            curr_tick += ev.delta_ticks;
+            match &ev.kind {
+                PlaybackEventKind::EventMarker(idx) => {
+                    marker_ticks.insert(*idx, curr_tick);
+                }
+                PlaybackEventKind::Midi { message: midly::MidiMessage::NoteOff { key, .. }, .. } => {
+                    note_offs.push((curr_tick, key.as_int()));
+                }
+                _ => {}
+            }
+        }
+
+        // Quarter 1 (prior note) starts at tick 0
+        assert_eq!(marker_ticks.get(&0), Some(&0), "Quarter 1 starts at tick 0");
+        // Grace 1 starts at tick 400 (steals 80 ticks from Quarter 1: 480 - 80 = 400)
+        assert_eq!(marker_ticks.get(&1), Some(&400), "Grace 1 starts at tick 400");
+        // Grace 2 starts at tick 440
+        assert_eq!(marker_ticks.get(&2), Some(&440), "Grace 2 starts at tick 440");
+        // Quarter 2 starts at tick 480 (EXACT on-beat nominal start!)
+        assert_eq!(marker_ticks.get(&3), Some(&480), "Quarter 2 starts at tick 480 on beat");
+        // Quarter 3 starts at tick 960 (EXACT on-beat nominal start!)
+        assert_eq!(marker_ticks.get(&4), Some(&960), "Quarter 3 starts at tick 960");
+
+        // Quarter 1 (E4 = 64) has NoteOff at tick 400!
+        // Grace 1 (G4 = 67) NoteOff at tick 440
+        // Grace 2 (A4 = 69) NoteOff at tick 480
+        // Quarter 2 (B4 = 71) NoteOff at tick 960 (full 480 duration!)
+        assert!(note_offs.iter().any(|&(t, k)| t == 400 && k == 64), "Quarter 1 NoteOff at 400");
+        assert!(note_offs.iter().any(|&(t, k)| t == 440 && k == 67), "Grace 1 NoteOff at 440");
+        assert!(note_offs.iter().any(|&(t, k)| t == 480 && k == 69), "Grace 2 NoteOff at 480");
+        assert!(note_offs.iter().any(|&(t, k)| t == 960 && k == 71), "Quarter 2 NoteOff at 960");
+    }
+
+    #[test]
+    fn test_playback_track_grace_notes_across_measure_boundary() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - time: { count: 4, unit: 4 }
+parts:
+  - id: part1
+    name: Guitar
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+      - sequences:
+          - content:
+              - type: grace
+                content:
+                  - duration: { base: eighth }
+                    notes: [{ pitch: { step: G, octave: 4 }, string: 1, fret: 3 }]
+                  - duration: { base: eighth }
+                    notes: [{ pitch: { step: A, octave: 4 }, string: 1, fret: 5 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: B, octave: 4 }, string: 1, fret: 7 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: C, octave: 5 }, string: 1, fret: 8 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: D, octave: 5 }, string: 1, fret: 10 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: E, octave: 5 }, string: 1, fret: 12 }]
+"#;
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
+        assert_eq!(ppq, 480.0);
+
+        let mut marker_ticks: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+        let mut curr_tick = 0;
+        let mut note_offs: Vec<(u32, u8)> = Vec::new();
+        for ev in &track {
+            curr_tick += ev.delta_ticks;
+            match &ev.kind {
+                PlaybackEventKind::EventMarker(idx) => {
+                    marker_ticks.insert(*idx, curr_tick);
+                }
+                PlaybackEventKind::Midi { message: midly::MidiMessage::NoteOff { key, .. }, .. } => {
+                    note_offs.push((curr_tick, key.as_int()));
+                }
+                _ => {}
+            }
+        }
+
+        // Measure 1 notes: 0, 480, 960, 1440
+        // Measure 1 note 4: nominal 1440..1920. Stolen 80 ticks: ends at 1840!
+        // Grace 1 (index 4): starts at 1840
+        // Grace 2 (index 5): starts at 1880
+        // Measure 2 note 1 (index 6): starts at EXACTLY 1920 (measure 2 downbeat!)
+        assert_eq!(marker_ticks.get(&3), Some(&1440), "M1 Note 4 starts at 1440");
+        assert_eq!(marker_ticks.get(&4), Some(&1840), "Grace 1 starts at 1840");
+        assert_eq!(marker_ticks.get(&5), Some(&1880), "Grace 2 starts at 1880");
+        assert_eq!(marker_ticks.get(&6), Some(&1920), "M2 Note 1 starts on downbeat at 1920");
+
+        assert!(note_offs.iter().any(|&(t, k)| t == 1840 && k == 64), "M1 Note 4 NoteOff at 1840");
+        assert!(note_offs.iter().any(|&(t, k)| t == 1880 && k == 67), "Grace 1 NoteOff at 1880");
+        assert!(note_offs.iter().any(|&(t, k)| t == 1920 && k == 69), "Grace 2 NoteOff at 1920");
+        assert!(note_offs.iter().any(|&(t, k)| t == 2400 && k == 71), "M2 Note 1 NoteOff at 2400 (full 480 duration)");
+    }
 }
 
 pub fn walk_events_with_scaling<'a>(
@@ -1436,6 +1796,9 @@ pub fn walk_events_with_scaling<'a>(
     for item in content {
         match item {
             crate::mnx::SequenceItem::Event(e) => out.push((e, scale)),
+            crate::mnx::SequenceItem::Grace(g) => {
+                walk_events_with_scaling(&g.content, out, 0.0);
+            }
             crate::mnx::SequenceItem::Tuplet(t) => {
                 let inner_beats = crate::validate::duration_to_quarter_beats(&t.inner.duration)
                     * (t.inner.multiple as f64);

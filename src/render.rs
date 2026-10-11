@@ -304,13 +304,34 @@ pub fn draw_tablature(
 
     // ── Total events width ────────────────────────────────────────────────────
 
-    let total_events_width: f32 = part
-        .measures
-        .iter()
-        .filter_map(|m| m.sequences.first())
-        .flat_map(|s| s.flattened_events())
-        .map(|ev| duration_spacing(&ev.duration, event_spacing))
-        .sum();
+    let total_events_width: f32 = {
+        let mut total = 0.0_f32;
+        for m in &part.measures {
+            if let Some(seq) = m.sequences.first() {
+                let mut layout_items = Vec::new();
+                for item in &seq.content {
+                    item.to_layout_items(&mut layout_items);
+                }
+                let mut in_grace = false;
+                for l_item in layout_items {
+                    match l_item {
+                        LayoutItem::GraceStart => in_grace = true,
+                        LayoutItem::GraceEnd => in_grace = false,
+                        LayoutItem::Event(ev) => {
+                            let sp = if in_grace {
+                                (duration_spacing(&ev.duration, event_spacing) * 0.75).max(19.0)
+                            } else {
+                                duration_spacing(&ev.duration, event_spacing)
+                            };
+                            total += sp;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        total
+    };
 
     // ── Time signatures to render ─────────────────────────────────────────────
 
@@ -508,7 +529,6 @@ pub fn draw_tablature(
     let mut collected_ties: Vec<(Pos2, u8, i32, String)> = Vec::new();
     
     struct ActiveTempoChange {
-        label: String,
         start_x: f32,
         y: f32,
         target_id: String,
@@ -523,6 +543,7 @@ pub fn draw_tablature(
 
     let mut flat_event_idx = 0;
     let mut last_event_spacing = event_spacing;
+    let mut grace_event_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
     // ── Main event loop ───────────────────────────────────────────────────────
 
@@ -541,6 +562,7 @@ pub fn draw_tablature(
             }
             let num_events = seq.flattened_events().len();
             let mut e_idx = 0;
+            let mut in_grace = false;
             for l_item in layout_items {
                 let event = match l_item {
                     LayoutItem::TupletStart(t) => {
@@ -591,13 +613,24 @@ pub fn draw_tablature(
                         }
                         continue;
                     }
+                    LayoutItem::GraceStart => {
+                        in_grace = true;
+                        continue;
+                    }
+                    LayoutItem::GraceEnd => {
+                        in_grace = false;
+                        continue;
+                    }
                     LayoutItem::Event(e) => e,
                 };
 
                 let current_tuplet_id = tuplet_stack.last().map(|&(id, _)| id);
                 let current_scale = tuplet_stack.last().map(|&(_, s)| s).unwrap_or(1.0);
-                let event_beats =
-                    crate::validate::duration_to_quarter_beats(&event.duration) * current_scale;
+                let event_beats = if in_grace {
+                    0.0
+                } else {
+                    crate::validate::duration_to_quarter_beats(&event.duration) * current_scale
+                };
                 let start_beat = current_measure_beat;
                 let end_beat = current_measure_beat + event_beats;
                 current_measure_beat = end_beat;
@@ -669,7 +702,6 @@ pub fn draw_tablature(
                                 );
                                 
                                 active_tempo_changes.push(ActiveTempoChange {
-                                    label: label.to_string(),
                                     start_x: text_rect.max.x + 5.0,
                                     y,
                                     target_id: tc.target.clone().unwrap_or_default(),
@@ -762,10 +794,17 @@ pub fn draw_tablature(
                     false
                 };
 
-                let col_rect = Rect::from_min_max(
-                    Pos2::new(current_x - 12.0, string_y_coords[0] - 6.0),
-                    Pos2::new(current_x + 12.0, stem_bot_y + 6.0),
-                );
+                let col_rect = if in_grace {
+                    Rect::from_min_max(
+                        Pos2::new(current_x - 8.5, string_y_coords[0] - 4.0),
+                        Pos2::new(current_x + 8.5, stem_bot_y + 4.0),
+                    )
+                } else {
+                    Rect::from_min_max(
+                        Pos2::new(current_x - 12.0, string_y_coords[0] - 6.0),
+                        Pos2::new(current_x + 12.0, stem_bot_y + 6.0),
+                    )
+                };
 
                 if is_selected {
                     let col_color = if is_editing_fret {
@@ -818,6 +857,7 @@ pub fn draw_tablature(
                 }
 
                 // Fret numbers on strings: store (fret, note_idx)
+                let current_font_id = if in_grace { FontId::monospace(10.0) } else { font_id.clone() };
                 let mut step_frets: Vec<Option<(i32, usize)>> = vec![None; num_strings];
                 let mut this_event_notes: Vec<(Option<String>, u8, i32, Pos2)> = Vec::new();
                 let mut min_string_y = f32::MAX;
@@ -1008,7 +1048,7 @@ pub fn draw_tablature(
                         };
 
                         let galley =
-                            painter.layout_no_wrap(display_text, font_id.clone(), text_color);
+                            painter.layout_no_wrap(display_text, current_font_id.clone(), text_color);
                         let text_rect =
                             Rect::from_center_size(Pos2::new(current_x, y), galley.size());
 
@@ -1199,7 +1239,7 @@ pub fn draw_tablature(
                             editing_fret_text.to_string()
                         };
                         let galley =
-                            painter.layout_no_wrap(display_text, font_id.clone(), Color32::BLACK);
+                            painter.layout_no_wrap(display_text, current_font_id.clone(), Color32::BLACK);
                         let text_rect =
                             Rect::from_center_size(Pos2::new(current_x, y), galley.size());
                         painter.rect_filled(text_rect.expand(3.5), 3.0, edit_color);
@@ -1207,16 +1247,26 @@ pub fn draw_tablature(
                     }
                 }
 
-                let stem_rect = Rect::from_min_max(
-                    Pos2::new(current_x - 10.0, stem_top_y - 2.0),
-                    Pos2::new(current_x + 10.0, stem_bot_y + 6.0),
-                );
+                let stem_rect = if in_grace {
+                    Rect::from_min_max(
+                        Pos2::new(current_x - 7.0, stem_top_y - 10.0),
+                        Pos2::new(current_x + 7.0, stem_bot_y + 4.0),
+                    )
+                } else {
+                    Rect::from_min_max(
+                        Pos2::new(current_x - 10.0, stem_top_y - 2.0),
+                        Pos2::new(current_x + 10.0, stem_bot_y + 6.0),
+                    )
+                };
                 event_hit_boxes.push((current_fret_rects, stem_rect, col_rect));
 
                 // Collect rhythm info for drawing after loop
                 let (rhythm, mut is_dotted) = parse_rhythm(&event.duration.base);
                 if event.duration.dots.unwrap_or(0) > 0 {
                     is_dotted = true;
+                }
+                if in_grace {
+                    grace_event_indices.insert(rhythm_notes.len());
                 }
                 rhythm_notes.push(RhythmNote {
                     x: current_x,
@@ -1229,7 +1279,11 @@ pub fn draw_tablature(
                     end_beat,
                 });
 
-                let mut spacing = duration_spacing(&event.duration, event_spacing);
+                let mut spacing = if in_grace {
+                    (duration_spacing(&event.duration, event_spacing) * 0.75).max(19.0)
+                } else {
+                    duration_spacing(&event.duration, event_spacing)
+                };
                 if event.notes.iter().any(|n| n.bend.is_some()) {
                     spacing = spacing.max(55.0); // Give bends enough horizontal room to draw arrowhead and text
                 }
@@ -1562,7 +1616,8 @@ pub fn draw_tablature(
 
     // ── Rhythm notation ───────────────────────────────────────────────────────
     let n = rhythm_notes.len();
-    let mut beam_right = vec![false; n];
+    let mut beam_to: Vec<Option<usize>> = vec![None; n];
+    let mut beam_from: Vec<Option<usize>> = vec![None; n];
 
     for (m_idx, measure) in part.measures.iter().enumerate() {
         let explicit_beams: Vec<&crate::mnx::BeamGroup> = measure
@@ -1583,11 +1638,37 @@ pub fn draw_tablature(
 
         if !all_explicit_beams.is_empty() {
             for bg in all_explicit_beams {
-                apply_beam_group(bg, &event_id_to_idx, &rhythm_notes, &mut beam_right);
+                apply_beam_group_indices(bg, &event_id_to_idx, &rhythm_notes, &mut beam_to, &mut beam_from);
+            }
+            // Grace notes in this measure: beam adjacent grace notes
+            let grace_indices: Vec<usize> = (0..n)
+                .filter(|&i| rhythm_notes[i].measure_idx == m_idx && grace_event_indices.contains(&i))
+                .collect();
+            for &ia in &grace_indices {
+                let ib = ia + 1;
+                if ib < n && grace_event_indices.contains(&ib) && rhythm_notes[ib].measure_idx == m_idx {
+                    let note_a = &rhythm_notes[ia];
+                    let note_b = &rhythm_notes[ib];
+                    if !note_a.is_rest
+                        && !note_b.is_rest
+                        && note_a.rhythm.flag_count() >= 1
+                        && note_b.rhythm.flag_count() >= 1
+                    {
+                        beam_to[ia] = Some(ib);
+                        beam_from[ib] = Some(ia);
+                    }
+                }
             }
         } else {
             let time_sig = get_time_signature_for_measure(global, m_idx);
-            compute_default_beaming_for_measure(m_idx, &time_sig, &rhythm_notes, &mut beam_right);
+            compute_default_beaming_indices(
+                m_idx,
+                &time_sig,
+                &rhythm_notes,
+                &grace_event_indices,
+                &mut beam_to,
+                &mut beam_from,
+            );
         }
     }
 
@@ -1596,6 +1677,14 @@ pub fn draw_tablature(
             continue;
         }
         let cx = note.x;
+        let is_grace = grace_event_indices.contains(&i);
+        let mut local_stem_top_y = stem_top_y;
+        let mut local_stem_bot_y = stem_bot_y;
+        if is_grace {
+            local_stem_top_y -= 8.0;
+            local_stem_bot_y -= 14.0;
+        }
+
         let flags = note.rhythm.flag_count();
         let is_selected = if let Some(cursor) = selected_event {
             let anchor = opts.selection_anchor.unwrap_or(cursor);
@@ -1608,88 +1697,93 @@ pub fn draw_tablature(
         } else {
             note_color
         };
-        let stem_thickness = if is_selected { 2.5 } else { 1.5 };
+        let stem_thickness = if is_selected { 2.5 } else if is_grace { 1.2 } else { 1.5 };
 
         // ── Stem ──────────────────────────────────────────────────────────────
         if note.rhythm != Rhythm::Whole {
             painter.line_segment(
-                [Pos2::new(cx, stem_top_y), Pos2::new(cx, stem_bot_y)],
+                [Pos2::new(cx, local_stem_top_y), Pos2::new(cx, local_stem_bot_y)],
                 Stroke::new(stem_thickness, this_stem_color),
             );
         }
 
         // ── Dot (augmentation) ────────────────────────────────────────────────
         if note.is_dotted {
-            painter.circle_filled(Pos2::new(cx + 5.0, stem_bot_y - 2.0), 1.5, this_stem_color);
+            painter.circle_filled(Pos2::new(cx + 5.0, local_stem_bot_y - 2.0), 1.5, this_stem_color);
         }
 
         // ── Flags or beams (at bottom of stems) ────────────────────────────────
         if flags == 0 {
             // Whole / Half / Quarter — no beams or flags needed
-        } else if beam_right[i] || (i > 0 && beam_right[i - 1]) {
+        } else if beam_to[i].is_some() || beam_from[i].is_some() {
             // Part of a beam group — draw beams as thick horizontal lines at stem_bot_y
-            if beam_right[i] {
-                let nx = rhythm_notes[i + 1].x; // right note stem x
+            if let Some(right_idx) = beam_to[i] {
+                let nx = rhythm_notes[right_idx].x; // right note stem x
                 let sx = cx; // this note stem x
+                let right_flags = rhythm_notes[right_idx].rhythm.flag_count();
 
                 // How many beam lines to draw between this note and the right note
-                let shared_flags = flags.min(rhythm_notes[i + 1].rhythm.flag_count());
+                let shared_flags = flags.min(right_flags);
+                let beam_thickness = if is_grace { 2.0 } else { 3.0 };
                 for f in 0..shared_flags {
-                    let by = stem_bot_y - (f as f32) * flag_spacing;
+                    let by = local_stem_bot_y - (f as f32) * flag_spacing;
                     painter.line_segment(
                         [Pos2::new(sx, by), Pos2::new(nx, by)],
-                        Stroke::new(3.0, note_color),
+                        Stroke::new(beam_thickness, note_color),
                     );
                 }
 
                 // If this note has more flags than its right neighbour (e.g. 16th to 8th):
-                let extra = flags.saturating_sub(rhythm_notes[i + 1].rhythm.flag_count());
+                let extra = flags.saturating_sub(right_flags);
+                let stub_w = if is_grace { event_spacing * 0.25 } else { event_spacing * 0.35 };
                 for f in shared_flags..shared_flags + extra {
-                    let by = stem_bot_y - (f as f32) * flag_spacing;
-                    let stub_w = event_spacing * 0.35;
+                    let by = local_stem_bot_y - (f as f32) * flag_spacing;
                     painter.line_segment(
                         [Pos2::new(sx, by), Pos2::new(sx + stub_w, by)],
-                        Stroke::new(3.0, this_stem_color),
+                        Stroke::new(beam_thickness, this_stem_color),
                     );
                 }
             }
 
             // If this note is the end of a beam group and has extra flags compared to its left neighbour:
-            if i > 0 && beam_right[i - 1] && !beam_right[i] {
-                let prev_flags = rhythm_notes[i - 1].rhythm.flag_count();
-                if flags > prev_flags {
-                    let extra = flags - prev_flags;
-                    let sx = cx;
-                    for f in prev_flags..prev_flags + extra {
-                        let by = stem_bot_y - (f as f32) * flag_spacing;
-                        let stub_w = event_spacing * 0.35;
-                        painter.line_segment(
-                            [Pos2::new(sx - stub_w, by), Pos2::new(sx, by)],
-                            Stroke::new(3.0, this_stem_color),
-                        );
+            if beam_to[i].is_none() {
+                if let Some(left_idx) = beam_from[i] {
+                    let prev_flags = rhythm_notes[left_idx].rhythm.flag_count();
+                    if flags > prev_flags {
+                        let extra = flags - prev_flags;
+                        let sx = cx;
+                        let beam_thickness = if is_grace { 2.0 } else { 3.0 };
+                        let stub_w = if is_grace { event_spacing * 0.25 } else { event_spacing * 0.35 };
+                        for f in prev_flags..prev_flags + extra {
+                            let by = local_stem_bot_y - (f as f32) * flag_spacing;
+                            painter.line_segment(
+                                [Pos2::new(sx - stub_w, by), Pos2::new(sx, by)],
+                                Stroke::new(beam_thickness, this_stem_color),
+                            );
+                        }
                     }
                 }
             }
         } else {
             // Isolated note — draw flag(s) attached at stem_bot_y angling up towards staff
             let sx = cx;
+            let flag_w = if is_grace { event_spacing * 0.25 } else { event_spacing * 0.45 };
             for f in 0..flags {
-                let flag_y_bot = stem_bot_y - (f as f32) * flag_spacing;
+                let flag_y_bot = local_stem_bot_y - (f as f32) * flag_spacing;
                 let flag_y_top = flag_y_bot - flag_spacing - 2.0;
-                let flag_w = event_spacing * 0.45;
                 painter.line_segment(
                     [
                         Pos2::new(sx, flag_y_bot),
                         Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
                     ],
-                    Stroke::new(if is_selected { 2.0 } else { 1.5 }, this_stem_color),
+                    Stroke::new(if is_selected { 2.0 } else if is_grace { 1.2 } else { 1.5 }, this_stem_color),
                 );
                 painter.line_segment(
                     [
                         Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
                         Pos2::new(sx + flag_w * 0.4, flag_y_top),
                     ],
-                    Stroke::new(if is_selected { 2.0 } else { 1.5 }, this_stem_color),
+                    Stroke::new(if is_selected { 2.0 } else if is_grace { 1.2 } else { 1.5 }, this_stem_color),
                 );
             }
         }
@@ -2451,12 +2545,232 @@ mod tests {
         // Eighth notes on beat 3 (2.0 and 2.5): beam together
         assert_eq!(beam_right, vec![false, false, false, true, false]);
     }
+
+    #[test]
+    fn test_grace_notes_do_not_alter_regular_rhythm_beaming() {
+        let ts_4_4 = TimeSignature { count: 4, unit: 4 };
+
+        // Test 1: Baseline 4 regular eighth notes in 4/4 (two pairs: 0-1 and 2-3)
+        let baseline_notes = vec![
+            RhythmNote {
+                x: 0.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.0,
+                end_beat: 0.5,
+            },
+            RhythmNote {
+                x: 30.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 1.0,
+            },
+            RhythmNote {
+                x: 60.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.0,
+                end_beat: 1.5,
+            },
+            RhythmNote {
+                x: 90.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.5,
+                end_beat: 2.0,
+            },
+        ];
+        let mut baseline_to = vec![None; 4];
+        let mut baseline_from = vec![None; 4];
+        compute_default_beaming_indices(
+            0,
+            &ts_4_4,
+            &baseline_notes,
+            &std::collections::HashSet::new(),
+            &mut baseline_to,
+            &mut baseline_from,
+        );
+        // In 4/4, four 8th notes beam up to beat 2.0
+        assert_eq!(baseline_to[0], Some(1));
+        assert_eq!(baseline_to[1], Some(2));
+        assert_eq!(baseline_to[2], Some(3));
+        assert_eq!(baseline_to[3], None);
+
+        // Test 2: Insert one 16th grace note before note 1
+        // Indices:
+        // 0: Regular 8th (beat 0.0)
+        // 1: Grace 16th (beat 0.5, grace)
+        // 2: Regular 8th (beat 0.5)
+        // 3: Regular 8th (beat 1.0)
+        // 4: Regular 8th (beat 1.5)
+        let mut grace_set = std::collections::HashSet::new();
+        grace_set.insert(1);
+        let notes_with_one_grace = vec![
+            RhythmNote {
+                x: 0.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.0,
+                end_beat: 0.5,
+            },
+            RhythmNote {
+                x: 19.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 0.5,
+            },
+            RhythmNote {
+                x: 38.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 1.0,
+            },
+            RhythmNote {
+                x: 68.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.0,
+                end_beat: 1.5,
+            },
+            RhythmNote {
+                x: 98.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 1.5,
+                end_beat: 2.0,
+            },
+        ];
+        let mut to = vec![None; 5];
+        let mut from = vec![None; 5];
+        compute_default_beaming_indices(
+            0,
+            &ts_4_4,
+            &notes_with_one_grace,
+            &grace_set,
+            &mut to,
+            &mut from,
+        );
+
+        // Note 0 (regular) MUST beam directly to Note 2 (regular), across Grace note 1!
+        assert_eq!(to[0], Some(2), "Regular note 0 must beam to regular note 2");
+        assert_eq!(from[2], Some(0), "Regular note 2 receives beam from regular note 0");
+        // Grace note 1 must NOT beam to regular note 2
+        assert_eq!(to[1], None, "Grace note 1 must not beam to regular note 2");
+        assert_eq!(from[1], None, "Grace note 1 must not receive beam from regular note 0");
+        // Regular notes continue their normal beam
+        assert_eq!(to[2], Some(3), "Regular note 2 beams to regular note 3");
+        assert_eq!(to[3], Some(4), "Regular note 3 beams to regular note 4");
+        assert_eq!(to[4], None);
+
+        // Test 3: Insert two 16th grace notes before note 1
+        // Indices:
+        // 0: Regular 8th (beat 0.0)
+        // 1: Grace 16th
+        // 2: Grace 16th
+        // 3: Regular 8th (beat 0.5)
+        let mut multi_grace_set = std::collections::HashSet::new();
+        multi_grace_set.insert(1);
+        multi_grace_set.insert(2);
+        let notes_with_two_grace = vec![
+            RhythmNote {
+                x: 0.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.0,
+                end_beat: 0.5,
+            },
+            RhythmNote {
+                x: 19.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 0.5,
+            },
+            RhythmNote {
+                x: 38.0,
+                rhythm: Rhythm::Sixteenth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 0.5,
+            },
+            RhythmNote {
+                x: 57.0,
+                rhythm: Rhythm::Eighth,
+                is_dotted: false,
+                measure_idx: 0,
+                is_rest: false,
+                tuplet_id: None,
+                start_beat: 0.5,
+                end_beat: 1.0,
+            },
+        ];
+        let mut multi_to = vec![None; 4];
+        let mut multi_from = vec![None; 4];
+        compute_default_beaming_indices(
+            0,
+            &ts_4_4,
+            &notes_with_two_grace,
+            &multi_grace_set,
+            &mut multi_to,
+            &mut multi_from,
+        );
+
+        // Regular note 0 beams to Regular note 3!
+        assert_eq!(multi_to[0], Some(3), "Regular note 0 beams across both grace notes to regular note 3");
+        assert_eq!(multi_from[3], Some(0));
+        // Grace note 1 beams to Grace note 2!
+        assert_eq!(multi_to[1], Some(2), "Grace note 1 beams to Grace note 2");
+        assert_eq!(multi_from[2], Some(1));
+        // Grace note 2 does NOT beam to regular note 3!
+        assert_eq!(multi_to[2], None, "Grace note 2 must not beam to regular note 3");
+    }
 }
 
 enum LayoutItem<'a> {
     Event(&'a crate::mnx::Event),
     TupletStart(&'a crate::mnx::Tuplet),
     TupletEnd,
+    GraceStart,
+    GraceEnd,
 }
 
 impl crate::mnx::SequenceItem {
@@ -2470,34 +2784,60 @@ impl crate::mnx::SequenceItem {
                 }
                 out.push(LayoutItem::TupletEnd);
             }
+            crate::mnx::SequenceItem::Grace(g) => {
+                out.push(LayoutItem::GraceStart);
+                for inner in &g.content {
+                    inner.to_layout_items(out);
+                }
+                out.push(LayoutItem::GraceEnd);
+            }
         }
     }
 }
 
-fn apply_beam_group(
+pub fn apply_beam_group_indices(
     group: &crate::mnx::BeamGroup,
     event_id_to_idx: &std::collections::HashMap<String, usize>,
     rhythm_notes: &[RhythmNote],
-    beam_right: &mut [bool],
+    beam_to: &mut [Option<usize>],
+    beam_from: &mut [Option<usize>],
 ) {
     for window in group.events.windows(2) {
         if let (Some(&ia), Some(&ib)) = (
             event_id_to_idx.get(&window[0]),
             event_id_to_idx.get(&window[1]),
         ) {
-            if ib == ia + 1
+            if ib > ia
                 && !rhythm_notes[ia].is_rest
                 && !rhythm_notes[ib].is_rest
                 && rhythm_notes[ia].rhythm.flag_count() >= 1
                 && rhythm_notes[ib].rhythm.flag_count() >= 1
             {
-                beam_right[ia] = true;
+                beam_to[ia] = Some(ib);
+                beam_from[ib] = Some(ia);
             }
         }
     }
     if let Some(inner_beams) = &group.beams {
         for inner in inner_beams {
-            apply_beam_group(inner, event_id_to_idx, rhythm_notes, beam_right);
+            apply_beam_group_indices(inner, event_id_to_idx, rhythm_notes, beam_to, beam_from);
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn apply_beam_group(
+    group: &crate::mnx::BeamGroup,
+    event_id_to_idx: &std::collections::HashMap<String, usize>,
+    rhythm_notes: &[RhythmNote],
+    beam_right: &mut [bool],
+) {
+    let mut beam_to = vec![None; rhythm_notes.len()];
+    let mut beam_from = vec![None; rhythm_notes.len()];
+    apply_beam_group_indices(group, event_id_to_idx, rhythm_notes, &mut beam_to, &mut beam_from);
+    for i in 0..rhythm_notes.len() {
+        if beam_to[i].is_some() {
+            beam_right[i] = true;
         }
     }
 }
@@ -2582,30 +2922,28 @@ pub fn get_beam_breaks(time_sig: &TimeSignature, has_sub_eighth: bool) -> Vec<f6
     breaks
 }
 
-/// Applies default beaming rules for a given measure when explicit beams are absent.
-/// Enforces:
-/// 1. Notes of a tuplet beam to notes inside the tuplet and NOT to notes outside the tuplet.
-/// 2. Within a tuplet, adjacent flagged notes beam together.
-/// 3. In time signatures other than 4/4, eighth notes beam 2 at a time.
-/// 4. Beam breaks for 5/n (3+2), 3k/n (3 at a time), 7/n (3+3+2), 4/4 (half-measure for 8ths, beat for 16ths).
-/// 5. Rests never receive beams and break beam groups.
-pub fn compute_default_beaming_for_measure(
+/// Applies default beaming rules for a given measure when explicit beams are absent,
+/// connecting notes by their target indices and keeping regular notes and grace notes separate.
+pub fn compute_default_beaming_indices(
     measure_idx: usize,
     time_sig: &TimeSignature,
     rhythm_notes: &[RhythmNote],
-    beam_right: &mut [bool],
+    grace_event_indices: &std::collections::HashSet<usize>,
+    beam_to: &mut [Option<usize>],
+    beam_from: &mut [Option<usize>],
 ) {
     let n = rhythm_notes.len();
-    for i in 0..n {
-        if rhythm_notes[i].measure_idx != measure_idx {
-            continue;
-        }
-        if i + 1 >= n || rhythm_notes[i + 1].measure_idx != measure_idx {
-            continue;
-        }
 
-        let note_a = &rhythm_notes[i];
-        let note_b = &rhythm_notes[i + 1];
+    // 1. Regular notes: beam consecutive regular notes in measure_idx
+    let reg_indices: Vec<usize> = (0..n)
+        .filter(|&i| rhythm_notes[i].measure_idx == measure_idx && !grace_event_indices.contains(&i))
+        .collect();
+
+    for k in 0..reg_indices.len().saturating_sub(1) {
+        let ia = reg_indices[k];
+        let ib = reg_indices[k + 1];
+        let note_a = &rhythm_notes[ia];
+        let note_b = &rhythm_notes[ib];
 
         // Neither note can be a rest, and both must require beams (flag_count >= 1)
         if note_a.is_rest || note_b.is_rest {
@@ -2616,10 +2954,11 @@ pub fn compute_default_beaming_for_measure(
         }
 
         // Tuplet constraint:
-        // - notes of a tuple should beam to notes inside the tuple and NOT to notes outside the tuple
+        // - notes of a tuplet should beam to notes inside the tuplet and NOT to notes outside the tuplet
         if note_a.tuplet_id.is_some() || note_b.tuplet_id.is_some() {
             if note_a.tuplet_id == note_b.tuplet_id {
-                beam_right[i] = true;
+                beam_to[ia] = Some(ib);
+                beam_from[ib] = Some(ia);
             }
             continue;
         }
@@ -2633,6 +2972,54 @@ pub fn compute_default_beaming_for_measure(
             .any(|&b| note_a.start_beat + eps < b && b <= note_b.start_beat + eps);
 
         if !has_break {
+            beam_to[ia] = Some(ib);
+            beam_from[ib] = Some(ia);
+        }
+    }
+
+    // 2. Grace notes: beam adjacent grace notes within same measure
+    let grace_indices: Vec<usize> = (0..n)
+        .filter(|&i| rhythm_notes[i].measure_idx == measure_idx && grace_event_indices.contains(&i))
+        .collect();
+
+    for &ia in &grace_indices {
+        let ib = ia + 1;
+        if ib < n && grace_event_indices.contains(&ib) && rhythm_notes[ib].measure_idx == measure_idx {
+            let note_a = &rhythm_notes[ia];
+            let note_b = &rhythm_notes[ib];
+            if !note_a.is_rest
+                && !note_b.is_rest
+                && note_a.rhythm.flag_count() >= 1
+                && note_b.rhythm.flag_count() >= 1
+            {
+                beam_to[ia] = Some(ib);
+                beam_from[ib] = Some(ia);
+            }
+        }
+    }
+}
+
+/// Applies default beaming rules for a given measure when explicit beams are absent.
+#[allow(dead_code)]
+pub fn compute_default_beaming_for_measure(
+    measure_idx: usize,
+    time_sig: &TimeSignature,
+    rhythm_notes: &[RhythmNote],
+    beam_right: &mut [bool],
+) {
+    let empty_grace = std::collections::HashSet::new();
+    let mut beam_to = vec![None; rhythm_notes.len()];
+    let mut beam_from = vec![None; rhythm_notes.len()];
+    compute_default_beaming_indices(
+        measure_idx,
+        time_sig,
+        rhythm_notes,
+        &empty_grace,
+        &mut beam_to,
+        &mut beam_from,
+    );
+    for i in 0..rhythm_notes.len() {
+        if beam_to[i].is_some() {
             beam_right[i] = true;
         }
     }

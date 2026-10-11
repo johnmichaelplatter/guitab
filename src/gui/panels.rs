@@ -74,6 +74,7 @@ impl MnxEditorApp {
             let mut clicked_action: Option<DurationAction> = None;
             let mut rest_clicked = false;
             let mut tuplet_clicked = false;
+            let mut grace_clicked = false;
             let mut tie_clicked = false;
             let mut slur_clicked = false;
             let mut tap_clicked = false;
@@ -205,6 +206,37 @@ impl MnxEditorApp {
                     }
                     if t_resp.on_hover_text("Tuplet").clicked() {
                         tuplet_clicked = true;
+                    }
+
+
+                    // Grace Notes button
+                    let is_grace = if let (Some(e), Some(doc)) = (self.selected_event_idx, &self.parsed_mnx) {
+                        doc.find_event_grace_info(e).is_some()
+                    } else {
+                        false
+                    };
+                    let (g_rect, g_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(g_rect) {
+                        let visuals = ui.style().interact_selectable(&g_resp, is_grace);
+                        ui.painter().rect(
+                            g_rect,
+                            visuals.corner_radius,
+                            visuals.bg_fill,
+                            visuals.bg_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        let color = visuals.text_color();
+                        let font_id = egui::FontId::new(28.0, egui::FontFamily::Name("Bravura".into()));
+                        ui.painter().text(
+                            g_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "\u{E561}",
+                            font_id,
+                            color,
+                        );
+                    }
+                    if g_resp.on_hover_text("Insert Grace Notes").clicked() {
+                        grace_clicked = true;
                     }
 
                     // Tie button
@@ -669,6 +701,9 @@ impl MnxEditorApp {
                 }
                 if tuplet_clicked {
                     self.handle_tuplet_button_click();
+                }
+                if grace_clicked {
+                    self.action_toggle_grace();
                 }
                 if tie_clicked {
                     self.action_add_tie();

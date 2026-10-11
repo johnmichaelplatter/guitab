@@ -78,6 +78,14 @@ impl MnxDocument {
                                     }
                                 }
                             }
+                            crate::mnx::SequenceItem::Grace(g) => {
+                                for (g_idx, inner) in g.content.iter().enumerate() {
+                                    if let crate::mnx::SequenceItem::Event(_) = inner {
+                                        flattened_events
+                                            .push(AstPath::InTuplet(m_idx, s_idx, i_idx, g_idx));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -105,7 +113,7 @@ impl MnxDocument {
                 }
             }
             AstPath::InTuplet(m, s, i, t) => {
-                if let SequenceItem::Tuplet(tu) = self
+                let item = self
                     .parts
                     .get(0)?
                     .measures
@@ -113,15 +121,23 @@ impl MnxDocument {
                     .sequences
                     .get(s)?
                     .content
-                    .get(i)?
-                {
-                    if let SequenceItem::Event(e) = tu.content.get(t)? {
-                        Some(e)
-                    } else {
-                        None
+                    .get(i)?;
+                match item {
+                    SequenceItem::Tuplet(tu) => {
+                        if let SequenceItem::Event(e) = tu.content.get(t)? {
+                            Some(e)
+                        } else {
+                            None
+                        }
                     }
-                } else {
-                    None
+                    SequenceItem::Grace(gr) => {
+                        if let SequenceItem::Event(e) = gr.content.get(t)? {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    }
+                    SequenceItem::Event(_) => None,
                 }
             }
         }
@@ -146,7 +162,7 @@ impl MnxDocument {
                 }
             }
             AstPath::InTuplet(m, s, i, t) => {
-                if let SequenceItem::Tuplet(tu) = self
+                let item = self
                     .parts
                     .get_mut(0)?
                     .measures
@@ -154,15 +170,23 @@ impl MnxDocument {
                     .sequences
                     .get_mut(s)?
                     .content
-                    .get_mut(i)?
-                {
-                    if let SequenceItem::Event(e) = tu.content.get_mut(t)? {
-                        Some(e)
-                    } else {
-                        None
+                    .get_mut(i)?;
+                match item {
+                    SequenceItem::Tuplet(tu) => {
+                        if let SequenceItem::Event(e) = tu.content.get_mut(t)? {
+                            Some(e)
+                        } else {
+                            None
+                        }
                     }
-                } else {
-                    None
+                    SequenceItem::Grace(gr) => {
+                        if let SequenceItem::Event(e) = gr.content.get_mut(t)? {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    }
+                    SequenceItem::Event(_) => None,
                 }
             }
         }
@@ -208,6 +232,9 @@ impl MnxDocument {
                             SequenceItem::Tuplet(t) => {
                                 walk(&mut t.content, all_note_ids);
                             }
+                            SequenceItem::Grace(g) => {
+                                walk(&mut g.content, all_note_ids);
+                            }
                         }
                     }
                 }
@@ -219,6 +246,19 @@ impl MnxDocument {
             for measure in &mut part.measures {
                 for seq in &mut measure.sequences {
                     traverse_mut!(&mut seq.content);
+
+                    // Merge adjacent SequenceItem::Grace items
+                    let mut i = 0;
+                    while i + 1 < seq.content.len() {
+                        if matches!((&seq.content[i], &seq.content[i + 1]), (SequenceItem::Grace(_), SequenceItem::Grace(_))) {
+                            let next_item = seq.content.remove(i + 1);
+                            if let (SequenceItem::Grace(g1), SequenceItem::Grace(g2)) = (&mut seq.content[i], next_item) {
+                                g1.content.extend(g2.content);
+                            }
+                        } else {
+                            i += 1;
+                        }
+                    }
                 }
             }
         }
@@ -395,7 +435,16 @@ pub struct Sequence {
 #[serde(untagged)]
 pub enum SequenceItem {
     Tuplet(Tuplet),
+    Grace(Grace),
     Event(Event),
+}
+
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Grace {
+    #[serde(rename = "type")]
+    pub item_type: String, // will always be "grace"
+    pub content: Vec<SequenceItem>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -636,6 +685,7 @@ impl SequenceItem {
                 crate::validate::duration_to_quarter_beats(&t.outer.duration)
                     * (t.outer.multiple as f64)
             }
+            SequenceItem::Grace(_) => 0.0,
         }
     }
     pub fn collect_events<'a>(&'a self, out: &mut Vec<&'a Event>) {
@@ -646,6 +696,11 @@ impl SequenceItem {
                     inner.collect_events(out);
                 }
             }
+            SequenceItem::Grace(g) => {
+                for inner in &g.content {
+                    inner.collect_events(out);
+                }
+            }
         }
     }
 }
@@ -653,6 +708,13 @@ impl SequenceItem {
 #[derive(Debug, Clone)]
 pub struct TupletInfo<'a> {
     pub tuplet: &'a Tuplet,
+    pub event_range: std::ops::Range<usize>,
+    pub inner_event_idx: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraceInfo<'a> {
+    pub grace: &'a Grace,
     pub event_range: std::ops::Range<usize>,
     pub inner_event_idx: usize,
 }
@@ -682,6 +744,69 @@ impl MnxDocument {
                             if flat_event_idx >= start && flat_event_idx < end {
                                 return Some(TupletInfo {
                                     tuplet: t,
+                                    event_range: start..end,
+                                    inner_event_idx: flat_event_idx - start,
+                                });
+                            }
+                            cur_e = end;
+                        }
+                        SequenceItem::Grace(g) => {
+                            let mut grace_events = Vec::new();
+                            for inner_item in &g.content {
+                                inner_item.collect_events(&mut grace_events);
+                            }
+                            let count = grace_events.len();
+                            let start = cur_e;
+                            let end = cur_e + count;
+                            if flat_event_idx >= start && flat_event_idx < end {
+                                return None; // Grace is not a Tuplet
+                            }
+                            cur_e = end;
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn find_event_grace_info(&self, flat_event_idx: usize) -> Option<GraceInfo<'_>> {
+        let part = self.parts.first()?;
+        let mut cur_e = 0;
+        for measure in &part.measures {
+            for seq in &measure.sequences {
+                for item in &seq.content {
+                    match item {
+                        SequenceItem::Event(_) => {
+                            if cur_e == flat_event_idx {
+                                return None;
+                            }
+                            cur_e += 1;
+                        }
+                        SequenceItem::Tuplet(t) => {
+                            let mut tuplet_events = Vec::new();
+                            for inner_item in &t.content {
+                                inner_item.collect_events(&mut tuplet_events);
+                            }
+                            let count = tuplet_events.len();
+                            let start = cur_e;
+                            let end = cur_e + count;
+                            if flat_event_idx >= start && flat_event_idx < end {
+                                return None; // Tuplet is not a Grace
+                            }
+                            cur_e = end;
+                        }
+                        SequenceItem::Grace(g) => {
+                            let mut grace_events = Vec::new();
+                            for inner_item in &g.content {
+                                inner_item.collect_events(&mut grace_events);
+                            }
+                            let count = grace_events.len();
+                            let start = cur_e;
+                            let end = cur_e + count;
+                            if flat_event_idx >= start && flat_event_idx < end {
+                                return Some(GraceInfo {
+                                    grace: g,
                                     event_range: start..end,
                                     inner_event_idx: flat_event_idx - start,
                                 });

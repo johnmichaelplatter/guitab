@@ -65,7 +65,8 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
                     SequenceItem::Event(ev) => duration_to_quarter_beats(&ev.duration),
                     SequenceItem::Tuplet(t) => {
                         duration_to_quarter_beats(&t.outer.duration) * (t.outer.multiple as f64)
-                    }
+                    },
+                    SequenceItem::Grace(_) => 0.0,
                 };
 
                 if item_beats <= remaining_capacity + eps {
@@ -87,6 +88,10 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
                         }
                         SequenceItem::Tuplet(t) => {
                             current_measure_items.push(SequenceItem::Tuplet(t));
+                            remaining_capacity -= item_beats;
+                        }
+                        SequenceItem::Grace(g) => {
+                            current_measure_items.push(SequenceItem::Grace(g));
                             remaining_capacity -= item_beats;
                         }
                     }

@@ -46,6 +46,7 @@ impl MnxEditorApp {
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     
                     let item_beats = item.total_beats();
@@ -53,7 +54,21 @@ impl MnxEditorApp {
                     let item_start = cur_e;
                     let item_end = cur_e + item_ev_count - 1;
 
-                    if item_start <= max_idx && item_end >= min_idx {
+                    if let crate::mnx::SequenceItem::Grace(g) = item {
+                        let mut selected_sub = Vec::new();
+                        for (k, sub) in g.content.iter().enumerate() {
+                            let sub_idx = cur_e + k;
+                            if sub_idx >= min_idx && sub_idx <= max_idx {
+                                selected_sub.push(sub.clone());
+                            }
+                        }
+                        if !selected_sub.is_empty() {
+                            items.push(crate::mnx::SequenceItem::Grace(crate::mnx::Grace {
+                                item_type: g.item_type.clone(),
+                                content: selected_sub,
+                            }));
+                        }
+                    } else if item_start <= max_idx && item_end >= min_idx {
                         let is_first = items.is_empty();
                         if is_first && item_start == measure_start_e {
                             if let Some(gm) = doc.global.measures.get(m_idx) {
@@ -104,6 +119,11 @@ impl MnxEditorApp {
                         extract_note_ids(i, ids);
                     }
                 }
+                crate::mnx::SequenceItem::Grace(g) => {
+                    for i in &g.content {
+                        extract_note_ids(i, ids);
+                    }
+                }
             }
         }
         for item in &items {
@@ -133,6 +153,7 @@ impl MnxEditorApp {
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     if cur_e2 == min_idx {
                         selection_start_beat = cur_beat;
@@ -230,6 +251,7 @@ impl MnxEditorApp {
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     let item_start = cur_e;
                     let item_end = cur_e + item_ev_count - 1;
@@ -246,6 +268,18 @@ impl MnxEditorApp {
                                     if let crate::mnx::SequenceItem::Event(sev) = sub_ev {
                                         if !sev.notes.is_empty() {
                                             all_empty = false;
+                                        }
+                                    }
+                                }
+                            }
+                            crate::mnx::SequenceItem::Grace(g) => {
+                                for (k, sub_ev) in g.content.iter().enumerate() {
+                                    let sub_idx = cur_e + k;
+                                    if sub_idx >= min_idx && sub_idx <= max_idx {
+                                        if let crate::mnx::SequenceItem::Event(sev) = sub_ev {
+                                            if !sev.notes.is_empty() {
+                                                all_empty = false;
+                                            }
                                         }
                                     }
                                 }
@@ -268,11 +302,28 @@ impl MnxEditorApp {
                         let item_ev_count = match item {
                             crate::mnx::SequenceItem::Event(_) => 1,
                             crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                         };
                         let item_start = cur_e;
                         let item_end = cur_e + item_ev_count - 1;
 
-                        if !(item_start <= max_idx && item_end >= min_idx) {
+                        if item_start <= max_idx && item_end >= min_idx {
+                            if let crate::mnx::SequenceItem::Grace(g) = item {
+                                let mut remaining = Vec::new();
+                                for (k, sub) in g.content.iter().enumerate() {
+                                    let sub_idx = cur_e + k;
+                                    if sub_idx < min_idx || sub_idx > max_idx {
+                                        remaining.push(sub.clone());
+                                    }
+                                }
+                                if !remaining.is_empty() {
+                                    flat_items.push(crate::mnx::SequenceItem::Grace(crate::mnx::Grace {
+                                        item_type: g.item_type.clone(),
+                                        content: remaining,
+                                    }));
+                                }
+                            }
+                        } else {
                             flat_items.push(item.clone());
                         }
                         cur_e += item_ev_count;
@@ -303,32 +354,54 @@ impl MnxEditorApp {
         let mut cur_e = 0;
         for m in &mut part.measures {
             for seq in &mut m.sequences {
-                for item in &mut seq.content {
-                    let item_ev_count = match item {
+                let mut new_content = Vec::new();
+                for item in seq.content.drain(..) {
+                    let item_ev_count = match &item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     let item_start = cur_e;
                     let item_end = cur_e + item_ev_count - 1;
 
                     if item_start <= max_idx && item_end >= min_idx {
                         match item {
-                            crate::mnx::SequenceItem::Event(ev) => {
+                            crate::mnx::SequenceItem::Event(mut ev) => {
                                 ev.notes.clear();
                                 ev.slurs = None;
+                                new_content.push(crate::mnx::SequenceItem::Event(ev));
                             }
-                            crate::mnx::SequenceItem::Tuplet(t) => {
+                            crate::mnx::SequenceItem::Tuplet(mut t) => {
                                 for sub_ev in &mut t.content {
                                     if let crate::mnx::SequenceItem::Event(sev) = sub_ev {
                                         sev.notes.clear();
                                         sev.slurs = None;
                                     }
                                 }
+                                new_content.push(crate::mnx::SequenceItem::Tuplet(t));
+                            }
+                            crate::mnx::SequenceItem::Grace(g) => {
+                                let mut remaining = Vec::new();
+                                for (k, sub_ev) in g.content.into_iter().enumerate() {
+                                    let sub_idx = cur_e + k;
+                                    if sub_idx < min_idx || sub_idx > max_idx {
+                                        remaining.push(sub_ev);
+                                    }
+                                }
+                                if !remaining.is_empty() {
+                                    new_content.push(crate::mnx::SequenceItem::Grace(crate::mnx::Grace {
+                                        item_type: g.item_type,
+                                        content: remaining,
+                                    }));
+                                }
                             }
                         }
+                    } else {
+                        new_content.push(item);
                     }
                     cur_e += item_ev_count;
                 }
+                seq.content = new_content;
             }
         }
 
@@ -384,6 +457,9 @@ impl MnxEditorApp {
                         crate::mnx::SequenceItem::Tuplet(t) => {
                             map_notes(&t.content, m_idx, map);
                         }
+                        crate::mnx::SequenceItem::Grace(g) => {
+                            map_notes(&g.content, m_idx, map);
+                        }
                     }
                 }
             }
@@ -434,32 +510,54 @@ impl MnxEditorApp {
         let mut cur_e = 0;
         for m in &mut part.measures {
             for seq in &mut m.sequences {
-                for item in &mut seq.content {
-                    let item_ev_count = match item {
+                let mut new_content = Vec::new();
+                for item in seq.content.drain(..) {
+                    let item_ev_count = match &item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     let item_start = cur_e;
                     let item_end = cur_e + item_ev_count - 1;
 
                     if item_start <= max_idx && item_end >= min_idx {
                         match item {
-                            crate::mnx::SequenceItem::Event(ev) => {
+                            crate::mnx::SequenceItem::Event(mut ev) => {
                                 ev.notes.clear();
                                 ev.slurs = None;
+                                new_content.push(crate::mnx::SequenceItem::Event(ev));
                             }
-                            crate::mnx::SequenceItem::Tuplet(t) => {
+                            crate::mnx::SequenceItem::Tuplet(mut t) => {
                                 for sub_ev in &mut t.content {
                                     if let crate::mnx::SequenceItem::Event(sev) = sub_ev {
                                         sev.notes.clear();
                                         sev.slurs = None;
                                     }
                                 }
+                                new_content.push(crate::mnx::SequenceItem::Tuplet(t));
+                            }
+                            crate::mnx::SequenceItem::Grace(g) => {
+                                let mut remaining = Vec::new();
+                                for (k, sub_ev) in g.content.into_iter().enumerate() {
+                                    let sub_idx = cur_e + k;
+                                    if sub_idx < min_idx || sub_idx > max_idx {
+                                        remaining.push(sub_ev);
+                                    }
+                                }
+                                if !remaining.is_empty() {
+                                    new_content.push(crate::mnx::SequenceItem::Grace(crate::mnx::Grace {
+                                        item_type: g.item_type,
+                                        content: remaining,
+                                    }));
+                                }
                             }
                         }
+                    } else {
+                        new_content.push(item);
                     }
                     cur_e += item_ev_count;
                 }
+                seq.content = new_content;
             }
         }
 
@@ -505,11 +603,28 @@ impl MnxEditorApp {
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     let item_start = cur_e;
                     let item_end = cur_e + item_ev_count - 1;
 
-                    if !(item_start <= max_idx && item_end >= min_idx) {
+                    if item_start <= max_idx && item_end >= min_idx {
+                        if let crate::mnx::SequenceItem::Grace(g) = item {
+                            let mut remaining = Vec::new();
+                            for (k, sub) in g.content.iter().enumerate() {
+                                let sub_idx = cur_e + k;
+                                if sub_idx < min_idx || sub_idx > max_idx {
+                                    remaining.push(sub.clone());
+                                }
+                            }
+                            if !remaining.is_empty() {
+                                flat_items.push(crate::mnx::SequenceItem::Grace(crate::mnx::Grace {
+                                    item_type: g.item_type.clone(),
+                                    content: remaining,
+                                }));
+                            }
+                        }
+                    } else {
                         flat_items.push(item.clone());
                     }
                     cur_e += item_ev_count;
@@ -562,17 +677,6 @@ impl MnxEditorApp {
                 tempo_changes: Vec::new(),
             });
         }
-
-        let parse_loc = |loc: &Option<String>| -> f64 {
-            if let Some(s) = loc {
-                if let Some((n, d)) = s.split_once('/') {
-                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
-                        if den > 0.0 { return (num / den) * 4.0; }
-                    }
-                }
-            }
-            0.0
-        };
 
         for (mut t, abs_beat) in pasted_tempos {
             // Find which measure it belongs to
@@ -642,6 +746,9 @@ impl MnxEditorApp {
                         crate::mnx::SequenceItem::Tuplet(t) => {
                             stack.push(&mut t.content);
                         }
+                        crate::mnx::SequenceItem::Grace(g) => {
+                            stack.push(&mut g.content);
+                        }
                     }
                 }
             }
@@ -672,6 +779,9 @@ impl MnxEditorApp {
                     }
                     crate::mnx::SequenceItem::Tuplet(t) => {
                         map_ids(&mut t.content, id_map);
+                    }
+                    crate::mnx::SequenceItem::Grace(g) => {
+                        map_ids(&mut g.content, id_map);
                     }
                 }
             }
@@ -724,6 +834,9 @@ impl MnxEditorApp {
                     }
                     crate::mnx::SequenceItem::Tuplet(t) => {
                         update_refs(&mut t.content, id_map);
+                    }
+                    crate::mnx::SequenceItem::Grace(g) => {
+                        update_refs(&mut g.content, id_map);
                     }
                 }
             }
@@ -816,6 +929,7 @@ impl MnxEditorApp {
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     cur_e += item_ev_count;
                     seq_beat += item.total_beats();
@@ -875,6 +989,7 @@ impl MnxEditorApp {
                 match item {
                     crate::mnx::SequenceItem::Event(_) => count += 1,
                     crate::mnx::SequenceItem::Tuplet(t) => count += t.content.len(),
+                    crate::mnx::SequenceItem::Grace(g) => count += g.content.len(),
                 }
             }
         }
@@ -914,6 +1029,7 @@ impl MnxEditorApp {
                     crate::validate::duration_to_quarter_beats(&t.outer.duration)
                         * (t.outer.multiple as f64)
                 }
+                crate::mnx::SequenceItem::Grace(_) => 0.0,
             };
             cb_beats += beats;
         }
@@ -962,11 +1078,13 @@ impl MnxEditorApp {
                             crate::validate::duration_to_quarter_beats(&t.outer.duration)
                                 * (t.outer.multiple as f64)
                         }
+                        crate::mnx::SequenceItem::Grace(_) => 0.0,
                     };
 
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
 
                     if inserted && absorbed_beats < cb_beats - 0.001 {
@@ -985,6 +1103,9 @@ impl MnxEditorApp {
                                     }
                                 }
                                 crate::mnx::SequenceItem::Tuplet(_t) => {
+                                    flat_items.push(item.clone());
+                                }
+                                crate::mnx::SequenceItem::Grace(_g) => {
                                     flat_items.push(item.clone());
                                 }
                             }
@@ -1084,6 +1205,7 @@ impl MnxEditorApp {
                     let item_ev_count = match item {
                         crate::mnx::SequenceItem::Event(_) => 1,
                         crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
                     };
                     cur_e += item_ev_count;
                 }

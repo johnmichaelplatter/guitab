@@ -197,6 +197,8 @@ impl MnxEditorApp {
                 self.handle_tuplet_right_arrow(e_idx, total_events)
             {
                 tuplet_next
+            } else if let Some(grace_next) = self.handle_grace_right_arrow(e_idx) {
+                grace_next
             } else {
                 let at_final_event = e_idx >= total_events.saturating_sub(1);
                 if at_final_event {
@@ -546,6 +548,20 @@ impl MnxEditorApp {
                 } else if let (Some(e_idx), Some(cur_str)) =
                     (self.selected_event_idx, self.editing_string)
                 {
+                    if let Some(doc) = &self.parsed_mnx {
+                        if doc.find_event_grace_info(e_idx).is_some() {
+                            let note_count = doc
+                                .get_flattened_event_paths()
+                                .get(e_idx)
+                                .and_then(|p| doc.get_event_at_path(*p))
+                                .map(|ev| ev.notes.len())
+                                .unwrap_or(0);
+                            if note_count <= 1 {
+                                self.action_delete_grace_event(e_idx);
+                                return;
+                            }
+                        }
+                    }
                     if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
                         self.update_yaml_and_clean_ties(new_yaml);
                         self.selected_note_idx_in_event = None;
@@ -554,6 +570,20 @@ impl MnxEditorApp {
             } else if delete_pressed {
                 if let (Some(e_idx), Some(cur_str)) = (self.selected_event_idx, self.editing_string)
                 {
+                    if let Some(doc) = &self.parsed_mnx {
+                        if doc.find_event_grace_info(e_idx).is_some() {
+                            let note_count = doc
+                                .get_flattened_event_paths()
+                                .get(e_idx)
+                                .and_then(|p| doc.get_event_at_path(*p))
+                                .map(|ev| ev.notes.len())
+                                .unwrap_or(0);
+                            if note_count <= 1 {
+                                self.action_delete_grace_event(e_idx);
+                                return;
+                            }
+                        }
+                    }
                     if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
                         self.update_yaml_and_clean_ties(new_yaml);
                         self.editing_fret_buf.clear();
@@ -645,6 +675,29 @@ impl MnxEditorApp {
                 if e_idx != anchor {
                     self.action_delete_overwrite();
                     return;
+                }
+
+                if let Some(doc) = &self.parsed_mnx {
+                    if doc.find_event_grace_info(e_idx).is_some() {
+                        let note_count = doc
+                            .get_flattened_event_paths()
+                            .get(e_idx)
+                            .and_then(|p| doc.get_event_at_path(*p))
+                            .map(|ev| ev.notes.len())
+                            .unwrap_or(0);
+                        if note_count > 1 && self.selected_note_idx_in_event.is_some() {
+                            let n_idx = self.selected_note_idx_in_event.unwrap();
+                            if let Some(s) = self.get_string_for_note(e_idx, n_idx) {
+                                if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
+                                    self.update_yaml_and_clean_ties(new_yaml);
+                                    self.selected_note_idx_in_event = None;
+                                    return;
+                                }
+                            }
+                        }
+                        self.action_delete_grace_event(e_idx);
+                        return;
+                    }
                 }
 
                 if let Some(n_idx) = self.selected_note_idx_in_event {
@@ -1064,5 +1117,38 @@ impl MnxEditorApp {
             self.update_yaml(new_yaml);
         }
         self.pending_slur = None;
+    }
+    
+    pub(crate) fn handle_grace_right_arrow(
+        &mut self,
+        e_idx: usize,
+    ) -> Option<usize> {
+        let doc = self.parsed_mnx.as_ref()?;
+        let info = doc.find_event_grace_info(e_idx)?;
+
+        // Must be the final event of the grace block
+        if e_idx != info.event_range.end - 1 {
+            return None;
+        }
+
+        let part = doc.parts.first()?;
+        let flat_events = part
+            .measures
+            .iter()
+            .flat_map(|m| m.sequences.iter())
+            .flat_map(|s| s.flattened_events())
+            .collect::<Vec<_>>();
+        let cur_ev = flat_events.get(e_idx)?;
+        if cur_ev.notes.is_empty() && cur_ev.rest.is_none() {
+            return None; // Still blank, don't advance
+        }
+
+        // Add blank note to grace block
+        if let Some(new_yaml) = crate::yaml_editor::append_blank_note_to_grace_block_in_yaml(&self.yaml_text, e_idx) {
+            self.update_yaml(new_yaml);
+            self.process_and_render();
+            return Some(e_idx + 1);
+        }
+        None
     }
 }

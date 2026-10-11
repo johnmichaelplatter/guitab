@@ -930,6 +930,85 @@ impl MnxEditorApp {
                                             }
                                         }
                                     }
+                                    crate::mnx::SequenceItem::Grace(tup) => {
+                                        for seq_item in &mut tup.content {
+                                            if let crate::mnx::SequenceItem::Event(ev) = seq_item {
+                                                let mut used_strings =
+                                                    std::collections::HashSet::new();
+                                                for note in &ev.notes {
+                                                    if let Some(s) = note.string {
+                                                        used_strings.insert(s);
+                                                    }
+                                                }
+
+                                                for note in &mut ev.notes {
+                                                    if let (Some(string), Some(_fret)) =
+                                                        (note.string, note.fret)
+                                                    {
+                                                        let target_steps =
+                                                            old_tuning.pitch_to_steps(&note.pitch);
+                                                        let old_hz = old_tuning.step_semitones
+                                                            * target_steps as f64;
+                                                        let new_target_steps = (old_hz
+                                                            / new_tuning.step_semitones)
+                                                            .round()
+                                                            as i32;
+                                                        note.pitch =  new_tuning
+                                                            .steps_to_pitch(new_target_steps);
+
+                                                        if let Some(st_pitch) =
+                                                            part_clone.get_string_tuning(string)
+                                                        {
+                                                            let base_steps = new_tuning
+                                                                .pitch_to_steps(&st_pitch);
+                                                            let diff =
+                                                                new_target_steps - base_steps;
+                                                            let mut new_fret = (diff as f32
+                                                                / new_step_multiplier as f32)
+                                                                .round()
+                                                                as i32;
+                                                            let mut best_string = string;
+
+                                                            if new_fret < 0 {
+                                                                used_strings.remove(&string);
+                                                                if let Some(tuning) = part_clone
+                                                                    .instrument
+                                                                    .as_ref()
+                                                                    .and_then(|i| i.tuning.as_ref())
+                                                                {
+                                                                    for t in tuning {
+                                                                        if !used_strings
+                                                                            .contains(&t.string)
+                                                                        {
+                                                                            let alt_base =
+                                                                                new_tuning
+                                                                                    .pitch_to_steps(
+                                                                                        &t.pitch,
+                                                                                    );
+                                                                            let alt_diff =
+                                                                                new_target_steps
+                                                                                    - alt_base;
+                                                                            let alt_fret = (alt_diff as f32 / new_step_multiplier as f32).round() as i32;
+                                                                            if alt_fret >= 0 {
+                                                                                best_string =
+                                                                                    t.string;
+                                                                                new_fret = alt_fret;
+                                                                                break;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                used_strings.insert(best_string);
+                                                            }
+
+                                                            note.string = Some(best_string);
+                                                            note.fret = Some(new_fret);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1024,6 +1103,79 @@ impl MnxEditorApp {
                                         }
                                     }
                                     crate::mnx::SequenceItem::Tuplet(tup) => {
+                                        for seq_item in &mut tup.content {
+                                            if let crate::mnx::SequenceItem::Event(ev) = seq_item {
+                                                let mut used_strings =
+                                                    std::collections::HashSet::new();
+                                                for note in &ev.notes {
+                                                    if let Some(s) = note.string {
+                                                        used_strings.insert(s);
+                                                    }
+                                                }
+
+                                                for note in &mut ev.notes {
+                                                    if let (Some(string), Some(_fret)) =
+                                                        (note.string, note.fret)
+                                                    {
+                                                        let target_steps =
+                                                            tuning_calc.pitch_to_steps(&note.pitch);
+                                                        if let Some(st_pitch) =
+                                                            part_clone.get_string_tuning(string)
+                                                        {
+                                                            let base_steps = tuning_calc
+                                                                .pitch_to_steps(&st_pitch);
+                                                            let diff = target_steps - base_steps;
+                                                            let mut new_fret = (diff as f32
+                                                                / step_mult as f32)
+                                                                .round()
+                                                                as i32;
+                                                            let mut best_string = string;
+
+                                                            if new_fret < 0 {
+                                                                used_strings.remove(&string);
+                                                                if let Some(tuning) = part_clone
+                                                                    .instrument
+                                                                    .as_ref()
+                                                                    .and_then(|i| i.tuning.as_ref())
+                                                                {
+                                                                    for t in tuning {
+                                                                        if !used_strings
+                                                                            .contains(&t.string)
+                                                                        {
+                                                                            let alt_base =
+                                                                                tuning_calc
+                                                                                    .pitch_to_steps(
+                                                                                        &t.pitch,
+                                                                                    );
+                                                                            let alt_diff =
+                                                                                target_steps
+                                                                                    - alt_base;
+                                                                            let alt_fret = (alt_diff
+                                                                                as f32
+                                                                                / step_mult as f32)
+                                                                                .round()
+                                                                                as i32;
+                                                                            if alt_fret >= 0 {
+                                                                                best_string =
+                                                                                    t.string;
+                                                                                new_fret = alt_fret;
+                                                                                break;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                used_strings.insert(best_string);
+                                                            }
+
+                                                            note.string = Some(best_string);
+                                                            note.fret = Some(new_fret);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    crate::mnx::SequenceItem::Grace(tup) => {
                                         for seq_item in &mut tup.content {
                                             if let crate::mnx::SequenceItem::Event(ev) = seq_item {
                                                 let mut used_strings =

@@ -1117,4 +1117,222 @@ parts:
         assert!(ev2.notes[0].tap.is_some());
         assert!(ev2.notes[1].tap.is_some());
     }
+
+    #[test]
+    fn test_grace_note_creation_and_yaml_structure() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: C, octave: 4 }
+                    string: 2
+                    fret: 1
+"#;
+        // Event ranges before grace note: should be 1
+        let er_before = find_all_event_ranges(yaml);
+        assert_eq!(er_before.len(), 1);
+
+        // Insert grace note before event 0
+        let grace_yaml = crate::yaml_editor::insert_grace_before_in_yaml(yaml, 0).expect("insert grace failed");
+
+        // Event ranges after grace note: should be 2 (the grace event, and the original quarter note).
+        // The "- type: grace" container header must NOT be an EventRange!
+        let er_after = find_all_event_ranges(&grace_yaml);
+        assert_eq!(er_after.len(), 2, "Grace container must not be counted as an event range");
+
+        // Now edit event 0 (which is the grace event) to set string 3 fret 12
+        let pitch = crate::mnx::Pitch {
+            step: "D".to_string(),
+            alter: None,
+            octave: 4,
+        };
+        let edited_yaml = crate::yaml_editor::set_or_add_note_on_string(&grace_yaml, 0, 3, 12, Some(&pitch))
+            .expect("set note on grace event failed");
+
+        // Verify that "notes:" is NOT on the grace container line, but inside content:
+        assert!(!edited_yaml.contains("- type: grace\n      notes:"));
+        assert!(!edited_yaml.contains("- type: grace\n    notes:"));
+
+        // Parse with MnxDocument
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&edited_yaml).expect("Failed to deserialize edited YAML");
+        let part = doc.parts.first().unwrap();
+        let seq = part.measures[0].sequences.first().unwrap();
+
+        // seq.content[0] must be SequenceItem::Grace
+        match &seq.content[0] {
+            crate::mnx::SequenceItem::Grace(g) => {
+                assert_eq!(g.content.len(), 1);
+                match &g.content[0] {
+                    crate::mnx::SequenceItem::Event(ev) => {
+                        assert_eq!(ev.notes.len(), 1);
+                        assert_eq!(ev.notes[0].string, Some(3));
+                        assert_eq!(ev.notes[0].fret, Some(12));
+                        assert_eq!(ev.notes[0].pitch.step, "D");
+                    }
+                    _ => panic!("Expected Event inside grace content"),
+                }
+            }
+            _ => panic!("Expected Grace as first sequence item"),
+        }
+    }
+
+    #[test]
+    fn test_grace_toggle_never_duplicates() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: C, octave: 4 }
+                    string: 2
+                    fret: 1
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        app.selected_event_idx = Some(0);
+
+        // Click grace once: inserts grace note before note
+        app.action_toggle_grace();
+        assert_eq!(app.selected_event_idx, Some(0)); // on the grace note
+        assert_eq!(app.yaml_text.matches("- type: grace").count(), 1);
+
+        // Click grace again: pops out to regular note (now event 1)
+        app.action_toggle_grace();
+        assert_eq!(app.selected_event_idx, Some(1)); // on the regular note
+        assert_eq!(app.yaml_text.matches("- type: grace").count(), 1);
+
+        // Click grace again while on regular note: should toggle back to grace note, NOT insert another!
+        app.action_toggle_grace();
+        assert_eq!(app.selected_event_idx, Some(0)); // on the grace note
+        assert_eq!(app.yaml_text.matches("- type: grace").count(), 1, "Must never create duplicate grace container");
+
+        // Click grace again: pops out to regular note
+        app.action_toggle_grace();
+        assert_eq!(app.selected_event_idx, Some(1));
+        assert_eq!(app.yaml_text.matches("- type: grace").count(), 1);
+    }
+
+    #[test]
+    fn test_grace_delete_single_and_multi() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - type: grace
+                content:
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: G, octave: 4 }
+                        string: 1
+                        fret: 3
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: A, octave: 4 }
+                        string: 1
+                        fret: 5
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: C, octave: 4 }
+                    string: 2
+                    fret: 1
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        // Events: 0 (Grace G), 1 (Grace A), 2 (Quarter C)
+        assert_eq!(find_all_event_ranges(&app.yaml_text).len(), 3);
+
+        // Delete Grace G (event 0)
+        app.action_delete_grace_event(0);
+        // Should now have 2 events: Grace A (event 0), Quarter C (event 1)
+        assert_eq!(find_all_event_ranges(&app.yaml_text).len(), 2);
+        assert_eq!(app.yaml_text.matches("- type: grace").count(), 1);
+
+        // Delete Grace A (event 0)
+        app.action_delete_grace_event(0);
+        // The grace block had only 1 note left, so it should be completely removed!
+        assert_eq!(find_all_event_ranges(&app.yaml_text).len(), 1);
+        assert_eq!(app.yaml_text.matches("- type: grace").count(), 0);
+        // Selection should be on the remaining quarter note (event 0)
+        assert_eq!(app.selected_event_idx, Some(0));
+    }
+
+    #[test]
+    fn test_grace_cut_preserves_remaining_grace_notes() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - type: grace
+                content:
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: G, octave: 4 }
+                        string: 1
+                        fret: 3
+                  - duration: { base: eighth }
+                    notes:
+                      - pitch: { step: A, octave: 4 }
+                        string: 1
+                        fret: 5
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: C, octave: 4 }
+                    string: 2
+                    fret: 1
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        // Select only Grace G (event 0)
+        app.selected_event_idx = Some(0);
+        app.selection_anchor = Some(0);
+
+        // Cut Grace G
+        app.action_cut_overwrite();
+
+        // Grace A (originally event 1) must be preserved!
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&app.yaml_text).unwrap();
+        let part = doc.parts.first().unwrap();
+        let seq = part.measures[0].sequences.first().unwrap();
+        match &seq.content[0] {
+            crate::mnx::SequenceItem::Grace(g) => {
+                assert_eq!(g.content.len(), 1, "Grace container must preserve Grace A");
+                if let crate::mnx::SequenceItem::Event(ev) = &g.content[0] {
+                    assert_eq!(ev.notes[0].fret, Some(5), "Grace A (fret 5) preserved");
+                } else {
+                    panic!("Expected Event inside grace");
+                }
+            }
+            _ => panic!("Expected Grace container"),
+        }
+    }
 }
