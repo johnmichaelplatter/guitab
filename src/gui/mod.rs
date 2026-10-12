@@ -174,6 +174,11 @@ pub enum ActiveDialog {
         string: u8,
         touch_buf: String,
     },
+    InsertEnding {
+        start_m: usize,
+        end_m: usize,
+        times_str: String,
+    },
 }
 
 impl Default for MnxEditorApp {
@@ -249,6 +254,27 @@ impl MnxEditorApp {
             self.process_and_render();
         }
     }
+
+    pub fn get_selected_measure_range(&self) -> (usize, usize) {
+        if let Some(doc) = &self.parsed_mnx {
+            let flattened = doc.get_flattened_event_paths();
+            if !flattened.is_empty() {
+                let (min_ev, max_ev) = match (self.selected_event_idx, self.selection_anchor) {
+                    (Some(curr), Some(anch)) => (curr.min(anch), curr.max(anch)),
+                    (Some(curr), None) => (curr, curr),
+                    (None, Some(anch)) => (anch, anch),
+                    (None, None) => (0, 0),
+                };
+                let min_ev = min_ev.min(flattened.len().saturating_sub(1));
+                let max_ev = max_ev.min(flattened.len().saturating_sub(1));
+                let start_m = flattened[min_ev].m_idx();
+                let end_m = flattened[max_ev].m_idx();
+                return (start_m, end_m);
+            }
+        }
+        (0, 0)
+    }
+
     pub fn start_midi_playback(&mut self, start_from_selected: bool) {
         if let Some(doc) = &self.parsed_mnx {
             if let Some(port_idx) = self.selected_midi_port {

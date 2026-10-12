@@ -1370,11 +1370,13 @@ pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &
     let lines: Vec<&str> = yaml.lines().collect();
     let mut in_global_section = false;
     let mut in_global_measures = false;
+    let mut measures_header_line = None;
     let mut m_idx = -1;
     let mut measure_indent = 0usize;
     
     let mut first_measure_line = None;
     let mut last_measure_line = None;
+    let mut last_global_line = None;
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -1384,10 +1386,12 @@ pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &
             in_global_section = true;
         } else if in_global_section && trimmed == "measures:" {
             in_global_measures = true;
+            measures_header_line = Some(i);
         } else if in_global_measures && trimmed.starts_with("- ") {
             if measure_indent == 0 { measure_indent = indent; }
             if indent == measure_indent {
                 m_idx += 1;
+                last_global_line = Some(i);
                 if m_idx == target_m_idx as i32 {
                     first_measure_line = Some(i);
                     last_measure_line = Some(i);
@@ -1396,10 +1400,16 @@ pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &
                 }
             } else if m_idx == target_m_idx as i32 {
                 last_measure_line = Some(i);
+                last_global_line = Some(i);
+            } else if m_idx < target_m_idx as i32 {
+                last_global_line = Some(i);
             }
-        } else if m_idx == target_m_idx as i32 {
+        } else if in_global_measures && m_idx >= 0 {
             if !trimmed.is_empty() && indent > measure_indent {
-                last_measure_line = Some(i);
+                if m_idx == target_m_idx as i32 {
+                    last_measure_line = Some(i);
+                }
+                last_global_line = Some(i);
             } else if !trimmed.is_empty() && indent <= measure_indent {
                 break;
             }
@@ -1431,6 +1441,16 @@ pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &
             for i in (e_idx + 1)..lines.len() {
                 result.push_str(lines[i]); result.push('\n');
             }
+        } else if lines[start].trim() == "- {}" {
+            // Replace the empty "- {}"
+            for i in 0..start {
+                result.push_str(lines[i]); result.push('\n');
+            }
+            result.push_str(&format!("{}- {}: {}", " ".repeat(measure_indent), prop_name, prop_value));
+            result.push('\n');
+            for i in (start + 1)..lines.len() {
+                result.push_str(lines[i]); result.push('\n');
+            }
         } else {
             // Insert after the start line
             for i in 0..=start {
@@ -1444,7 +1464,27 @@ pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &
         return result.trim_end_matches('\n').to_string() + if yaml.ends_with('\n') { "\n" } else { "" };
     }
     
-    // If measure not found, we could try to create global measures, but let's assume it exists.
+    // If measure not found, pad global measures up to target_m_idx
+    if in_global_measures {
+        let insert_after = last_global_line.or(measures_header_line).unwrap_or(0);
+        let m_indent_str = " ".repeat(if measure_indent > 0 { measure_indent } else { 4 });
+        let mut result = String::new();
+        for i in 0..=insert_after {
+            result.push_str(lines[i]); result.push('\n');
+        }
+        for curr in (m_idx + 1)..=(target_m_idx as i32) {
+            if curr == target_m_idx as i32 {
+                result.push_str(&format!("{}- {}: {}\n", m_indent_str, prop_name, prop_value));
+            } else {
+                result.push_str(&format!("{}- {{}}\n", m_indent_str));
+            }
+        }
+        for i in (insert_after + 1)..lines.len() {
+            result.push_str(lines[i]); result.push('\n');
+        }
+        return result.trim_end_matches('\n').to_string() + if yaml.ends_with('\n') { "\n" } else { "" };
+    }
+
     yaml.to_string()
 }
 pub fn insert_grace_before_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {

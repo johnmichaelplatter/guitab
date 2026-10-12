@@ -547,6 +547,41 @@ impl MnxEditorApp {
                     self.update_yaml(new_yaml);
                     self.process_and_render();
                 }
+
+                let icon_size = egui::vec2(24.0, 24.0);
+                let btn_size = egui::vec2(30.0, 30.0);
+
+                let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg")).fit_to_exact_size(icon_size);
+                if ui.add_sized(btn_size, egui::Button::image(img_closed)).on_hover_text("Insert 1st... Ending").clicked() {
+                    let (start_m, end_m) = self.get_selected_measure_range();
+                    self.active_dialog = ActiveDialog::InsertEnding {
+                        start_m,
+                        end_m,
+                        times_str: "1".to_string(),
+                    };
+                }
+
+                let img_open = egui::Image::new(include_image!("../../assets/open ending.svg")).fit_to_exact_size(icon_size);
+                if ui.add_sized(btn_size, egui::Button::image(img_open)).on_hover_text("Insert Open Ending").clicked() {
+                    let (start_m, end_m) = self.get_selected_measure_range();
+                    let prev_max = if let Some(doc) = &self.parsed_mnx {
+                        doc.get_prior_ending_max(start_m)
+                    } else {
+                        None
+                    }.unwrap_or(0);
+                    let start_num = prev_max + 1;
+                    let numbers = vec![start_num];
+                    let duration = (end_m - start_m + 1) as u32;
+                    let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
+                    let yaml = crate::yaml_editor::set_global_measure_property(
+                        &self.yaml_text,
+                        start_m,
+                        "ending",
+                        &ending_val,
+                    );
+                    self.update_yaml(yaml);
+                    self.process_and_render();
+                }
             });
             ui.separator();
             ui.horizontal(|ui| {

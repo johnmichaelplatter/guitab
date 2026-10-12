@@ -849,6 +849,28 @@ impl MnxDocument {
         }
         None
     }
+
+    pub fn get_prior_ending_max(&self, start_m: usize) -> Option<u32> {
+        if start_m == 0 {
+            return None;
+        }
+        for k in (0..start_m).rev() {
+            if let Some(gm) = self.global.measures.get(k) {
+                if let Some(ending) = &gm.ending {
+                    let end_cov = k + ending.duration as usize;
+                    if end_cov == start_m {
+                        return ending.numbers.iter().max().copied();
+                    }
+                }
+            }
+        }
+        if let Some(gm) = self.global.measures.get(start_m - 1) {
+            if let Some(ending) = &gm.ending {
+                return ending.numbers.iter().max().copied();
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]

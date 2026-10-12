@@ -64,6 +64,11 @@ impl MnxEditorApp {
                 touch: f64,
                 sounding_pitch: crate::mnx::Pitch,
             },
+            InsertEnding {
+                start_m: usize,
+                end_m: usize,
+                times: u32,
+            },
         }
 
         let mut close_dialog = false;
@@ -71,6 +76,47 @@ impl MnxEditorApp {
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
+            ActiveDialog::InsertEnding {
+                start_m,
+                end_m,
+                times_str,
+            } => {
+                let start_m_val = *start_m;
+                let end_m_val = *end_m;
+
+                egui::Window::new("Insert Ending")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        ui.label("How many times will this ending be played?");
+                        ui.add(egui::TextEdit::singleline(times_str).desired_width(60.0));
+
+                        let parsed_times = times_str.trim().parse::<u32>();
+                        let is_valid = match parsed_times {
+                            Ok(t) => t >= 1 && t <= 15,
+                            Err(_) => false,
+                        };
+
+                        ui.horizontal(|ui| {
+                            let ok_btn = ui.add_enabled(is_valid, egui::Button::new("OK"));
+                            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if (ok_btn.clicked() || enter_pressed) && is_valid {
+                                let times = parsed_times.unwrap();
+                                apply_action = Some(DialogAction::InsertEnding {
+                                    start_m: start_m_val,
+                                    end_m: end_m_val,
+                                    times,
+                                });
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
             ActiveDialog::InsertTempo {
                 bpm_str,
                 duration_value,
@@ -1441,6 +1487,37 @@ impl MnxEditorApp {
                             self.process_and_render();
                         }
                     }
+                }
+                DialogAction::InsertEnding {
+                    start_m,
+                    end_m,
+                    times,
+                } => {
+                    let prev_max = if let Some(doc) = &self.parsed_mnx {
+                        doc.get_prior_ending_max(start_m)
+                    } else {
+                        None
+                    }
+                    .unwrap_or(0);
+                    let start_num = prev_max + 1;
+                    let numbers: Vec<u32> = (start_num..(start_num + times)).collect();
+                    let duration = (end_m - start_m + 1) as u32;
+                    let ending_val =
+                        format!("{{ duration: {}, numbers: {:?} }}", duration, numbers);
+                    let mut yaml = crate::yaml_editor::set_global_measure_property(
+                        &self.yaml_text,
+                        start_m,
+                        "ending",
+                        &ending_val,
+                    );
+                    yaml = crate::yaml_editor::set_global_measure_property(
+                        &yaml,
+                        end_m,
+                        "repeatEnd",
+                        "{}",
+                    );
+                    self.update_yaml(yaml);
+                    self.process_and_render();
                 }
             }
         }

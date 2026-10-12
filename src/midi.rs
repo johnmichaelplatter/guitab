@@ -941,40 +941,8 @@ impl<'a> PlaybackTrackGenerator<'a> {
     }
 
     pub fn generate(mut self) -> (Vec<PlaybackEvent>, f64) {
-        
-        let mut flattened_measures = Vec::new();
-        let mut active_repeat_start = 0;
-        let num_measures = self.doc.global.measures.len();
-        let mut m = 0;
-        
-        if num_measures == 0 {
-            if let Some(part) = self.doc.parts.first() {
-                for i in 0..part.measures.len() {
-                    flattened_measures.push(i);
-                }
-            }
-        } else {
-            while m < num_measures {
-                let gm = &self.doc.global.measures[m];
-                if gm.repeat_start.is_some() {
-                    active_repeat_start = m;
-                }
-                flattened_measures.push(m);
-                
-                if let Some(repeat_end) = &gm.repeat_end {
-                    let times = repeat_end.times.max(1);
-                    if times > 1 {
-                        for _ in 1..times {
-                            for rep_m in active_repeat_start..=m {
-                                flattened_measures.push(rep_m);
-                            }
-                        }
-                    }
-                    active_repeat_start = m + 1;
-                }
-                m += 1;
-            }
-        }
+        let total_part_measures = self.doc.parts.first().map(|p| p.measures.len()).unwrap_or(0);
+        let flattened_measures = compute_flattened_measures(&self.doc.global, total_part_measures);
 
         if let Some(part) = self.doc.parts.first() {
             let num_strings = part.num_strings() as u8;
@@ -1020,6 +988,154 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let ppq = self.ppq;
         (self.resolve_deltas(), ppq)
     }
+}
+
+/// Computes the flattened playback order of measures respecting repeats (repeatStart, repeatEnd)
+/// and alternate endings (voltas).
+pub fn compute_flattened_measures(
+    global: &crate::mnx::Global,
+    num_part_measures: usize,
+) -> Vec<usize> {
+    let mut flattened_measures = Vec::new();
+    let num_measures = if global.measures.is_empty() {
+        num_part_measures
+    } else {
+        global.measures.len().min(num_part_measures)
+    };
+
+    if num_measures == 0 {
+        return flattened_measures;
+    }
+
+    if global.measures.is_empty() {
+        for i in 0..num_measures {
+            flattened_measures.push(i);
+        }
+        return flattened_measures;
+    }
+
+    struct EndingRange {
+        start_m: usize,
+        duration: usize,
+        numbers: Vec<u32>,
+    }
+
+    let mut endings: Vec<EndingRange> = Vec::new();
+    for (idx, gm) in global.measures.iter().enumerate().take(num_measures) {
+        if let Some(ending) = &gm.ending {
+            endings.push(EndingRange {
+                start_m: idx,
+                duration: ending.duration.max(1) as usize,
+                numbers: ending.numbers.clone(),
+            });
+        }
+    }
+
+    let mut m = 0;
+    let mut active_repeat_start = 0;
+    let mut pass_count: u32 = 1;
+    let mut steps_count = 0;
+    const MAX_STEPS: usize = 10_000;
+
+    while m < num_measures && steps_count < MAX_STEPS {
+        steps_count += 1;
+        let gm = &global.measures[m];
+
+        // If this measure starts a repeat block
+        if gm.repeat_start.is_some() && pass_count == 1 {
+            active_repeat_start = m;
+        }
+
+        // Determine the next repeat_start boundary after active_repeat_start
+        let next_repeat_start = (active_repeat_start + 1..num_measures)
+            .find(|&i| global.measures[i].repeat_start.is_some())
+            .unwrap_or(num_measures);
+
+        // Collect all endings belonging to this repeat section
+        let section_endings: Vec<&EndingRange> = endings
+            .iter()
+            .filter(|e| e.start_m >= active_repeat_start && e.start_m < next_repeat_start)
+            .collect();
+
+        // End of the last ending in this section (if any)
+        let section_endings_end = section_endings
+            .iter()
+            .map(|e| e.start_m + e.duration)
+            .max();
+
+        // If we have advanced past all endings of this section, reset pass_count and active_repeat_start
+        if let Some(end_m) = section_endings_end {
+            if m >= end_m && pass_count > 1 {
+                pass_count = 1;
+                active_repeat_start = m;
+            }
+        }
+
+        // Compute max_pass for this repeat section
+        let max_pass: u32 = if !section_endings.is_empty() {
+            section_endings
+                .iter()
+                .flat_map(|e| e.numbers.iter())
+                .copied()
+                .max()
+                .unwrap_or(2)
+        } else {
+            // Check if there is a repeat_end in this section
+            (active_repeat_start..next_repeat_start)
+                .filter_map(|i| global.measures[i].repeat_end.as_ref())
+                .map(|re| re.times.max(1))
+                .next()
+                .unwrap_or(2)
+        };
+
+        // Check if measure m is the start of an ending
+        if let Some(cur_ending) = section_endings.iter().find(|e| e.start_m == m) {
+            if !cur_ending.numbers.contains(&pass_count) {
+                // Skip this ending! Find an ending in this section that matches pass_count
+                if let Some(next_matching_ending) = section_endings
+                    .iter()
+                    .find(|e| e.start_m > m && e.numbers.contains(&pass_count))
+                {
+                    m = next_matching_ending.start_m;
+                    continue;
+                } else {
+                    // No matching ending found for this pass; jump past all endings in this section
+                    let last_ending_end = section_endings_end.unwrap_or(m + cur_ending.duration);
+                    m = last_ending_end;
+                    continue;
+                }
+            }
+        }
+
+        // Play this measure
+        flattened_measures.push(m);
+
+        // Check if this measure triggers a repeat
+        let is_repeat_end = gm.repeat_end.is_some()
+            || (pass_count < max_pass
+                && section_endings.iter().any(|e| {
+                    e.start_m + e.duration - 1 == m && e.numbers.contains(&pass_count)
+                })
+                && section_endings.iter().any(|e| e.start_m == m + 1));
+
+        if is_repeat_end {
+            if pass_count < max_pass {
+                pass_count += 1;
+                m = active_repeat_start;
+                continue;
+            } else {
+                // Finished all passes for this repeat block
+                pass_count = 1;
+                active_repeat_start = m + 1;
+                m += 1;
+                continue;
+            }
+        }
+
+        m += 1;
+    }
+
+    flattened_measures
 }
 
 pub fn generate_playback_track(
@@ -2078,6 +2194,83 @@ parts:
         assert_eq!(note_ons[1], (480, 83));
         assert_eq!(note_ons[2], (960, 88));
         assert_eq!(note_ons[3], (1440, 92));
+    }
+
+    #[test]
+    fn test_compute_flattened_measures_endings() {
+        let yaml = include_str!("../example_endings.yaml");
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let flattened = compute_flattened_measures(&doc.global, 6);
+        assert_eq!(flattened, vec![0, 1, 2, 0, 1, 2, 0, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_compute_flattened_measures_simple_endings() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - repeatStart: {}
+      time: { count: 4, unit: 4 }
+    - ending: { duration: 1, numbers: [1] }
+      repeatEnd: {}
+    - ending: { duration: 1, numbers: [2] }
+      repeatEnd: {}
+    - ending: { duration: 1, numbers: [3], open: true }
+parts:
+  - measures:
+      - sequences: []
+      - sequences: []
+      - sequences: []
+      - sequences: []
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let flattened = compute_flattened_measures(&doc.global, 4);
+        assert_eq!(flattened, vec![0, 1, 0, 2, 0, 3]);
+    }
+
+    #[test]
+    fn test_compute_flattened_measures_standard_repeat() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - repeatStart: {}
+      time: { count: 4, unit: 4 }
+    - {}
+    - repeatEnd: { times: 2 }
+    - {}
+parts:
+  - measures:
+      - sequences: []
+      - sequences: []
+      - sequences: []
+      - sequences: []
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let flattened = compute_flattened_measures(&doc.global, 4);
+        assert_eq!(flattened, vec![0, 1, 2, 0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_playback_track_endings_example() {
+        let yaml = include_str!("../example_endings.yaml");
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let (track, _) = generate_playback_track(&doc, MidiOptions::default());
+
+        let markers: Vec<usize> = track
+            .iter()
+            .filter_map(|ev| {
+                if let PlaybackEventKind::EventMarker(idx) = ev.kind {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(markers, vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 4, 5, 6, 7]);
     }
 }
 
