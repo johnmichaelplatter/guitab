@@ -211,6 +211,96 @@ pub fn duration_spacing(duration: &crate::mnx::Duration, base_spacing: f32) -> f
     base_spacing * duration_spacing_weight(beats)
 }
 
+/// Formats a harmonic touch location for tablature display, enclosed in angle brackets.
+/// Integers (or values very close to an integer) are formatted without decimals (e.g. "<12>"),
+/// while fractional touches are formatted with one decimal place (e.g. "<3.9>").
+pub fn format_harmonic_touch(touch: f64) -> String {
+    if (touch - touch.round()).abs() < 1e-4 {
+        format!("<{:.0}>", touch.round())
+    } else {
+        format!("<{:.1}>", touch)
+    }
+}
+
+/// Returns the maximum displayed text width of an event's note labels in tablature.
+pub fn event_text_width(
+    event: &crate::mnx::Event,
+    in_grace: bool,
+    editing_len: Option<usize>,
+) -> f32 {
+    let char_w = if in_grace { 6.05_f32 } else { 8.45_f32 };
+    let mut max_chars = editing_len.unwrap_or(0);
+    for note in &event.notes {
+        let len = if let Some(harmonic) = &note.harmonic {
+            format_harmonic_touch(harmonic.touch).len()
+        } else if note.muted.unwrap_or(false) {
+            1
+        } else {
+            note.fret.map(|f| f.to_string().len()).unwrap_or(1)
+        };
+        max_chars = max_chars.max(len);
+    }
+    if max_chars == 0 {
+        if event.rest.is_some() {
+            14.0
+        } else {
+            char_w
+        }
+    } else {
+        (max_chars as f32) * char_w
+    }
+}
+
+/// Calculates the horizontal advancement spacing following an event in tablature.
+/// Accounts for:
+/// - Duration spacing weight
+/// - Grace note scaling
+/// - Pitch bends
+/// - Collision prevention between wide text entries (e.g. natural harmonics like "<20.5>", double digits)
+/// - Barline clearance if this is the last event in a measure
+pub fn calculate_event_spacing(
+    event: &crate::mnx::Event,
+    in_grace: bool,
+    base_event_spacing: f32,
+    next_event_info: Option<(&crate::mnx::Event, bool)>,
+    editing_len: Option<usize>,
+    next_editing_len: Option<usize>,
+) -> f32 {
+    let mut spacing = if in_grace {
+        (duration_spacing(&event.duration, base_event_spacing) * 0.75).max(19.0)
+    } else {
+        duration_spacing(&event.duration, base_event_spacing)
+    };
+
+    if event.notes.iter().any(|n| n.bend.is_some()) {
+        spacing = spacing.max(55.0);
+    }
+
+    let w1 = event_text_width(event, in_grace, editing_len);
+
+    let min_collision_spacing = match next_event_info {
+        Some((next_ev, next_in_grace)) => {
+            let w2 = event_text_width(next_ev, next_in_grace, next_editing_len);
+            let gap = if w1 > 8.5 || w2 > 8.5 {
+                if in_grace && next_in_grace {
+                    8.0
+                } else {
+                    10.0
+                }
+            } else {
+                5.0
+            };
+            (w1 + w2) * 0.5 + 4.0 + gap
+        }
+        None => {
+            // End of measure before barline: ensure right edge and mask clear the barline
+            w1 * 0.5 + 2.0 + 10.0
+        }
+    };
+
+    spacing.max(min_collision_spacing)
+}
+
 // ── Collected note position for rhythm drawing ────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -306,23 +396,60 @@ pub fn draw_tablature(
 
     let total_events_width: f32 = {
         let mut total = 0.0_f32;
-        for m in &part.measures {
+        for (m_idx, m) in part.measures.iter().enumerate() {
             if let Some(seq) = m.sequences.first() {
                 let mut layout_items = Vec::new();
                 for item in &seq.content {
                     item.to_layout_items(&mut layout_items);
                 }
+
+                let mut first_ev_info = None;
+                let mut temp_grace = false;
+                for item in &layout_items {
+                    match item {
+                        LayoutItem::GraceStart => temp_grace = true,
+                        LayoutItem::GraceEnd => temp_grace = false,
+                        LayoutItem::Event(e) => {
+                            first_ev_info = Some((*e, temp_grace));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some((first_ev, first_grace)) = first_ev_info {
+                    let w_first = event_text_width(first_ev, first_grace, None);
+                    let def_pad = if m_idx == 0 { first_bar_pad } else { measure_spacing };
+                    let extra_start = (w_first * 0.5 + 10.0 - def_pad).max(0.0);
+                    total += extra_start;
+                }
+
                 let mut in_grace = false;
-                for l_item in layout_items {
+                for (item_idx, l_item) in layout_items.iter().enumerate() {
                     match l_item {
                         LayoutItem::GraceStart => in_grace = true,
                         LayoutItem::GraceEnd => in_grace = false,
                         LayoutItem::Event(ev) => {
-                            let sp = if in_grace {
-                                (duration_spacing(&ev.duration, event_spacing) * 0.75).max(19.0)
-                            } else {
-                                duration_spacing(&ev.duration, event_spacing)
-                            };
+                            let mut next_ev_info = None;
+                            let mut look_grace = in_grace;
+                            for next_item in &layout_items[item_idx + 1..] {
+                                match next_item {
+                                    LayoutItem::GraceStart => look_grace = true,
+                                    LayoutItem::GraceEnd => look_grace = false,
+                                    LayoutItem::Event(ne) => {
+                                        next_ev_info = Some((*ne, look_grace));
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            let sp = calculate_event_spacing(
+                                ev,
+                                in_grace,
+                                event_spacing,
+                                next_ev_info,
+                                None,
+                                None,
+                            );
                             total += sp;
                         }
                         _ => {}
@@ -560,10 +687,39 @@ pub fn draw_tablature(
             for item in &seq.content {
                 item.to_layout_items(&mut layout_items);
             }
+
+            let mut first_ev_info = None;
+            let mut temp_grace = false;
+            for item in &layout_items {
+                match item {
+                    LayoutItem::GraceStart => temp_grace = true,
+                    LayoutItem::GraceEnd => temp_grace = false,
+                    LayoutItem::Event(e) => {
+                        first_ev_info = Some((*e, temp_grace));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some((first_ev, first_grace)) = first_ev_info {
+                let is_editing_first = opts.is_editing_fret
+                    && opts.selected_event == Some(flat_event_idx)
+                    && !opts.editing_fret_text.is_empty();
+                let edit_len = if is_editing_first {
+                    Some(opts.editing_fret_text.len())
+                } else {
+                    None
+                };
+                let w_first = event_text_width(first_ev, first_grace, edit_len);
+                let def_pad = if m_idx == 0 { first_bar_pad } else { measure_spacing };
+                let extra_start = (w_first * 0.5 + 10.0 - def_pad).max(0.0);
+                current_x += extra_start;
+            }
+
             let num_events = seq.flattened_events().len();
             let mut e_idx = 0;
             let mut in_grace = false;
-            for l_item in layout_items {
+            for (item_idx, l_item) in layout_items.iter().enumerate() {
                 let event = match l_item {
                     LayoutItem::TupletStart(t) => {
                         tuplet_counter += 1;
@@ -621,7 +777,7 @@ pub fn draw_tablature(
                         in_grace = false;
                         continue;
                     }
-                    LayoutItem::Event(e) => e,
+                    LayoutItem::Event(e) => *e,
                 };
 
                 let current_tuplet_id = tuplet_stack.last().map(|&(id, _)| id);
@@ -787,6 +943,47 @@ pub fn draw_tablature(
                     event_id_to_idx.insert(ev_id.clone(), flat_event_idx);
                 }
 
+                let mut next_ev_info = None;
+                let mut look_grace = in_grace;
+                for next_item in &layout_items[item_idx + 1..] {
+                    match next_item {
+                        LayoutItem::GraceStart => look_grace = true,
+                        LayoutItem::GraceEnd => look_grace = false,
+                        LayoutItem::Event(ne) => {
+                            next_ev_info = Some((*ne, look_grace));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let is_editing_this = opts.is_editing_fret
+                    && opts.selected_event == Some(flat_event_idx)
+                    && !opts.editing_fret_text.is_empty();
+                let edit_len = if is_editing_this {
+                    Some(opts.editing_fret_text.len())
+                } else {
+                    None
+                };
+
+                let next_editing_len = if opts.is_editing_fret
+                    && opts.selected_event == Some(flat_event_idx + 1)
+                    && !opts.editing_fret_text.is_empty()
+                {
+                    Some(opts.editing_fret_text.len())
+                } else {
+                    None
+                };
+
+                let spacing = calculate_event_spacing(
+                    event,
+                    in_grace,
+                    event_spacing,
+                    next_ev_info,
+                    edit_len,
+                    next_editing_len,
+                );
+
                 let is_selected = if let Some(cursor) = selected_event {
                     let anchor = opts.selection_anchor.unwrap_or(cursor);
                     flat_event_idx >= cursor.min(anchor) && flat_event_idx <= cursor.max(anchor)
@@ -794,15 +991,17 @@ pub fn draw_tablature(
                     false
                 };
 
+                let event_w = event_text_width(event, in_grace, edit_len);
+                let half_col_w = (event_w * 0.5 + 4.0).max(if in_grace { 8.5 } else { 12.0 });
                 let col_rect = if in_grace {
                     Rect::from_min_max(
-                        Pos2::new(current_x - 8.5, string_y_coords[0] - 4.0),
-                        Pos2::new(current_x + 8.5, stem_bot_y + 4.0),
+                        Pos2::new(current_x - half_col_w, string_y_coords[0] - 4.0),
+                        Pos2::new(current_x + half_col_w, stem_bot_y + 4.0),
                     )
                 } else {
                     Rect::from_min_max(
-                        Pos2::new(current_x - 12.0, string_y_coords[0] - 6.0),
-                        Pos2::new(current_x + 12.0, stem_bot_y + 6.0),
+                        Pos2::new(current_x - half_col_w, string_y_coords[0] - 6.0),
+                        Pos2::new(current_x + half_col_w, stem_bot_y + 6.0),
                     )
                 };
 
@@ -870,7 +1069,10 @@ pub fn draw_tablature(
                             max_string_y = max_string_y.max(y);
                         }
                     }
-                    if let (Some(s), Some(f)) = (note.string, note.fret) {
+                    let effective_fret = note
+                        .fret
+                        .or_else(|| note.harmonic.as_ref().map(|h| h.touch.round() as i32));
+                    if let (Some(s), Some(f)) = (note.string, effective_fret) {
                         if s >= 1 && (s as usize) <= num_strings {
                             step_frets[(s - 1) as usize] = Some((f, n_idx));
                             let note_pos = Pos2::new(current_x, string_y_coords[(s - 1) as usize]);
@@ -931,7 +1133,7 @@ pub fn draw_tablature(
                         let font_size = 28.0;
                         let arp_font_id =
                             FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
-                        let arp_x = current_x - 12.0;
+                        let arp_x = current_x - (event_w * 0.5 + 6.0).max(12.0);
 
                         let step_y = font_size * 0.25;
                         let num_steps = ((max_string_y - min_string_y) / step_y).ceil() as i32;
@@ -1029,12 +1231,18 @@ pub fn draw_tablature(
                         };
 
                         let is_muted = event.notes[n_idx].muted.unwrap_or(false);
+                        let display_fret = if let Some(harmonic) = &event.notes[n_idx].harmonic {
+                            format_harmonic_touch(harmonic.touch)
+                        } else {
+                            fret.to_string()
+                        };
+
                         let display_text = if is_this_string_editing {
                             if editing_fret_text.is_empty() {
                                 if is_muted {
                                     "X".to_string()
                                 } else {
-                                    fret.to_string()
+                                    display_fret
                                 }
                             } else {
                                 editing_fret_text.to_string()
@@ -1043,7 +1251,7 @@ pub fn draw_tablature(
                             if is_muted {
                                 "X".to_string()
                             } else {
-                                fret.to_string()
+                                display_fret
                             }
                         };
 
@@ -1139,9 +1347,6 @@ pub fn draw_tablature(
                                 let cents = (max_y_text * pitch_bend_range as f32).round() as i32;
 
                                 if cents > 0 && !path_nodes.is_empty() {
-                                    let mut spacing =
-                                        duration_spacing(&event.duration, event_spacing);
-                                    spacing = spacing.max(55.0); // Match the push we do below
 
                                     let start_pos =
                                         Pos2::new(text_rect.max.x + 2.0, text_rect.center().y);
@@ -1278,15 +1483,6 @@ pub fn draw_tablature(
                     start_beat,
                     end_beat,
                 });
-
-                let mut spacing = if in_grace {
-                    (duration_spacing(&event.duration, event_spacing) * 0.75).max(19.0)
-                } else {
-                    duration_spacing(&event.duration, event_spacing)
-                };
-                if event.notes.iter().any(|n| n.bend.is_some()) {
-                    spacing = spacing.max(55.0); // Give bends enough horizontal room to draw arrowhead and text
-                }
 
                 flat_event_idx += 1;
                 e_idx += 1;
@@ -1907,6 +2103,18 @@ mod tests {
         assert_eq!(smufl_time_sig_digits(8), "\u{E088}");
         assert_eq!(smufl_time_sig_digits(16), "\u{E081}\u{E086}");
     }
+
+    #[test]
+    fn test_format_harmonic_touch() {
+        assert_eq!(format_harmonic_touch(12.0), "<12>");
+        assert_eq!(format_harmonic_touch(7.0), "<7>");
+        assert_eq!(format_harmonic_touch(5.0), "<5>");
+        assert_eq!(format_harmonic_touch(3.9), "<3.9>");
+        assert_eq!(format_harmonic_touch(2.7), "<2.7>");
+        assert_eq!(format_harmonic_touch(9.7), "<9.7>");
+    }
+
+
 
     #[test]
     fn test_apply_beam_group() {
@@ -2762,6 +2970,175 @@ mod tests {
         assert_eq!(multi_from[2], Some(1));
         // Grace note 2 does NOT beam to regular note 3!
         assert_eq!(multi_to[2], None, "Grace note 2 must not beam to regular note 3");
+    }
+
+    #[test]
+    fn test_event_text_width_calculations() {
+        use crate::mnx::{Duration, Event, Harmonic, Note, Pitch};
+
+        let dummy = |fret: i32, harmonic: Option<f64>| Note {
+            pitch: Pitch { step: "C".into(), alter: None, octave: 4 },
+            accidental: None,
+            fret: Some(fret),
+            string: Some(1),
+            id: None,
+            muted: None,
+            ties: None,
+            tap: None,
+            slide: None,
+            bend: None,
+            harmonic: harmonic.map(|t| Harmonic {
+                touch: t,
+                sounding_note: Box::new(Note {
+                    pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
+                    accidental: None,
+                    fret: None,
+                    string: None,
+                    id: None,
+                    muted: None,
+                    ties: None,
+                    tap: None,
+                    slide: None,
+                    bend: None,
+                    harmonic: None,
+                }),
+            }),
+        };
+
+        // Single digit note (fret 7)
+        let single_digit_ev = Event {
+            duration: Duration { base: "quarter".into(), dots: None, multiple: None },
+            notes: vec![dummy(7, None)],
+            id: None, rest: None, slurs: None, markings: None,
+        };
+        assert!((event_text_width(&single_digit_ev, false, None) - 8.45).abs() < 1e-4);
+        assert!((event_text_width(&single_digit_ev, true, None) - 6.05).abs() < 1e-4);
+
+        // Double digit note (fret 12)
+        let double_digit_ev = Event {
+            duration: Duration { base: "quarter".into(), dots: None, multiple: None },
+            notes: vec![dummy(12, None)],
+            id: None, rest: None, slurs: None, markings: None,
+        };
+        assert!((event_text_width(&double_digit_ev, false, None) - 16.90).abs() < 1e-4);
+
+        // Natural harmonic <12> (4 chars)
+        let harmonic_12_ev = Event {
+            duration: Duration { base: "quarter".into(), dots: None, multiple: None },
+            notes: vec![dummy(12, Some(12.0))],
+            id: None, rest: None, slurs: None, markings: None,
+        };
+        assert!((event_text_width(&harmonic_12_ev, false, None) - 33.80).abs() < 1e-4);
+
+        // Natural harmonic <3.9> (5 chars)
+        let harmonic_3_9_ev = Event {
+            duration: Duration { base: "quarter".into(), dots: None, multiple: None },
+            notes: vec![dummy(4, Some(3.9))],
+            id: None, rest: None, slurs: None, markings: None,
+        };
+        assert!((event_text_width(&harmonic_3_9_ev, false, None) - 42.25).abs() < 1e-4);
+
+        // Natural harmonic <20.5> (6 chars)
+        let harmonic_20_5_ev = Event {
+            duration: Duration { base: "quarter".into(), dots: None, multiple: None },
+            notes: vec![dummy(21, Some(20.5))],
+            id: None, rest: None, slurs: None, markings: None,
+        };
+        assert!((event_text_width(&harmonic_20_5_ev, false, None) - 50.70).abs() < 1e-4);
+        assert!((event_text_width(&harmonic_20_5_ev, true, None) - 36.30).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_calculate_event_spacing_wide_entries() {
+        use crate::mnx::{Duration, Event, Harmonic, Note, Pitch};
+
+        let quarter_d = Duration { base: "quarter".into(), dots: None, multiple: None };
+        let sixteenth_d = Duration { base: "16th".into(), dots: None, multiple: None };
+
+        let make_note_ev = |dur: Duration, fret: i32, harmonic: Option<f64>| Event {
+            duration: dur,
+            notes: vec![Note {
+                pitch: Pitch { step: "C".into(), alter: None, octave: 4 },
+                accidental: None,
+                id: None,
+                string: Some(1),
+                fret: Some(fret),
+                harmonic: harmonic.map(|t| Harmonic {
+                    touch: t,
+                    sounding_note: Box::new(Note {
+                        pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
+                        accidental: None,
+                        fret: None,
+                        string: None,
+                        id: None,
+                        muted: None,
+                        ties: None,
+                        tap: None,
+                        slide: None,
+                        bend: None,
+                        harmonic: None,
+                    }),
+                }),
+                muted: None,
+                ties: None,
+                slide: None,
+                tap: None,
+                bend: None,
+            }],
+            id: None,
+            rest: None,
+            slurs: None,
+            markings: None,
+        };
+
+        let ev_single = make_note_ev(quarter_d.clone(), 7, None);
+        let ev_16th_single = make_note_ev(sixteenth_d.clone(), 7, None);
+        let ev_double = make_note_ev(sixteenth_d.clone(), 12, None);
+        let ev_h12 = make_note_ev(sixteenth_d.clone(), 12, Some(12.0));
+        let ev_h3_9 = make_note_ev(sixteenth_d.clone(), 4, Some(3.9));
+        let ev_h20_5 = make_note_ev(sixteenth_d.clone(), 21, Some(20.5));
+
+        let base_spacing = 30.0;
+
+        // Baseline single-digit quarter note keeps 30.0
+        let sp_single_q = calculate_event_spacing(&ev_single, false, base_spacing, Some((&ev_single, false)), None, None);
+        assert_eq!(sp_single_q, 30.0);
+
+        // Baseline single-digit 16th notes keep 22.5 (0.75 * 30.0)
+        let sp_single_16 = calculate_event_spacing(&ev_16th_single, false, base_spacing, Some((&ev_16th_single, false)), None, None);
+        assert_eq!(sp_single_16, 22.5);
+
+        // Double-digit notes expand beyond 18.0 (to at least 28.0)
+        let sp_double = calculate_event_spacing(&ev_double, false, base_spacing, Some((&ev_double, false)), None, None);
+        assert!(sp_double >= 28.0, "Double-digit notes must expand beyond 18.0, got {}", sp_double);
+
+        // Harmonic <12> (4 chars) expands to >= 47.0
+        let sp_h12 = calculate_event_spacing(&ev_h12, false, base_spacing, Some((&ev_h12, false)), None, None);
+        assert!(sp_h12 >= 47.0, "Harmonic <12> must expand to >= 47.0, got {}", sp_h12);
+
+        // Harmonic <3.9> (5 chars) expands to >= 56.0
+        let sp_h3_9 = calculate_event_spacing(&ev_h3_9, false, base_spacing, Some((&ev_h3_9, false)), None, None);
+        assert!(sp_h3_9 >= 56.0, "Harmonic <3.9> must expand to >= 56.0, got {}", sp_h3_9);
+
+        // Harmonic <20.5> (6 chars) followed by <20.5> expands to >= 64.0
+        let sp_h20_5 = calculate_event_spacing(&ev_h20_5, false, base_spacing, Some((&ev_h20_5, false)), None, None);
+        assert!(sp_h20_5 >= 64.0, "Harmonic <20.5> must expand to >= 64.0, got {}", sp_h20_5);
+
+        // Harmonic <20.5> followed by single-digit expands to >= 43.0
+        let sp_h20_5_single = calculate_event_spacing(&ev_h20_5, false, base_spacing, Some((&ev_single, false)), None, None);
+        assert!(sp_h20_5_single >= 43.0, "Harmonic <20.5> before single note must expand to >= 43.0, got {}", sp_h20_5_single);
+
+        // Single digit followed by <20.5> also expands to >= 43.0 to prevent right-hand note from colliding
+        let sp_single_h20_5 = calculate_event_spacing(&ev_16th_single, false, base_spacing, Some((&ev_h20_5, false)), None, None);
+        assert!(sp_single_h20_5 >= 43.0, "Single note before <20.5> must expand to >= 43.0, got {}", sp_single_h20_5);
+
+        // Harmonic <20.5> as last note before barline expands to >= 37.0
+        let sp_h20_5_barline = calculate_event_spacing(&ev_h20_5, false, base_spacing, None, None, None);
+        assert!(sp_h20_5_barline >= 37.0, "Harmonic <20.5> before barline must expand to >= 37.0, got {}", sp_h20_5_barline);
+
+        // Grace note with <20.5> expands to >= 46.0
+        let sp_grace_h20_5 = calculate_event_spacing(&ev_h20_5, true, base_spacing, Some((&ev_h20_5, true)), None, None);
+        assert!(sp_grace_h20_5 >= 46.0, "Grace harmonic <20.5> must expand to >= 46.0, got {}", sp_grace_h20_5);
     }
 }
 

@@ -58,6 +58,12 @@ impl MnxEditorApp {
             DiscardChangesSave,
             DiscardChangesSaveAs,
             DiscardChangesProceed,
+            ApplyNaturalHarmonic {
+                event_idx: usize,
+                string: u8,
+                touch: f64,
+                sounding_pitch: crate::mnx::Pitch,
+            },
         }
 
         let mut close_dialog = false;
@@ -626,6 +632,108 @@ impl MnxEditorApp {
                                 close_dialog = true;
                             }
                             if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
+            ActiveDialog::NaturalHarmonicPrompt {
+                event_idx,
+                string,
+                touch_buf,
+            } => {
+                let event_idx_val = *event_idx;
+                let string_val = *string;
+
+                let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
+                let table = part.map(|p| crate::harmonic::HarmonicLookupTable::from_part(p));
+
+                egui::Window::new("Natural Harmonic")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Touch String at:");
+                            ui.add(egui::TextEdit::singleline(touch_buf).desired_width(70.0));
+                        });
+
+                        // Real-time lookup of harmonic node
+                        let parsed_touch = touch_buf.trim().parse::<f64>();
+                        let mut matched_node: Option<crate::harmonic::HarmonicNode> = None;
+                        if let (Ok(touch_val), Some(tbl)) = (&parsed_touch, &table) {
+                            let matching = tbl.find_nodes_at_touch(string_val, *touch_val);
+                            if !matching.is_empty() {
+                                matched_node = Some(matching[0].clone());
+                            }
+                        }
+
+                        if let Some(node) = &matched_node {
+                            let alter_str = node
+                                .sounding_pitch
+                                .alter
+                                .as_ref()
+                                .map(|a| {
+                                    let v = a.as_semitones();
+                                    if v >= 0.0 {
+                                        format!(" (+{:.3})", v)
+                                    } else {
+                                        format!(" ({:.3})", v)
+                                    }
+                                })
+                                .unwrap_or_default();
+
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Harmonic: {}th Harmonic ({}/{} node)",
+                                    node.harmonic_number, node.node_index, node.harmonic_number
+                                ))
+                                .color(egui::Color32::from_rgb(0, 180, 80)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Sounding Note: {}{}{}",
+                                    node.sounding_pitch.step, node.sounding_pitch.octave, alter_str
+                                ))
+                                .strong(),
+                            );
+                        } else if !touch_buf.trim().is_empty() {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Not a valid harmonic location on string {}.",
+                                    string_val
+                                ))
+                                .color(egui::Color32::RED),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("Enter a decimal fret position (e.g. 3.9, 2.7, 7.0)")
+                                    .weak(),
+                            );
+                        }
+
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            let can_ok = matched_node.is_some();
+                            let ok_btn = ui.add_enabled(can_ok, egui::Button::new("Ok"));
+                            if (ok_btn.clicked()
+                                || (can_ok && ui.input(|i| i.key_pressed(egui::Key::Enter))))
+                                && matched_node.is_some()
+                            {
+                                let node = matched_node.unwrap();
+                                apply_action = Some(DialogAction::ApplyNaturalHarmonic {
+                                    event_idx: event_idx_val,
+                                    string: string_val,
+                                    touch: node.touch_fret,
+                                    sounding_pitch: node.sounding_pitch.clone(),
+                                });
+                                close_dialog = true;
+                            }
+
+                            if ui.button("Cancel").clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            {
                                 close_dialog = true;
                             }
                         });
@@ -1277,6 +1385,62 @@ impl MnxEditorApp {
                 }
                 DialogAction::DiscardChangesProceed => {
                     self.prompt_new_tab_instrument_setup();
+                }
+                DialogAction::ApplyNaturalHarmonic {
+                    event_idx,
+                    string,
+                    touch,
+                    sounding_pitch,
+                } => {
+                    let mut doc = match self.parsed_mnx.clone() {
+                        Some(d) => d,
+                        None => return,
+                    };
+                    let flattened = doc.get_flattened_event_paths();
+                    if event_idx < flattened.len() {
+                        let cur_path = flattened[event_idx];
+                        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+                            let note_idx = ev
+                                .notes
+                                .iter()
+                                .position(|n| n.string == Some(string))
+                                .or_else(|| {
+                                    if ev.notes.len() == 1 {
+                                        Some(0)
+                                    } else {
+                                        None
+                                    }
+                                });
+
+                            if let Some(idx) = note_idx {
+                                let note = &mut ev.notes[idx];
+                                if note.string.is_none() {
+                                    note.string = Some(string);
+                                }
+                                note.fret = Some(note.fret.unwrap_or(touch.round() as i32));
+                                note.harmonic = Some(crate::mnx::Harmonic {
+                                    touch,
+                                    sounding_note: Box::new(crate::mnx::Note {
+                                        muted: None,
+                                        id: None,
+                                        pitch: sounding_pitch,
+                                        string: None,
+                                        fret: None,
+                                        accidental: None,
+                                        ties: None,
+                                        tap: None,
+                                        slide: None,
+                                        bend: None,
+                                        harmonic: None,
+                                    }),
+                                });
+                            }
+                        }
+                        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                            self.update_yaml(new_yaml);
+                            self.process_and_render();
+                        }
+                    }
                 }
             }
         }

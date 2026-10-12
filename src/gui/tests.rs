@@ -1335,4 +1335,147 @@ parts:
             _ => panic!("Expected Grace container"),
         }
     }
+
+    #[test]
+    fn test_natural_harmonic_valid_fret_toggle() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Standard Guitar"
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: E, octave: 4 }
+    measures:
+      - sequences:
+          - content:
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+"#
+        .to_string();
+        app.process_and_render();
+
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.selected_note_idx_in_event = Some(0);
+        assert!(!app.is_selected_note_harmonic());
+
+        // Toggle Natural Harmonic ON
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        assert!(app.yaml_text.contains("harmonic:"));
+        assert!(app.yaml_text.contains("touch: 12"));
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let h = ev.notes[0].harmonic.as_ref().expect("Harmonic should be present");
+        assert_eq!(h.touch, 12.0);
+        assert_eq!(h.sounding_note.pitch.step, "E");
+        assert_eq!(h.sounding_note.pitch.octave, 5);
+
+        // Toggle Natural Harmonic OFF: restores note to fret 0 and open string pitch (E4)
+        app.action_toggle_harmonic();
+        assert!(!app.is_selected_note_harmonic());
+        assert!(!app.yaml_text.contains("harmonic:"));
+
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev2.notes[0].harmonic.is_none());
+        assert_eq!(ev2.notes[0].fret, Some(0));
+        assert_eq!(ev2.notes[0].pitch.step, "E");
+        assert_eq!(ev2.notes[0].pitch.octave, 4);
+    }
+
+    #[test]
+    fn test_natural_harmonic_invalid_fret_dialog_prompt() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Standard Guitar"
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: E, octave: 4 }
+    measures:
+      - sequences:
+          - content:
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 4
+"#
+        .to_string();
+        app.process_and_render();
+
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.selected_note_idx_in_event = Some(0);
+
+        // Fret 4 is not a valid harmonic node on String 1 -> should open dialog
+        app.action_toggle_harmonic();
+        match &app.active_dialog {
+            ActiveDialog::NaturalHarmonicPrompt { event_idx, string, touch_buf } => {
+                assert_eq!(*event_idx, 0);
+                assert_eq!(*string, 1);
+                assert_eq!(touch_buf, "4");
+            }
+            other => panic!("Expected NaturalHarmonicPrompt dialog, got {:?}", other),
+        }
+
+        // Simulate user typing "3.9" and submitting via ApplyNaturalHarmonic
+        let part = app.parsed_mnx.as_ref().unwrap().parts.first().unwrap();
+        let table = crate::harmonic::HarmonicLookupTable::from_part(part);
+        let nodes = table.find_nodes_at_touch(1, 3.9);
+        assert!(!nodes.is_empty());
+        let node = nodes[0];
+
+        // Apply harmonic dialog action
+        let mut doc = app.parsed_mnx.clone().unwrap();
+        let cur_path = doc.get_flattened_event_paths()[0];
+        let ev = doc.get_event_mut_at_path(cur_path).unwrap();
+        ev.notes[0].harmonic = Some(crate::mnx::Harmonic {
+            touch: node.touch_fret,
+            sounding_note: Box::new(crate::mnx::Note {
+                muted: None,
+                id: None,
+                pitch: node.sounding_pitch.clone(),
+                string: None,
+                fret: None,
+                accidental: None,
+                ties: None,
+                tap: None,
+                slide: None,
+                bend: None,
+                harmonic: None,
+            }),
+        });
+        let new_yaml = serde_saphyr::to_string(&doc).unwrap();
+        app.update_yaml(new_yaml);
+        app.process_and_render();
+
+        assert!(app.is_selected_note_harmonic());
+        assert!(app.yaml_text.contains("touch: 3.9"));
+        assert!(app.yaml_text.contains("step: G"));
+        assert!(app.yaml_text.contains("octave: 6"));
+    }
 }

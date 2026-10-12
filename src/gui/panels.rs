@@ -85,6 +85,7 @@ impl MnxEditorApp {
             let mut strum_down_clicked = false;
             let mut arpeggio_up_clicked = false;
             let mut arpeggio_down_clicked = false;
+            let mut harmonic_clicked = false;
             let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
 
             ui.horizontal(|ui| {
@@ -619,6 +620,14 @@ impl MnxEditorApp {
                     if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("Bnd").size(11.0)).selected(is_bend)).on_hover_text("Bend (B)").clicked() || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::B))) {
                         bend_clicked = true;
                     }
+
+                    // Natural Harmonic button
+                    let is_harmonic = self.is_selected_note_harmonic();
+                    let nh_btn = egui::Button::new(egui::RichText::new("<N.H.>").size(10.5).strong())
+                        .selected(is_harmonic);
+                    if ui.add_sized(egui::vec2(44.0, 30.0), nh_btn).on_hover_text("Natural Harmonic").clicked() {
+                        harmonic_clicked = true;
+                    }
                     
                     // Strum Up button
                     // Accent button
@@ -719,6 +728,9 @@ impl MnxEditorApp {
                 }
                 if bend_clicked {
                     self.action_edit_bend();
+                }
+                if harmonic_clicked {
+                    self.action_toggle_harmonic();
                 }
                 if accent_clicked {
                     self.action_toggle_accent();

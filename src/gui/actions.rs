@@ -611,6 +611,43 @@ impl MnxEditorApp {
         false
     }
 
+    pub fn is_selected_note_harmonic(&self) -> bool {
+        let e_idx = match self.selected_event_idx {
+            Some(i) => i,
+            None => return false,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return false,
+        };
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return false,
+        };
+        let mut cur_e = 0;
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    if cur_e == e_idx {
+                        if let Some(n_idx) = self.selected_note_idx_in_event {
+                            if let Some(n) = ev.notes.get(n_idx) {
+                                return n.harmonic.is_some();
+                            }
+                        } else if let Some(cur_str) = self.editing_string {
+                            return ev
+                                .notes
+                                .iter()
+                                .any(|n| n.string == Some(cur_str) && n.harmonic.is_some());
+                        }
+                        return ev.notes.iter().any(|n| n.harmonic.is_some());
+                    }
+                    cur_e += 1;
+                }
+            }
+        }
+        false
+    }
+
     pub fn update_yaml_and_clean_ties(&mut self, new_yaml: String) {
         if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&new_yaml) {
             doc.clean_dangling_ties();
@@ -1582,6 +1619,137 @@ impl MnxEditorApp {
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
             self.process_and_render();
+        }
+    }
+
+    pub fn action_toggle_harmonic(&mut self) {
+        if self.is_editing_fret {
+            self.commit_fret_edit();
+        }
+
+        let event_idx = match self.selected_event_idx {
+            Some(idx) => idx,
+            None => return,
+        };
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+        let flattened = doc.get_flattened_event_paths();
+        if event_idx >= flattened.len() {
+            return;
+        }
+        let cur_path = flattened[event_idx];
+        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+            Some(e) => e.clone(),
+            None => return,
+        };
+        if ev_cur_clone.notes.is_empty() {
+            return;
+        }
+
+        let note_idx = match self.editing_string {
+            Some(s) => match ev_cur_clone.notes.iter().position(|n| n.string == Some(s)) {
+                Some(idx) => idx,
+                None => {
+                    if let Some(idx) = self.selected_note_idx_in_event {
+                        idx
+                    } else if ev_cur_clone.notes.len() == 1 {
+                        0
+                    } else {
+                        return;
+                    }
+                }
+            },
+            None => {
+                if let Some(n_idx) = self.selected_note_idx_in_event {
+                    n_idx
+                } else if ev_cur_clone.notes.len() == 1 {
+                    0
+                } else {
+                    return;
+                }
+            }
+        };
+
+        let note = &ev_cur_clone.notes[note_idx];
+        let string_num = match note.string.or(self.editing_string) {
+            Some(s) => s,
+            None => return,
+        };
+
+        // If harmonic already exists: remove it and restore note to fret 0
+        if note.harmonic.is_some() {
+            let p0 = doc
+                .parts
+                .first()
+                .and_then(|part| crate::yaml_editor::calculate_pitch_for_string_fret(part, string_num, 0));
+
+            if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+                if let Some(n) = ev.notes.get_mut(note_idx) {
+                    n.harmonic = None;
+                    n.fret = Some(0);
+                    if let Some(p) = p0 {
+                        n.pitch = p;
+                    }
+                }
+            }
+            self.selected_note_idx_in_event = Some(note_idx);
+            self.editing_string = Some(string_num);
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+            }
+            return;
+        }
+
+        // Otherwise: check if the note's current fret is a valid harmonic location
+        let fret_num = note.fret.unwrap_or(0);
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return,
+        };
+        let table = crate::harmonic::HarmonicLookupTable::from_part(part);
+        let matching_nodes = table.find_nodes_at_touch(string_num, fret_num as f64);
+
+        if !matching_nodes.is_empty() {
+            let node = matching_nodes[0];
+            if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+                if let Some(n) = ev.notes.get_mut(note_idx) {
+                    n.harmonic = Some(crate::mnx::Harmonic {
+                        touch: node.touch_fret,
+                        sounding_note: Box::new(crate::mnx::Note {
+                            muted: None,
+                            id: None,
+                            pitch: node.sounding_pitch.clone(),
+                            string: None,
+                            fret: None,
+                            accidental: None,
+                            ties: None,
+                            tap: None,
+                            slide: None,
+                            bend: None,
+                            harmonic: None,
+                        }),
+                    });
+                }
+            }
+            self.selected_note_idx_in_event = Some(note_idx);
+            self.editing_string = Some(string_num);
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+            }
+        } else {
+            self.active_dialog = ActiveDialog::NaturalHarmonicPrompt {
+                event_idx,
+                string: string_num,
+                touch_buf: if fret_num > 0 {
+                    fret_num.to_string()
+                } else {
+                    String::new()
+                },
+            };
         }
     }
 }

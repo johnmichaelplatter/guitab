@@ -382,15 +382,31 @@ impl<'a> PlaybackTrackGenerator<'a> {
                         .map(|&(st, _)| st)
                         .unwrap_or(0);
                     for note in &event.notes {
-                        if note.muted.unwrap_or(false) {
+                        if note.muted.unwrap_or(false)
+                            || note
+                                .harmonic
+                                .as_ref()
+                                .and_then(|h| h.sounding_note.muted)
+                                .unwrap_or(false)
+                        {
                             continue;
                         }
-                        if let (Some(string), Some(fret)) = (note.string, note.fret) {
-                            if let Some(pos_state) = freq_table.get(string, fret) {
+                        let string_opt = note
+                            .string
+                            .or_else(|| note.harmonic.as_ref().and_then(|h| h.sounding_note.string));
+                        if let Some(string) = string_opt {
+                            let midi_frac_opt = if let Some(harmonic) = &note.harmonic {
+                                Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
+                            } else if let Some(fret) = note.fret {
+                                freq_table.get(string, fret).map(|s| s.midi_note_number)
+                            } else {
+                                Some(freq_table.pitch_to_midi_note_number(&note.pitch))
+                            };
+                            if let Some(midi_frac) = midi_frac_opt {
                                 string_notes_timeline
                                     .entry(string)
                                     .or_default()
-                                    .push((event_start, pos_state.midi_note_number));
+                                    .push((event_start, midi_frac));
                             }
                         }
                     }
@@ -580,7 +596,14 @@ impl<'a> PlaybackTrackGenerator<'a> {
                         let num_notes = event
                             .notes
                             .iter()
-                            .filter(|n| n.string.is_some() && n.fret.is_some())
+                            .filter(|n| {
+                                let s = n.string.or_else(|| {
+                                    n.harmonic
+                                        .as_ref()
+                                        .and_then(|h| h.sounding_note.string)
+                                });
+                                s.is_some() && (n.fret.is_some() || n.harmonic.is_some())
+                            })
                             .count();
                         let total_strum_delay_ticks = (0.125 * (self.ppq as f64)).round() as u32; // 32nd note
                         let strum_delay_per_note = if num_notes > 1 {
@@ -591,11 +614,22 @@ impl<'a> PlaybackTrackGenerator<'a> {
 
                         let mut ordered_notes = Vec::new();
                         for (i, note) in event.notes.iter().enumerate() {
-                            if note.muted.unwrap_or(false) {
+                            if note.muted.unwrap_or(false)
+                                || note
+                                    .harmonic
+                                    .as_ref()
+                                    .and_then(|h| h.sounding_note.muted)
+                                    .unwrap_or(false)
+                            {
                                 continue;
                             }
-                            if let (Some(string), Some(_fret)) = (note.string, note.fret) {
-                                ordered_notes.push((i, note, string));
+                            let string_opt = note
+                                .string
+                                .or_else(|| note.harmonic.as_ref().and_then(|h| h.sounding_note.string));
+                            if let Some(string) = string_opt {
+                                if note.fret.is_some() || note.harmonic.is_some() {
+                                    ordered_notes.push((i, note, string));
+                                }
                             }
                         }
                         if arp_dir.as_deref() == Some("up") {
@@ -612,212 +646,232 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 note_start_ticks += (strum_idx as u32) * strum_delay_per_note;
                             }
 
-                            let fret = note.fret.unwrap();
-                            if true {
-                                let default_ch = if self.options.is_mpe {
-                                    u4::from(((string - 1) % 15 + 1) as u8)
-                                } else {
-                                    u4::from((string - 1) % 16)
-                                };
-                                let channel = self
-                                    .options
-                                    .string_to_channel
-                                    .get(&string)
-                                    .copied()
-                                    .unwrap_or(default_ch);
+                            let default_ch = if self.options.is_mpe {
+                                u4::from(((string - 1) % 15 + 1) as u8)
+                            } else {
+                                u4::from((string - 1) % 16)
+                            };
+                            let channel = self
+                                .options
+                                .string_to_channel
+                                .get(&string)
+                                .copied()
+                                .unwrap_or(default_ch);
 
-                                if let Some(pos_state) = freq_table.get(string, fret) {
-                                    let midi_note_frac = pos_state.midi_note_number;
-                                    let base_note = midi_note_frac.round() as u8;
-                                    let semitone_diff =
-                                        (midi_note_frac - (base_note as f64)) as f32;
-                                    let pitch_bend_val = calculate_pitch_bend(
-                                        semitone_diff,
-                                        self.options.pitch_bend_range,
-                                    );
+                            let midi_note_frac_opt = if let Some(harmonic) = &note.harmonic {
+                                Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
+                            } else if let Some(fret) = note.fret {
+                                freq_table.get(string, fret).map(|s| s.midi_note_number)
+                            } else {
+                                Some(freq_table.pitch_to_midi_note_number(&note.pitch))
+                            };
 
-                                    let bend_editor = if let Some(bend_str) = &note.bend {
-                                        Some(crate::curve_editor::parse_bend_string(
-                                            bend_str,
-                                            eframe::egui::Rect::from_min_size(
-                                                eframe::egui::pos2(0.0, 0.0),
-                                                eframe::egui::vec2(100.0, 100.0),
-                                            ),
-                                        ))
-                                    } else {
-                                        None
-                                    };
+                            if let Some(midi_note_frac) = midi_note_frac_opt {
+                                let base_note = midi_note_frac.round() as u8;
+                                let semitone_diff =
+                                    (midi_note_frac - (base_note as f64)) as f32;
+                                let pitch_bend_val = calculate_pitch_bend(
+                                    semitone_diff,
+                                    self.options.pitch_bend_range,
+                                );
 
-                                    let mut has_forward_slide = false;
-                                    let mut slide_target_midi_frac = 0.0;
-                                    if note.slide.is_some() {
-                                        has_forward_slide = true;
-                                        if let Some(timeline) = string_notes_timeline.get(&string) {
-                                            for &(t, midi_frac) in timeline {
-                                                if t > effective_start_ticks {
-                                                    slide_target_midi_frac = midi_frac;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    let is_tied = note
-                                        .id
+                                let bend_str_opt = note.bend.as_ref().or_else(|| {
+                                    note.harmonic
                                         .as_ref()
-                                        .map_or(false, |id| pending_ties.contains_key(id));
+                                        .and_then(|h| h.sounding_note.bend.as_ref())
+                                });
+                                let bend_editor = if let Some(bend_str) = bend_str_opt {
+                                    Some(crate::curve_editor::parse_bend_string(
+                                        bend_str,
+                                        eframe::egui::Rect::from_min_size(
+                                            eframe::egui::pos2(0.0, 0.0),
+                                            eframe::egui::vec2(100.0, 100.0),
+                                        ),
+                                    ))
+                                } else {
+                                    None
+                                };
 
-                                    let (ch, note_val) = if is_tied {
-                                        let id = note.id.as_ref().unwrap();
-                                        pending_ties.remove(id).unwrap()
-                                    } else {
-                                        self.abs_events.push(InternalAbsoluteEvent {
-                                            time_ticks: note_start_ticks,
-                                            kind: InternalEventKind::Midi {
-                                                channel,
-                                                message: MidiMessage::PitchBend {
-                                                    bend: midly::PitchBend(midly::num::u14::from(
-                                                        pitch_bend_val,
-                                                    )),
-                                                },
-                                            },
-                                        });
-
-                                        if let Some(editor) = &bend_editor {
-                                            let num_samples = 32;
-                                            for i in 1..=num_samples {
-                                                let progress = i as f32 / num_samples as f32;
-                                                let tick_offset =
-                                                    ((duration_ticks as f32) * progress) as u32;
-                                                // Normalized X is 0.0 to 100.0 for the evaluator
-                                                // sample_y_at_x returns 0.0 (top) to 100.0 (bottom) because the editor rect was 0.0 to 100.0
-                                                let y_screen =
-                                                    editor.sample_y_at_x(progress * 100.0);
-                                                let y_norm = (100.0 - y_screen).clamp(0.0, 100.0); // invert so 100.0 is MAX bend
-                                                let bend_semitones = (y_norm / 100.0)
-                                                    * (self.options.pitch_bend_range as f32);
-
-                                                let total_bend_val = calculate_pitch_bend(
-                                                    semitone_diff + bend_semitones,
-                                                    self.options.pitch_bend_range,
-                                                );
-
-                                                self.abs_events.push(InternalAbsoluteEvent {
-                                                    time_ticks: note_start_ticks + tick_offset,
-                                                    kind: InternalEventKind::Midi {
-                                                        channel,
-                                                        message: MidiMessage::PitchBend {
-                                                            bend: midly::PitchBend(
-                                                                midly::num::u14::from(
-                                                                    total_bend_val,
-                                                                ),
-                                                            ),
-                                                        },
-                                                    },
-                                                });
-                                            }
-                                        } else if has_forward_slide && slide_target_midi_frac != 0.0
-                                        {
-                                            let num_samples = 32;
-                                            let total_dist =
-                                                (slide_target_midi_frac - midi_note_frac) as f32;
-                                            let clipped_dist = total_dist.clamp(
-                                                -(self.options.pitch_bend_range as f32),
-                                                self.options.pitch_bend_range as f32,
-                                            );
-
-                                            // Instantiate the exact curve from the user's screenshot for the slide
-                                            // Starts flat at bottom-left (0,0), handle pulled 50% to the right (50,0). Ends top-right (100,100).
-                                            let slide_editor = crate::curve_editor::MonotonicCurveEditor::from_svg_path_normalized(
-                                                "M 0.0 0.0 C 50.0 0.0 100.0 100.0 100.0 100.0",
-                                                eframe::egui::Rect::from_min_max(eframe::egui::pos2(0.0, 0.0), eframe::egui::pos2(100.0, 100.0))
-                                            );
-
-                                            for i in 1..=num_samples {
-                                                let progress = i as f32 / num_samples as f32;
-                                                let tick_offset =
-                                                    ((duration_ticks as f32) * progress) as u32;
-
-                                                // Evaluate the bezier curve
-                                                let y_screen =
-                                                    slide_editor.sample_y_at_x(progress * 100.0);
-                                                // y_screen goes from 100.0 (bottom) to 0.0 (top)
-                                                // We want normalized progression from 0.0 to 1.0
-                                                let curve_progress = (100.0 - y_screen) / 100.0;
-                                                let curve_progress = curve_progress.clamp(0.0, 1.0);
-
-                                                let bend_semitones = clipped_dist * curve_progress;
-                                                let total_bend_val = calculate_pitch_bend(
-                                                    semitone_diff + bend_semitones,
-                                                    self.options.pitch_bend_range,
-                                                );
-
-                                                self.abs_events.push(InternalAbsoluteEvent {
-                                                    time_ticks: note_start_ticks + tick_offset,
-                                                    kind: InternalEventKind::Midi {
-                                                        channel,
-                                                        message: MidiMessage::PitchBend {
-                                                            bend: midly::PitchBend(
-                                                                midly::num::u14::from(
-                                                                    total_bend_val,
-                                                                ),
-                                                            ),
-                                                        },
-                                                    },
-                                                });
+                                let has_slide = note.slide.is_some()
+                                    || note
+                                        .harmonic
+                                        .as_ref()
+                                        .map_or(false, |h| h.sounding_note.slide.is_some());
+                                let mut has_forward_slide = false;
+                                let mut slide_target_midi_frac = 0.0;
+                                if has_slide {
+                                    has_forward_slide = true;
+                                    if let Some(timeline) = string_notes_timeline.get(&string) {
+                                        for &(t, midi_frac) in timeline {
+                                            if t > effective_start_ticks {
+                                                slide_target_midi_frac = midi_frac;
+                                                break;
                                             }
                                         }
+                                    }
+                                }
 
-                                        let is_accented = event.markings.as_ref().map_or(false, |m| m.accent.is_some());
-                                        let velocity = if is_accented { 127 } else { 100 };
+                                let note_id_opt = note.id.as_ref().or_else(|| {
+                                    note.harmonic
+                                        .as_ref()
+                                        .and_then(|h| h.sounding_note.id.as_ref())
+                                });
+                                let is_tied = note_id_opt
+                                    .map_or(false, |id| pending_ties.contains_key(id));
 
-                                        self.abs_events.push(InternalAbsoluteEvent {
-                                            time_ticks: note_start_ticks,
-                                            kind: InternalEventKind::Midi {
-                                                channel,
-                                                message: MidiMessage::NoteOn {
-                                                    key: u7::from(base_note.min(127)),
-                                                    vel: u7::from(velocity),
-                                                },
+                                let (ch, note_val) = if is_tied {
+                                    let id = note_id_opt.unwrap();
+                                    pending_ties.remove(id).unwrap()
+                                } else {
+                                    self.abs_events.push(InternalAbsoluteEvent {
+                                        time_ticks: note_start_ticks,
+                                        kind: InternalEventKind::Midi {
+                                            channel,
+                                            message: MidiMessage::PitchBend {
+                                                bend: midly::PitchBend(midly::num::u14::from(
+                                                    pitch_bend_val,
+                                                )),
                                             },
-                                        });
-                                        (channel, base_note)
+                                        },
+                                    });
+
+                                    if let Some(editor) = &bend_editor {
+                                        let num_samples = 32;
+                                        for i in 1..=num_samples {
+                                            let progress = i as f32 / num_samples as f32;
+                                            let tick_offset =
+                                                ((duration_ticks as f32) * progress) as u32;
+                                            // Normalized X is 0.0 to 100.0 for the evaluator
+                                            // sample_y_at_x returns 0.0 (top) to 100.0 (bottom) because the editor rect was 0.0 to 100.0
+                                            let y_screen =
+                                                editor.sample_y_at_x(progress * 100.0);
+                                            let y_norm = (100.0 - y_screen).clamp(0.0, 100.0); // invert so 100.0 is MAX bend
+                                            let bend_semitones = (y_norm / 100.0)
+                                                * (self.options.pitch_bend_range as f32);
+
+                                            let total_bend_val = calculate_pitch_bend(
+                                                semitone_diff + bend_semitones,
+                                                self.options.pitch_bend_range,
+                                            );
+
+                                            self.abs_events.push(InternalAbsoluteEvent {
+                                                time_ticks: note_start_ticks + tick_offset,
+                                                kind: InternalEventKind::Midi {
+                                                    channel,
+                                                    message: MidiMessage::PitchBend {
+                                                        bend: midly::PitchBend(
+                                                            midly::num::u14::from(
+                                                                total_bend_val,
+                                                            ),
+                                                        ),
+                                                    },
+                                                },
+                                            });
+                                        }
+                                    } else if has_forward_slide && slide_target_midi_frac != 0.0
+                                    {
+                                        let num_samples = 32;
+                                        let total_dist =
+                                            (slide_target_midi_frac - midi_note_frac) as f32;
+                                        let clipped_dist = total_dist.clamp(
+                                            -(self.options.pitch_bend_range as f32),
+                                            self.options.pitch_bend_range as f32,
+                                        );
+
+                                        // Instantiate the exact curve from the user's screenshot for the slide
+                                        // Starts flat at bottom-left (0,0), handle pulled 50% to the right (50,0). Ends top-right (100,100).
+                                        let slide_editor = crate::curve_editor::MonotonicCurveEditor::from_svg_path_normalized(
+                                            "M 0.0 0.0 C 50.0 0.0 100.0 100.0 100.0 100.0",
+                                            eframe::egui::Rect::from_min_max(eframe::egui::pos2(0.0, 0.0), eframe::egui::pos2(100.0, 100.0))
+                                        );
+
+                                        for i in 1..=num_samples {
+                                            let progress = i as f32 / num_samples as f32;
+                                            let tick_offset =
+                                                ((duration_ticks as f32) * progress) as u32;
+
+                                            // Evaluate the bezier curve
+                                            let y_screen =
+                                                slide_editor.sample_y_at_x(progress * 100.0);
+                                            // y_screen goes from 100.0 (bottom) to 0.0 (top)
+                                            // We want normalized progression from 0.0 to 1.0
+                                            let curve_progress = (100.0 - y_screen) / 100.0;
+                                            let curve_progress = curve_progress.clamp(0.0, 1.0);
+
+                                            let bend_semitones = clipped_dist * curve_progress;
+                                            let total_bend_val = calculate_pitch_bend(
+                                                semitone_diff + bend_semitones,
+                                                self.options.pitch_bend_range,
+                                            );
+
+                                            self.abs_events.push(InternalAbsoluteEvent {
+                                                time_ticks: note_start_ticks + tick_offset,
+                                                kind: InternalEventKind::Midi {
+                                                    channel,
+                                                    message: MidiMessage::PitchBend {
+                                                        bend: midly::PitchBend(
+                                                            midly::num::u14::from(
+                                                                total_bend_val,
+                                                            ),
+                                                        ),
+                                                    },
+                                                },
+                                            });
+                                        }
+                                    }
+
+                                    let is_accented = event.markings.as_ref().map_or(false, |m| m.accent.is_some());
+                                    let velocity = if is_accented { 127 } else { 100 };
+
+                                    self.abs_events.push(InternalAbsoluteEvent {
+                                        time_ticks: note_start_ticks,
+                                        kind: InternalEventKind::Midi {
+                                            channel,
+                                            message: MidiMessage::NoteOn {
+                                                key: u7::from(base_note.min(127)),
+                                                vel: u7::from(velocity),
+                                            },
+                                        },
+                                    });
+                                    (channel, base_note)
+                                };
+
+                                let forward_ties = note
+                                    .ties
+                                    .as_ref()
+                                    .or_else(|| note.harmonic.as_ref().and_then(|h| h.sounding_note.ties.as_ref()));
+                                let has_forward_tie = forward_ties.map_or(false, |t| !t.is_empty());
+
+                                let mut has_forward_slur = false;
+                                if let (Some(slurs), Some(n_id)) = (&event.slurs, note_id_opt) {
+                                    has_forward_slur = slurs
+                                        .iter()
+                                        .any(|s| s.start_note.as_ref() == Some(n_id));
+                                }
+
+                                if has_forward_tie {
+                                    let target = forward_ties.unwrap()[0].target.clone();
+                                    pending_ties.insert(target, (ch, note_val));
+                                } else {
+                                    // Legato overlap: if slur or slide, delay NoteOff by ~5% of a quarter note
+                                    let overlap = if has_forward_slur || has_forward_slide {
+                                        (self.ppq as f64 * 0.05) as u32
+                                    } else {
+                                        0
                                     };
 
-                                    let has_forward_tie =
-                                        note.ties.as_ref().map_or(false, |t| !t.is_empty());
-
-                                    let mut has_forward_slur = false;
-                                    if let (Some(slurs), Some(n_id)) = (&event.slurs, &note.id) {
-                                        has_forward_slur = slurs
-                                            .iter()
-                                            .any(|s| s.start_note.as_ref() == Some(n_id));
-                                    }
-
-                                    if has_forward_tie {
-                                        let target = note.ties.as_ref().unwrap()[0].target.clone();
-                                        pending_ties.insert(target, (ch, note_val));
-                                    } else {
-                                        // Legato overlap: if slur or slide, delay NoteOff by ~5% of a quarter note
-                                        let overlap = if has_forward_slur || has_forward_slide {
-                                            (self.ppq as f64 * 0.05) as u32
-                                        } else {
-                                            0
-                                        };
-
-                                        self.abs_events.push(InternalAbsoluteEvent {
-                                            time_ticks: event_start_ticks
-                                                + duration_ticks
-                                                + overlap,
-                                            kind: InternalEventKind::Midi {
-                                                channel: ch,
-                                                message: MidiMessage::NoteOff {
-                                                    key: u7::from(note_val.min(127)),
-                                                    vel: u7::from(64),
-                                                },
+                                    self.abs_events.push(InternalAbsoluteEvent {
+                                        time_ticks: event_start_ticks
+                                            + duration_ticks
+                                            + overlap,
+                                        kind: InternalEventKind::Midi {
+                                            channel: ch,
+                                            message: MidiMessage::NoteOff {
+                                                key: u7::from(note_val.min(127)),
+                                                vel: u7::from(64),
                                             },
-                                        });
-                                    }
+                                        },
+                                    });
                                 }
                             }
                         }
@@ -1785,6 +1839,245 @@ parts:
         assert!(note_offs.iter().any(|&(t, k)| t == 1880 && k == 67), "Grace 1 NoteOff at 1880");
         assert!(note_offs.iter().any(|&(t, k)| t == 1920 && k == 69), "Grace 2 NoteOff at 1920");
         assert!(note_offs.iter().any(|&(t, k)| t == 2400 && k == 71), "M2 Note 1 NoteOff at 2400 (full 480 duration)");
+    }
+
+    #[test]
+    fn test_harmonic_midi_rendering() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Standard Guitar"
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: E, octave: 4 }
+    measures:
+      - sequences:
+          - content:
+              # Harmonic 1: touch 12.0 -> sounding E5 (MIDI 76). Without harmonic, fret 12 is E5 (MIDI 76).
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+                    harmonic:
+                      touch: 12.0
+                      soundingNote:
+                        pitch: { step: E, octave: 5 }
+              # Harmonic 2: touch 7.0 -> sounding B5 (MIDI 83). Without harmonic, fret 7 is B4 (MIDI 71)!
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 7
+                    harmonic:
+                      touch: 7.0
+                      soundingNote:
+                        pitch: { step: B, alter: 0.02, octave: 5 }
+              # Harmonic 3: touch 5.0 -> sounding E6 (MIDI 88). Without harmonic, fret 5 is A4 (MIDI 69)!
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 5
+                    harmonic:
+                      touch: 5.0
+                      soundingNote:
+                        pitch: { step: E, octave: 6 }
+              # Harmonic 4: touch 3.9 -> sounding G6 (alter 0.863, MIDI ~92). Without harmonic, fret 4 is G#4 (MIDI 68)!
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 4
+                    harmonic:
+                      touch: 3.9
+                      soundingNote:
+                        pitch: { step: G, alter: 0.863, octave: 6 }
+"#;
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
+        assert_eq!(ppq, 480.0);
+
+        let mut note_ons: Vec<(u32, u8)> = Vec::new();
+        let mut note_offs: Vec<(u32, u8)> = Vec::new();
+        let mut curr_tick = 0;
+        for ev in &track {
+            curr_tick += ev.delta_ticks;
+            match &ev.kind {
+                PlaybackEventKind::Midi {
+                    message: midly::MidiMessage::NoteOn { key, vel },
+                    ..
+                } => {
+                    if vel.as_int() > 0 {
+                        note_ons.push((curr_tick, key.as_int()));
+                    } else {
+                        note_offs.push((curr_tick, key.as_int()));
+                    }
+                }
+                PlaybackEventKind::Midi {
+                    message: midly::MidiMessage::NoteOff { key, .. },
+                    ..
+                } => {
+                    note_offs.push((curr_tick, key.as_int()));
+                }
+                _ => {}
+            }
+        }
+
+        // 4 quarter notes: starts at 0, 480, 960, 1440
+        assert_eq!(note_ons.len(), 4);
+        assert_eq!(note_ons[0], (0, 76), "Harmonic 1 sounds E5 (MIDI 76)");
+        assert_eq!(
+            note_ons[1],
+            (480, 83),
+            "Harmonic 2 sounds B5 (MIDI 83, not fretted B4 71)"
+        );
+        assert_eq!(
+            note_ons[2],
+            (960, 88),
+            "Harmonic 3 sounds E6 (MIDI 88, not fretted A4 69)"
+        );
+        assert_eq!(
+            note_ons[3],
+            (1440, 92),
+            "Harmonic 4 sounds G#6 (MIDI 92, not fretted G#4 68)"
+        );
+
+        // Durations: each quarter note has 480 ticks duration
+        assert_eq!(note_offs.len(), 4);
+        assert_eq!(note_offs[0], (480, 76), "Harmonic 1 ends at 480");
+        assert_eq!(note_offs[1], (960, 83), "Harmonic 2 ends at 960");
+        assert_eq!(note_offs[2], (1440, 88), "Harmonic 3 ends at 1440");
+        assert_eq!(note_offs[3], (1920, 92), "Harmonic 4 ends at 1920");
+    }
+
+    #[test]
+    fn test_harmonic_tied_midi_rendering() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Standard Guitar"
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: E, octave: 4 }
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: half }
+                notes:
+                  - id: h1
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 7
+                    ties: [{ target: h2 }]
+                    harmonic:
+                      touch: 7.0
+                      soundingNote:
+                        pitch: { step: B, alter: 0.02, octave: 5 }
+              - duration: { base: half }
+                notes:
+                  - id: h2
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 7
+                    harmonic:
+                      touch: 7.0
+                      soundingNote:
+                        pitch: { step: B, alter: 0.02, octave: 5 }
+"#;
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let (track, _) = generate_playback_track(&doc, MidiOptions::default());
+
+        let mut note_ons: Vec<(u32, u8)> = Vec::new();
+        let mut note_offs: Vec<(u32, u8)> = Vec::new();
+        let mut curr_tick = 0;
+        for ev in &track {
+            curr_tick += ev.delta_ticks;
+            match &ev.kind {
+                PlaybackEventKind::Midi {
+                    message: midly::MidiMessage::NoteOn { key, vel },
+                    ..
+                } => {
+                    if vel.as_int() > 0 {
+                        note_ons.push((curr_tick, key.as_int()));
+                    } else {
+                        note_offs.push((curr_tick, key.as_int()));
+                    }
+                }
+                PlaybackEventKind::Midi {
+                    message: midly::MidiMessage::NoteOff { key, .. },
+                    ..
+                } => {
+                    note_offs.push((curr_tick, key.as_int()));
+                }
+                _ => {}
+            }
+        }
+
+        // Tied harmonic: Only one NoteOn at tick 0 (key 83 = B5), and one NoteOff at tick 1920 (end of measure / both half notes)
+        assert_eq!(note_ons.len(), 1, "Only one NoteOn for tied harmonic");
+        assert_eq!(note_ons[0], (0, 83));
+        assert_eq!(note_offs.len(), 1, "Only one NoteOff for tied harmonic");
+        assert_eq!(
+            note_offs[0],
+            (1920, 83),
+            "NoteOff sustained until end of tied note"
+        );
+    }
+
+    #[test]
+    fn test_example_harmonics_yaml_midi_rendering() {
+        let yaml = include_str!("../example_harmonics.yaml");
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
+        assert_eq!(ppq, 480.0);
+
+        let note_ons: Vec<(u32, u8)> = track
+            .iter()
+            .scan(0, |curr_tick, ev| {
+                *curr_tick += ev.delta_ticks;
+                Some((*curr_tick, ev))
+            })
+            .filter_map(|(tick, ev)| {
+                if let PlaybackEventKind::Midi {
+                    message: midly::MidiMessage::NoteOn { key, vel },
+                    ..
+                } = ev.kind
+                {
+                    if vel.as_int() > 0 {
+                        Some((tick, key.as_int()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Measure 1 notes (first 4 NoteOns):
+        // ev1: E5 (76)
+        // ev2: B5 (83)
+        // ev3: E6 (88)
+        // ev4: G#6 (92)
+        assert_eq!(note_ons[0], (0, 76));
+        assert_eq!(note_ons[1], (480, 83));
+        assert_eq!(note_ons[2], (960, 88));
+        assert_eq!(note_ons[3], (1440, 92));
     }
 }
 

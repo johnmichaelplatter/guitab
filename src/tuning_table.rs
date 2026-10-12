@@ -147,12 +147,32 @@ impl FretboardFrequencyTable {
         self.get(string, fret).map(|s| s.frequency_hz)
     }
 
-    /// Compute frequency in Hz directly for any pitch in this EDO space using the reference pitch.
+    /// Compute frequency in Hz directly for any pitch in this EDO space using the reference pitch,
+    /// accurately handling microtonal and decimal alterations.
     pub fn pitch_to_hz(&self, pitch: &Pitch) -> f64 {
         let tuning_calc = EdoTuning::new(self.edo);
-        let steps = tuning_calc.pitch_to_steps(pitch);
-        let step_delta = (steps - self.ref_steps) as f64;
-        self.reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (self.edo as f64))
+        let step_char = pitch
+            .step
+            .chars()
+            .next()
+            .unwrap_or('C')
+            .to_ascii_uppercase();
+        let base_steps = tuning_calc.nominal_step(step_char) + (pitch.octave * (self.edo as i32));
+        let step_delta = (base_steps - self.ref_steps) as f64;
+        let f_base =
+            self.reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (self.edo as f64));
+        let alter_semitones = pitch
+            .alter
+            .as_ref()
+            .map(|a| a.as_semitones())
+            .unwrap_or(0.0);
+        f_base * (2.0_f64).powf(alter_semitones / 12.0)
+    }
+
+    /// Compute continuous MIDI note number (e.g. 69.0 for A440) for any pitch in this EDO space.
+    pub fn pitch_to_midi_note_number(&self, pitch: &Pitch) -> f64 {
+        let hz = self.pitch_to_hz(pitch);
+        69.0 + 12.0 * (hz / 440.0).log2()
     }
 
     /// Compute frequency in Hz directly for any played step integer in this EDO space.
@@ -297,5 +317,45 @@ parts:
         assert!((s5_f0.frequency_hz - expected_f).abs() < 1e-6);
         assert_eq!(s5_f0.pitch.step, "B");
         assert_eq!(s5_f0.pitch.octave, 2);
+    }
+
+    #[test]
+    fn test_pitch_to_midi_note_number() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures: []
+parts:
+  - instrument:
+      name: "Standard Guitar"
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+    measures: []
+"#;
+        let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
+        let part = &doc.parts[0];
+        let table = FretboardFrequencyTable::from_part_default(part);
+
+        let a4 = Pitch {
+            step: "A".to_string(),
+            alter: None,
+            octave: 4,
+        };
+        assert!((table.pitch_to_midi_note_number(&a4) - 69.0).abs() < 1e-4);
+
+        let e4 = Pitch {
+            step: "E".to_string(),
+            alter: None,
+            octave: 4,
+        };
+        assert!((table.pitch_to_midi_note_number(&e4) - 64.0).abs() < 1e-4);
+
+        let b5_altered = Pitch {
+            step: "B".to_string(),
+            alter: Some(crate::mnx::Alteration::Value(0.020)),
+            octave: 5,
+        };
+        assert!((table.pitch_to_midi_note_number(&b5_altered) - 83.020).abs() < 1e-4);
     }
 }

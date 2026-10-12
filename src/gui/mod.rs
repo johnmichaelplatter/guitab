@@ -169,6 +169,11 @@ pub enum ActiveDialog {
         curve_editor: crate::curve_editor::MonotonicCurveEditor,
         bend_range_steps: u32,
     },
+    NaturalHarmonicPrompt {
+        event_idx: usize,
+        string: u8,
+        touch_buf: String,
+    },
 }
 
 impl Default for MnxEditorApp {
@@ -373,10 +378,19 @@ impl MnxEditorApp {
             };
 
         for note in target_notes {
-            if note.muted.unwrap_or(false) {
+            if note.muted.unwrap_or(false)
+                || note
+                    .harmonic
+                    .as_ref()
+                    .and_then(|h| h.sounding_note.muted)
+                    .unwrap_or(false)
+            {
                 continue;
             }
-            if let (Some(string), Some(fret)) = (note.string, note.fret) {
+            let string_opt = note
+                .string
+                .or_else(|| note.harmonic.as_ref().and_then(|h| h.sounding_note.string));
+            if let Some(string) = string_opt {
                 let default_ch = if self.is_mpe_mode { string + 1 } else { string };
                 let ch_1_based = self
                     .string_channel_map
@@ -386,8 +400,15 @@ impl MnxEditorApp {
                 let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
                 let channel = midly::num::u4::from(ch_0_based);
 
-                if let Some(pos_state) = freq_table.get(string, fret) {
-                    let midi_note_frac = pos_state.midi_note_number;
+                let midi_note_frac_opt = if let Some(harmonic) = &note.harmonic {
+                    Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
+                } else if let Some(fret) = note.fret {
+                    freq_table.get(string, fret).map(|s| s.midi_note_number)
+                } else {
+                    Some(freq_table.pitch_to_midi_note_number(&note.pitch))
+                };
+
+                if let Some(midi_note_frac) = midi_note_frac_opt {
                     let base_note = midi_note_frac.round() as u8;
                     let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
 
