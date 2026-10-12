@@ -1,0 +1,197 @@
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - time: { count: 4, unit: 4 }
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Standard Guitar"
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      capo: 0
+      tuning:
+        - string: 1
+          pitch: { step: E, octave: 4 }
+        - string: 2
+          pitch: { step: B, octave: 3 }
+        - string: 3
+          pitch: { step: G, octave: 3 }
+        - string: 4
+          pitch: { step: D, octave: 3 }
+        - string: 5
+          pitch: { step: A, octave: 2 }
+        - string: 6
+          pitch: { step: E, octave: 2 }
+    measures:
+      # =========================================================================
+      # Measure 1: VALID Harmonics (n = 2, 3, 4, 5) on String 1 (E4)
+      # =========================================================================
+      - sequences:
+          - content:
+              # Harmonic n = 2 (1/2 node): Touch fret 12.0 -> Sounding E5
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+                    harmonic:
+                      touch: 12.0
+                      soundingNote:
+                        pitch: { step: E, octave: 5 }
+
+              # Harmonic n = 3 (1/3 node): Touch fret 7.0 -> Sounding B5 (alter +0.02)
+              - id: ev2
+                duration: { base: quarter }
+                notes:
+                  - id: n2
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 7
+                    harmonic:
+                      touch: 7.0
+                      soundingNote:
+                        pitch: { step: B, alter: 0.02, octave: 5 }
+
+              # Harmonic n = 4 (1/4 node): Touch fret 5.0 -> Sounding E6
+              - id: ev3
+                duration: { base: quarter }
+                notes:
+                  - id: n3
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 5
+                    harmonic:
+                      touch: 5.0
+                      soundingNote:
+                        pitch: { step: E, octave: 6 }
+
+              # Harmonic n = 5 (1/5 node): Touch fret 3.9 -> Sounding G6 (alter +0.863)
+              - id: ev4
+                duration: { base: quarter }
+                notes:
+                  - id: n4
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 4
+                    harmonic:
+                      touch: 3.9
+                      soundingNote:
+                        pitch: { step: G, alter: 0.863, octave: 6 }
+
+      # =========================================================================
+      # Measure 2: VALID Harmonics (Higher Harmonics & Multiple Strings)
+      # =========================================================================
+      - sequences:
+          - content:
+              # Harmonic n = 3 (2/3 node): Touch fret 19.0 -> Sounding B5 (alter +0.02)
+              - id: ev5
+                duration: { base: quarter }
+                notes:
+                  - id: n5
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 19
+                    harmonic:
+                      touch: 19.0
+                      soundingNote:
+                        pitch: { step: B, alter: 0.02, octave: 5 }
+
+              # Harmonic n = 7 (1/7 node): Touch fret 2.7 -> Sounding D7 (alter -0.312)
+              - id: ev6
+                duration: { base: quarter }
+                notes:
+                  - id: n6
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 3
+                    harmonic:
+                      touch: 2.7
+                      soundingNote:
+                        pitch: { step: D, alter: -0.312, octave: 7 }
+
+              # Harmonic n = 9 (1/9 node): Touch fret 2.0 -> Sounding F7 (alter +1.039)
+              - id: ev7
+                duration: { base: quarter }
+                notes:
+                  - id: n7
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 2
+                    harmonic:
+                      touch: 2.0
+                      soundingNote:
+                        pitch: { step: F, alter: 1.039, octave: 7 }
+
+              # String 5 (A2), Harmonic n = 2 (1/2 node): Touch fret 12.0 -> Sounding A3
+              - id: ev8
+                duration: { base: quarter }
+                notes:
+                  - id: n8
+                    pitch: { step: A, octave: 2 }
+                    string: 5
+                    fret: 12
+                    harmonic:
+                      touch: 12.0
+                      soundingNote:
+                        pitch: { step: A, octave: 3 }
+
+      # =========================================================================
+      # Measure 3: INVALID Harmonics (Demonstrating Validation Failures)
+      # =========================================================================
+      - sequences:
+          - content:
+              # INVALID: Touch fret 4.5 is not an acoustic harmonic node (n in 2..11)
+              - id: ev9
+                duration: { base: quarter }
+                notes:
+                  - id: n9
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 5
+                    harmonic:
+                      touch: 4.5
+                      soundingNote:
+                        pitch: { step: E, octave: 5 }
+
+              # INVALID: At touch 12.0 on String 1 (E4), sounding note is E5, not C5 (wrong step)
+              - id: ev10
+                duration: { base: quarter }
+                notes:
+                  - id: n10
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+                    harmonic:
+                      touch: 12.0
+                      soundingNote:
+                        pitch: { step: C, octave: 5 }
+
+              # INVALID: At touch 7.0 on String 1 (E4), alter is 0.02, not 0.5 (wrong alter)
+              - id: ev11
+                duration: { base: quarter }
+                notes:
+                  - id: n11
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 7
+                    harmonic:
+                      touch: 7.0
+                      soundingNote:
+                        pitch: { step: B, alter: 0.5, octave: 5 }
+
+              # INVALID: At touch 12.0 on String 1 (E4), sounding note is E5, not E4 (wrong octave)
+              - id: ev12
+                duration: { base: quarter }
+                notes:
+                  - id: n12
+                    pitch: { step: E, octave: 4 }
+                    string: 1
+                    fret: 12
+                    harmonic:
+                      touch: 12.0
+                      soundingNote:
+                        pitch: { step: E, octave: 4 }

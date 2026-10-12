@@ -1,5 +1,6 @@
 pub mod curve_editor;
 mod edo;
+pub mod harmonic;
 mod gui;
 pub mod midi;
 mod mnx;

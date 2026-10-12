@@ -90,6 +90,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
         let step_multiplier = part.step_multiplier();
 
         let tuning_calc = EdoTuning::new(edo);
+        let harmonic_table = crate::harmonic::HarmonicLookupTable::from_part(part);
         let num_measures = part.measures.len();
 
         for (m_idx, measure) in part.measures.iter().enumerate() {
@@ -153,7 +154,20 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                 });
                             }
 
-                            if let Some(string_pitch) = part.get_string_tuning(string) {
+                            if let Some(harmonic) = &note.harmonic {
+                                match harmonic_table.validate_harmonic(string, harmonic) {
+                                    Ok(_) => {}
+                                    Err(h_err) => {
+                                        errors.push(ValidationError {
+                                            measure_idx: m_idx + 1,
+                                            event_idx: e_idx,
+                                            string,
+                                            fret,
+                                            message: h_err.message,
+                                        });
+                                    }
+                                }
+                            } else if let Some(string_pitch) = part.get_string_tuning(string) {
                                 let string_base = tuning_calc.pitch_to_steps(&string_pitch);
 
                                 let physical_capo_steps = (capo_fret as i32) * step_multiplier;
@@ -386,6 +400,17 @@ parts:
         assert_eq!(errors3.len(), 1);
         assert_eq!(errors3[0].measure_idx, 1);
         assert!(errors3[0].message.contains("exceeds"));
+    }
+
+    #[test]
+    fn test_validate_harmonics_in_validate_mnx() {
+        let yaml_str = include_str!("../example_harmonics.yaml");
+        let doc: MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
+        let errors = validate_mnx(&doc);
+        assert_eq!(errors.len(), 4);
+        for err in &errors {
+            assert_eq!(err.measure_idx, 3);
+        }
     }
 }
 

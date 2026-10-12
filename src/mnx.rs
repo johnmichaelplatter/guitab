@@ -540,6 +540,15 @@ pub struct Note {
     pub slide: Option<Slide>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harmonic: Option<Harmonic>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Harmonic {
+    pub touch: f64,
+    #[serde(rename = "soundingNote")]
+    pub sounding_note: Box<Note>,
 }
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632)
