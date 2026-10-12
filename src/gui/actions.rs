@@ -107,6 +107,7 @@ impl MnxEditorApp {
                     repeat_start: None,
                     repeat_end: None,
                     barline: None,
+                    ending: None,
                     tempos: Vec::new(),
                     tempo_changes: Vec::new(),
                 });
@@ -185,6 +186,7 @@ impl MnxEditorApp {
                     repeat_start: None,
                     repeat_end: None,
                     barline: None,
+                    ending: None,
                     tempos: Vec::new(),
                     tempo_changes: Vec::new(),
                 });
@@ -820,7 +822,7 @@ impl MnxEditorApp {
                 .unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
             doc.global.measures.push(crate::mnx::GlobalMeasure {
                 time: Some(ts),
-                repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
+                repeat_start: None, repeat_end: None, barline: None, ending: None, tempos: Vec::new(),
                     tempo_changes: Vec::new(),
             });
         }
@@ -1451,7 +1453,7 @@ impl MnxEditorApp {
                             count: time_sig_count,
                             unit: time_sig_unit,
                         }),
-                        repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
+                        repeat_start: None, repeat_end: None, barline: None, ending: None, tempos: Vec::new(),
                     tempo_changes: Vec::new(),
                     };
                     doc.global.measures.push(gm);
@@ -1506,7 +1508,7 @@ impl MnxEditorApp {
                             count: time_sig_count,
                             unit: time_sig_unit,
                         }),
-                        repeat_start: None, repeat_end: None, barline: None, tempos: Vec::new(),
+                        repeat_start: None, repeat_end: None, barline: None, ending: None, tempos: Vec::new(),
                     tempo_changes: Vec::new(),
                     };
                     doc.global.measures.push(gm);

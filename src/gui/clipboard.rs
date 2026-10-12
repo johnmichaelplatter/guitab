@@ -673,6 +673,7 @@ impl MnxEditorApp {
                 repeat_start: None,
                 repeat_end: None,
                 barline: None,
+                ending: None,
                 tempos: Vec::new(),
                 tempo_changes: Vec::new(),
             });

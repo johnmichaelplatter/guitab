@@ -412,6 +412,16 @@ parts:
             assert_eq!(err.measure_idx, 3);
         }
     }
+
+    #[test]
+    fn test_validate_example_endings_yaml() {
+        let yaml_str = include_str!("../example_endings.yaml");
+        let doc: MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
+        let errors = validate_mnx(&doc);
+        assert_eq!(errors.len(), 0, "example_endings.yaml should have 0 validation errors: {:?}", errors);
+        assert_eq!(doc.global.measures.len(), 6);
+        assert_eq!(doc.parts[0].measures.len(), 6);
+    }
 }
 
 pub fn quarter_beats_to_duration(beats: f64) -> Option<Duration> {

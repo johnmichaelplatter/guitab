@@ -222,6 +222,19 @@ pub fn format_harmonic_touch(touch: f64) -> String {
     }
 }
 
+/// Formats an ending's numbers for tablature display (e.g. `1.` or `1, 2.`).
+pub fn format_ending_numbers(numbers: &[u32]) -> String {
+    if numbers.is_empty() {
+        return String::new();
+    }
+    let nums_str = numbers
+        .iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}.", nums_str)
+}
+
 /// Returns the maximum displayed text width of an event's note labels in tablature.
 pub fn event_text_width(
     event: &crate::mnx::Event,
@@ -488,7 +501,20 @@ pub fn draw_tablature(
 
     let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
     let rhythm_row_h = rhythm_gap + stem_height + 10.0; // stem + flags/dots + pad
-    let top_pad = 96.0_f32; // room for name + EDO label + tempos + slurs on top string
+    let has_endings = global
+        .map(|g| g.measures.iter().any(|m| m.ending.is_some()))
+        .unwrap_or(false);
+    let has_tempos = global
+        .map(|g| g.measures.iter().any(|m| !m.tempos.is_empty() || !m.tempo_changes.is_empty()))
+        .unwrap_or(false);
+
+    let top_pad = if has_endings && has_tempos {
+        130.0_f32
+    } else if has_endings {
+        108.0_f32
+    } else {
+        96.0_f32
+    }; // room for name + EDO label + voltas + tempos + slurs on top string
     let total_height = top_pad + staff_height + rhythm_row_h + 10.0; // top pad + staff + rhythm + bottom pad
     let total_width = start_offset_x
         + total_events_width
@@ -671,6 +697,7 @@ pub fn draw_tablature(
     let mut flat_event_idx = 0;
     let mut last_event_spacing = event_spacing;
     let mut grace_event_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut measure_barlines: Vec<f32> = vec![first_barline_x];
 
     // ── Main event loop ───────────────────────────────────────────────────────
 
@@ -1608,6 +1635,8 @@ pub fn draw_tablature(
             );
         }
 
+        measure_barlines.push(current_x);
+
         if m_idx + 1 < part.measures.len() {
             let next_ts = global
                 .and_then(|g| g.measures.get(m_idx + 1))
@@ -1632,6 +1661,72 @@ pub fn draw_tablature(
                 }
             } else {
                 current_x += measure_spacing;
+            }
+        }
+    }
+
+    // ── Draw Alternate Endings (Voltas) ────────────────────────────────────────
+    if let Some(g) = global {
+        let bracket_y = if has_tempos {
+            string_y_coords[0] - 56.0
+        } else {
+            string_y_coords[0] - 32.0
+        };
+        let hook_len = 14.0_f32;
+        let bracket_stroke = Stroke::new(1.2, note_color);
+
+        for (m_idx, gm) in g.measures.iter().enumerate() {
+            if let Some(ending) = &gm.ending {
+                let start_m = m_idx;
+                let duration = ending.duration.max(1) as usize;
+                let end_m = (start_m + duration - 1).min(part.measures.len().saturating_sub(1));
+
+                if start_m < measure_barlines.len() && end_m + 1 < measure_barlines.len() {
+                    let start_x = measure_barlines[start_m] + 1.5;
+                    let is_open = ending.open.unwrap_or(false);
+                    let end_x = if is_open {
+                        measure_barlines[end_m + 1]
+                    } else {
+                        measure_barlines[end_m + 1] - 1.5
+                    };
+
+                    if end_x > start_x {
+                        // Horizontal bracket line
+                        painter.line_segment(
+                            [Pos2::new(start_x, bracket_y), Pos2::new(end_x, bracket_y)],
+                            bracket_stroke,
+                        );
+                        // Left vertical hook
+                        painter.line_segment(
+                            [
+                                Pos2::new(start_x, bracket_y),
+                                Pos2::new(start_x, bracket_y + hook_len),
+                            ],
+                            bracket_stroke,
+                        );
+                        // Right vertical hook (only if not open)
+                        if !is_open {
+                            painter.line_segment(
+                                [
+                                    Pos2::new(end_x, bracket_y),
+                                    Pos2::new(end_x, bracket_y + hook_len),
+                                ],
+                                bracket_stroke,
+                            );
+                        }
+                        // Label (e.g. "1, 2." or "3.")
+                        let label_text = format_ending_numbers(&ending.numbers);
+                        if !label_text.is_empty() {
+                            painter.text(
+                                Pos2::new(start_x + 5.0, bracket_y + 2.0),
+                                egui::Align2::LEFT_TOP,
+                                label_text,
+                                FontId::proportional(13.0),
+                                note_color,
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -2112,6 +2207,43 @@ mod tests {
         assert_eq!(format_harmonic_touch(3.9), "<3.9>");
         assert_eq!(format_harmonic_touch(2.7), "<2.7>");
         assert_eq!(format_harmonic_touch(9.7), "<9.7>");
+    }
+
+    #[test]
+    fn test_format_ending_numbers() {
+        assert_eq!(format_ending_numbers(&[1]), "1.");
+        assert_eq!(format_ending_numbers(&[2]), "2.");
+        assert_eq!(format_ending_numbers(&[3]), "3.");
+        assert_eq!(format_ending_numbers(&[1, 2]), "1, 2.");
+        assert_eq!(format_ending_numbers(&[1, 2, 3]), "1, 2, 3.");
+        assert_eq!(format_ending_numbers(&[]), "");
+    }
+
+    #[test]
+    fn test_render_example_endings_tablature() {
+        let yaml_str = include_str!("../example_endings.yaml");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let part = &doc.parts[0];
+            let errors = Vec::new();
+            let opts = TablatureOptions {
+                part,
+                global: Some(&doc.global),
+                errors: &errors,
+                selected_event: None,
+                selection_anchor: None,
+                selected_note_in_event: None,
+                is_editing_fret: false,
+                editing_fret_text: "",
+                editing_string: None,
+                scroll_to_selected: false,
+                pitch_bend_range: 2,
+            };
+            let (_resp, _clicked, _add_bar) = draw_tablature(ui, opts);
+        });
+        output.textures_delta.clear();
     }
 
 

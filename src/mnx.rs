@@ -283,7 +283,25 @@ pub struct Global {
     pub measures: Vec<GlobalMeasure>,
 }
 
+fn default_repeat_times() -> u32 {
+    2
+}
+
+fn default_ending_duration() -> u32 {
+    1
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Ending {
+    #[serde(default = "default_ending_duration")]
+    pub duration: u32,
+    #[serde(with = "flow_seq_req")]
+    pub numbers: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct GlobalMeasure {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub time: Option<TimeSignature>,
@@ -301,6 +319,8 @@ pub struct GlobalMeasure {
     pub repeat_end: Option<RepeatEnd>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub barline: Option<Barline>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
+    pub ending: Option<Ending>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempos: Vec<Tempo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "tempoChange")]
@@ -312,6 +332,7 @@ pub struct RepeatStart {}
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct RepeatEnd {
+    #[serde(default = "default_repeat_times")]
     pub times: u32,
 }
 
@@ -961,6 +982,49 @@ parts:
 
         let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with tap");
         assert!(out.contains("tap: {}"));
+    }
+
+    #[test]
+    fn test_parse_and_serialize_endings() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - repeatStart: {}
+      time: { count: 3, unit: 4 }
+    - ending: { duration: 2, numbers: [1, 2] }
+    - repeatEnd: {}
+    - ending: { duration: 2, numbers: [3], open: true }
+    - {}
+    - {}
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: half, dots: 1 }
+                notes: []
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with endings");
+        assert_eq!(doc.global.measures.len(), 6);
+        assert!(doc.global.measures[0].repeat_start.is_some());
+        
+        let e1 = doc.global.measures[1].ending.as_ref().unwrap();
+        assert_eq!(e1.duration, 2);
+        assert_eq!(e1.numbers, vec![1, 2]);
+        assert_eq!(e1.open, None);
+
+        let r_end = doc.global.measures[2].repeat_end.as_ref().unwrap();
+        assert_eq!(r_end.times, 2); // defaulted to 2
+
+        let e2 = doc.global.measures[3].ending.as_ref().unwrap();
+        assert_eq!(e2.duration, 2);
+        assert_eq!(e2.numbers, vec![3]);
+        assert_eq!(e2.open, Some(true));
+
+        let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with endings");
+        let doc2: MnxDocument = serde_saphyr::from_str(&out).expect("Failed to deserialize serialized endings");
+        assert_eq!(doc, doc2);
     }
 }
 

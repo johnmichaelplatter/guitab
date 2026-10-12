@@ -12,7 +12,7 @@ pub mod yaml_editor;
 use eframe::egui;
 
 /// Register the Bravura SMuFL font so egui can render music notation glyphs.
-fn setup_custom_fonts(ctx: &egui::Context) {
+pub(crate) fn setup_custom_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "Bravura".to_owned(),
