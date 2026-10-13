@@ -153,7 +153,7 @@ impl DisplayList {
         sorted.sort_by_key(|item| -item.z_index); // topmost first
         for item in sorted {
             if let Some(id) = &item.id {
-                if item.bounding_box().expand(4.0).contains(pos) {
+                if item.bounding_box().contains(pos) {
                     return Some(id.clone());
                 }
             }

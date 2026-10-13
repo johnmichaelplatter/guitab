@@ -30,7 +30,7 @@ impl MnxEditorApp {
                         .save_file()
                     {
                         if let Some(doc) = &self.parsed_mnx {
-                            let pages = crate::layout::compute_score_layout(doc, 30.0);
+                            let pages = crate::layout::compute_score_layout(doc, 22.0);
                             if let Err(e) = crate::pdf_export::export_score_to_pdf(doc, &pages, &path) {
                                 eprintln!("Export PDF error: {}", e);
                             }
@@ -1301,7 +1301,7 @@ impl MnxEditorApp {
 
     pub(crate) fn render_layout_panel(&mut self, ui: &mut egui::Ui) {
         let (pages, offsets) = if let Some(doc) = &self.parsed_mnx {
-            let p = crate::layout::compute_score_layout(doc, 30.0);
+            let p = crate::layout::compute_score_layout(doc, 22.0);
             let offs = doc.layout.as_ref().map(|l| l.offsets.clone()).unwrap_or_default();
             (p, offs)
         } else {

@@ -124,14 +124,19 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
         }
 
         if in_content {
-            if indent <= content_indent
-                && (trimmed.starts_with("measures:")
-                    || trimmed.starts_with("sequences:")
-                    || trimmed.starts_with("parts:")
-                    || trimmed.starts_with("- sequences:")
-                    || trimmed.starts_with("- measures:")
-                    || trimmed.starts_with("arpeggios:")
-                    || trimmed.starts_with("- arpeggios:"))
+            if indent == 0
+                || (indent <= content_indent
+                    && (trimmed.starts_with("measures:")
+                        || trimmed.starts_with("sequences:")
+                        || trimmed.starts_with("parts:")
+                        || trimmed.starts_with("layout:")
+                        || trimmed.starts_with("title:")
+                        || trimmed.starts_with("subtitle:")
+                        || trimmed.starts_with("composer:")
+                        || trimmed.starts_with("- sequences:")
+                        || trimmed.starts_with("- measures:")
+                        || trimmed.starts_with("arpeggios:")
+                        || trimmed.starts_with("- arpeggios:")))
             {
                 if let Some(start_line) = current_event_start_line {
                     let end_line = i.saturating_sub(1);
@@ -660,93 +665,144 @@ pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Optio
         return None;
     }
 
-    // 1. Find global/measures section to add a global measure entry
-    let mut in_global = false;
+    // 1. Scan global/measures section
+    let mut in_global_measures = false;
     let mut global_measures_idx = None;
-    let mut global_measure_item_idx = None;
-    let mut global_end_idx = None;
-    let mut global_item_indent = 4;
+    let mut global_item_indent = None;
+    let mut last_gm_line = None;
     let mut last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
 
-    // 2. Find parts/measures section
-    let mut in_parts = false;
+    // 2. Scan parts/measures section
+    let mut in_part = false;
+    let mut in_part_measures = false;
     let mut parts_measures_idx = None;
-    let mut seq_indent = 6;
+    let mut measure_item_indent = None;
+    let mut last_pm_line = None;
+    let mut detected_seq_indent = None;
+    let mut detected_content_indent = None;
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         let indent = line.len() - line.trim_start().len();
 
-        if trimmed.starts_with("global:") {
-            in_global = true;
-            in_parts = false;
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        if in_global {
-            if trimmed.starts_with("measures:") {
-                global_measures_idx = Some(i);
-                continue;
-            }
+        // Global section detection
+        if trimmed.starts_with("global:") {
+            in_global_measures = false;
+            in_part = false;
+            in_part_measures = false;
+            continue;
+        }
 
-            if global_measures_idx.is_some() {
-                if trimmed.starts_with('-') {
-                    global_measure_item_idx = Some(i);
-                    global_item_indent = indent;
-                    if let Some(pos) = trimmed.find("time:") {
-                        let extracted = trimmed[pos..].trim();
-                        if extracted == "time:" {
-                            last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
-                        } else {
-                            last_time_sig_str = extracted.to_string();
+        if !in_part && (trimmed == "measures:" || trimmed.starts_with("measures:")) && global_measures_idx.is_none() {
+            in_global_measures = true;
+            global_measures_idx = Some(i);
+            continue;
+        }
+
+        if in_global_measures {
+            if trimmed.starts_with("parts:") || (indent == 0 && global_measures_idx.is_some()) {
+                in_global_measures = false;
+            } else if let Some(m_indent) = global_item_indent {
+                if indent < m_indent {
+                    in_global_measures = false;
+                } else if indent == m_indent {
+                    if trimmed.starts_with('-') {
+                        last_gm_line = Some(i);
+                        if let Some(pos) = trimmed.find("time:") {
+                            let extracted = trimmed[pos..].trim();
+                            if extracted == "time:" {
+                                last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
+                            } else {
+                                last_time_sig_str = extracted.to_string();
+                            }
                         }
+                    } else {
+                        in_global_measures = false;
                     }
-                } else if trimmed.starts_with("parts:") || (indent == 0 && !trimmed.is_empty()) {
-                    in_global = false;
-                    global_end_idx = Some(i);
+                } else {
+                    last_gm_line = Some(i);
+                }
+            } else if trimmed.starts_with('-') {
+                global_item_indent = Some(indent);
+                last_gm_line = Some(i);
+                if let Some(pos) = trimmed.find("time:") {
+                    let extracted = trimmed[pos..].trim();
+                    if extracted == "time:" {
+                        last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
+                    } else {
+                        last_time_sig_str = extracted.to_string();
+                    }
                 }
             }
         }
 
+        // Parts section detection
         if trimmed.starts_with("parts:") {
-            in_parts = true;
-            in_global = false;
+            in_part = true;
+            in_global_measures = false;
+            in_part_measures = false;
             continue;
         }
 
-        if in_parts {
-            if trimmed.starts_with("measures:") {
+        if in_part {
+            if (trimmed == "measures:" || trimmed.starts_with("measures:")) && parts_measures_idx.is_none() {
+                in_part_measures = true;
                 parts_measures_idx = Some(i);
                 continue;
             }
 
-            if parts_measures_idx.is_some()
-                && (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:"))
-            {
-                seq_indent = indent;
+            if in_part_measures {
+                if let Some(m_indent) = measure_item_indent {
+                    if indent < m_indent {
+                        in_part_measures = false;
+                        in_part = false;
+                    } else if indent == m_indent {
+                        if trimmed.starts_with('-') {
+                            last_pm_line = Some(i);
+                            if trimmed.contains("sequences:") {
+                                detected_seq_indent = Some(indent);
+                            }
+                        } else {
+                            in_part_measures = false;
+                            in_part = false;
+                        }
+                    } else {
+                        last_pm_line = Some(i);
+                        if (trimmed.starts_with("- content:") || trimmed.starts_with("-content:") || trimmed.starts_with("content:"))
+                            && detected_content_indent.is_none()
+                        {
+                            detected_content_indent = Some(indent);
+                        }
+                        if (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:") || trimmed.starts_with("sequences:"))
+                            && detected_seq_indent.is_none()
+                        {
+                            detected_seq_indent = Some(indent);
+                        }
+                    }
+                } else if trimmed.starts_with('-') {
+                    measure_item_indent = Some(indent);
+                    last_pm_line = Some(i);
+                    if trimmed.contains("sequences:") {
+                        detected_seq_indent = Some(indent);
+                    }
+                } else if indent == 0 || trimmed.starts_with("layout:") {
+                    in_part_measures = false;
+                    in_part = false;
+                }
             }
         }
     }
 
-    let _ = parts_measures_idx?;
+    let p_header_idx = parts_measures_idx?;
+    let parts_insert_idx = last_pm_line.map(|l| l + 1).unwrap_or(p_header_idx + 1);
 
-    // Format new measure in global/measures if global/measures exists
-    let mut result_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-
-    if let Some(end_idx) = global_end_idx {
-        // Insert at the end of the global block (just before parts)
-        let new_gm_line = format!("{}- {}", " ".repeat(global_item_indent), last_time_sig_str);
-        result_lines.insert(end_idx, new_gm_line);
-    } else if let Some(last_gm_idx) = global_measure_item_idx {
-        // Fallback: Insert after the last item in global/measures
-        let new_gm_line = format!("{}- {}", " ".repeat(global_item_indent), last_time_sig_str);
-        result_lines.insert(last_gm_idx + 1, new_gm_line);
-    } else if let Some(gm_header_idx) = global_measures_idx {
-        let new_gm_line = format!("{}- {}", " ".repeat(4), last_time_sig_str);
-        result_lines.insert(gm_header_idx + 1, new_gm_line);
-    }
-
-    let intermediate_yaml = result_lines.join("\n");
+    let global_insert_idx = global_measures_idx.map(|g_idx| {
+        last_gm_line.map(|l| l + 1).unwrap_or(g_idx + 1)
+    });
 
     let dur_str = if let Some(dots) = duration.dots {
         if dots > 0 {
@@ -758,18 +814,63 @@ pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Optio
         format!("{{ base: {} }}", duration.base)
     };
 
-    let seq_spaces = " ".repeat(seq_indent);
-    let content_spaces = " ".repeat(seq_indent + 4);
-    let event_spaces = " ".repeat(seq_indent + 8);
-    let notes_spaces = " ".repeat(seq_indent + 10);
+    let seq_ind = detected_seq_indent.unwrap_or_else(|| measure_item_indent.unwrap_or(6));
+    let step = if let Some(c_ind) = detected_content_indent {
+        if c_ind > seq_ind {
+            c_ind - seq_ind
+        } else if seq_ind <= 4 {
+            2
+        } else {
+            4
+        }
+    } else if seq_ind <= 4 {
+        2
+    } else {
+        4
+    };
+
+    let seq_spaces = " ".repeat(seq_ind);
+    let content_spaces = " ".repeat(seq_ind + step);
+    let event_spaces = " ".repeat(seq_ind + step * 2);
+    let notes_spaces = " ".repeat(seq_ind + step * 2 + 2);
 
     let new_measure_block = format!(
         "{}- sequences:\n{}- content:\n{}- duration: {}\n{}notes: []",
         seq_spaces, content_spaces, event_spaces, dur_str, notes_spaces
     );
 
-    let trimmed_yaml = intermediate_yaml.trim_end();
-    Some(format!("{}\n{}\n", trimmed_yaml, new_measure_block))
+    let gm_ind = global_item_indent.unwrap_or(4);
+    let new_gm_line = format!("{}- {}", " ".repeat(gm_ind), last_time_sig_str);
+
+    let mut result_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+
+    // Insert the block with the larger index first so earlier indices are not invalidated
+    match global_insert_idx {
+        Some(g_idx) => {
+            if parts_insert_idx >= g_idx {
+                for (offset, bline) in new_measure_block.lines().enumerate() {
+                    result_lines.insert(parts_insert_idx + offset, bline.to_string());
+                }
+                result_lines.insert(g_idx, new_gm_line);
+            } else {
+                result_lines.insert(g_idx, new_gm_line);
+                for (offset, bline) in new_measure_block.lines().enumerate() {
+                    result_lines.insert(parts_insert_idx + offset, bline.to_string());
+                }
+            }
+        }
+        None => {
+            for (offset, bline) in new_measure_block.lines().enumerate() {
+                result_lines.insert(parts_insert_idx + offset, bline.to_string());
+            }
+        }
+    }
+
+    let mut res = result_lines.join("\n");
+    if yaml.ends_with('\n') {
+        res.push('\n');
+    }
+    Some(res)
 }
 
 /// Appends a new blank note (notes: []) to the last measure of the first part.

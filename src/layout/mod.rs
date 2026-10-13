@@ -25,13 +25,24 @@ pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLay
     let justify_last = layout_cfg.map(|l| l.justify_last_system).unwrap_or(false);
 
     let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6);
-    let line_spacing = 13.0_f32;
+    let line_spacing = 11.0_f32;
     let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
-    let rhythm_row_h = 35.0_f32;
-    let system_height = staff_height + rhythm_row_h + 80.0;
-    let system_gap = 40.0_f32;
 
-    let metrics = compute_measure_metrics(doc, base_spacing);
+    let has_lyrics = doc.parts.first().map(|p| {
+        p.measures.iter().any(|m| {
+            m.sequences.iter().any(|s| {
+                s.flattened_events().iter().any(|e| e.lyrics.as_ref().map(|l| !l.is_empty()).unwrap_or(false))
+            })
+        })
+    }).unwrap_or(false);
+
+    let lyrics_extra = if has_lyrics { 14.0_f32 } else { 0.0_f32 };
+    let system_height = staff_height + 56.0 + lyrics_extra;
+    let system_gap = 14.0_f32;
+    let first_page_header_height = 75.0_f32;
+
+    let effective_base_spacing = if base_spacing > 0.0 { base_spacing } else { 22.0 };
+    let metrics = compute_measure_metrics(doc, effective_base_spacing);
     let content_w = (page_w - margins.left - margins.right).max(200.0);
     let system_breaks = break_measures_into_systems(&metrics, content_w);
     let mut pages = pack_systems_into_pages(
@@ -41,6 +52,7 @@ pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLay
         &margins,
         system_height,
         system_gap,
+        first_page_header_height,
     );
     justify_systems(&mut pages, &metrics, justify_last);
 
@@ -118,7 +130,7 @@ mod tests {
         let content_w = page_w - margins.left - margins.right; // 500.0
 
         let breaks = break_measures_into_systems(&measures, content_w);
-        let mut pages = pack_systems_into_pages(breaks, page_w, 800.0, &margins, 100.0, 20.0);
+        let mut pages = pack_systems_into_pages(breaks, page_w, 800.0, &margins, 100.0, 20.0, 0.0);
 
         // Justify system 0
         justify_systems(&mut pages, &measures, true);

@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
 // ── Pitch helpers ────────────────────────────────────────────────────────────
 
-fn format_pitch(pitch: &Pitch, edo: u32) -> String {
+pub fn format_pitch(pitch: &Pitch, edo: u32) -> String {
     let mut prefix = String::new();
     let mut suffix = String::new();
 

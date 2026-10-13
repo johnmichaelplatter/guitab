@@ -155,9 +155,22 @@ pub fn generate_score_pdf_bytes(
                     };
                     current_layer.add_polygon(circle_poly);
                 }
-                DrawKind::Text { pos, text, font_id, color, .. } => {
-                    let x = Mm(pos.x * mm_per_px);
-                    let y = Mm(page_h_val - pos.y * mm_per_px);
+                DrawKind::Text { pos, align, text, font_id, color } => {
+                    let approx_w = (text.chars().count() as f32) * font_id.size * 0.52;
+                    let approx_h = font_id.size * 0.75;
+                    let adj_x = match align.x() {
+                        eframe::emath::Align::Min => pos.x,
+                        eframe::emath::Align::Center => pos.x - approx_w * 0.5,
+                        eframe::emath::Align::Max => pos.x - approx_w,
+                    };
+                    let adj_y = match align.y() {
+                        eframe::emath::Align::Min => pos.y + approx_h,
+                        eframe::emath::Align::Center => pos.y + approx_h * 0.35,
+                        eframe::emath::Align::Max => pos.y,
+                    };
+
+                    let x = Mm(adj_x * mm_per_px);
+                    let y = Mm(page_h_val - adj_y * mm_per_px);
                     let is_bravura = match &font_id.family {
                         eframe::egui::FontFamily::Name(name) => name.as_ref() == "Bravura" || name.as_ref() == "BravuraText",
                         _ => text.chars().any(|c| (c as u32) >= 0xE000 && (c as u32) <= 0xF8FF),
@@ -232,7 +245,7 @@ pub fn populate_page_display_list(
         None => return,
     };
     let num_strings = part.num_strings();
-    let line_spacing = 13.0_f32;
+    let line_spacing = 11.0_f32;
     let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
 
     let text_color = Color32::from_rgb(20, 20, 20);
@@ -241,32 +254,72 @@ pub fn populate_page_display_list(
 
     // Header on Page 1
     if page.page_number == 1 {
-        if let Some(inst) = &part.instrument {
+        let title_text = doc
+            .title
+            .as_deref()
+            .or_else(|| doc.layout.as_ref().and_then(|l| l.title.as_deref()))
+            .or_else(|| part.instrument.as_ref().map(|i| i.name.as_str()))
+            .unwrap_or("Title");
+
+        if !title_text.is_empty() {
             dl.push(DrawItem {
                 id: Some("header_title".to_string()),
                 kind: DrawKind::Text {
-                    pos: Pos2::new(page.width / 2.0, page.margins.top * 0.6),
+                    pos: Pos2::new(page.width / 2.0, page.margins.top + 16.0),
                     align: Align2::CENTER_CENTER,
-                    text: inst.name.clone(),
+                    text: title_text.to_string(),
                     font_id: FontId::proportional(22.0),
                     color: text_color,
                 },
                 z_index: 10,
             });
+        }
 
-            if let Some(divs) = inst.micro_fret_divisions {
+        let edo_sub = part
+            .instrument
+            .as_ref()
+            .and_then(|i| i.micro_fret_divisions)
+            .map(|divs| format!("{} EDO", divs));
+        let subtitle_text = doc
+            .subtitle
+            .as_deref()
+            .or_else(|| doc.layout.as_ref().and_then(|l| l.subtitle.as_deref()))
+            .or_else(|| edo_sub.as_deref());
+
+        if let Some(sub) = subtitle_text {
+            if !sub.is_empty() {
                 dl.push(DrawItem {
                     id: Some("header_subtitle".to_string()),
                     kind: DrawKind::Text {
-                        pos: Pos2::new(page.width / 2.0, page.margins.top * 0.6 + 22.0),
+                        pos: Pos2::new(page.width / 2.0, page.margins.top + 42.0),
                         align: Align2::CENTER_CENTER,
-                        text: format!("{} EDO", divs),
-                        font_id: FontId::proportional(14.0),
-                        color: Color32::from_rgb(110, 110, 110),
+                        text: sub.to_string(),
+                        font_id: FontId::proportional(12.0),
+                        color: Color32::from_rgb(100, 100, 100),
                     },
                     z_index: 10,
                 });
             }
+        }
+
+        let composer_text = doc
+            .composer
+            .as_deref()
+            .or_else(|| doc.layout.as_ref().and_then(|l| l.composer.as_deref()))
+            .unwrap_or("Composer");
+
+        if !composer_text.is_empty() {
+            dl.push(DrawItem {
+                id: Some("header_composer".to_string()),
+                kind: DrawKind::Text {
+                    pos: Pos2::new(page.width - page.margins.right, page.margins.top + 42.0),
+                    align: Align2::RIGHT_CENTER,
+                    text: composer_text.to_string(),
+                    font_id: FontId::proportional(12.0),
+                    color: text_color,
+                },
+                z_index: 10,
+            });
         }
     }
 
@@ -303,6 +356,44 @@ pub fn populate_page_display_list(
                 },
                 z_index: 1,
             });
+        }
+
+        // Open string tuning labels at the first bar
+        if system.measure_range.start == 0 {
+            let edo = part.edo();
+            for s in 1..=num_strings {
+                let str_y = staff_top_y + ((s - 1) as f32) * line_spacing;
+                let tuning_str = if let Some(pitch) = part.get_string_tuning(s as u8) {
+                    crate::render::format_pitch(&pitch, edo)
+                } else {
+                    let default_name = match s {
+                        1 => "E",
+                        2 => "B",
+                        3 => "G",
+                        4 => "D",
+                        5 => "A",
+                        6 => "E",
+                        7 => "B",
+                        8 => "F#",
+                        _ => "",
+                    };
+                    default_name.to_string()
+                };
+
+                if !tuning_str.is_empty() {
+                    dl.push(DrawItem {
+                        id: Some(format!("tuning_{}", s)),
+                        kind: DrawKind::Text {
+                            pos: Pos2::new(system_start_x - 6.0, str_y),
+                            align: Align2::RIGHT_CENTER,
+                            text: tuning_str,
+                            font_id: FontId::proportional(10.5),
+                            color: Color32::from_rgb(70, 70, 70),
+                        },
+                        z_index: 3,
+                    });
+                }
+            }
         }
 
         // Draw opening barline
@@ -379,7 +470,7 @@ pub fn populate_page_display_list(
                     pos: Pos2::new(system_start_x, staff_top_y - 12.0),
                     align: Align2::LEFT_BOTTOM,
                     text: mn_str,
-                    font_id: FontId::proportional(11.0),
+                    font_id: FontId::proportional(10.0),
                     color: Color32::from_rgb(90, 90, 90),
                 },
                 z_index: 5,
@@ -414,7 +505,7 @@ pub fn populate_page_display_list(
                         pos: Pos2::new(m_x + 2.0, staff_top_y - 12.0),
                         align: Align2::LEFT_BOTTOM,
                         text: mn_str,
-                        font_id: FontId::proportional(11.0),
+                        font_id: FontId::proportional(10.0),
                         color: Color32::from_rgb(90, 90, 90),
                     },
                     z_index: 5,
@@ -449,7 +540,7 @@ pub fn populate_page_display_list(
                     let ts_center_x = m_x + start_pad + 12.0;
                     let num_text = crate::render::smufl_time_sig_digits(ts.count);
                     let den_text = crate::render::smufl_time_sig_digits(ts.unit);
-                    let center_pad = 46.0_f32 / 4.0 + 0.25;
+                    let center_pad = 38.0_f32 / 4.0 + 0.25;
 
                     dl.push(DrawItem {
                         id: Some(format!("time_sig_{}", m_idx)),
@@ -457,7 +548,7 @@ pub fn populate_page_display_list(
                             pos: Pos2::new(ts_center_x, staff_mid_y - center_pad),
                             align: Align2::CENTER_CENTER,
                             text: num_text,
-                            font_id: FontId::new(46.0, egui::FontFamily::Name("Bravura".into())),
+                            font_id: FontId::new(38.0, egui::FontFamily::Name("Bravura".into())),
                             color: text_color,
                         },
                         z_index: 5,
@@ -469,7 +560,7 @@ pub fn populate_page_display_list(
                             pos: Pos2::new(ts_center_x, staff_mid_y + center_pad),
                             align: Align2::CENTER_CENTER,
                             text: den_text,
-                            font_id: FontId::new(46.0, egui::FontFamily::Name("Bravura".into())),
+                            font_id: FontId::new(38.0, egui::FontFamily::Name("Bravura".into())),
                             color: text_color,
                         },
                         z_index: 5,
@@ -530,7 +621,7 @@ pub fn populate_page_display_list(
                     let has_tempos_in_sys = system.measure_range.clone().any(|mi| {
                         doc.global.measures.get(mi).map(|g| !g.tempos.is_empty()).unwrap_or(false)
                     });
-                    let bracket_y = if has_tempos_in_sys { staff_top_y - 44.0 } else { staff_top_y - 24.0 };
+                    let bracket_y = if has_tempos_in_sys { staff_top_y - 36.0 } else { staff_top_y - 20.0 };
                     let hook_len = 8.0_f32;
                     let is_open = ending.open.unwrap_or(false);
 
@@ -597,7 +688,7 @@ pub fn populate_page_display_list(
                 let has_endings_in_sys = system.measure_range.clone().any(|mi| {
                     doc.global.measures.get(mi).and_then(|g| g.ending.as_ref()).is_some()
                 });
-                let tempo_y = if has_endings_in_sys { staff_top_y - 40.0 } else { staff_top_y - 24.0 };
+                let tempo_y = if has_endings_in_sys { staff_top_y - 34.0 } else { staff_top_y - 20.0 };
 
                 for tempo in &gm.tempos {
                     let glyph = match tempo.value.base.as_str() {
@@ -621,7 +712,7 @@ pub fn populate_page_display_list(
                             pos: Pos2::new(tempo_x, tempo_y),
                             align: Align2::LEFT_BOTTOM,
                             text: glyph.to_string(),
-                            font_id: FontId::new(20.0, egui::FontFamily::Name("BravuraText".into())),
+                            font_id: FontId::new(17.0, egui::FontFamily::Name("BravuraText".into())),
                             color: text_color,
                         },
                         z_index: 6,
@@ -630,10 +721,10 @@ pub fn populate_page_display_list(
                     dl.push(DrawItem {
                         id: tempo_mark_id,
                         kind: DrawKind::Text {
-                            pos: Pos2::new(tempo_x + 14.0, tempo_y),
+                            pos: Pos2::new(tempo_x + 12.0, tempo_y),
                             align: Align2::LEFT_BOTTOM,
                             text,
-                            font_id: FontId::proportional(15.0),
+                            font_id: FontId::proportional(13.0),
                             color: text_color,
                         },
                         z_index: 6,
@@ -649,7 +740,7 @@ pub fn populate_page_display_list(
                             pos: Pos2::new(tc_x, tempo_y),
                             align: Align2::LEFT_BOTTOM,
                             text: label.to_string(),
-                            font_id: FontId::proportional(14.0),
+                            font_id: FontId::proportional(13.0),
                             color: text_color,
                         },
                         z_index: 6,
@@ -692,7 +783,7 @@ pub fn populate_page_display_list(
                                 let sp = crate::render::calculate_event_spacing(
                                     ev,
                                     in_grace,
-                                    30.0,
+                                    22.0,
                                     next_ev_info,
                                     None,
                                     None,
@@ -709,23 +800,36 @@ pub fn populate_page_display_list(
                     let mut ev_idx_in_m = 0;
                     let mut accum_x = 0.0_f32;
                     let mut active_tuplets: Vec<(usize, f32, u32)> = Vec::new();
-                    let mut current_tuplet_id: Option<usize> = None;
                     let mut tuplet_counter = 0;
+                    let mut tuplet_stack: Vec<(usize, f64)> = Vec::new(); // (tuplet_id, scale)
+                    let mut current_measure_beat: f64 = 0.0;
                     in_grace = false;
 
                     for l_item in &layout_items {
                         match l_item {
                             LayoutItem::TupletStart(t) => {
                                 tuplet_counter += 1;
-                                current_tuplet_id = Some(tuplet_counter);
+                                let current_scale = tuplet_stack.last().map(|&(_, s)| s).unwrap_or(1.0);
+                                let inner_beats =
+                                    crate::validate::duration_to_quarter_beats(&t.inner.duration)
+                                        * (t.inner.multiple as f64);
+                                let outer_beats =
+                                    crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                                        * (t.outer.multiple as f64);
+                                let new_scale = if inner_beats > 0.0 {
+                                    current_scale * (outer_beats / inner_beats)
+                                } else {
+                                    current_scale
+                                };
+                                tuplet_stack.push((tuplet_counter, new_scale));
                                 let current_x = m_x + start_pad + accum_x * ev_scale;
                                 active_tuplets.push((tuplet_counter, current_x, t.inner.multiple));
                             }
                             LayoutItem::TupletEnd => {
-                                current_tuplet_id = None;
+                                tuplet_stack.pop();
                                 if let Some((t_cnt, start_x, mult)) = active_tuplets.pop() {
                                     let end_x = m_x + start_pad + accum_x * ev_scale;
-                                    let y = staff_top_y - 14.0;
+                                    let y = staff_top_y - 12.0;
                                     tuplet_brackets.push((m_idx, t_cnt, start_x, end_x, mult, y));
                                 }
                             }
@@ -736,7 +840,17 @@ pub fn populate_page_display_list(
                                 in_grace = false;
                             }
                             LayoutItem::Event(ev) => {
-                                let ev_w = event_spacings.get(ev_idx_in_m).copied().unwrap_or(30.0);
+                                let current_tuplet_id = tuplet_stack.last().map(|&(id, _)| id);
+                                let current_scale = tuplet_stack.last().map(|&(_, s)| s).unwrap_or(1.0);
+                                let event_beats = if in_grace {
+                                    0.0
+                                } else {
+                                    crate::validate::duration_to_quarter_beats(&ev.duration) * current_scale
+                                };
+                                let start_beat = current_measure_beat;
+                                let end_beat = current_measure_beat + event_beats;
+                                current_measure_beat = end_beat;
+                                let ev_w = event_spacings.get(ev_idx_in_m).copied().unwrap_or(22.0);
                                 let ev_x = m_x + start_pad + (accum_x + ev_w * 0.5) * ev_scale;
                                 accum_x += ev_w;
                                 ev_idx_in_m += 1;
@@ -767,7 +881,7 @@ pub fn populate_page_display_list(
                                             pos: Pos2::new(ev_x, staff_mid_y),
                                             align: Align2::CENTER_CENTER,
                                             text: rest_char.to_string(),
-                                            font_id: FontId::new(32.0, egui::FontFamily::Name("Bravura".into())),
+                                            font_id: FontId::new(26.0, egui::FontFamily::Name("Bravura".into())),
                                             color: text_color,
                                         },
                                         z_index: 4,
@@ -777,10 +891,10 @@ pub fn populate_page_display_list(
                                         dl.push(DrawItem {
                                             id: rest_id,
                                             kind: DrawKind::Text {
-                                                pos: Pos2::new(ev_x + 12.0, staff_mid_y),
+                                                pos: Pos2::new(ev_x + 10.0, staff_mid_y),
                                                 align: Align2::CENTER_CENTER,
                                                 text: "\u{E4CD}".to_string(),
-                                                font_id: FontId::new(32.0, egui::FontFamily::Name("Bravura".into())),
+                                                font_id: FontId::new(26.0, egui::FontFamily::Name("Bravura".into())),
                                                 color: text_color,
                                             },
                                             z_index: 4,
@@ -821,15 +935,15 @@ pub fn populate_page_display_list(
 
                                                 string_timeline.entry(s).or_default().push((system_rhythm_notes.len(), fret_val, note_pos));
 
-                                                let font_sz = if in_grace { 10.0 } else { 12.0 };
-                                                let text_w = (fret_text.chars().count() as f32) * (if in_grace { 6.0 } else { 8.5 });
+                                                let font_sz = if in_grace { 9.5 } else { 11.0 };
+                                                let text_w = (fret_text.chars().count() as f32) * (if in_grace { 5.5 } else { 7.5 });
                                                 let note_item_id = Some(note.id.clone().unwrap_or_else(|| format!("note_{}_{}_{}", m_idx, ev_idx_in_m, s)));
                                                 dl.push(DrawItem {
                                                     id: note_item_id.clone(),
                                                     kind: DrawKind::Rect {
                                                         rect: Rect::from_center_size(
                                                             note_pos,
-                                                            eframe::egui::Vec2::new(text_w + 4.0, 12.0),
+                                                            eframe::egui::Vec2::new(text_w + 3.0, 11.0),
                                                         ),
                                                         fill: Color32::WHITE,
                                                         stroke: Stroke::NONE,
@@ -879,15 +993,15 @@ pub fn populate_page_display_list(
                                     measure_idx: m_idx,
                                     is_rest,
                                     tuplet_id: current_tuplet_id,
-                                    start_beat: 0.0,
-                                    end_beat: 0.0,
+                                    start_beat,
+                                    end_beat,
                                 });
 
                                 // Draw lyrics if present
                                 if let Some(lyrics) = &ev.lyrics {
-                                    let stem_bot = last_string_y + 32.0;
+                                    let stem_bot = last_string_y + 26.0;
                                     for (l_i, lyr) in lyrics.iter().enumerate() {
-                                        let lyr_y = stem_bot + 12.0 + (l_i as f32) * 16.0;
+                                        let lyr_y = stem_bot + 10.0 + (l_i as f32) * 14.0;
                                         let lyric_id = Some(format!("lyric_{}_{}", m_idx, ev_idx_in_m));
                                         dl.push(DrawItem {
                                             id: lyric_id.clone(),
@@ -960,6 +1074,26 @@ pub fn populate_page_display_list(
                             &mut beam_from,
                         );
                     }
+                    // Grace notes in this measure: beam adjacent grace notes
+                    let n = system_rhythm_notes.len();
+                    let grace_indices: Vec<usize> = (0..n)
+                        .filter(|&i| system_rhythm_notes[i].measure_idx == m_idx && grace_event_indices.contains(&i))
+                        .collect();
+                    for &ia in &grace_indices {
+                        let ib = ia + 1;
+                        if ib < n && grace_event_indices.contains(&ib) && system_rhythm_notes[ib].measure_idx == m_idx {
+                            let note_a = &system_rhythm_notes[ia];
+                            let note_b = &system_rhythm_notes[ib];
+                            if !note_a.is_rest
+                                && !note_b.is_rest
+                                && note_a.rhythm.flag_count() >= 1
+                                && note_b.rhythm.flag_count() >= 1
+                            {
+                                beam_to[ia] = Some(ib);
+                                beam_from[ib] = Some(ia);
+                            }
+                        }
+                    }
                 } else {
                     let time_sig = crate::render::get_time_signature_for_measure(Some(&doc.global), m_idx);
                     crate::render::compute_default_beaming_indices(
@@ -974,9 +1108,9 @@ pub fn populate_page_display_list(
             }
         }
 
-        let stem_top_y = last_string_y + 8.0;
-        let stem_bot_y = stem_top_y + 24.0;
-        let flag_spacing = 5.0_f32;
+        let stem_top_y = last_string_y + 6.0;
+        let stem_bot_y = stem_top_y + 20.0;
+        let flag_spacing = 4.5_f32;
 
         for (i, note) in system_rhythm_notes.iter().enumerate() {
             if note.is_rest {
@@ -1204,13 +1338,15 @@ pub fn populate_page_display_list(
             let string_y = start_pos.y;
             if let Some(&(target_pos, target_string, _target_fret)) = note_id_map.get(target_id) {
                 if *start_string == target_string && target_pos.x > start_pos.x {
-                    let x1 = start_pos.x + 9.0;
-                    let x2 = target_pos.x - 9.0;
+                    let total_dx = target_pos.x - start_pos.x;
+                    let pad = (total_dx * 0.2).clamp(4.0, 8.0);
+                    let x1 = start_pos.x + pad;
+                    let x2 = target_pos.x - pad;
                     if x2 > x1 {
                         let p0 = Pos2::new(x1, string_y + 3.0);
                         let p3 = Pos2::new(x2, string_y + 3.0);
                         let dx = p3.x - p0.x;
-                        let dip = (dx * 0.12).clamp(5.0, 11.0);
+                        let dip = (dx * 0.12).clamp(4.0, 10.0);
                         let p1 = Pos2::new(p0.x + dx * 0.25, string_y + 3.0 + dip);
                         let p2 = Pos2::new(p3.x - dx * 0.25, string_y + 3.0 + dip);
 
@@ -1226,13 +1362,15 @@ pub fn populate_page_display_list(
                 }
             } else if let Some(&(rest_x, _is_rest)) = event_id_map.get(target_id) {
                 if rest_x > start_pos.x {
-                    let x1 = start_pos.x + 9.0;
-                    let x2 = rest_x - 6.0;
+                    let total_dx = rest_x - start_pos.x;
+                    let pad = (total_dx * 0.2).clamp(4.0, 8.0);
+                    let x1 = start_pos.x + pad;
+                    let x2 = rest_x - 4.0;
                     if x2 > x1 {
                         let p0 = Pos2::new(x1, string_y + 3.0);
                         let p3 = Pos2::new(x2, string_y + 3.0);
                         let dx = p3.x - p0.x;
-                        let dip = (dx * 0.12).clamp(5.0, 11.0);
+                        let dip = (dx * 0.12).clamp(4.0, 10.0);
                         let p1 = Pos2::new(p0.x + dx * 0.25, string_y + 3.0 + dip);
                         let p2 = Pos2::new(p3.x - dx * 0.25, string_y + 3.0 + dip);
 
@@ -1299,7 +1437,7 @@ pub fn populate_page_display_list(
                     to: Pos2::new(*start_x, *y),
                     stroke: Stroke::new(1.0, Color32::from_gray(140)),
                 },
-                z_index: 4,
+                z_index: 5,
             });
             dl.push(DrawItem {
                 id: tuplet_id.clone(),
@@ -1308,7 +1446,7 @@ pub fn populate_page_display_list(
                     to: Pos2::new(*end_x, *y),
                     stroke: Stroke::new(1.0, Color32::from_gray(140)),
                 },
-                z_index: 4,
+                z_index: 5,
             });
             dl.push(DrawItem {
                 id: tuplet_id.clone(),
@@ -1317,7 +1455,7 @@ pub fn populate_page_display_list(
                     to: Pos2::new(*end_x, *y + 6.0),
                     stroke: Stroke::new(1.0, Color32::from_gray(140)),
                 },
-                z_index: 4,
+                z_index: 5,
             });
             dl.push(DrawItem {
                 id: tuplet_id,
@@ -1378,7 +1516,7 @@ parts:
                     fret: 0
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 30.0);
+        let pages = crate::layout::compute_score_layout(&doc, 22.0);
         assert!(!pages.is_empty());
 
         let pdf_bytes = generate_score_pdf_bytes(&doc, &pages).expect("PDF export should succeed");
@@ -1440,7 +1578,7 @@ parts:
                     fret: 0
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 30.0);
+        let pages = crate::layout::compute_score_layout(&doc, 22.0);
         assert_eq!(pages.len(), 2, "Page break on measure 2 should produce 2 pages");
 
         let pdf_bytes = generate_score_pdf_bytes(&doc, &pages).expect("Multi-page PDF export should succeed");
@@ -1516,11 +1654,23 @@ parts:
                     fret: 1
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 30.0);
+        let pages = crate::layout::compute_score_layout(&doc, 22.0);
         assert!(!pages.is_empty());
 
         let mut dl = DisplayList::new();
         populate_page_display_list(&doc, &pages[0], &mut dl);
+
+        // Verify Header elements
+        let has_title = dl.items.iter().any(|item| item.id.as_deref() == Some("header_title"));
+        assert!(has_title, "Header title should be present on page 1");
+        let has_composer = dl.items.iter().any(|item| item.id.as_deref() == Some("header_composer"));
+        assert!(has_composer, "Header composer should be present on page 1");
+
+        // Verify String Tunings on first bar
+        let has_tuning_1 = dl.items.iter().any(|item| item.id.as_deref() == Some("tuning_1"));
+        let has_tuning_6 = dl.items.iter().any(|item| item.id.as_deref() == Some("tuning_6"));
+        assert!(has_tuning_1, "Tuning label for string 1 should be present at bar 1");
+        assert!(has_tuning_6, "Tuning label for string 6 should be present at bar 1");
 
         // Verify Time Signatures
         let has_ts0 = dl.items.iter().any(|item| item.id.as_deref() == Some("time_sig_0"));
@@ -1630,7 +1780,7 @@ parts:
                 rest: {}
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 30.0);
+        let pages = crate::layout::compute_score_layout(&doc, 22.0);
         let mut dl = DisplayList::new();
         populate_page_display_list(&doc, &pages[0], &mut dl);
 
@@ -1679,4 +1829,156 @@ parts:
             assert!((m_bbox.min.y - (orig.min.y + 7.0)).abs() < 0.01, "Slur y should shift by 7");
         }
     }
+
+    #[test]
+    fn test_four_bars_fit_in_system_by_default() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - {}
+    - {}
+    - {}
+parts:
+  - instrument:
+      name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: B, octave: 3 }, string: 2, fret: 0 }]
+              - duration: { base: half }
+                notes: [{ pitch: { step: G, octave: 3 }, string: 3, fret: 0 }]
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes: [{ pitch: { step: D, octave: 3 }, string: 4, fret: 0 }]
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes: [{ pitch: { step: A, octave: 2 }, string: 5, fret: 0 }]
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes: [{ pitch: { step: E, octave: 2 }, string: 6, fret: 0 }]
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
+        assert!(!pages.is_empty(), "Should generate at least one page");
+        let sys0 = &pages[0].systems[0];
+        assert_eq!(
+            sys0.measure_range,
+            0..4,
+            "Roughly four bars should fit onto System 0 by default, got {:?}",
+            sys0.measure_range
+        );
+    }
+
+    #[test]
+    fn test_layout_mode_beaming_matches_continuous_mode() {
+        // 1. Verify 4/4 measure with 8 eighth notes splits at beat 2.0 (4 + 4 beaming)
+        let yaml_4_4 = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+"#;
+        let doc_4_4: MnxDocument = serde_saphyr::from_str(yaml_4_4).unwrap();
+        let pages_4_4 = crate::layout::compute_score_layout(&doc_4_4, 22.0);
+        let mut dl_4_4 = DisplayList::new();
+        populate_page_display_list(&doc_4_4, &pages_4_4[0], &mut dl_4_4);
+
+        // Find beam lines (horizontal lines with thickness >= 2.9 at stem bottom)
+        let beam_lines_4_4: Vec<_> = dl_4_4
+            .items
+            .iter()
+            .filter(|item| match &item.kind {
+                DrawKind::Line { from, to, stroke } => stroke.width >= 2.9 && from.y == to.y,
+                _ => false,
+            })
+            .collect();
+
+        // 8 eighth notes split into two groups of 4 notes -> exactly 3 + 3 = 6 beam segments
+        // (Without the fix, it would be 7 beam segments spanning the entire measure!)
+        assert_eq!(
+            beam_lines_4_4.len(),
+            6,
+            "4/4 with 8 eighth notes must produce exactly 6 beam lines (3 in beats 1-2, 3 in beats 3-4)"
+        );
+
+        // 2. Verify 3/4 measure with 6 eighth notes splits into 2 + 2 + 2 beaming
+        let yaml_3_4 = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 3, unit: 4 }
+parts:
+  - instrument:
+      name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+"#;
+        let doc_3_4: MnxDocument = serde_saphyr::from_str(yaml_3_4).unwrap();
+        let pages_3_4 = crate::layout::compute_score_layout(&doc_3_4, 22.0);
+        let mut dl_3_4 = DisplayList::new();
+        populate_page_display_list(&doc_3_4, &pages_3_4[0], &mut dl_3_4);
+
+        let beam_lines_3_4: Vec<_> = dl_3_4
+            .items
+            .iter()
+            .filter(|item| match &item.kind {
+                DrawKind::Line { from, to, stroke } => stroke.width >= 2.9 && from.y == to.y,
+                _ => false,
+            })
+            .collect();
+
+        // 6 eighth notes in 3/4 split into 3 groups of 2 notes -> exactly 1 + 1 + 1 = 3 beam segments
+        assert_eq!(
+            beam_lines_3_4.len(),
+            3,
+            "3/4 with 6 eighth notes must produce exactly 3 beam lines (1 per pair: beats 1, 2, 3)"
+        );
+    }
 }
+

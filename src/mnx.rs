@@ -271,6 +271,12 @@ pub struct MnxDocument {
     pub global: Global,
     pub parts: Vec<Part>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<ScoreLayout>,
 }
 
@@ -281,7 +287,7 @@ fn default_margin_top_bottom() -> f32 {
     40.0
 }
 fn default_margin_left_right() -> f32 {
-    40.0
+    45.0
 }
 fn default_measure_numbers() -> String {
     "systemStart".to_string()
@@ -300,6 +306,12 @@ pub struct ScoreLayout {
     pub measure_numbers: String,
     #[serde(default = "default_false", rename = "justifyLastSystem")]
     pub justify_last_system: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub offsets: std::collections::HashMap<String, Offset2D>,
 }
@@ -311,6 +323,9 @@ impl Default for ScoreLayout {
             margins: PageMargins::default(),
             measure_numbers: default_measure_numbers(),
             justify_last_system: false,
+            title: None,
+            subtitle: None,
+            composer: None,
             offsets: std::collections::HashMap::new(),
         }
     }

@@ -91,21 +91,23 @@ pub fn pack_systems_into_pages(
     margins: &PageMargins,
     system_height: f32,
     system_gap: f32,
+    first_page_header_height: f32,
 ) -> Vec<PageLayout> {
     let mut pages = Vec::new();
     if system_breaks.is_empty() {
         return pages;
     }
 
-    let content_height = (page_height - margins.top - margins.bottom).max(100.0);
+    let system_top_pad = 34.0_f32;
     let mut current_page_systems = Vec::new();
-    let mut current_y = margins.top;
+    let mut current_y = margins.top + system_top_pad + first_page_header_height;
     let mut page_number = 1;
     let mut global_system_idx = 0;
 
     for s_break in system_breaks {
+        let max_content_y = (page_height - margins.bottom).max(100.0);
         let would_overflow = !current_page_systems.is_empty()
-            && (current_y + system_height > margins.top + content_height);
+            && (current_y + system_height > max_content_y);
 
         if would_overflow {
             pages.push(PageLayout {
@@ -117,7 +119,7 @@ pub fn pack_systems_into_pages(
             });
             page_number += 1;
             current_page_systems = Vec::new();
-            current_y = margins.top;
+            current_y = margins.top + system_top_pad;
         }
 
         current_page_systems.push(SystemLayout {
@@ -142,7 +144,7 @@ pub fn pack_systems_into_pages(
             });
             page_number += 1;
             current_page_systems = Vec::new();
-            current_y = margins.top;
+            current_y = margins.top + system_top_pad;
         }
     }
 

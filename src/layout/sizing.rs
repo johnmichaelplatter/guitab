@@ -50,11 +50,11 @@ pub fn compute_measure_metrics(doc: &MnxDocument, base_spacing: f32) -> Vec<Meas
             current_ts = Some(ts);
         }
 
-        let ts_width = if shows_ts { 45.0 } else { 0.0 };
+        let ts_width = if shows_ts { 34.0 } else { 0.0 };
 
-        let mut min_width = 15.0 + ts_width;
+        let mut min_width = 12.0 + ts_width;
         if has_repeat_start {
-            min_width += 14.0;
+            min_width += 12.0;
         }
 
         let mut measure_beats = 0.0;
@@ -104,11 +104,11 @@ pub fn compute_measure_metrics(doc: &MnxDocument, base_spacing: f32) -> Vec<Meas
         }
 
         if has_repeat_end {
-            min_width += 14.0;
+            min_width += 12.0;
         }
 
         // Clamp minimum measure width
-        min_width = min_width.max(65.0);
+        min_width = min_width.max(50.0);
         let spring_stiffness = if measure_beats > 0.0 {
             measure_beats
         } else {
