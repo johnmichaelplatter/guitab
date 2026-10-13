@@ -463,6 +463,90 @@ impl MnxEditorApp {
             }
         }
 
+        // In-place Lyric Editing Key Handling
+        if self.is_editing_lyric {
+            let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let space_pressed = ui.input(|i| i.key_pressed(egui::Key::Space));
+            let backspace_pressed = ui.input(|i| i.key_pressed(egui::Key::Backspace));
+            let tab_pressed = ui.input(|i| i.key_pressed(egui::Key::Tab));
+
+            if esc_pressed || enter_pressed {
+                if let Some(e_idx) = self.selected_event_idx {
+                    let text = self.editing_lyric_buf.clone();
+                    self.action_set_event_lyric(e_idx, &text);
+                }
+                self.is_editing_lyric = false;
+                self.editing_lyric_buf.clear();
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if space_pressed || tab_pressed {
+                if let Some(e_idx) = self.selected_event_idx {
+                    let text = self.editing_lyric_buf.clone();
+                    self.action_set_event_lyric(e_idx, &text);
+                    if e_idx + 1 < total_events {
+                        self.selected_event_idx = Some(e_idx + 1);
+                        self.load_lyric_buf_for_selected();
+                    } else {
+                        self.is_editing_lyric = false;
+                        self.editing_lyric_buf.clear();
+                    }
+                }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if backspace_pressed {
+                if !self.editing_lyric_buf.is_empty() {
+                    self.editing_lyric_buf.pop();
+                } else if let Some(e_idx) = self.selected_event_idx {
+                    if e_idx > 0 {
+                        self.selected_event_idx = Some(e_idx - 1);
+                        self.load_lyric_buf_for_selected();
+                    }
+                }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else {
+                let events = ui.input(|i| i.events.clone());
+                for ev in events {
+                    if let egui::Event::Text(t) = ev {
+                        for c in t.chars() {
+                            if c == '-' {
+                                self.editing_lyric_buf.push('-');
+                                if let Some(e_idx) = self.selected_event_idx {
+                                    let text = self.editing_lyric_buf.clone();
+                                    self.action_set_event_lyric(e_idx, &text);
+                                    if e_idx + 1 < total_events {
+                                        self.selected_event_idx = Some(e_idx + 1);
+                                        self.load_lyric_buf_for_selected();
+                                    } else {
+                                        self.is_editing_lyric = false;
+                                        self.editing_lyric_buf.clear();
+                                    }
+                                }
+                            } else if c == '_' {
+                                self.editing_lyric_buf.push('_');
+                                if let Some(e_idx) = self.selected_event_idx {
+                                    let text = self.editing_lyric_buf.clone();
+                                    self.action_set_event_lyric(e_idx, &text);
+                                    if e_idx + 1 < total_events {
+                                        self.selected_event_idx = Some(e_idx + 1);
+                                        self.load_lyric_buf_for_selected();
+                                    } else {
+                                        self.is_editing_lyric = false;
+                                        self.editing_lyric_buf.clear();
+                                    }
+                                }
+                            } else if !c.is_control() {
+                                self.editing_lyric_buf.push(c);
+                            }
+                        }
+                    }
+                }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            }
+        }
+
         // In-place Fret Editing Key Handling
         if self.is_editing_fret {
             let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -608,6 +692,15 @@ impl MnxEditorApp {
             let shift_b_pressed = ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::B));
             if shift_b_pressed {
                 self.add_measure_to_end();
+            }
+
+            let shift_l_pressed = ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::L));
+            if shift_l_pressed && self.selected_event_idx.is_some() {
+                self.is_editing_lyric = true;
+                self.is_editing_fret = false;
+                self.load_lyric_buf_for_selected();
+                ui.input_mut(|i| i.events.clear());
+                return;
             }
 
             // Duration keyboard shortcuts: 8 (whole), 7 (half), 6 (quarter), 5 (eighth), 4 (16th), 3 (32nd), . (dot)

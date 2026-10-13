@@ -56,7 +56,7 @@ fn format_pitch(pitch: &Pitch, edo: u32) -> String {
 
 // ── SMuFL Time Signature helpers ─────────────────────────────────────────────
 
-fn smufl_time_sig_digits(num: u32) -> String {
+pub(crate) fn smufl_time_sig_digits(num: u32) -> String {
     num.to_string()
         .chars()
         .map(|c| match c {
@@ -158,7 +158,7 @@ impl Rhythm {
     }
 }
 
-fn parse_rhythm(base: &str) -> (Rhythm, bool) {
+pub(crate) fn parse_rhythm(base: &str) -> (Rhythm, bool) {
     let s = base.to_lowercase();
     // dotted: the spec might say "dotted-quarter" or similar
     let is_dotted = s.contains("dotted") || s.contains('.');
@@ -264,12 +264,32 @@ pub fn event_text_width(
     }
 }
 
+/// Returns the estimated pixel width of the longest lyric syllable on this event.
+pub fn event_lyric_width(event: &crate::mnx::Event) -> f32 {
+    if let Some(lyrics) = &event.lyrics {
+        let max_chars = lyrics
+            .iter()
+            .map(|l| l.text.chars().count())
+            .max()
+            .unwrap_or(0);
+        if max_chars > 0 {
+            // Proportional font ~13pt average character width ~7.5px plus margin
+            (max_chars as f32) * 7.5 + 4.0
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    }
+}
+
 /// Calculates the horizontal advancement spacing following an event in tablature.
 /// Accounts for:
 /// - Duration spacing weight
 /// - Grace note scaling
 /// - Pitch bends
 /// - Collision prevention between wide text entries (e.g. natural harmonics like "<20.5>", double digits)
+/// - Collision prevention between lyric syllables (rod stretching for wide syllables)
 /// - Barline clearance if this is the last event in a measure
 pub fn calculate_event_spacing(
     event: &crate::mnx::Event,
@@ -311,7 +331,26 @@ pub fn calculate_event_spacing(
         }
     };
 
-    spacing.max(min_collision_spacing)
+    let lyr_w1 = event_lyric_width(event);
+    let min_lyric_spacing = match next_event_info {
+        Some((next_ev, _)) => {
+            let lyr_w2 = event_lyric_width(next_ev);
+            if lyr_w1 > 0.0 || lyr_w2 > 0.0 {
+                (lyr_w1 + lyr_w2) * 0.5 + 8.0
+            } else {
+                0.0
+            }
+        }
+        None => {
+            if lyr_w1 > 0.0 {
+                lyr_w1 * 0.5 + 6.0
+            } else {
+                0.0
+            }
+        }
+    };
+
+    spacing.max(min_collision_spacing).max(min_lyric_spacing)
 }
 
 // ── Collected note position for rhythm drawing ────────────────────────────────
@@ -329,6 +368,17 @@ pub struct RhythmNote {
     pub end_beat: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct RenderedLyric {
+    pub event_idx: usize,
+    pub x: f32,
+    pub text: String,
+    pub syllabic: Option<String>,
+    pub extender: Option<bool>,
+    pub line: usize,
+    pub is_editing: bool,
+}
+
 // ── Main draw function ────────────────────────────────────────────────────────
 
 pub struct TablatureOptions<'a> {
@@ -341,6 +391,8 @@ pub struct TablatureOptions<'a> {
     pub is_editing_fret: bool,
     pub editing_fret_text: &'a str,
     pub editing_string: Option<u8>,
+    pub is_editing_lyric: bool,
+    pub editing_lyric_text: &'a str,
     pub scroll_to_selected: bool,
     pub pitch_bend_range: u8,
 }
@@ -507,6 +559,14 @@ pub fn draw_tablature(
     let has_tempos = global
         .map(|g| g.measures.iter().any(|m| !m.tempos.is_empty() || !m.tempo_changes.is_empty()))
         .unwrap_or(false);
+    let has_lyrics = part.measures.iter().any(|m| {
+        m.sequences.iter().any(|s| {
+            s.flattened_events()
+                .iter()
+                .any(|e| e.lyrics.as_ref().map(|l| !l.is_empty()).unwrap_or(false))
+        })
+    });
+    let lyrics_row_h = if has_lyrics || opts.is_editing_lyric { 28.0 } else { 0.0 };
 
     let top_pad = if has_endings && has_tempos {
         130.0_f32
@@ -515,7 +575,7 @@ pub fn draw_tablature(
     } else {
         96.0_f32
     }; // room for name + EDO label + voltas + tempos + slurs on top string
-    let total_height = top_pad + staff_height + rhythm_row_h + 10.0; // top pad + staff + rhythm + bottom pad
+    let total_height = top_pad + staff_height + rhythm_row_h + lyrics_row_h + 10.0; // top pad + staff + rhythm + lyrics + bottom pad
     let total_width = start_offset_x
         + total_events_width
         + (part.measures.len() as f32) * measure_spacing
@@ -698,6 +758,8 @@ pub fn draw_tablature(
     let mut last_event_spacing = event_spacing;
     let mut grace_event_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut measure_barlines: Vec<f32> = vec![first_barline_x];
+    let mut rendered_lyrics: Vec<RenderedLyric> = Vec::new();
+    let mut event_x_coords: Vec<(usize, f32)> = Vec::new();
 
     // ── Main event loop ───────────────────────────────────────────────────────
 
@@ -1511,6 +1573,34 @@ pub fn draw_tablature(
                     end_beat,
                 });
 
+                event_x_coords.push((flat_event_idx, current_x));
+
+                let is_editing_this_lyric = opts.is_editing_lyric && opts.selected_event == Some(flat_event_idx);
+                if is_editing_this_lyric {
+                    rendered_lyrics.push(RenderedLyric {
+                        event_idx: flat_event_idx,
+                        x: current_x,
+                        text: opts.editing_lyric_text.to_string(),
+                        syllabic: None,
+                        extender: None,
+                        line: 0,
+                        is_editing: true,
+                    });
+                } else if let Some(lyrics) = &event.lyrics {
+                    for (line_idx, lyric) in lyrics.iter().enumerate() {
+                        let line = lyric.line.map(|l| (l.saturating_sub(1)) as usize).unwrap_or(line_idx);
+                        rendered_lyrics.push(RenderedLyric {
+                            event_idx: flat_event_idx,
+                            x: current_x,
+                            text: lyric.text.clone(),
+                            syllabic: lyric.syllabic.clone(),
+                            extender: lyric.extender,
+                            line,
+                            is_editing: false,
+                        });
+                    }
+                }
+
                 flat_event_idx += 1;
                 e_idx += 1;
                 current_x += spacing;
@@ -2080,6 +2170,85 @@ pub fn draw_tablature(
         }
     }
 
+    // ── Draw Lyrics ────────────────────────────────────────────────────────────
+    let lyrics_y = stem_bot_y + 16.0;
+    for (i, lyr) in rendered_lyrics.iter().enumerate() {
+        let y = lyrics_y + (lyr.line as f32) * 18.0;
+        let font_id = FontId::proportional(13.0);
+
+        if lyr.is_editing {
+            let display_text = if lyr.text.is_empty() { "|" } else { &lyr.text };
+            let text_galley = painter.layout_no_wrap(display_text.to_string(), font_id.clone(), Color32::WHITE);
+            let text_rect = Rect::from_center_size(Pos2::new(lyr.x, y), text_galley.size());
+            painter.rect_filled(text_rect.expand(3.0), 3.0, Color32::from_rgb(50, 110, 200));
+            painter.galley(text_rect.min, text_galley, Color32::WHITE);
+        } else {
+            painter.text(
+                Pos2::new(lyr.x, y),
+                egui::Align2::CENTER_CENTER,
+                &lyr.text,
+                font_id.clone(),
+                note_color,
+            );
+        }
+
+        let char_count = lyr.text.chars().count();
+        let text_w = (char_count as f32) * 7.5;
+
+        // Draw hyphens between split syllables (syllabic == begin or middle or ends with '-')
+        let is_split = lyr.syllabic.as_deref() == Some("begin")
+            || lyr.syllabic.as_deref() == Some("middle")
+            || lyr.text.ends_with('-');
+        if is_split {
+            if let Some(next_lyr) = rendered_lyrics.get(i + 1) {
+                if next_lyr.line == lyr.line && next_lyr.x > lyr.x {
+                    let dist = next_lyr.x - lyr.x;
+                    if dist > 26.0 {
+                        let hyphen_x = (lyr.x + next_lyr.x) * 0.5;
+                        painter.text(
+                            Pos2::new(hyphen_x, y),
+                            egui::Align2::CENTER_CENTER,
+                            "-",
+                            font_id.clone(),
+                            note_color,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Draw melisma extender line "_" if extender == Some(true) or text ends with '_'
+        let has_extender = lyr.extender == Some(true) || lyr.text.ends_with('_');
+        if has_extender {
+            let next_target_x = if let Some(next_lyr) = rendered_lyrics.get(i + 1) {
+                if next_lyr.line == lyr.line {
+                    Some(next_lyr.x - (next_lyr.text.chars().count() as f32 * 3.75) - 4.0)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let end_x = next_target_x.unwrap_or_else(|| {
+                event_x_coords
+                    .iter()
+                    .find(|(idx, _)| *idx > lyr.event_idx)
+                    .map(|(_, x)| *x + 6.0)
+                    .unwrap_or(lyr.x + text_w * 0.5 + 20.0)
+            });
+
+            let start_x = lyr.x + text_w * 0.5 + 3.0;
+            if end_x > start_x + 4.0 {
+                let baseline_y = y + 6.0;
+                painter.line_segment(
+                    [Pos2::new(start_x, baseline_y), Pos2::new(end_x, baseline_y)],
+                    Stroke::new(1.2, note_color),
+                );
+            }
+        }
+    }
+
     // ── Floating "Add Bar" Button (| + |) after final barline ──────────────────
     let btn_x = current_x + 6.0;
     let btn_w = 32.0;
@@ -2238,6 +2407,8 @@ mod tests {
                 is_editing_fret: false,
                 editing_fret_text: "",
                 editing_string: None,
+                is_editing_lyric: false,
+                editing_lyric_text: "",
                 scroll_to_selected: false,
                 pitch_bend_range: 2,
             };
@@ -3141,7 +3312,7 @@ mod tests {
         let single_digit_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(7, None)],
-            id: None, rest: None, slurs: None, markings: None,
+            id: None, rest: None, slurs: None, markings: None, lyrics: None,
         };
         assert!((event_text_width(&single_digit_ev, false, None) - 8.45).abs() < 1e-4);
         assert!((event_text_width(&single_digit_ev, true, None) - 6.05).abs() < 1e-4);
@@ -3150,7 +3321,7 @@ mod tests {
         let double_digit_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(12, None)],
-            id: None, rest: None, slurs: None, markings: None,
+            id: None, rest: None, slurs: None, markings: None, lyrics: None,
         };
         assert!((event_text_width(&double_digit_ev, false, None) - 16.90).abs() < 1e-4);
 
@@ -3158,7 +3329,7 @@ mod tests {
         let harmonic_12_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(12, Some(12.0))],
-            id: None, rest: None, slurs: None, markings: None,
+            id: None, rest: None, slurs: None, markings: None, lyrics: None,
         };
         assert!((event_text_width(&harmonic_12_ev, false, None) - 33.80).abs() < 1e-4);
 
@@ -3166,7 +3337,7 @@ mod tests {
         let harmonic_3_9_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(4, Some(3.9))],
-            id: None, rest: None, slurs: None, markings: None,
+            id: None, rest: None, slurs: None, markings: None, lyrics: None,
         };
         assert!((event_text_width(&harmonic_3_9_ev, false, None) - 42.25).abs() < 1e-4);
 
@@ -3174,7 +3345,7 @@ mod tests {
         let harmonic_20_5_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(21, Some(20.5))],
-            id: None, rest: None, slurs: None, markings: None,
+            id: None, rest: None, slurs: None, markings: None, lyrics: None,
         };
         assert!((event_text_width(&harmonic_20_5_ev, false, None) - 50.70).abs() < 1e-4);
         assert!((event_text_width(&harmonic_20_5_ev, true, None) - 36.30).abs() < 1e-4);
@@ -3221,6 +3392,7 @@ mod tests {
             rest: None,
             slurs: None,
             markings: None,
+            lyrics: None,
         };
 
         let ev_single = make_note_ev(quarter_d.clone(), 7, None);
@@ -3272,9 +3444,49 @@ mod tests {
         let sp_grace_h20_5 = calculate_event_spacing(&ev_h20_5, true, base_spacing, Some((&ev_h20_5, true)), None, None);
         assert!(sp_grace_h20_5 >= 46.0, "Grace harmonic <20.5> must expand to >= 46.0, got {}", sp_grace_h20_5);
     }
+
+    #[test]
+    fn test_lyric_rod_stretching() {
+        use crate::mnx::{Duration, Event, Lyric};
+
+        let sixteenth_d = Duration { base: "16th".into(), dots: None, multiple: None };
+        let ev_lyric = Event {
+            duration: sixteenth_d.clone(),
+            notes: vec![],
+            id: None,
+            rest: None,
+            slurs: None,
+            markings: None,
+            lyrics: Some(vec![Lyric {
+                text: "extraordinary".into(),
+                syllabic: None,
+                extender: None,
+                line: None,
+            }]),
+        };
+        let ev_next = Event {
+            duration: sixteenth_d.clone(),
+            notes: vec![],
+            id: None,
+            rest: None,
+            slurs: None,
+            markings: None,
+            lyrics: Some(vec![Lyric {
+                text: "voice".into(),
+                syllabic: None,
+                extender: None,
+                line: None,
+            }]),
+        };
+
+        // Natural 16th base spacing is 22.5.
+        // Long syllable "extraordinary" (13 chars) + "voice" (5 chars) must push spacing far out to prevent collision.
+        let sp = calculate_event_spacing(&ev_lyric, false, 30.0, Some((&ev_next, false)), None, None);
+        assert!(sp > 70.0, "Lyric syllables must push spacing beyond natural 16th, got {}", sp);
+    }
 }
 
-enum LayoutItem<'a> {
+pub enum LayoutItem<'a> {
     Event(&'a crate::mnx::Event),
     TupletStart(&'a crate::mnx::Tuplet),
     TupletEnd,
@@ -3283,7 +3495,7 @@ enum LayoutItem<'a> {
 }
 
 impl crate::mnx::SequenceItem {
-    fn to_layout_items<'a>(&'a self, out: &mut Vec<LayoutItem<'a>>) {
+    pub fn to_layout_items<'a>(&'a self, out: &mut Vec<LayoutItem<'a>>) {
         match self {
             crate::mnx::SequenceItem::Event(e) => out.push(LayoutItem::Event(e)),
             crate::mnx::SequenceItem::Tuplet(t) => {

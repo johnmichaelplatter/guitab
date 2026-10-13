@@ -422,6 +422,17 @@ parts:
         assert_eq!(doc.global.measures.len(), 6);
         assert_eq!(doc.parts[0].measures.len(), 6);
     }
+
+    #[test]
+    fn test_validate_example_layout_lyrics_yaml() {
+        let yaml_str = include_str!("../example_layout_lyrics.yaml");
+        let doc: MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
+        let errors = validate_mnx(&doc);
+        assert_eq!(errors.len(), 0, "example_layout_lyrics.yaml should validate without errors: {:?}", errors);
+        assert_eq!(doc.global.measures.len(), 4);
+        assert_eq!(doc.parts[0].measures.len(), 4);
+        assert!(doc.layout.is_some());
+    }
 }
 
 pub fn quarter_beats_to_duration(beats: f64) -> Option<Duration> {

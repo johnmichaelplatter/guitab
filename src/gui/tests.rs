@@ -1478,4 +1478,69 @@ parts:
         assert!(app.yaml_text.contains("step: G"));
         assert!(app.yaml_text.contains("octave: 6"));
     }
+
+    #[test]
+    fn test_lyrics_action_and_melisma_in_yaml() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+        app.action_set_event_lyric(0, "Ooh_");
+        assert!(app.yaml_text.contains("lyrics:"));
+        assert!(app.yaml_text.contains("text: Ooh"));
+        assert!(app.yaml_text.contains("extender: true"));
+
+        app.action_set_event_lyric(0, "con-");
+        assert!(app.yaml_text.contains("text: \"con-\"") || app.yaml_text.contains("text: con-"));
+        assert!(app.yaml_text.contains("syllabic: begin"));
+
+        app.action_set_event_lyric(0, "");
+        assert!(!app.yaml_text.contains("lyrics:"));
+    }
+
+    #[test]
+    fn test_layout_mode_breaks_and_settings() {
+        let mut app = MnxEditorApp::default();
+        
+        // 1. Toggle system break on measure 0
+        app.action_toggle_system_break(0);
+        assert!(app.yaml_text.contains("systemBreak: true"));
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures[0].system_break, Some(true));
+
+        // Untoggle system break
+        app.action_toggle_system_break(0);
+        assert!(!app.yaml_text.contains("systemBreak: true"));
+
+        // 2. Toggle page break on measure 0
+        app.action_toggle_page_break(0);
+        assert!(app.yaml_text.contains("pageBreak: true"));
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures[0].page_break, Some(true));
+
+        // 3. Page size and measure numbers settings
+        app.action_set_layout_page_size("a4");
+        assert!(app.yaml_text.contains("pageSize: a4") || app.yaml_text.contains("pageSize: \"a4\""));
+
+        app.action_set_layout_measure_numbers("all");
+        assert!(app.yaml_text.contains("measureNumbers: all") || app.yaml_text.contains("measureNumbers: \"all\""));
+
+        // 4. Element offset hand-removal of collision
+        app.action_set_element_offset("ending_0", 15.5, -8.0);
+        assert!(app.yaml_text.contains("ending_0:"));
+        assert!(app.yaml_text.contains("dx: 15.5"));
+        assert!(app.yaml_text.contains("dy: -8"));
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let layout = doc.layout.as_ref().unwrap();
+        assert_eq!(layout.page_size, "a4");
+        assert_eq!(layout.measure_numbers, "all");
+        let off = layout.offsets.get("ending_0").unwrap();
+        assert_eq!(off.dx, 15.5);
+        assert_eq!(off.dy, -8.0);
+
+        // Reset offset to 0
+        app.action_set_element_offset("ending_0", 0.0, 0.0);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let layout = doc.layout.as_ref().unwrap();
+        assert!(!layout.offsets.contains_key("ending_0"));
+    }
 }

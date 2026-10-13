@@ -270,6 +270,79 @@ pub struct MnxDocument {
     pub mnx: MnxMeta,
     pub global: Global,
     pub parts: Vec<Part>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<ScoreLayout>,
+}
+
+fn default_page_size() -> String {
+    "letter".to_string()
+}
+fn default_margin_top_bottom() -> f32 {
+    40.0
+}
+fn default_margin_left_right() -> f32 {
+    40.0
+}
+fn default_measure_numbers() -> String {
+    "systemStart".to_string()
+}
+fn default_false() -> bool {
+    false
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct ScoreLayout {
+    #[serde(default = "default_page_size", rename = "pageSize")]
+    pub page_size: String,
+    #[serde(default)]
+    pub margins: PageMargins,
+    #[serde(default = "default_measure_numbers", rename = "measureNumbers")]
+    pub measure_numbers: String,
+    #[serde(default = "default_false", rename = "justifyLastSystem")]
+    pub justify_last_system: bool,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub offsets: std::collections::HashMap<String, Offset2D>,
+}
+
+impl Default for ScoreLayout {
+    fn default() -> Self {
+        Self {
+            page_size: default_page_size(),
+            margins: PageMargins::default(),
+            measure_numbers: default_measure_numbers(),
+            justify_last_system: false,
+            offsets: std::collections::HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct PageMargins {
+    #[serde(default = "default_margin_top_bottom")]
+    pub top: f32,
+    #[serde(default = "default_margin_top_bottom")]
+    pub bottom: f32,
+    #[serde(default = "default_margin_left_right")]
+    pub left: f32,
+    #[serde(default = "default_margin_left_right")]
+    pub right: f32,
+}
+
+impl Default for PageMargins {
+    fn default() -> Self {
+        Self {
+            top: default_margin_top_bottom(),
+            bottom: default_margin_top_bottom(),
+            left: default_margin_left_right(),
+            right: default_margin_left_right(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq)]
+pub struct Offset2D {
+    pub dx: f32,
+    pub dy: f32,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -325,6 +398,20 @@ pub struct GlobalMeasure {
     pub tempos: Vec<Tempo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "tempoChange")]
     pub tempo_changes: Vec<TempoChange>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "systemBreak"
+    )]
+    pub system_break: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "pageBreak"
+    )]
+    pub page_break: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -501,6 +588,17 @@ pub struct Slur {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Lyric {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syllabic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extender: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markings: Option<EventMarkings>,
@@ -514,6 +612,8 @@ pub struct Event {
     pub rest: Option<Rest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slurs: Option<Vec<Slur>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lyrics: Option<Vec<Lyric>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -1046,6 +1146,56 @@ parts:
 
         let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with endings");
         let doc2: MnxDocument = serde_saphyr::from_str(&out).expect("Failed to deserialize serialized endings");
+        assert_eq!(doc, doc2);
+    }
+
+    #[test]
+    fn test_lyrics_yaml_roundtrip() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - {}
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes: []
+                lyrics:
+                  - text: Ooh
+                    extender: true
+              - duration: { base: eighth }
+                notes: []
+                lyrics:
+                  - text: "con-"
+                    syllabic: begin
+              - duration: { base: eighth }
+                notes: []
+                lyrics:
+                  - text: cert
+                    syllabic: end
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with lyrics");
+        let content = &doc.parts[0].measures[0].sequences[0].content;
+        assert_eq!(content.len(), 3);
+        if let SequenceItem::Event(ev) = &content[0] {
+            let lyr = &ev.lyrics.as_ref().unwrap()[0];
+            assert_eq!(lyr.text, "Ooh");
+            assert_eq!(lyr.extender, Some(true));
+        } else {
+            panic!("Expected Event");
+        }
+        if let SequenceItem::Event(ev) = &content[1] {
+            let lyr = &ev.lyrics.as_ref().unwrap()[0];
+            assert_eq!(lyr.text, "con-");
+            assert_eq!(lyr.syllabic.as_deref(), Some("begin"));
+        } else {
+            panic!("Expected Event");
+        }
+        let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with lyrics");
+        let doc2: MnxDocument = serde_saphyr::from_str(&out).expect("Failed to deserialize serialized lyrics");
         assert_eq!(doc, doc2);
     }
 }

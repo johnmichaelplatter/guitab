@@ -102,15 +102,7 @@ impl MnxEditorApp {
             
             // Ensure global measures exist up to end_m_idx
             while doc.global.measures.len() <= end_m_idx.max(start_m_idx) {
-                doc.global.measures.push(crate::mnx::GlobalMeasure {
-                    time: None,
-                    repeat_start: None,
-                    repeat_end: None,
-                    barline: None,
-                    ending: None,
-                    tempos: Vec::new(),
-                    tempo_changes: Vec::new(),
-                });
+                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
             }
 
             // Create target tempo object
@@ -181,15 +173,7 @@ impl MnxEditorApp {
             }
 
             while doc.global.measures.len() <= target_m_idx {
-                doc.global.measures.push(crate::mnx::GlobalMeasure {
-                    time: None,
-                    repeat_start: None,
-                    repeat_end: None,
-                    barline: None,
-                    ending: None,
-                    tempos: Vec::new(),
-                    tempo_changes: Vec::new(),
-                });
+                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
             }
 
             let location = if sum_quarter_beats > 0.001 {
@@ -822,8 +806,7 @@ impl MnxEditorApp {
                 .unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
             doc.global.measures.push(crate::mnx::GlobalMeasure {
                 time: Some(ts),
-                repeat_start: None, repeat_end: None, barline: None, ending: None, tempos: Vec::new(),
-                    tempo_changes: Vec::new(),
+                ..Default::default()
             });
         }
 
@@ -1362,6 +1345,7 @@ impl MnxEditorApp {
                 rest: None,
                 slurs: None,
                 markings: None,
+                lyrics: None,
             };
             next_target_id = id;
             doc.parts[0].measures[cur_m].sequences[cur_s]
@@ -1403,6 +1387,7 @@ impl MnxEditorApp {
                 rest: None,
                 slurs: None,
                 markings: None,
+                lyrics: None,
             };
 
             let ev2 = crate::mnx::Event {
@@ -1424,6 +1409,7 @@ impl MnxEditorApp {
                 rest: None,
                 slurs: None,
                 markings: None,
+                lyrics: None,
             };
 
             next_target_id = id1;
@@ -1453,8 +1439,7 @@ impl MnxEditorApp {
                             count: time_sig_count,
                             unit: time_sig_unit,
                         }),
-                        repeat_start: None, repeat_end: None, barline: None, ending: None, tempos: Vec::new(),
-                    tempo_changes: Vec::new(),
+                        ..Default::default()
                     };
                     doc.global.measures.push(gm);
                 }
@@ -1484,6 +1469,7 @@ impl MnxEditorApp {
                 rest: None,
                 slurs: None,
                 markings: None,
+                lyrics: None,
             };
 
             next_target_id = id2;
@@ -1508,8 +1494,7 @@ impl MnxEditorApp {
                             count: time_sig_count,
                             unit: time_sig_unit,
                         }),
-                        repeat_start: None, repeat_end: None, barline: None, ending: None, tempos: Vec::new(),
-                    tempo_changes: Vec::new(),
+                        ..Default::default()
                     };
                     doc.global.measures.push(gm);
                 }
@@ -2028,6 +2013,128 @@ impl crate::gui::MnxEditorApp {
             self.selected_note_idx_in_event = None;
             self.editing_string = None;
             self.selection_anchor = None;
+        }
+    }
+
+    pub(crate) fn load_lyric_buf_for_selected(&mut self) {
+        self.editing_lyric_buf.clear();
+        if let Some(e_idx) = self.selected_event_idx {
+            if let Some(doc) = &self.parsed_mnx {
+                let paths = doc.get_flattened_event_paths();
+                if let Some(path) = paths.get(e_idx) {
+                    if let Some(ev) = doc.get_event_at_path(*path) {
+                        if let Some(lyrics) = &ev.lyrics {
+                            if let Some(l) = lyrics.first() {
+                                let ext_suffix = if l.extender == Some(true) { "_" } else { "" };
+                                self.editing_lyric_buf = format!("{}{}", l.text, ext_suffix);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn action_set_event_lyric(&mut self, event_idx: usize, lyric_text: &str) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            let paths = doc.get_flattened_event_paths();
+            if let Some(path) = paths.get(event_idx) {
+                if let Some(ev) = doc.get_event_mut_at_path(*path) {
+                    let trimmed = lyric_text.trim();
+                    if trimmed.is_empty() {
+                        ev.lyrics = None;
+                    } else {
+                        let has_hyphen = trimmed.ends_with('-');
+                        let has_extender = trimmed.ends_with('_');
+                        let clean_text = trimmed.trim_end_matches('_').to_string();
+                        let syllabic = if has_hyphen {
+                            Some("begin".to_string())
+                        } else {
+                            None
+                        };
+                        let extender = if has_extender {
+                            Some(true)
+                        } else {
+                            None
+                        };
+                        ev.lyrics = Some(vec![crate::mnx::Lyric {
+                            text: clean_text,
+                            syllabic,
+                            extender,
+                            line: None,
+                        }]);
+                    }
+                    if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn action_toggle_system_break(&mut self, m_idx: usize) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            while doc.global.measures.len() <= m_idx {
+                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+            }
+            let cur = doc.global.measures[m_idx].system_break.unwrap_or(false);
+            doc.global.measures[m_idx].system_break = if cur { None } else { Some(true) };
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+            }
+        }
+    }
+
+    pub(crate) fn action_toggle_page_break(&mut self, m_idx: usize) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            while doc.global.measures.len() <= m_idx {
+                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+            }
+            let cur = doc.global.measures[m_idx].page_break.unwrap_or(false);
+            doc.global.measures[m_idx].page_break = if cur { None } else { Some(true) };
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+            }
+        }
+    }
+
+    pub(crate) fn action_set_element_offset(&mut self, element_id: &str, dx: f32, dy: f32) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            let layout = doc.layout.get_or_insert_with(Default::default);
+            if dx.abs() < 0.1 && dy.abs() < 0.1 {
+                layout.offsets.remove(element_id);
+            } else {
+                layout.offsets.insert(element_id.to_string(), crate::mnx::Offset2D { dx, dy });
+            }
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+            }
+        }
+    }
+
+    pub(crate) fn action_set_layout_page_size(&mut self, page_size: &str) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            let layout = doc.layout.get_or_insert_with(Default::default);
+            layout.page_size = page_size.to_string();
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+            }
+        }
+    }
+
+    pub(crate) fn action_set_layout_measure_numbers(&mut self, setting: &str) {
+        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+            let layout = doc.layout.get_or_insert_with(Default::default);
+            layout.measure_numbers = setting.to_string();
+            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                self.update_yaml(new_yaml);
+                self.process_and_render();
+            }
         }
     }
 }

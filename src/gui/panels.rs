@@ -23,6 +23,20 @@ impl MnxEditorApp {
                 if ui.button("Save As...").clicked() {
                     self.save_as_file();
                 }
+                if ui.button("Export PDF...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("PDF Document", &["pdf"])
+                        .set_file_name("score.pdf")
+                        .save_file()
+                    {
+                        if let Some(doc) = &self.parsed_mnx {
+                            let pages = crate::layout::compute_score_layout(doc, 30.0);
+                            if let Err(e) = crate::pdf_export::export_score_to_pdf(doc, &pages, &path) {
+                                eprintln!("Export PDF error: {}", e);
+                            }
+                        }
+                    }
+                }
 
                 ui.separator();
 
@@ -34,6 +48,80 @@ impl MnxEditorApp {
                     .unwrap_or("Untitled");
 
                 ui.label(egui::RichText::new(format!("Editing: {}", file_name)).italics());
+
+                ui.separator();
+                ui.label(egui::RichText::new("Mode:").strong());
+                let is_cont = self.view_mode == ViewMode::Continuous;
+                let is_lay = self.view_mode == ViewMode::Layout;
+                if ui.selectable_label(is_cont, "Continuous").clicked() {
+                    self.view_mode = ViewMode::Continuous;
+                }
+                if ui.selectable_label(is_lay, "Layout").clicked() {
+                    self.view_mode = ViewMode::Layout;
+                }
+
+                if self.view_mode == ViewMode::Layout {
+                    ui.separator();
+                    let current_page_size = self
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.layout.as_ref())
+                        .map(|l| l.page_size.as_str())
+                        .unwrap_or("letter");
+                    let mut size_choice = if current_page_size.eq_ignore_ascii_case("a4") {
+                        "A4"
+                    } else {
+                        "Letter"
+                    };
+                    egui::ComboBox::from_label("Page")
+                        .selected_text(size_choice)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_value(&mut size_choice, "Letter", "Letter").clicked() {
+                                self.action_set_layout_page_size("letter");
+                            }
+                            if ui.selectable_value(&mut size_choice, "A4", "A4").clicked() {
+                                self.action_set_layout_page_size("a4");
+                            }
+                        });
+
+                    let current_mn = self
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.layout.as_ref())
+                        .map(|l| l.measure_numbers.as_str())
+                        .unwrap_or("systemStart");
+                    let mn_text = match current_mn {
+                        "all" => "All Bars",
+                        "none" => "None",
+                        _ => "System Start",
+                    };
+                    let mut mn_choice = mn_text;
+                    egui::ComboBox::from_label("Bar Numbers")
+                        .selected_text(mn_choice)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_value(&mut mn_choice, "System Start", "System Start").clicked() {
+                                self.action_set_layout_measure_numbers("systemStart");
+                            }
+                            if ui.selectable_value(&mut mn_choice, "All Bars", "All Bars").clicked() {
+                                self.action_set_layout_measure_numbers("all");
+                            }
+                            if ui.selectable_value(&mut mn_choice, "None", "None").clicked() {
+                                self.action_set_layout_measure_numbers("none");
+                            }
+                        });
+
+                    if let Some(sel_id) = &self.selected_layout_element_id {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("Offset: {}", sel_id))
+                                .color(Color32::from_rgb(0, 150, 255)),
+                        );
+                        if ui.button("Reset").clicked() {
+                            let id_to_reset = sel_id.clone();
+                            self.action_set_element_offset(&id_to_reset, 0.0, 0.0);
+                        }
+                    }
+                }
 
                 if let Some(sel) = self.selected_event_idx {
                     ui.separator();
@@ -582,6 +670,29 @@ impl MnxEditorApp {
                     self.update_yaml(yaml);
                     self.process_and_render();
                 }
+
+                let (start_m, _) = self.get_selected_measure_range();
+                let (is_system_break, is_page_break) = if let Some(doc) = &self.parsed_mnx {
+                    doc.global.measures.get(start_m).map(|gm| (gm.system_break.unwrap_or(false), gm.page_break.unwrap_or(false))).unwrap_or((false, false))
+                } else {
+                    (false, false)
+                };
+
+                let img_sys = egui::Image::new(include_image!("../../assets/system_break.svg"))
+                    .fit_to_exact_size(icon_size)
+                    .tint(ui.visuals().text_color());
+                if ui.add_sized(btn_size, egui::Button::image(img_sys).selected(is_system_break)).on_hover_text("Toggle System Break").clicked() {
+                    let (start_m, _) = self.get_selected_measure_range();
+                    self.action_toggle_system_break(start_m);
+                }
+
+                let img_page = egui::Image::new(include_image!("../../assets/page_break.svg"))
+                    .fit_to_exact_size(icon_size)
+                    .tint(ui.visuals().text_color());
+                if ui.add_sized(btn_size, egui::Button::image(img_page).selected(is_page_break)).on_hover_text("Toggle Page Break").clicked() {
+                    let (start_m, _) = self.get_selected_measure_range();
+                    self.action_toggle_page_break(start_m);
+                }
             });
             ui.separator();
             ui.horizontal(|ui| {
@@ -1106,76 +1217,305 @@ impl MnxEditorApp {
 
     pub(crate) fn render_central_panel(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::both().show(ui, |ui| {
-                if let Some(doc) = &self.parsed_mnx {
-                    if let Some(part) = doc.parts.first() {
-                        let (_resp, clicked, add_bar_clicked) = render::draw_tablature(
-                            ui,
-                            crate::render::TablatureOptions {
-                                part,
-                                global: Some(&doc.global),
-                                errors: &self.parsed_errors,
-                                selected_event: self.selected_event_idx,
-                                selection_anchor: self.selection_anchor,
-                                selected_note_in_event: self.selected_note_idx_in_event,
-                                is_editing_fret: self.is_editing_fret,
-                                editing_fret_text: &self.editing_fret_buf,
-                                editing_string: self.editing_string,
-                                scroll_to_selected: self.needs_scroll,
-                                pitch_bend_range: self.pitch_bend_range,
-                            },
-                        );
-                        self.needs_scroll = false;
-                        if add_bar_clicked {
-                            self.add_measure_to_end();
-                        } else if let Some((clicked_event, clicked_note)) = clicked {
-                            self.needs_scroll = false;
-                            let total_events = find_all_event_ranges(&self.yaml_text).len();
-                            let was_at_final =
-                                self.selected_event_idx == Some(total_events.saturating_sub(1));
-                            let is_final_blank = was_at_final
-                                && self
-                                    .parsed_mnx
-                                    .as_ref()
-                                    .and_then(|d| d.parts.first())
-                                    .and_then(|p| p.measures.last())
-                                    .and_then(|m| m.sequences.first())
-                                    .and_then(|s| s.flattened_events().last().copied())
-                                    .map(|e| e.notes.is_empty() && e.rest.is_none())
-                                    .unwrap_or(false);
+            match self.view_mode {
+                ViewMode::Continuous => {
+                    egui::ScrollArea::both().show(ui, |ui| {
+                        if let Some(doc) = &self.parsed_mnx {
+                            if let Some(part) = doc.parts.first() {
+                                let (_resp, clicked, add_bar_clicked) = render::draw_tablature(
+                                    ui,
+                                    crate::render::TablatureOptions {
+                                        part,
+                                        global: Some(&doc.global),
+                                        errors: &self.parsed_errors,
+                                        selected_event: self.selected_event_idx,
+                                        selection_anchor: self.selection_anchor,
+                                        selected_note_in_event: self.selected_note_idx_in_event,
+                                        is_editing_fret: self.is_editing_fret,
+                                        editing_fret_text: &self.editing_fret_buf,
+                                        editing_string: self.editing_string,
+                                        is_editing_lyric: self.is_editing_lyric,
+                                        editing_lyric_text: &self.editing_lyric_buf,
+                                        scroll_to_selected: self.needs_scroll,
+                                        pitch_bend_range: self.pitch_bend_range,
+                                    },
+                                );
+                                self.needs_scroll = false;
+                                if add_bar_clicked {
+                                    self.add_measure_to_end();
+                                } else if let Some((clicked_event, clicked_note)) = clicked {
+                                    self.needs_scroll = false;
+                                    let total_events = find_all_event_ranges(&self.yaml_text).len();
+                                    let was_at_final =
+                                        self.selected_event_idx == Some(total_events.saturating_sub(1));
+                                    let is_final_blank = was_at_final
+                                        && self
+                                            .parsed_mnx
+                                            .as_ref()
+                                            .and_then(|d| d.parts.first())
+                                            .and_then(|p| p.measures.last())
+                                            .and_then(|m| m.sequences.first())
+                                            .and_then(|s| s.flattened_events().last().copied())
+                                            .map(|e| e.notes.is_empty() && e.rest.is_none())
+                                            .unwrap_or(false);
 
-                            if is_final_blank && clicked_event < total_events.saturating_sub(1) {
-                                if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                                    self.update_yaml(new_yaml);
-                                    self.process_and_render();
-                                }
-                            }
+                                    if is_final_blank && clicked_event < total_events.saturating_sub(1) {
+                                        if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
+                                            self.update_yaml(new_yaml);
+                                            self.process_and_render();
+                                        }
+                                    }
 
-                            let shift_down = ui.input(|i| i.modifiers.shift);
-                            if shift_down {
-                                if self.selection_anchor.is_none() {
-                                    self.selection_anchor = self.selected_event_idx;
+                                    let shift_down = ui.input(|i| i.modifiers.shift);
+                                    if shift_down {
+                                        if self.selection_anchor.is_none() {
+                                            self.selection_anchor = self.selected_event_idx;
+                                        }
+                                    } else {
+                                        self.selection_anchor = None;
+                                    }
+                                    self.selected_event_idx = Some(clicked_event);
+                                    self.selected_note_idx_in_event = clicked_note;
+                                    self.is_editing_fret = false;
+                                    self.editing_fret_buf.clear();
+                                    self.editing_string = None;
+
+                                    if clicked_note.is_some() {
+                                        self.preview_selected_sound();
+                                    }
                                 }
                             } else {
-                                self.selection_anchor = None;
+                                ui.label("No parts found in document.");
                             }
-                            self.selected_event_idx = Some(clicked_event);
-                            self.selected_note_idx_in_event = clicked_note;
-                            self.is_editing_fret = false;
-                            self.editing_fret_buf.clear();
-                            self.editing_string = None;
+                        } else {
+                            ui.label("Could not parse document.");
+                        }
+                    });
+                }
+                ViewMode::Layout => {
+                    self.render_layout_panel(ui);
+                }
+            }
+        });
+    }
 
-                            if clicked_note.is_some() {
-                                self.preview_selected_sound();
+    pub(crate) fn render_layout_panel(&mut self, ui: &mut egui::Ui) {
+        let (pages, offsets) = if let Some(doc) = &self.parsed_mnx {
+            let p = crate::layout::compute_score_layout(doc, 30.0);
+            let offs = doc.layout.as_ref().map(|l| l.offsets.clone()).unwrap_or_default();
+            (p, offs)
+        } else {
+            ui.label("No document loaded.");
+            return;
+        };
+
+        if pages.is_empty() {
+            ui.label("No pages in score layout.");
+            return;
+        }
+
+        let mouse_pos = ui.input(|i| i.pointer.hover_pos());
+        let mouse_clicked = ui.input(|i| i.pointer.primary_clicked());
+        let drag_delta = ui.input(|i| i.pointer.delta());
+
+        let mut arrow_nudge = egui::vec2(0.0, 0.0);
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) { arrow_nudge.x -= 2.0; }
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) { arrow_nudge.x += 2.0; }
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) { arrow_nudge.y -= 2.0; }
+        if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) { arrow_nudge.y += 2.0; }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.selected_layout_element_id = None;
+        }
+
+        let mut clicked_element_id: Option<Option<String>> = None;
+        let mut offset_to_apply: Option<(String, f32, f32)> = None;
+
+        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+
+                for (page_idx, page) in pages.iter().enumerate() {
+                    let page_size = egui::vec2(page.width, page.height);
+                    let (page_rect, page_resp) = ui.allocate_exact_size(page_size, egui::Sense::click_and_drag());
+
+                    let painter = ui.painter();
+
+                    // Drop shadow
+                    painter.rect_filled(
+                        page_rect.translate(egui::vec2(4.0, 4.0)),
+                        4.0,
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 35),
+                    );
+                    // Paper
+                    painter.rect_filled(page_rect, 2.0, Color32::WHITE);
+                    // Border
+                    painter.rect_stroke(
+                        page_rect,
+                        2.0,
+                        egui::Stroke::new(1.0, Color32::from_rgb(210, 210, 210)),
+                        egui::StrokeKind::Outside,
+                    );
+
+                    // Page number footer
+                    let page_footer = format!("Page {} of {}", page_idx + 1, pages.len());
+                    painter.text(
+                        page_rect.center_bottom() - egui::vec2(0.0, page.margins.bottom * 0.4),
+                        egui::Align2::CENTER_BOTTOM,
+                        page_footer,
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(140, 140, 140),
+                    );
+
+                    // Build page display list
+                    let mut dl = crate::layout::display_list::DisplayList::new();
+                    if let Some(doc) = &self.parsed_mnx {
+                        crate::pdf_export::populate_page_display_list(doc, page, &mut dl);
+                        if let Some(layout_cfg) = &doc.layout {
+                            dl.apply_offsets(&layout_cfg.offsets);
+                        }
+                    }
+
+                    // Handle hit testing
+                    if mouse_clicked {
+                        if let Some(mpos) = mouse_pos {
+                            if page_rect.contains(mpos) {
+                                let local_pos = egui::pos2(mpos.x - page_rect.min.x, mpos.y - page_rect.min.y);
+                                if let Some(hit_id) = dl.hit_test(local_pos) {
+                                    clicked_element_id = Some(Some(hit_id));
+                                } else {
+                                    clicked_element_id = Some(None);
+                                }
                             }
                         }
-                    } else {
-                        ui.label("No parts found in document.");
                     }
-                } else {
-                    ui.label("Could not parse document.");
+
+                    // Handle hover cursor
+                    if let Some(mpos) = mouse_pos {
+                        if page_rect.contains(mpos) {
+                            let local_pos = egui::pos2(mpos.x - page_rect.min.x, mpos.y - page_rect.min.y);
+                            if dl.hit_test(local_pos).is_some() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                        }
+                    }
+
+                    // Render display list items
+                    let page_origin = page_rect.min.to_vec2();
+                    for item in &dl.items {
+                        match &item.kind {
+                            crate::layout::display_list::DrawKind::Line { from, to, stroke } => {
+                                painter.line_segment(
+                                    [*from + page_origin, *to + page_origin],
+                                    *stroke,
+                                );
+                            }
+                            crate::layout::display_list::DrawKind::Rect { rect, fill, stroke, rounding } => {
+                                let srect = rect.translate(page_origin);
+                                if fill.a() > 0 {
+                                    painter.rect_filled(srect, *rounding, *fill);
+                                }
+                                if stroke.width > 0.0 {
+                                    painter.rect_stroke(srect, *rounding, *stroke, egui::StrokeKind::Middle);
+                                }
+                            }
+                            crate::layout::display_list::DrawKind::Text { pos, align, text, font_id, color } => {
+                                painter.text(
+                                    *pos + page_origin,
+                                    *align,
+                                    text,
+                                    font_id.clone(),
+                                    *color,
+                                );
+                            }
+                            crate::layout::display_list::DrawKind::Glyph { pos, align, codepoint, font_family, size, color } => {
+                                let font_id = egui::FontId::new(*size, egui::FontFamily::Name(font_family.clone().into()));
+                                painter.text(
+                                    *pos + page_origin,
+                                    *align,
+                                    codepoint.to_string(),
+                                    font_id,
+                                    *color,
+                                );
+                            }
+                            crate::layout::display_list::DrawKind::Circle { center, radius, fill } => {
+                                painter.circle_filled(*center + page_origin, *radius, *fill);
+                            }
+                            crate::layout::display_list::DrawKind::Curve { points, stroke } => {
+                                let pts = [
+                                    points[0] + page_origin,
+                                    points[1] + page_origin,
+                                    points[2] + page_origin,
+                                    points[3] + page_origin,
+                                ];
+                                let shape = egui::epaint::CubicBezierShape::from_points_stroke(
+                                    pts,
+                                    false,
+                                    Color32::TRANSPARENT,
+                                    *stroke,
+                                );
+                                painter.add(shape);
+                            }
+                        }
+                    }
+
+                    // Render unified selection highlight box for the selected element
+                    if let Some(sel_id) = &self.selected_layout_element_id {
+                        let mut union_box: Option<egui::Rect> = None;
+                        for item in &dl.items {
+                            if item.id.as_ref() == Some(sel_id) {
+                                let bbox = item.bounding_box().translate(page_origin);
+                                if let Some(ub) = &mut union_box {
+                                    *ub = ub.union(bbox);
+                                } else {
+                                    union_box = Some(bbox);
+                                }
+                            }
+                        }
+                        if let Some(ub) = union_box {
+                            let sel_box = ub.expand(4.0);
+                            painter.rect_stroke(
+                                sel_box,
+                                2.0,
+                                egui::Stroke::new(1.5, Color32::from_rgb(0, 120, 215)),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                    }
+
+                    // Drag handling for selected element
+                    if let Some(sel_id) = &self.selected_layout_element_id {
+                        if page_resp.dragged() {
+                            self.is_dragging_layout_element = true;
+                            if drag_delta.length_sq() > 0.0 {
+                                let cur_off = offsets.get(sel_id).copied().unwrap_or(crate::mnx::Offset2D { dx: 0.0, dy: 0.0 });
+                                offset_to_apply = Some((sel_id.clone(), cur_off.dx + drag_delta.x, cur_off.dy + drag_delta.y));
+                            }
+                        } else {
+                            self.is_dragging_layout_element = false;
+                        }
+                    } else {
+                        self.is_dragging_layout_element = false;
+                    }
+
+                    ui.add_space(30.0);
                 }
             });
         });
+
+        if let Some(hit) = clicked_element_id {
+            self.selected_layout_element_id = hit;
+        }
+
+        if let Some((id, ox, oy)) = offset_to_apply {
+            self.action_set_element_offset(&id, ox, oy);
+        }
+
+        if arrow_nudge != egui::vec2(0.0, 0.0) {
+            if let Some(sel_id) = &self.selected_layout_element_id {
+                let cur_off = offsets.get(sel_id).copied().unwrap_or(crate::mnx::Offset2D { dx: 0.0, dy: 0.0 });
+                let id_to_nudge = sel_id.clone();
+                self.action_set_element_offset(&id_to_nudge, cur_off.dx + arrow_nudge.x, cur_off.dy + arrow_nudge.y);
+            }
+        }
     }
 }

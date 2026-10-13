@@ -98,6 +98,17 @@ pub struct MnxEditorApp {
     pub(crate) undo_stack: Vec<String>,
     pub(crate) redo_stack: Vec<String>,
     pub(crate) clipboard: Option<ClipboardData>,
+    pub is_editing_lyric: bool,
+    pub editing_lyric_buf: String,
+    pub view_mode: ViewMode,
+    pub selected_layout_element_id: Option<String>,
+    pub is_dragging_layout_element: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Continuous,
+    Layout,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -217,6 +228,11 @@ impl Default for MnxEditorApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             clipboard: None,
+            is_editing_lyric: false,
+            editing_lyric_buf: String::new(),
+            view_mode: ViewMode::Continuous,
+            selected_layout_element_id: None,
+            is_dragging_layout_element: false,
         };
 
         app.process_and_render();

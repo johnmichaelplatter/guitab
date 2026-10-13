@@ -670,12 +670,7 @@ impl MnxEditorApp {
             let last_ts = global_measures.last().and_then(|g| g.time.clone()).unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
             global_measures.push(crate::mnx::GlobalMeasure {
                 time: Some(last_ts),
-                repeat_start: None,
-                repeat_end: None,
-                barline: None,
-                ending: None,
-                tempos: Vec::new(),
-                tempo_changes: Vec::new(),
+                ..Default::default()
             });
         }
 
@@ -1198,6 +1193,7 @@ impl MnxEditorApp {
                             rest: Some(crate::mnx::Rest {}),
                             slurs: None,
                             markings: None,
+                            lyrics: None,
                         };
                         flat_items.push(crate::mnx::SequenceItem::Event(rest_ev));
                         inserted = true;
@@ -1225,6 +1221,7 @@ impl MnxEditorApp {
                 rest: Some(crate::mnx::Rest {}),
                 slurs: None,
                 markings: None,
+                lyrics: None,
             };
             flat_items.push(crate::mnx::SequenceItem::Event(rest_ev));
         }
