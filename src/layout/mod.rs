@@ -10,6 +10,8 @@ pub use justification::justify_systems;
 
 use crate::mnx::{MnxDocument, PageMargins};
 
+pub const DEFAULT_LAYOUT_BASE_SPACING: f32 = 16.0;
+
 /// Computes the complete paginated and justified layout for a document.
 pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLayout> {
     let layout_cfg = doc.layout.as_ref();
@@ -41,7 +43,7 @@ pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLay
     let system_gap = 14.0_f32;
     let first_page_header_height = 75.0_f32;
 
-    let effective_base_spacing = if base_spacing > 0.0 { base_spacing } else { 22.0 };
+    let effective_base_spacing = if base_spacing > 0.0 { base_spacing } else { DEFAULT_LAYOUT_BASE_SPACING };
     let metrics = compute_measure_metrics(doc, effective_base_spacing);
     let content_w = (page_w - margins.left - margins.right).max(200.0);
     let system_breaks = break_measures_into_systems(&metrics, content_w);

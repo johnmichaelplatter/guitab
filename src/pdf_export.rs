@@ -52,14 +52,13 @@ pub fn generate_score_pdf_bytes(
         .map_err(|e| format!("Failed to load Bravura font: {:?}", e))?;
 
     let text_font = pdf_doc
-        .add_builtin_font(BuiltinFont::Helvetica)
-        .map_err(|e| format!("Failed to load Helvetica font: {:?}", e))?;
+        .add_external_font(std::io::Cursor::new(epaint_default_fonts::UBUNTU_LIGHT))
+        .or_else(|_| pdf_doc.add_builtin_font(BuiltinFont::Helvetica))
+        .map_err(|e| format!("Failed to load text font: {:?}", e))?;
 
-    let text_font_bold = pdf_doc
-        .add_builtin_font(BuiltinFont::HelveticaBold)
-        .map_err(|e| format!("Failed to load Helvetica Bold font: {:?}", e))?;
-
-    // Scale factors: from layout points (screen pixels ~96DPI) to PDF Mm
+    // Scale factors: from layout points (screen pixels ~96DPI) to PDF Mm and Pt
+    // 1 px = 72.0 / 96.0 pt = 0.75 pt
+    let pt_per_px = 72.0_f32 / 96.0_f32;
     // 1 inch = 96 px = 25.4 mm => mm_per_px = 25.4 / 96.0 ≈ 0.264583
     let mm_per_px = 25.4_f32 / 96.0_f32;
     let page_h_val = page_h_mm.0;
@@ -97,7 +96,7 @@ pub fn generate_score_pdf_bytes(
                         points: vec![(pt1, false), (pt2, false)],
                         is_closed: false,
                     };
-                    current_layer.set_outline_thickness(stroke.width * mm_per_px * 0.75);
+                    current_layer.set_outline_thickness(stroke.width * pt_per_px);
                     let r = stroke.color.r() as f32 / 255.0;
                     let g = stroke.color.g() as f32 / 255.0;
                     let b = stroke.color.b() as f32 / 255.0;
@@ -119,7 +118,7 @@ pub fn generate_score_pdf_bytes(
                     };
 
                     if has_stroke {
-                        current_layer.set_outline_thickness(stroke.width * mm_per_px);
+                        current_layer.set_outline_thickness(stroke.width * pt_per_px);
                         current_layer.set_outline_color(Color::Rgb(Rgb::new(0.2, 0.2, 0.2, None)));
                     }
                     if has_fill {
@@ -156,7 +155,11 @@ pub fn generate_score_pdf_bytes(
                     current_layer.add_polygon(circle_poly);
                 }
                 DrawKind::Text { pos, align, text, font_id, color } => {
-                    let approx_w = (text.chars().count() as f32) * font_id.size * 0.52;
+                    let is_bravura = match &font_id.family {
+                        eframe::egui::FontFamily::Name(name) => name.as_ref() == "Bravura" || name.as_ref() == "BravuraText",
+                        _ => text.chars().any(|c| (c as u32) >= 0xE000 && (c as u32) <= 0xF8FF),
+                    };
+                    let approx_w = (text.chars().count() as f32) * font_id.size * (if is_bravura { 0.48 } else { 0.52 });
                     let approx_h = font_id.size * 0.75;
                     let adj_x = match align.x() {
                         eframe::emath::Align::Min => pos.x,
@@ -164,21 +167,15 @@ pub fn generate_score_pdf_bytes(
                         eframe::emath::Align::Max => pos.x - approx_w,
                     };
                     let adj_y = match align.y() {
-                        eframe::emath::Align::Min => pos.y + approx_h,
-                        eframe::emath::Align::Center => pos.y + approx_h * 0.35,
+                        eframe::emath::Align::Min => pos.y + approx_h * (if is_bravura { 0.5 } else { 1.0 }),
+                        eframe::emath::Align::Center => if is_bravura { pos.y } else { pos.y + approx_h * 0.35 },
                         eframe::emath::Align::Max => pos.y,
                     };
 
                     let x = Mm(adj_x * mm_per_px);
                     let y = Mm(page_h_val - adj_y * mm_per_px);
-                    let is_bravura = match &font_id.family {
-                        eframe::egui::FontFamily::Name(name) => name.as_ref() == "Bravura" || name.as_ref() == "BravuraText",
-                        _ => text.chars().any(|c| (c as u32) >= 0xE000 && (c as u32) <= 0xF8FF),
-                    };
                     let font_ref = if is_bravura {
                         &bravura_font
-                    } else if font_id.size > 14.0 {
-                        &text_font_bold
                     } else {
                         &text_font
                     };
@@ -186,16 +183,28 @@ pub fn generate_score_pdf_bytes(
                     let g = color.g() as f32 / 255.0;
                     let b = color.b() as f32 / 255.0;
                     current_layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
-                    current_layer.use_text(text, font_id.size * 0.75, x, y, font_ref);
+                    current_layer.use_text(text, font_id.size * pt_per_px, x, y, font_ref);
                 }
-                DrawKind::Glyph { pos, codepoint, size, color, .. } => {
-                    let x = Mm(pos.x * mm_per_px);
-                    let y = Mm(page_h_val - pos.y * mm_per_px);
+                DrawKind::Glyph { pos, align, codepoint, size, color, .. } => {
+                    let approx_w = *size * 0.48;
+                    let approx_h = *size * 0.75;
+                    let adj_x = match align.x() {
+                        eframe::emath::Align::Min => pos.x,
+                        eframe::emath::Align::Center => pos.x - approx_w * 0.5,
+                        eframe::emath::Align::Max => pos.x - approx_w,
+                    };
+                    let adj_y = match align.y() {
+                        eframe::emath::Align::Min => pos.y + approx_h * 0.5,
+                        eframe::emath::Align::Center => pos.y,
+                        eframe::emath::Align::Max => pos.y,
+                    };
+                    let x = Mm(adj_x * mm_per_px);
+                    let y = Mm(page_h_val - adj_y * mm_per_px);
                     let r = color.r() as f32 / 255.0;
                     let g = color.g() as f32 / 255.0;
                     let b = color.b() as f32 / 255.0;
                     current_layer.set_fill_color(Color::Rgb(Rgb::new(r, g, b, None)));
-                    current_layer.use_text(codepoint.to_string(), *size * 0.75, x, y, &bravura_font);
+                    current_layer.use_text(codepoint.to_string(), *size * pt_per_px, x, y, &bravura_font);
                 }
                 DrawKind::Curve { points, stroke } => {
                     let mut curve_pts = Vec::new();
@@ -218,7 +227,7 @@ pub fn generate_score_pdf_bytes(
                         points: curve_pts,
                         is_closed: false,
                     };
-                    current_layer.set_outline_thickness(stroke.width * mm_per_px);
+                    current_layer.set_outline_thickness(stroke.width * pt_per_px);
                     let r = stroke.color.r() as f32 / 255.0;
                     let g = stroke.color.g() as f32 / 255.0;
                     let b = stroke.color.b() as f32 / 255.0;
@@ -783,7 +792,7 @@ pub fn populate_page_display_list(
                                 let sp = crate::render::calculate_event_spacing(
                                     ev,
                                     in_grace,
-                                    22.0,
+                                    crate::layout::DEFAULT_LAYOUT_BASE_SPACING,
                                     next_ev_info,
                                     None,
                                     None,
@@ -850,7 +859,7 @@ pub fn populate_page_display_list(
                                 let start_beat = current_measure_beat;
                                 let end_beat = current_measure_beat + event_beats;
                                 current_measure_beat = end_beat;
-                                let ev_w = event_spacings.get(ev_idx_in_m).copied().unwrap_or(22.0);
+                                let ev_w = event_spacings.get(ev_idx_in_m).copied().unwrap_or(crate::layout::DEFAULT_LAYOUT_BASE_SPACING);
                                 let ev_x = m_x + start_pad + (accum_x + ev_w * 0.5) * ev_scale;
                                 accum_x += ev_w;
                                 ev_idx_in_m += 1;
@@ -1201,7 +1210,7 @@ pub fn populate_page_display_list(
                                 let extra = flags - prev_flags;
                                 let sx = cx;
                                 let beam_thickness = if is_grace { 2.0 } else { 3.0 };
-                                let stub_w = 8.0_f32;
+                                let stub_w = if is_grace { 4.5_f32 } else { 6.0_f32 };
                                 for f in prev_flags..prev_flags + extra {
                                     let by = local_stem_bot_y - (f as f32) * flag_spacing;
                                     dl.push(DrawItem {
@@ -1220,7 +1229,7 @@ pub fn populate_page_display_list(
                 } else {
                     // Isolated flags
                     let sx = cx;
-                    let flag_w = if is_grace { 8.0 } else { 12.0 };
+                    let flag_w = if is_grace { 6.0_f32 } else { 9.0_f32 };
                     for f in 0..flags {
                         let flag_y_bot = local_stem_bot_y - (f as f32) * flag_spacing;
                         let flag_y_top = flag_y_bot - flag_spacing - 2.0;
@@ -1406,11 +1415,11 @@ pub fn populate_page_display_list(
                     if pos_in_tl + 1 < timeline.len() {
                         let (_, next_fret, next_pos) = timeline[pos_in_tl + 1];
                         let up = next_fret > *start_fret;
-                        let start_x = start_pos.x + 8.0;
-                        let mut end_x = start_x + 12.0;
+                        let start_x = start_pos.x + 5.5;
+                        let mut end_x = start_x + 10.0;
                         let start_y = start_pos.y;
                         let end_y = if up { start_pos.y - 6.0 } else { start_pos.y + 6.0 };
-                        end_x = end_x.min(next_pos.x - 4.0);
+                        end_x = end_x.min(next_pos.x - 4.0).max(start_x + 2.0);
 
                         let slide_id = Some(format!("slide_{}_{}", string_num, start_idx));
                         dl.push(DrawItem {
@@ -1516,7 +1525,7 @@ parts:
                     fret: 0
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 22.0);
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
         assert!(!pages.is_empty());
 
         let pdf_bytes = generate_score_pdf_bytes(&doc, &pages).expect("PDF export should succeed");
@@ -1578,7 +1587,7 @@ parts:
                     fret: 0
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 22.0);
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
         assert_eq!(pages.len(), 2, "Page break on measure 2 should produce 2 pages");
 
         let pdf_bytes = generate_score_pdf_bytes(&doc, &pages).expect("Multi-page PDF export should succeed");
@@ -1654,7 +1663,7 @@ parts:
                     fret: 1
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 22.0);
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
         assert!(!pages.is_empty());
 
         let mut dl = DisplayList::new();
@@ -1780,7 +1789,7 @@ parts:
                 rest: {}
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
-        let pages = crate::layout::compute_score_layout(&doc, 22.0);
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
         let mut dl = DisplayList::new();
         populate_page_display_list(&doc, &pages[0], &mut dl);
 
@@ -1911,7 +1920,7 @@ parts:
                 notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
 "#;
         let doc_4_4: MnxDocument = serde_saphyr::from_str(yaml_4_4).unwrap();
-        let pages_4_4 = crate::layout::compute_score_layout(&doc_4_4, 22.0);
+        let pages_4_4 = crate::layout::compute_score_layout(&doc_4_4, 0.0);
         let mut dl_4_4 = DisplayList::new();
         populate_page_display_list(&doc_4_4, &pages_4_4[0], &mut dl_4_4);
 
@@ -1960,7 +1969,7 @@ parts:
                 notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
 "#;
         let doc_3_4: MnxDocument = serde_saphyr::from_str(yaml_3_4).unwrap();
-        let pages_3_4 = crate::layout::compute_score_layout(&doc_3_4, 22.0);
+        let pages_3_4 = crate::layout::compute_score_layout(&doc_3_4, 0.0);
         let mut dl_3_4 = DisplayList::new();
         populate_page_display_list(&doc_3_4, &pages_3_4[0], &mut dl_3_4);
 
@@ -1979,6 +1988,198 @@ parts:
             3,
             "3/4 with 6 eighth notes must produce exactly 3 beam lines (1 per pair: beats 1, 2, 3)"
         );
+    }
+
+    #[test]
+    fn test_layout_mode_horizontal_spacing_measure_of_eighth_notes() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - {}
+    - {}
+    - {}
+parts:
+  - instrument:
+      name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+              - duration: { base: eighth }
+                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
+        assert!(!pages.is_empty());
+        let sys0 = &pages[0].systems[0];
+        assert_eq!(
+            sys0.measure_range,
+            0..4,
+            "All four bars of 8 eighth notes must fit into System 0 with decreased default horizontal spacing"
+        );
+
+        let mut dl = DisplayList::new();
+        populate_page_display_list(&doc, &pages[0], &mut dl);
+
+        // Find the x coordinates of the 8 notes in measure 0
+        let note_x_coords: Vec<f32> = (0..8)
+            .map(|ev_i| {
+                let nid = format!("note_0_{}_1", ev_i + 1);
+                dl.items
+                    .iter()
+                    .find(|item| item.id.as_deref() == Some(&nid) && matches!(item.kind, DrawKind::Text { .. }))
+                    .map(|item| match &item.kind {
+                        DrawKind::Text { pos, .. } => pos.x,
+                        _ => 0.0,
+                    })
+                    .expect("Note text must exist")
+            })
+            .collect();
+
+        // Calculate spacings between consecutive eighth notes
+        for i in 0..7 {
+            let spacing = note_x_coords[i + 1] - note_x_coords[i];
+            assert!(
+                spacing < 20.0,
+                "Eighth note spacing must be decreased below 20px, got {}px at index {}",
+                spacing,
+                i
+            );
+            assert!(
+                spacing > 10.0,
+                "Eighth note spacing should remain clear (>10px), got {}px at index {}",
+                spacing,
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_pdf_export_wysiwyg_parity() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - instrument:
+      name: "Guitar"
+      microFretDivisions: 12
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    fret: 0
+                    string: 1
+              - duration: { base: eighth }
+                notes:
+                  - pitch: { step: F, alter: 1, octave: 4 }
+                    fret: 2
+                    string: 1
+              - duration: { base: eighth }
+                notes:
+                  - pitch: { step: G, octave: 4 }
+                    fret: 3
+                    string: 1
+              - duration: { base: eighth }
+                notes:
+                  - pitch: { step: A, octave: 4 }
+                    fret: 5
+                    string: 1
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: B, octave: 4 }
+                    fret: 7
+                    string: 1
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: B, octave: 3 }
+                    fret: 0
+                    string: 2
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
+        assert!(!pages.is_empty());
+
+        let pdf_bytes = generate_score_pdf_bytes(&doc, &pages).expect("PDF generation should succeed");
+        assert!(!pdf_bytes.is_empty(), "PDF bytes should not be empty");
+
+        // Verify that the PDF is valid PDF syntax
+        let pdf_str = String::from_utf8_lossy(&pdf_bytes);
+        assert!(pdf_str.starts_with("%PDF-"));
     }
 }
 

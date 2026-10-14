@@ -208,6 +208,106 @@ parts:
     }
 
     #[test]
+    fn test_add_measure_to_yaml_serde_saphyr_tuning_style() {
+        let yaml = r#"mnx:
+  version: 1
+global:
+  measures:
+  - time: {count: 4, unit: 4}
+parts:
+- instrument:
+    name: Guitar
+    tuning:
+    - string: 1
+      pitch: {octave: 4, step: E}
+    - string: 2
+      pitch: {octave: 3, step: B}
+  measures:
+  - sequences:
+    - content:
+      - duration: {base: quarter}
+        notes:
+        - {fret: 0, pitch: {octave: 4, step: E}, string: 1}
+layout:
+  pageSize: letter
+"#;
+        let dur = crate::mnx::Duration {
+            multiple: None,
+            base: "quarter".to_string(),
+            dots: None,
+        };
+
+        let updated = add_measure_to_yaml(yaml, &dur).expect("Should add measure");
+        
+        // 1. Must parse cleanly
+        let doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated YAML must parse");
+        assert_eq!(doc.parts[0].measures.len(), 2, "Part should have 2 measures");
+        assert_eq!(doc.global.measures.len(), 2, "Global should have 2 measures");
+        assert!(doc.layout.is_some(), "Layout should be preserved");
+
+        // 2. Measure 0 notes must still be the original note, NOT displaced by an insertion at top
+        let m0_events = doc.parts[0].measures[0].sequences[0].flattened_events();
+        assert_eq!(m0_events.len(), 1);
+        assert_eq!(m0_events[0].notes.len(), 1, "First measure should still have its original note");
+
+        // 3. Measure 1 must be the newly added blank note
+        let m1_events = doc.parts[0].measures[1].sequences[0].flattened_events();
+        assert_eq!(m1_events.len(), 1);
+        assert_eq!(m1_events[0].notes.len(), 0, "Second measure should be blank");
+
+        // 4. In text, the newly added measure must come AFTER measure 0, and BEFORE layout:, NEVER between tuning and measures
+        let parts_pos = updated.find("parts:").unwrap();
+        let tuning_pos = updated.find("tuning:").unwrap();
+        let parts_measures_pos = updated[parts_pos..].find("measures:").unwrap() + parts_pos;
+        let layout_pos = updated.find("layout:").unwrap();
+        assert!(tuning_pos < parts_measures_pos);
+        
+        let seq_positions: Vec<usize> = updated.match_indices("- sequences:").map(|(pos, _)| pos).collect();
+        assert_eq!(seq_positions.len(), 2, "Should have two measures");
+        assert!(seq_positions[0] > parts_measures_pos, "Measure 0 must be after measures:");
+        assert!(seq_positions[1] > seq_positions[0], "Measure 1 must be after measure 0");
+        assert!(seq_positions[1] < layout_pos, "Measure 1 must be before layout:");
+    }
+
+    #[test]
+    fn test_add_measure_to_yaml_real_files_and_reserialized() {
+        let dur = crate::mnx::Duration {
+            multiple: None,
+            base: "quarter".to_string(),
+            dots: None,
+        };
+
+        for filename in &["example.yaml", "example_layout_lyrics.yaml"] {
+            let path = std::path::Path::new(filename);
+            if !path.exists() {
+                continue;
+            }
+            let raw_yaml = std::fs::read_to_string(path).expect("Read yaml");
+            
+            // 1. Raw hand-crafted YAML
+            let raw_doc = serde_saphyr::from_str::<MnxDocument>(&raw_yaml).expect("Parse raw");
+            let initial_m_count = raw_doc.parts[0].measures.len();
+            let updated_raw = add_measure_to_yaml(&raw_yaml, &dur).expect("Add measure to raw");
+            let parsed_raw = serde_saphyr::from_str::<MnxDocument>(&updated_raw).expect("Parse updated raw");
+            assert_eq!(parsed_raw.parts[0].measures.len(), initial_m_count + 1);
+            assert_eq!(parsed_raw.global.measures.len(), initial_m_count + 1);
+
+            // 2. serde_saphyr serialized YAML (Layout mode style)
+            let reserialized = serde_saphyr::to_string(&raw_doc).expect("Serialize with serde_saphyr");
+            let updated_reserialized = add_measure_to_yaml(&reserialized, &dur).expect("Add measure to reserialized");
+            let parsed_reserialized = serde_saphyr::from_str::<MnxDocument>(&updated_reserialized).expect("Parse updated reserialized");
+            assert_eq!(parsed_reserialized.parts[0].measures.len(), initial_m_count + 1);
+            assert_eq!(parsed_reserialized.global.measures.len(), initial_m_count + 1);
+
+            // Ensure layout block is still present and valid if it was present
+            if raw_doc.layout.is_some() {
+                assert!(parsed_raw.layout.is_some());
+                assert!(parsed_reserialized.layout.is_some());
+            }
+        }
+    }
+
+    #[test]
     fn test_add_blank_note_to_last_measure_and_remove() {
         let yaml = r#"
 mnx:

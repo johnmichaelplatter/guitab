@@ -2195,6 +2195,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui_extras",
+ "epaint_default_fonts",
  "image",
  "midir",
  "midly",

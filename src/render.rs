@@ -299,14 +299,15 @@ pub fn calculate_event_spacing(
     editing_len: Option<usize>,
     next_editing_len: Option<usize>,
 ) -> f32 {
+    let scale = (base_event_spacing / 30.0).clamp(0.4, 1.0);
     let mut spacing = if in_grace {
-        (duration_spacing(&event.duration, base_event_spacing) * 0.75).max(19.0)
+        (duration_spacing(&event.duration, base_event_spacing) * 0.75).max(19.0 * scale)
     } else {
         duration_spacing(&event.duration, base_event_spacing)
     };
 
     if event.notes.iter().any(|n| n.bend.is_some()) {
-        spacing = spacing.max(55.0);
+        spacing = spacing.max(55.0 * scale);
     }
 
     let w1 = event_text_width(event, in_grace, editing_len);
@@ -316,18 +317,18 @@ pub fn calculate_event_spacing(
             let w2 = event_text_width(next_ev, next_in_grace, next_editing_len);
             let gap = if w1 > 8.5 || w2 > 8.5 {
                 if in_grace && next_in_grace {
-                    8.0
+                    8.0 * scale
                 } else {
-                    10.0
+                    10.0 * scale
                 }
             } else {
-                5.0
+                5.0 * scale
             };
-            (w1 + w2) * 0.5 + 4.0 + gap
+            (w1 + w2) * 0.5 + 4.0 * scale + gap
         }
         None => {
             // End of measure before barline: ensure right edge and mask clear the barline
-            w1 * 0.5 + 2.0 + 10.0
+            w1 * 0.5 + 2.0 * scale + 10.0 * scale
         }
     };
 
@@ -336,14 +337,16 @@ pub fn calculate_event_spacing(
         Some((next_ev, _)) => {
             let lyr_w2 = event_lyric_width(next_ev);
             if lyr_w1 > 0.0 || lyr_w2 > 0.0 {
-                (lyr_w1 + lyr_w2) * 0.5 + 8.0
+                let lyr_scale = (base_event_spacing / 30.0).clamp(0.65, 1.0);
+                (lyr_w1 + lyr_w2) * 0.5 + 8.0 * lyr_scale
             } else {
                 0.0
             }
         }
         None => {
             if lyr_w1 > 0.0 {
-                lyr_w1 * 0.5 + 6.0
+                let lyr_scale = (base_event_spacing / 30.0).clamp(0.65, 1.0);
+                lyr_w1 * 0.5 + 6.0 * lyr_scale
             } else {
                 0.0
             }

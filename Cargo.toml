@@ -13,5 +13,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 midly = "0.5"
 midir = "0.10"
 printpdf = "0.7"
+epaint_default_fonts = "0.36"
 
 
