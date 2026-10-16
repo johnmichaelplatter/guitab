@@ -39,6 +39,7 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
             || event_text.contains("type: grace")
             || event_text.contains("type: \"grace\"")
             || event_text.contains("type: 'grace'")
+            || (event_text.contains("inner:") && event_text.contains("outer:"))
         {
             return;
         }
@@ -60,7 +61,7 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
 
             if trimmed.starts_with("notes:") || trimmed.ends_with("notes:") {
                 in_notes = true;
-                notes_indent = indent;
+                notes_indent = line.find("notes:").unwrap_or(indent);
                 continue;
             }
 
@@ -118,25 +119,16 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
                 finish_event(start_line, end_line, &mut results);
                 current_event_start_line = None;
             }
-            in_content = true;
-            content_indent = indent;
+            if !in_content {
+                in_content = true;
+                content_indent = line.find("content:").unwrap_or(indent);
+            }
             continue;
         }
 
         if in_content {
-            if indent == 0
-                || (indent <= content_indent
-                    && (trimmed.starts_with("measures:")
-                        || trimmed.starts_with("sequences:")
-                        || trimmed.starts_with("parts:")
-                        || trimmed.starts_with("layout:")
-                        || trimmed.starts_with("title:")
-                        || trimmed.starts_with("subtitle:")
-                        || trimmed.starts_with("composer:")
-                        || trimmed.starts_with("- sequences:")
-                        || trimmed.starts_with("- measures:")
-                        || trimmed.starts_with("arpeggios:")
-                        || trimmed.starts_with("- arpeggios:")))
+            if (trimmed.starts_with('-') && indent < content_indent)
+                || (!trimmed.starts_with('-') && indent <= content_indent)
             {
                 if let Some(start_line) = current_event_start_line {
                     let end_line = i.saturating_sub(1);
@@ -171,24 +163,6 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
     results
 }
 
-fn format_pitch_yaml(pitch: &crate::mnx::Pitch) -> String {
-    if let Some(alter) = &pitch.alter {
-        let alter_str = match alter {
-            crate::mnx::Alteration::Fraction(s) => format!("'{}'", s),
-            crate::mnx::Alteration::Value(v) => format!("{}", v),
-        };
-        format!(
-            "pitch: {{ step: {}, alter: {}, octave: {} }}",
-            pitch.step, alter_str, pitch.octave
-        )
-    } else {
-        format!(
-            "pitch: {{ step: {}, octave: {} }}",
-            pitch.step, pitch.octave
-        )
-    }
-}
-
 /// Calculates the exact microtonal Pitch for a given string and fret.
 pub fn calculate_pitch_for_string_fret(
     part: &crate::mnx::Part,
@@ -209,17 +183,64 @@ pub fn calculate_pitch_for_string_fret(
 
 /// Helper to parse the `string: <n>` value out of an individual note YAML block text.
 pub fn get_note_string_from_text(note_text: &str) -> Option<u8> {
-    for line in note_text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("string:") {
-            let num_str = rest.trim();
-            let digits: String = num_str.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(s) = digits.parse::<u8>() {
-                return Some(s);
-            }
+    if let Some(pos) = note_text.find("string:") {
+        let after = note_text[pos + "string:".len()..].trim_start();
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(s) = digits.parse::<u8>() {
+            return Some(s);
         }
     }
     None
+}
+
+fn new_blank_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
+    crate::mnx::Event {
+        markings: None,
+        id: None,
+        duration,
+        notes: Vec::new(),
+        rest: None,
+        slurs: None,
+        lyrics: None,
+    }
+}
+
+fn new_rest_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
+    crate::mnx::Event {
+        markings: None,
+        id: None,
+        duration,
+        notes: Vec::new(),
+        rest: Some(crate::mnx::Rest {}),
+        slurs: None,
+        lyrics: None,
+    }
+}
+
+/// Replaces the fret number and pitch of the given note inside `doc`.
+pub fn update_note_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    note_idx: usize,
+    new_fret: i32,
+    new_pitch: Option<&crate::mnx::Pitch>,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    let Some(note) = ev.notes.get_mut(note_idx) else {
+        return false;
+    };
+    note.fret = Some(new_fret);
+    note.muted = None;
+    if let Some(pitch) = new_pitch {
+        note.pitch = pitch.clone();
+    }
+    true
 }
 
 /// Replaces the fret number and pitch of the given note inside yaml_text and returns the updated YAML string.
@@ -230,62 +251,60 @@ pub fn update_note_in_yaml(
     new_fret: i32,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let target_range = er.note_ranges.get(note_idx).unwrap_or(&er.total_range);
-    let note_text = yaml.get(target_range.clone())?;
-
-    let mut result = yaml.to_string();
-
-    // 1. Update fret
-    if let Some(pos) = note_text.find("fret:") {
-        let after_fret = &note_text[pos + 5..];
-        let num_start_rel = after_fret.find(|c: char| c.is_ascii_digit())?;
-        let num_end_rel = after_fret[num_start_rel..]
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(after_fret[num_start_rel..].len());
-
-        let abs_start = target_range.start + pos + 5 + num_start_rel;
-        let abs_end = abs_start + num_end_rel;
-
-        result = format!("{}{}{}", &yaml[..abs_start], new_fret, &yaml[abs_end..]);
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !update_note_in_doc(&mut doc, event_idx, note_idx, new_fret, new_pitch) {
+        return None;
     }
-
-    // 2. Update pitch if provided
-    if let Some(pitch) = new_pitch {
-        let event_ranges = find_all_event_ranges(&result);
-        if let Some(er) = event_ranges.get(event_idx) {
-            let target_range = er.note_ranges.get(note_idx).unwrap_or(&er.total_range);
-            if let Some(cur_note_text) = result.get(target_range.clone()) {
-                if let Some(p_start_rel) = cur_note_text.find("pitch:") {
-                    let after_p = &cur_note_text[p_start_rel..];
-                    let p_len = if let Some(brace_end) = after_p.find('}') {
-                        brace_end + 1
-                    } else if let Some(nl) = after_p.find('\n') {
-                        nl
-                    } else {
-                        after_p.len()
-                    };
-
-                    let abs_p_start = target_range.start + p_start_rel;
-                    let abs_p_end = abs_p_start + p_len;
-
-                    let pitch_yaml_str = format_pitch_yaml(pitch);
-                    result = format!(
-                        "{}{}{}",
-                        &result[..abs_p_start],
-                        pitch_yaml_str,
-                        &result[abs_p_end..]
-                    );
-                }
-            }
-        }
-    }
-
-    Some(result)
+    serde_saphyr::to_string(&doc).ok()
 }
 
-/// Sets or adds a note on `target_string` in the specified event with `new_fret` and `new_pitch`.
+/// Updates an existing note on `target_string` in `event_idx`, or appends a new note on `target_string` to `event_idx` if none exists.
+pub fn set_or_add_note_on_string_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    target_string: u8,
+    new_fret: i32,
+    new_pitch: Option<&crate::mnx::Pitch>,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    ev.rest = None;
+
+    if let Some(existing) = ev.notes.iter_mut().find(|n| n.string == Some(target_string)) {
+        existing.fret = Some(new_fret);
+        existing.muted = None;
+        if let Some(p) = new_pitch {
+            existing.pitch = p.clone();
+        }
+    } else {
+        let pitch = new_pitch.cloned().unwrap_or(crate::mnx::Pitch {
+            step: "C".to_string(),
+            alter: None,
+            octave: 4,
+        });
+        ev.notes.push(crate::mnx::Note {
+            muted: None,
+            id: None,
+            pitch,
+            string: Some(target_string),
+            fret: Some(new_fret),
+            accidental: None,
+            ties: None,
+            tap: None,
+            slide: None,
+            bend: None,
+            harmonic: None,
+        });
+    }
+    true
+}
+
+/// Updates an existing note on `target_string` in `event_idx`, or appends a new note on `target_string` to `event_idx` if none exists.
 pub fn set_or_add_note_on_string(
     yaml: &str,
     event_idx: usize,
@@ -293,584 +312,171 @@ pub fn set_or_add_note_on_string(
     new_fret: i32,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-
-    // 1. Check if a note already exists on target_string
-    for (note_idx, nr) in er.note_ranges.iter().enumerate() {
-        if let Some(note_text) = yaml.get(nr.clone()) {
-            if get_note_string_from_text(note_text) == Some(target_string) {
-                return update_note_in_yaml(yaml, event_idx, note_idx, new_fret, new_pitch);
-            }
-        }
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !set_or_add_note_on_string_in_doc(&mut doc, event_idx, target_string, new_fret, new_pitch) {
+        return None;
     }
+    serde_saphyr::to_string(&doc).ok()
+}
 
-    // 2. No note on target_string: Add a new note to this event
-    let pitch_str = if let Some(p) = new_pitch {
-        format_pitch_yaml(p)
-    } else {
-        "pitch: { step: C, octave: 4 }".to_string()
+/// Removes the note on `target_string` from the event at `event_idx` in `doc`.
+pub fn remove_note_on_string_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    target_string: u8,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
     };
-
-    if !er.note_ranges.is_empty() {
-        // Append after the last existing note in this event
-        let last_range = er.note_ranges.last().unwrap();
-        let first_note_text = &yaml[er.note_ranges[0].clone()];
-        let leading_spaces = first_note_text.len() - first_note_text.trim_start().len();
-        let indent = " ".repeat(leading_spaces);
-        let sub_indent = " ".repeat(leading_spaces + 2);
-
-        let insert_text = format!(
-            "\n{}- {}\n{}string: {}\n{}fret: {}",
-            indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
-        );
-
-        let insert_pos = last_range.end;
-        let mut res = yaml.to_string();
-        res.insert_str(insert_pos, &insert_text);
-        Some(res)
-    } else {
-        // notes: list is empty or notes: []
-        let event_text = yaml.get(er.total_range.clone())?;
-        if let Some(notes_pos) = event_text.find("notes:") {
-            let abs_notes_pos = er.total_range.start + notes_pos;
-            let after_notes = &yaml[abs_notes_pos + 6..];
-            let line_end_rel = after_notes.find('\n').unwrap_or(after_notes.len());
-
-            // Find indent of notes: line
-            let line_start = yaml[..abs_notes_pos]
-                .rfind('\n')
-                .map(|p| p + 1)
-                .unwrap_or(0);
-            let notes_indent_len = abs_notes_pos - line_start;
-            let indent = " ".repeat(notes_indent_len + 2);
-            let sub_indent = " ".repeat(notes_indent_len + 4);
-
-            let new_notes_block = format!(
-                "notes:\n{}- {}\n{}string: {}\n{}fret: {}",
-                indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
-            );
-
-            let abs_replace_end = abs_notes_pos + 6 + line_end_rel;
-            let mut res = yaml.to_string();
-            res.replace_range(abs_notes_pos..abs_replace_end, &new_notes_block);
-            Some(res)
-        } else if let Some(rest_pos) = event_text.find("rest:") {
-            let abs_rest_pos = er.total_range.start + rest_pos;
-            let after_rest = &yaml[abs_rest_pos..];
-            let line_end_rel = after_rest.find('\n').unwrap_or(after_rest.len());
-
-            let line_start = yaml[..abs_rest_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            let notes_indent_len = abs_rest_pos - line_start;
-            let indent = " ".repeat(notes_indent_len + 2);
-            let sub_indent = " ".repeat(notes_indent_len + 4);
-
-            let new_notes_block = format!(
-                "notes:\n{}- {}\n{}string: {}\n{}fret: {}",
-                indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
-            );
-
-            let abs_replace_end = abs_rest_pos + line_end_rel;
-            let mut res = yaml.to_string();
-            res.replace_range(abs_rest_pos..abs_replace_end, &new_notes_block);
-            Some(res)
-        } else {
-            // Append notes block
-            let first_line_start = event_text.find('-').unwrap_or(0);
-            let before_dash = &event_text[..first_line_start];
-            let indent_len = before_dash
-                .rfind('\n')
-                .map(|p| before_dash.len() - p - 1)
-                .unwrap_or(before_dash.len());
-            let indent = " ".repeat(indent_len + 2);
-            let sub_indent = " ".repeat(indent_len + 4);
-
-            let new_notes_block = format!(
-                "\n{}notes:\n{}- {}\n{}string: {}\n{}fret: {}",
-                indent, indent, pitch_str, sub_indent, target_string, sub_indent, new_fret
-            );
-
-            let mut res = yaml.to_string();
-            res.insert_str(er.total_range.end, &new_notes_block);
-            Some(res)
-        }
-    }
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    let initial_len = ev.notes.len();
+    ev.notes.retain(|n| n.string != Some(target_string));
+    ev.notes.len() != initial_len
 }
 
-/// Removes the note on `target_string` from the specified event in YAML.
+/// Removes the note on `target_string` from the event at `event_idx`.
 pub fn remove_note_on_string(yaml: &str, event_idx: usize, target_string: u8) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-
-    let mut target_range: Option<std::ops::Range<usize>> = None;
-    for nr in &er.note_ranges {
-        if let Some(note_text) = yaml.get(nr.clone()) {
-            if get_note_string_from_text(note_text) == Some(target_string) {
-                target_range = Some(nr.clone());
-                break;
-            }
-        }
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !remove_note_on_string_in_doc(&mut doc, event_idx, target_string) {
+        return None;
     }
-
-    let nr = target_range?;
-    let mut res = yaml.to_string();
-
-    if er.note_ranges.len() == 1 {
-        // Only note in the event: replace entire notes block with notes: []
-        let event_text = yaml.get(er.total_range.clone())?;
-        if let Some(notes_pos) = event_text.find("notes:") {
-            let abs_notes_pos = er.total_range.start + notes_pos;
-            let replace_end = nr.end;
-            res.replace_range(abs_notes_pos..replace_end, "notes: []");
-        }
-    } else {
-        // Chord with multiple notes: remove this specific note range
-        let mut start = nr.start;
-        let mut end = nr.end;
-        if start > 0 && res.as_bytes()[start - 1] == b'\n' {
-            start -= 1;
-        } else if end < res.len() && res.as_bytes()[end] == b'\n' {
-            end += 1;
-        }
-        res.replace_range(start..end, "");
-    }
-    Some(res)
+    serde_saphyr::to_string(&doc).ok()
 }
 
-/// Replaces the duration of the specified event inside yaml_text and returns the updated YAML string.
+/// Replaces the `duration` property of the event at `event_idx` with `new_duration` in `doc`.
+pub fn update_event_duration_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    new_duration: &crate::mnx::Duration,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    ev.duration = new_duration.clone();
+    true
+}
+
+/// Replaces the `duration` property of the event at `event_idx` with `new_duration`.
 pub fn update_event_duration_in_yaml(
     yaml: &str,
     event_idx: usize,
     new_duration: &crate::mnx::Duration,
 ) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let event_text = yaml.get(er.total_range.clone())?;
-
-    let dur_rel = event_text.find("duration:")?;
-    let abs_dur_start = er.total_range.start + dur_rel;
-    let after_dur = &yaml[abs_dur_start + 9..];
-
-    let dur_str = if let Some(dots) = new_duration.dots {
-        if dots > 0 {
-            format!("{{ base: {}, dots: {} }}", new_duration.base, dots)
-        } else {
-            format!("{{ base: {} }}", new_duration.base)
-        }
-    } else {
-        format!("{{ base: {} }}", new_duration.base)
-    };
-
-    let replacement = format!("duration: {}", dur_str);
-
-    let abs_dur_end = if let Some(brace_start) = after_dur.find('{') {
-        let before_brace = &after_dur[..brace_start];
-        if !before_brace.contains("notes:") && !before_brace.contains('\n') {
-            if let Some(brace_end) = after_dur.find('}') {
-                abs_dur_start + 9 + brace_end + 1
-            } else {
-                abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
-            }
-        } else if let Some(notes_rel) = event_text.find("notes:") {
-            let notes_abs = er.total_range.start + notes_rel;
-            let before_notes = &yaml[..notes_abs];
-            before_notes.rfind('\n').map(|p| p + 1).unwrap_or(notes_abs)
-        } else {
-            abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
-        }
-    } else if let Some(notes_rel) = event_text.find("notes:") {
-        let notes_abs = er.total_range.start + notes_rel;
-        let before_notes = &yaml[..notes_abs];
-        before_notes.rfind('\n').map(|p| p + 1).unwrap_or(notes_abs)
-    } else {
-        abs_dur_start + 9 + after_dur.find('\n').unwrap_or(after_dur.len())
-    };
-
-    let mut result = yaml.to_string();
-    result.replace_range(abs_dur_start..abs_dur_end, &replacement);
-    Some(result)
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !update_event_duration_in_doc(&mut doc, event_idx, new_duration) {
+        return None;
+    }
+    serde_saphyr::to_string(&doc).ok()
 }
 
-/// Sets or updates the BPM tempo directive in the first global measure's directions block.
-///
-/// If `global/measures[0]/tempos:` with a `` entry already exists, it updates the
-/// `bpm:` field in-place.  Otherwise it inserts the `tempos:` block under the first
-/// global measure entry (after the `time:` line if present, otherwise right after the `- ` list
-/// marker of the first measure entry).
-pub fn set_bpm_in_yaml(yaml: &str, bpm: f64) -> String {
-    let bpm_str = if bpm.fract() == 0.0 {
-        format!("{:.0}", bpm)
-    } else {
-        format!("{}", bpm)
-    };
+/// Updates an existing `bpm:` entry inside the first global measure's `tempos` list,
+/// or inserts a `tempos:` block into the first global measure if none is present.
+pub fn set_bpm_in_doc(doc: &mut crate::mnx::MnxDocument, new_bpm: f64) {
+    if doc.global.measures.is_empty() {
+        doc.global.measures.push(crate::mnx::GlobalMeasure {
+            time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+            ..Default::default()
+        });
+    }
 
-    let lines: Vec<&str> = yaml.lines().collect();
-
-    // 1. Try to find an existing `bpm:` line inside a tempos directive and update it in-place.
+    if let Some(tempo) = doc
+        .global
+        .measures
+        .iter_mut()
+        .flat_map(|m| m.tempos.iter_mut())
+        .next()
     {
-        let mut in_global_measures = false;
-        let mut first_measure_seen = false;
-        let mut in_tempos = false;
-        let mut in_tempo = false;
-        let mut base_indent = 0usize;
-
-        for (i, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            let indent = line.len() - line.trim_start().len();
-
-            if trimmed == "global:" {
-                in_global_measures = false;
-                first_measure_seen = false;
-            }
-            if trimmed == "measures:" && !in_global_measures {
-                in_global_measures = true;
-                continue;
-            }
-            if in_global_measures && !first_measure_seen && trimmed.starts_with("- ") {
-                first_measure_seen = true;
-                base_indent = indent;
-                in_tempos = false;
-                in_tempo = false;
-            }
-            if first_measure_seen
-                && indent <= base_indent
-                && trimmed.starts_with("- ")
-                && !trimmed.starts_with("- time")
-                && !trimmed.starts_with("- tempos")
-            {
-                // We've moved past the first measure entry without finding BPM.
-                break;
-            }
-            if first_measure_seen && trimmed.starts_with("tempos:") {
-                in_tempos = true;
-            }
-            if in_tempos && trimmed.starts_with("-") {
-                if trimmed.contains("bpm:") {
-                    // Inline format like `- { bpm: 140, value: quarter }`
-                    let leading = &line[..indent];
-                    let mut result = lines[..i].join("\n");
-                    if !result.is_empty() {
-                        result.push('\n');
-                    }
-                    result.push_str(&format!(
-                        "{}- {{ bpm: {}, value: {{ base: quarter }} }}",
-                        leading,
-                        bpm_str
-                    ));
-                    result.push('\n');
-                    for later in &lines[i + 1..] {
-                        result.push_str(later);
-                        result.push('\n');
-                    }
-                    if !yaml.ends_with('\n') {
-                        result = result.trim_end_matches('\n').to_string();
-                    }
-                    return result;
-                }
-                in_tempo = true;
-            }
-            if in_tempo && trimmed.starts_with("bpm:") {
-                // Found existing bpm line – replace it.
-                let leading = &line[..indent];
-                let mut result = lines[..i].join("\n");
-                if !result.is_empty() {
-                    result.push('\n');
-                }
-                result.push_str(&format!("{}bpm: {}", leading, bpm_str));
-                result.push('\n');
-                for later in &lines[i + 1..] {
-                    result.push_str(later);
-                    result.push('\n');
-                }
-                // Trim trailing newline added if original didn't have one
-                if !yaml.ends_with('\n') {
-                    result = result.trim_end_matches('\n').to_string();
-                }
-                return result;
-            }
-        }
+        tempo.bpm = new_bpm;
+    } else {
+        doc.global.measures[0].tempos.push(crate::mnx::Tempo {
+            id: None,
+            bpm: new_bpm,
+            value: crate::mnx::Duration {
+                base: "quarter".to_string(),
+                dots: None,
+                multiple: None,
+            },
+            location: None,
+        });
     }
+}
 
-    // 2. No existing bpm: found. Find the first global measure list item and append tempos block.
-    let mut in_global_section = false;
-    let mut in_global_measures = false;
-    let mut first_measure_line: Option<usize> = None;
-    let mut first_measure_indent = 0usize;
-    // We'll insert after the `time:` line within that entry, or after the `- ` marker itself.
-    let mut insert_after_line: Option<usize> = None;
+pub fn set_bpm_in_yaml(yaml: &str, new_bpm: f64) -> String {
+    let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml) else {
+        return yaml.to_string();
+    };
+    set_bpm_in_doc(&mut doc, new_bpm);
+    serde_saphyr::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
+}
 
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
+/// Appends a new measure to `global/measures` and to the first part in `doc`, containing a single blank note with `duration`.
+pub fn add_measure_to_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    duration: &crate::mnx::Duration,
+) -> bool {
+    let last_time = doc
+        .global
+        .measures
+        .iter()
+        .rev()
+        .find_map(|m| m.time)
+        .unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
 
-        if trimmed == "global:" {
-            in_global_section = true;
-            in_global_measures = false;
-        } else if in_global_section && trimmed == "measures:" {
-            in_global_measures = true;
-        } else if in_global_measures && first_measure_line.is_none() && trimmed.starts_with("- ") {
-            first_measure_line = Some(i);
-            first_measure_indent = indent;
-            insert_after_line = Some(i); // default: right after the `- …` line
-        } else if first_measure_line.is_some() {
-            // Track the last line belonging to the first measure (i.e. before the indent drops or next - item appears)
-            if indent > first_measure_indent
-                || (indent == first_measure_indent && !trimmed.starts_with("- "))
-            {
-                insert_after_line = Some(i); // extend insertion point
-            } else {
-                break;
-            }
-        } else if in_global_measures && first_measure_line.is_some() {
-            break;
-        } else if !in_global_section && !in_global_measures {
-            // Left global section
-            if in_global_section {
-                break;
-            }
-        }
-    }
+    doc.global.measures.push(crate::mnx::GlobalMeasure {
+        time: Some(last_time),
+        ..Default::default()
+    });
 
-    if let Some(insert_after) = insert_after_line {
-        // Determine indentation of child fields within the first measure (2 extra spaces past its `- ` indent).
-        let child_indent = " ".repeat(first_measure_indent + 2);
-
-        let directions_block = format!(
-            "{}tempos:\n{}  - {{ bpm: {}, value: {{ base: quarter }} }}",
-            child_indent, child_indent, bpm_str
-        );
-
-        let mut result = lines[..=insert_after].join("\n");
-        result.push('\n');
-        result.push_str(&directions_block);
-        result.push('\n');
-        for later in &lines[insert_after + 1..] {
-            result.push_str(later);
-            result.push('\n');
-        }
-        if !yaml.ends_with('\n') {
-            result = result.trim_end_matches('\n').to_string();
-        }
-        return result;
-    }
-
-    // Fallback: return unchanged
-    yaml.to_string()
+    let Some(part) = doc.parts.first_mut() else {
+        return false;
+    };
+    part.measures.push(crate::mnx::Measure {
+        beams: None,
+        arpeggios: None,
+        sequences: vec![crate::mnx::Sequence {
+            content: vec![crate::mnx::SequenceItem::Event(new_blank_event(
+                duration.clone(),
+            ))],
+            beams: None,
+        }],
+    });
+    true
 }
 
 /// Appends a new measure to `global/measures` and to the first part in `yaml_text`, containing a single blank note with `duration`.
 pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
-    let lines: Vec<&str> = yaml.lines().collect();
-    if lines.is_empty() {
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !add_measure_to_doc(&mut doc, duration) {
         return None;
     }
+    serde_saphyr::to_string(&doc).ok()
+}
 
-    // 1. Scan global/measures section
-    let mut in_global_measures = false;
-    let mut global_measures_idx = None;
-    let mut global_item_indent = None;
-    let mut last_gm_line = None;
-    let mut last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
-
-    // 2. Scan parts/measures section
-    let mut in_part = false;
-    let mut in_part_measures = false;
-    let mut parts_measures_idx = None;
-    let mut measure_item_indent = None;
-    let mut last_pm_line = None;
-    let mut detected_seq_indent = None;
-    let mut detected_content_indent = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Global section detection
-        if trimmed.starts_with("global:") {
-            in_global_measures = false;
-            in_part = false;
-            in_part_measures = false;
-            continue;
-        }
-
-        if !in_part && (trimmed == "measures:" || trimmed.starts_with("measures:")) && global_measures_idx.is_none() {
-            in_global_measures = true;
-            global_measures_idx = Some(i);
-            continue;
-        }
-
-        if in_global_measures {
-            if trimmed.starts_with("parts:") || (indent == 0 && global_measures_idx.is_some()) {
-                in_global_measures = false;
-            } else if let Some(m_indent) = global_item_indent {
-                if indent < m_indent {
-                    in_global_measures = false;
-                } else if indent == m_indent {
-                    if trimmed.starts_with('-') {
-                        last_gm_line = Some(i);
-                        if let Some(pos) = trimmed.find("time:") {
-                            let extracted = trimmed[pos..].trim();
-                            if extracted == "time:" {
-                                last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
-                            } else {
-                                last_time_sig_str = extracted.to_string();
-                            }
-                        }
-                    } else {
-                        in_global_measures = false;
-                    }
-                } else {
-                    last_gm_line = Some(i);
-                }
-            } else if trimmed.starts_with('-') {
-                global_item_indent = Some(indent);
-                last_gm_line = Some(i);
-                if let Some(pos) = trimmed.find("time:") {
-                    let extracted = trimmed[pos..].trim();
-                    if extracted == "time:" {
-                        last_time_sig_str = "time: { count: 4, unit: 4 }".to_string();
-                    } else {
-                        last_time_sig_str = extracted.to_string();
-                    }
-                }
-            }
-        }
-
-        // Parts section detection
-        if trimmed.starts_with("parts:") {
-            in_part = true;
-            in_global_measures = false;
-            in_part_measures = false;
-            continue;
-        }
-
-        if in_part {
-            if (trimmed == "measures:" || trimmed.starts_with("measures:")) && parts_measures_idx.is_none() {
-                in_part_measures = true;
-                parts_measures_idx = Some(i);
-                continue;
-            }
-
-            if in_part_measures {
-                if let Some(m_indent) = measure_item_indent {
-                    if indent < m_indent {
-                        in_part_measures = false;
-                        in_part = false;
-                    } else if indent == m_indent {
-                        if trimmed.starts_with('-') {
-                            last_pm_line = Some(i);
-                            if trimmed.contains("sequences:") {
-                                detected_seq_indent = Some(indent);
-                            }
-                        } else {
-                            in_part_measures = false;
-                            in_part = false;
-                        }
-                    } else {
-                        last_pm_line = Some(i);
-                        if (trimmed.starts_with("- content:") || trimmed.starts_with("-content:") || trimmed.starts_with("content:"))
-                            && detected_content_indent.is_none()
-                        {
-                            detected_content_indent = Some(indent);
-                        }
-                        if (trimmed.starts_with("- sequences:") || trimmed.starts_with("-sequences:") || trimmed.starts_with("sequences:"))
-                            && detected_seq_indent.is_none()
-                        {
-                            detected_seq_indent = Some(indent);
-                        }
-                    }
-                } else if trimmed.starts_with('-') {
-                    measure_item_indent = Some(indent);
-                    last_pm_line = Some(i);
-                    if trimmed.contains("sequences:") {
-                        detected_seq_indent = Some(indent);
-                    }
-                } else if indent == 0 || trimmed.starts_with("layout:") {
-                    in_part_measures = false;
-                    in_part = false;
-                }
-            }
-        }
-    }
-
-    let p_header_idx = parts_measures_idx?;
-    let parts_insert_idx = last_pm_line.map(|l| l + 1).unwrap_or(p_header_idx + 1);
-
-    let global_insert_idx = global_measures_idx.map(|g_idx| {
-        last_gm_line.map(|l| l + 1).unwrap_or(g_idx + 1)
-    });
-
-    let dur_str = if let Some(dots) = duration.dots {
-        if dots > 0 {
-            format!("{{ base: {}, dots: {} }}", duration.base, dots)
-        } else {
-            format!("{{ base: {} }}", duration.base)
-        }
-    } else {
-        format!("{{ base: {} }}", duration.base)
+/// Appends a new blank note (notes: []) to the last measure of the first part in `doc`.
+pub fn add_blank_note_to_last_measure_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    duration: &crate::mnx::Duration,
+) -> bool {
+    let Some(seq) = doc
+        .parts
+        .first_mut()
+        .and_then(|p| p.measures.last_mut())
+        .and_then(|m| m.sequences.first_mut())
+    else {
+        return false;
     };
-
-    let seq_ind = detected_seq_indent.unwrap_or_else(|| measure_item_indent.unwrap_or(6));
-    let step = if let Some(c_ind) = detected_content_indent {
-        if c_ind > seq_ind {
-            c_ind - seq_ind
-        } else if seq_ind <= 4 {
-            2
-        } else {
-            4
-        }
-    } else if seq_ind <= 4 {
-        2
-    } else {
-        4
-    };
-
-    let seq_spaces = " ".repeat(seq_ind);
-    let content_spaces = " ".repeat(seq_ind + step);
-    let event_spaces = " ".repeat(seq_ind + step * 2);
-    let notes_spaces = " ".repeat(seq_ind + step * 2 + 2);
-
-    let new_measure_block = format!(
-        "{}- sequences:\n{}- content:\n{}- duration: {}\n{}notes: []",
-        seq_spaces, content_spaces, event_spaces, dur_str, notes_spaces
-    );
-
-    let gm_ind = global_item_indent.unwrap_or(4);
-    let new_gm_line = format!("{}- {}", " ".repeat(gm_ind), last_time_sig_str);
-
-    let mut result_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-
-    // Insert the block with the larger index first so earlier indices are not invalidated
-    match global_insert_idx {
-        Some(g_idx) => {
-            if parts_insert_idx >= g_idx {
-                for (offset, bline) in new_measure_block.lines().enumerate() {
-                    result_lines.insert(parts_insert_idx + offset, bline.to_string());
-                }
-                result_lines.insert(g_idx, new_gm_line);
-            } else {
-                result_lines.insert(g_idx, new_gm_line);
-                for (offset, bline) in new_measure_block.lines().enumerate() {
-                    result_lines.insert(parts_insert_idx + offset, bline.to_string());
-                }
-            }
-        }
-        None => {
-            for (offset, bline) in new_measure_block.lines().enumerate() {
-                result_lines.insert(parts_insert_idx + offset, bline.to_string());
-            }
-        }
-    }
-
-    let mut res = result_lines.join("\n");
-    if yaml.ends_with('\n') {
-        res.push('\n');
-    }
-    Some(res)
+    seq.content
+        .push(crate::mnx::SequenceItem::Event(new_blank_event(
+            duration.clone(),
+        )));
+    true
 }
 
 /// Appends a new blank note (notes: []) to the last measure of the first part.
@@ -878,49 +484,40 @@ pub fn add_blank_note_to_last_measure(
     yaml: &str,
     duration: &crate::mnx::Duration,
 ) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let last_er = event_ranges.last()?;
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !add_blank_note_to_last_measure_in_doc(&mut doc, duration) {
+        return None;
+    }
+    serde_saphyr::to_string(&doc).ok()
+}
 
-    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok();
-    let total_events = event_ranges.len();
-    let tuplet_info = doc
-        .as_ref()
-        .and_then(|d| d.find_event_tuplet_info(total_events.saturating_sub(1)));
-
-    let indent = if tuplet_info.is_some() {
-        let before_first = &yaml[..last_er.total_range.start];
-        let tuplet_pos = before_first
-            .rfind("- type: tuplet")
-            .or_else(|| before_first.rfind("- type: \"tuplet\""))
-            .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
-        let tuplet_line_start = yaml[..tuplet_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-        let tuplet_indent_len = tuplet_pos - tuplet_line_start;
-        " ".repeat(tuplet_indent_len)
-    } else {
-        let event_first_line = &yaml[last_er.total_range.start..];
-        let indent_len = event_first_line.len() - event_first_line.trim_start().len();
-        " ".repeat(indent_len)
-    };
-    let sub_indent = format!("{}  ", indent);
-
-    let dur_str = if let Some(dots) = duration.dots {
-        if dots > 0 {
-            format!("{{ base: {}, dots: {} }}", duration.base, dots)
-        } else {
-            format!("{{ base: {} }}", duration.base)
-        }
-    } else {
-        format!("{{ base: {} }}", duration.base)
+pub fn insert_blank_note_after_tuplet_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    base: &str,
+) -> Option<usize> {
+    let info = doc.find_event_tuplet_info(event_idx)?;
+    let tuplet_end = info.event_range.end;
+    let paths = doc.get_flattened_event_paths();
+    let crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _) = *paths.get(event_idx)? else {
+        return None;
     };
 
-    let new_event_str = format!(
-        "\n{}- duration: {}\n{}notes: []",
-        indent, dur_str, sub_indent
-    );
-
-    let mut result = yaml.to_string();
-    result.insert_str(last_er.total_range.end, &new_event_str);
-    Some(result)
+    let dur = crate::mnx::Duration {
+        base: base.to_string(),
+        dots: None,
+        multiple: None,
+    };
+    let seq = doc
+        .parts
+        .first_mut()?
+        .measures
+        .get_mut(m_idx)?
+        .sequences
+        .get_mut(s_idx)?;
+    seq.content
+        .insert(i_idx + 1, crate::mnx::SequenceItem::Event(new_blank_event(dur)));
+    Some(tuplet_end)
 }
 
 pub fn insert_blank_note_after_tuplet(
@@ -928,58 +525,28 @@ pub fn insert_blank_note_after_tuplet(
     event_idx: usize,
     base: &str,
 ) -> Option<(String, usize)> {
-    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
-    let info = doc.find_event_tuplet_info(event_idx)?;
-    let event_ranges = find_all_event_ranges(yaml);
-
-    let tuplet_end = info.event_range.end;
-    let last_er = event_ranges.get(tuplet_end.saturating_sub(1))?;
-
-    let before_first = &yaml[..last_er.total_range.start];
-    let tuplet_pos = before_first
-        .rfind("- type: tuplet")
-        .or_else(|| before_first.rfind("- type: \"tuplet\""))
-        .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
-    let tuplet_line_start = yaml[..tuplet_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let tuplet_indent_len = tuplet_pos - tuplet_line_start;
-    let dash_indent = " ".repeat(tuplet_indent_len);
-
-    let insert_text = format!(
-        "\n{}- duration: {{ base: {} }}\n{}  notes: []",
-        dash_indent, base, dash_indent
-    );
-    let insert_pos = last_er.total_range.end;
-
-    let mut result = yaml.to_string();
-    result.insert_str(insert_pos, &insert_text);
-
-    let new_event_idx = tuplet_end;
-    Some((result, new_event_idx))
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    let tuplet_end = insert_blank_note_after_tuplet_in_doc(&mut doc, event_idx, base)?;
+    let new_yaml = serde_saphyr::to_string(&doc).ok()?;
+    Some((new_yaml, tuplet_end))
 }
 
-/// If the final event in the last measure is blank (notes: []), removes it from the YAML.
+/// If the final event in the last measure is blank (notes: []), removes it from `doc`.
 /// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
-pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
-    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
-
-    if doc.parts.is_empty() {
-        return None;
+pub fn remove_last_blank_event_in_doc(doc: &mut crate::mnx::MnxDocument) -> bool {
+    if doc.parts.is_empty() || doc.parts[0].measures.is_empty() {
+        return false;
     }
 
     let last_measure_idx = doc.parts[0].measures.len().saturating_sub(1);
-    if doc.parts[0].measures.is_empty() {
-        return None;
-    }
-
     let measure = &mut doc.parts[0].measures[last_measure_idx];
     if measure.sequences.is_empty() {
-        return None;
+        return false;
     }
 
     let seq = &mut measure.sequences[0];
-
     if seq.content.is_empty() {
-        return None;
+        return false;
     }
 
     fn remove_last_blank(items: &mut Vec<crate::mnx::SequenceItem>) -> bool {
@@ -1011,9 +578,8 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
         false
     }
 
-    let removed = remove_last_blank(&mut seq.content);
-    if !removed {
-        return None;
+    if !remove_last_blank(&mut seq.content) {
+        return false;
     }
 
     if seq.content.is_empty() {
@@ -1022,111 +588,122 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
             doc.global.measures.remove(last_measure_idx);
         }
     }
+    true
+}
 
+/// If the final event in the last measure is blank (notes: []), removes it from the YAML.
+/// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
+pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !remove_last_blank_event_in_doc(&mut doc) {
+        return None;
+    }
     serde_saphyr::to_string(&doc).ok()
 }
 
-pub fn convert_rest_to_blank(yaml: &str, event_idx: usize) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let event_text = yaml.get(er.total_range.clone())?;
-
-    if let Some(rest_pos) = event_text.find("rest:") {
-        let abs_rest_pos = er.total_range.start + rest_pos;
-        let after_rest = &yaml[abs_rest_pos..];
-        let line_end_rel = after_rest.find('\n').unwrap_or(after_rest.len());
-        let abs_replace_end = abs_rest_pos + line_end_rel;
-
-        let mut res = yaml.to_string();
-        res.replace_range(abs_rest_pos..abs_replace_end, "notes: []");
-        return Some(res);
+pub fn convert_rest_to_blank_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    if ev.rest.is_none() {
+        return false;
     }
-    None
+    ev.rest = None;
+    true
+}
+
+pub fn convert_rest_to_blank(yaml: &str, event_idx: usize) -> Option<String> {
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !convert_rest_to_blank_in_doc(&mut doc, event_idx) {
+        return None;
+    }
+    serde_saphyr::to_string(&doc).ok()
+}
+
+pub fn convert_event_to_rest_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    if ev.rest.is_some() && ev.notes.is_empty() {
+        return false;
+    }
+    ev.notes.clear();
+    ev.rest = Some(crate::mnx::Rest {});
+    true
 }
 
 pub fn convert_event_to_rest(yaml: &str, event_idx: usize) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let event_text = yaml.get(er.total_range.clone())?;
-
-    // Find where notes: block starts, or if we have notes at all
-    let mut result = yaml.to_string();
-
-    // Find the indent of the event's first line
-    let first_line_start = event_text.find('-').unwrap_or(0);
-    let before_dash = &event_text[..first_line_start];
-    let indent_len = before_dash
-        .rfind('\n')
-        .map(|p| before_dash.len() - p - 1)
-        .unwrap_or(before_dash.len());
-    let indent = " ".repeat(indent_len + 2); // properties are usually indented 2 spaces from the dash
-
-    let mut to_replace_start = None;
-    let mut to_replace_end = None;
-
-    if let Some(notes_pos) = event_text.find("notes:") {
-        let abs_start = er.total_range.start + notes_pos;
-        to_replace_start = Some(abs_start);
-
-        // Find end of notes block
-        let block_end = if !er.note_ranges.is_empty() {
-            let last_note_range = er.note_ranges.last().unwrap();
-            let after_last_note = &yaml[last_note_range.end..er.total_range.end];
-            if let Some(nl) = after_last_note.find('\n') {
-                last_note_range.end + nl
-            } else {
-                er.total_range.end
-            }
-        } else {
-            let after_notes = &event_text[notes_pos..];
-            if let Some(nl) = after_notes.find('\n') {
-                abs_start + nl
-            } else {
-                er.total_range.end
-            }
-        };
-        to_replace_end = Some(block_end);
-    } else if event_text.contains("rest:") {
-        // Already a rest
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !convert_event_to_rest_in_doc(&mut doc, event_idx) {
         return None;
     }
-
-    let rest_line = format!("rest: {{}}");
-
-    if let (Some(start), Some(end)) = (to_replace_start, to_replace_end) {
-        result.replace_range(start..end, &rest_line);
-    } else {
-        // Just append rest: {} to the end of the event
-        result.insert_str(er.total_range.end, &format!("\n{}{}", indent, rest_line));
-    }
-
-    Some(result)
+    serde_saphyr::to_string(&doc).ok()
 }
 
-fn replace_event_duration_base(event_text: &str, new_base: &str) -> String {
-    let lines: Vec<&str> = event_text.lines().collect();
-    let mut new_lines = Vec::new();
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("- duration:") {
-            let indent = line.len() - line.trim_start().len();
-            new_lines.push(format!(
-                "{}- duration: {{ base: {} }}",
-                " ".repeat(indent),
-                new_base
-            ));
-        } else if trimmed.starts_with("duration:") {
-            let indent = line.len() - line.trim_start().len();
-            new_lines.push(format!(
-                "{}duration: {{ base: {} }}",
-                " ".repeat(indent),
-                new_base
-            ));
-        } else {
-            new_lines.push(line.to_string());
-        }
+pub fn create_tuplet_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    inner_multiple: u32,
+    outer_multiple: u32,
+    base: &str,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&crate::mnx::AstPath::TopLevel(m_idx, s_idx, i_idx)) = paths.get(event_idx) else {
+        return false;
+    };
+
+    let Some(seq) = doc
+        .parts
+        .first_mut()
+        .and_then(|p| p.measures.get_mut(m_idx))
+        .and_then(|m| m.sequences.get_mut(s_idx))
+    else {
+        return false;
+    };
+
+    let Some(item) = seq.content.get_mut(i_idx) else {
+        return false;
+    };
+    let crate::mnx::SequenceItem::Event(mut ev) = item.clone() else {
+        return false;
+    };
+
+    let base_dur = crate::mnx::Duration {
+        base: base.to_string(),
+        dots: None,
+        multiple: None,
+    };
+    ev.duration = base_dur.clone();
+
+    let mut content = Vec::with_capacity(inner_multiple as usize);
+    content.push(crate::mnx::SequenceItem::Event(ev));
+    for _ in 1..inner_multiple {
+        content.push(crate::mnx::SequenceItem::Event(new_rest_event(
+            base_dur.clone(),
+        )));
     }
-    new_lines.join("\n")
+
+    *item = crate::mnx::SequenceItem::Tuplet(crate::mnx::Tuplet {
+        item_type: Some("tuplet".to_string()),
+        inner: crate::mnx::TupletDuration {
+            duration: base_dur.clone(),
+            multiple: inner_multiple,
+        },
+        outer: crate::mnx::TupletDuration {
+            duration: base_dur,
+            multiple: outer_multiple,
+        },
+        content,
+    });
+    true
 }
 
 pub fn create_tuplet_in_yaml(
@@ -1136,121 +713,62 @@ pub fn create_tuplet_in_yaml(
     outer_multiple: u32,
     base: &str,
 ) -> Option<String> {
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let event_text = yaml.get(er.total_range.clone())?;
-
-    let first_line_start = event_text.find('-').unwrap_or(0);
-    let before_dash = &event_text[..first_line_start];
-    let indent_len = before_dash
-        .rfind('\n')
-        .map(|p| before_dash.len() - p - 1)
-        .unwrap_or(before_dash.len());
-    let dash_indent = " ".repeat(indent_len);
-    let prop_indent = " ".repeat(indent_len + 2);
-    let inner_dash_indent = " ".repeat(indent_len + 4);
-
-    let mut tuplet_yaml = String::new();
-    tuplet_yaml.push_str(&format!("{}- type: tuplet\n", dash_indent));
-    tuplet_yaml.push_str(&format!("{}inner:\n", prop_indent));
-    tuplet_yaml.push_str(&format!(
-        "{}duration: {{ base: {} }}\n",
-        inner_dash_indent, base
-    ));
-    tuplet_yaml.push_str(&format!(
-        "{}multiple: {}\n",
-        inner_dash_indent, inner_multiple
-    ));
-    tuplet_yaml.push_str(&format!("{}outer:\n", prop_indent));
-    tuplet_yaml.push_str(&format!(
-        "{}duration: {{ base: {} }}\n",
-        inner_dash_indent, base
-    ));
-    tuplet_yaml.push_str(&format!(
-        "{}multiple: {}\n",
-        inner_dash_indent, outer_multiple
-    ));
-    tuplet_yaml.push_str(&format!("{}content:\n", prop_indent));
-
-    let updated_event_text = replace_event_duration_base(event_text, base);
-    for line in updated_event_text.lines() {
-        tuplet_yaml.push_str(&format!("    {}\n", line));
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !create_tuplet_in_doc(&mut doc, event_idx, inner_multiple, outer_multiple, base) {
+        return None;
     }
+    serde_saphyr::to_string(&doc).ok()
+}
 
-    for _ in 1..inner_multiple {
-        tuplet_yaml.push_str(&format!(
-            "{}- duration: {{ base: {} }}\n",
-            inner_dash_indent, base
-        ));
-        tuplet_yaml.push_str(&format!("{}  rest: {{}}\n", inner_dash_indent));
+pub fn remove_tuplet_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
+    if doc.find_event_tuplet_info(event_idx).is_none() {
+        return false;
     }
+    let paths = doc.get_flattened_event_paths();
+    let Some(&crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _)) = paths.get(event_idx) else {
+        return false;
+    };
 
-    let mut result = yaml.to_string();
-    result.replace_range(er.total_range.clone(), tuplet_yaml.trim_end());
-    Some(result)
+    let Some(seq) = doc
+        .parts
+        .first_mut()
+        .and_then(|p| p.measures.get_mut(m_idx))
+        .and_then(|m| m.sequences.get_mut(s_idx))
+    else {
+        return false;
+    };
+
+    if let crate::mnx::SequenceItem::Tuplet(tuplet) = seq.content.remove(i_idx) {
+        seq.content.splice(i_idx..i_idx, tuplet.content);
+        true
+    } else {
+        false
+    }
 }
 
 pub fn remove_tuplet_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {
-    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
-    let info = doc.find_event_tuplet_info(event_idx)?;
-    let event_ranges = find_all_event_ranges(yaml);
-
-    let first_er = event_ranges.get(info.event_range.start)?;
-    let last_er = event_ranges.get(info.event_range.end.saturating_sub(1))?;
-
-    let before_first = &yaml[..first_er.total_range.start];
-    let tuplet_pos = before_first
-        .rfind("- type: tuplet")
-        .or_else(|| before_first.rfind("- type: \"tuplet\""))
-        .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
-
-    let tuplet_line_start = yaml[..tuplet_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let tuplet_indent = tuplet_pos - tuplet_line_start;
-
-    let inner_content_text = &yaml[first_er.total_range.start..last_er.total_range.end];
-
-    let first_inner_dash = inner_content_text.find('-').unwrap_or(0);
-    let inner_indent_len = inner_content_text[..first_inner_dash]
-        .rfind('\n')
-        .map(|p| inner_content_text[..first_inner_dash].len() - p - 1)
-        .unwrap_or(inner_content_text[..first_inner_dash].len());
-
-    let de_indent = inner_indent_len.saturating_sub(tuplet_indent);
-
-    let mut unwrapped_lines = Vec::new();
-    for line in inner_content_text.lines() {
-        if line.len() >= de_indent && line[..de_indent].trim().is_empty() {
-            unwrapped_lines.push(&line[de_indent..]);
-        } else {
-            unwrapped_lines.push(line.trim_start());
-        }
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !remove_tuplet_in_doc(&mut doc, event_idx) {
+        return None;
     }
-    let unwrapped_text = unwrapped_lines.join("\n");
-
-    let mut result = yaml.to_string();
-    result.replace_range(tuplet_line_start..last_er.total_range.end, &unwrapped_text);
-    Some(result)
+    serde_saphyr::to_string(&doc).ok()
 }
 
-pub fn fill_tuplet_rests_and_add_blank(yaml: &str, event_idx: usize) -> Option<(String, usize)> {
-    let mut current_yaml = yaml.to_string();
-    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&current_yaml).ok()?;
+pub fn fill_tuplet_rests_and_add_blank_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+) -> Option<usize> {
     let info = doc.find_event_tuplet_info(event_idx)?;
-
     let tuplet_end = info.event_range.end;
     let outer_base = info.tuplet.outer.duration.base.clone();
 
-    // Check if the current event is blank (has no notes and is not a rest)
-    let flat_events = doc
-        .parts
-        .first()?
-        .measures
-        .iter()
-        .flat_map(|m| m.sequences.iter())
-        .flat_map(|s| s.flattened_events())
-        .collect::<Vec<_>>();
-    let cur_is_blank = flat_events
-        .get(event_idx)
+    let paths = doc.get_flattened_event_paths();
+    let crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _) = *paths.get(event_idx)? else {
+        return None;
+    };
+
+    let cur_is_blank = doc
+        .get_event_at_path(paths[event_idx])
         .map(|e| e.notes.is_empty() && e.rest.is_none())
         .unwrap_or(false);
 
@@ -1260,83 +778,60 @@ pub fn fill_tuplet_rests_and_add_blank(yaml: &str, event_idx: usize) -> Option<(
         event_idx + 1
     };
 
-    // Fill remaining events in tuplet with rests in reverse order so indices remain stable
-    for idx in (convert_start..tuplet_end).rev() {
-        if let Some(updated) = convert_event_to_rest(&current_yaml, idx) {
-            current_yaml = updated;
+    for idx in convert_start..tuplet_end {
+        if let Some(ev) = doc.get_event_mut_at_path(paths[idx]) {
+            ev.notes.clear();
+            ev.rest = Some(crate::mnx::Rest {});
         }
     }
 
-    // Now insert a new blank note after the tuplet
-    let event_ranges = find_all_event_ranges(&current_yaml);
-    let last_er = event_ranges.get(tuplet_end.saturating_sub(1))?;
-
-    // Determine indentation for top-level sequence items from the tuplet header
-    let before_first = &current_yaml[..last_er.total_range.start];
-    let tuplet_pos = before_first
-        .rfind("- type: tuplet")
-        .or_else(|| before_first.rfind("- type: \"tuplet\""))
-        .or_else(|| before_first.rfind("- type: 'tuplet'"))?;
-    let tuplet_line_start = current_yaml[..tuplet_pos]
-        .rfind('\n')
-        .map(|p| p + 1)
-        .unwrap_or(0);
-    let tuplet_indent_len = tuplet_pos - tuplet_line_start;
-    let dash_indent = " ".repeat(tuplet_indent_len);
-
-    // Check if measure capacity allows adding note or requires a new measure
-    let current_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&current_yaml).ok()?;
-    let part = current_doc.parts.first()?;
-
-    // Find which measure contains the tuplet
-    let mut cur_e = 0;
-    let mut measure_idx = 0;
-    let mut is_last_event_in_measure = false;
-    for (m_i, measure) in part.measures.iter().enumerate() {
-        if let Some(seq) = measure.sequences.first() {
-            let count = seq.flattened_events().len();
-            if tuplet_end <= cur_e + count {
-                measure_idx = m_i;
-                is_last_event_in_measure = tuplet_end == cur_e + count;
-                break;
-            }
-            cur_e += count;
-        }
-    }
-
-    let is_last_measure = measure_idx == part.measures.len().saturating_sub(1);
     let outer_dur = crate::mnx::Duration {
-        base: outer_base.clone(),
+        base: outer_base,
         dots: None,
         multiple: None,
     };
-    let dur_beats = crate::validate::duration_to_quarter_beats(&outer_dur);
-    let time_sig = crate::validate::get_time_signature_for_measure(&current_doc, measure_idx);
-    let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
-    let seq_beats = part.measures[measure_idx]
+
+    let part_measures_len = doc.parts.first()?.measures.len();
+    let is_last_measure = m_idx == part_measures_len.saturating_sub(1);
+    let seq_items_len = doc.parts[0].measures[m_idx]
         .sequences
-        .first()
+        .get(s_idx)
+        .map(|s| s.content.len())
+        .unwrap_or(0);
+    let is_last_item_in_measure = i_idx + 1 == seq_items_len;
+
+    let dur_beats = crate::validate::duration_to_quarter_beats(&outer_dur);
+    let time_sig = crate::validate::get_time_signature_for_measure(doc, m_idx);
+    let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+    let seq_beats = doc.parts[0].measures[m_idx]
+        .sequences
+        .get(s_idx)
         .map(|s| s.total_beats())
         .unwrap_or(0.0);
 
-    if is_last_measure && is_last_event_in_measure && (seq_beats + dur_beats > max_beats + 1e-4) {
-        // Measure is full, add a new measure
-        if let Some(new_yaml) = add_measure_to_yaml(&current_yaml, &outer_dur) {
-            let new_total = find_all_event_ranges(&new_yaml).len();
-            return Some((new_yaml, new_total.saturating_sub(1)));
+    if is_last_measure && is_last_item_in_measure && (seq_beats + dur_beats > max_beats + 1e-4) {
+        if add_measure_to_doc(doc, &outer_dur) {
+            let new_total = doc.get_flattened_event_paths().len();
+            return Some(new_total.saturating_sub(1));
         }
+        return None;
     }
 
-    // Insert blank note right after the tuplet
-    let insert_text = format!(
-        "\n{}- duration: {{ base: {} }}\n{}  notes: []",
-        dash_indent, outer_base, dash_indent
-    );
-    let insert_pos = last_er.total_range.end;
-    current_yaml.insert_str(insert_pos, &insert_text);
+    doc.parts[0].measures[m_idx].sequences[s_idx]
+        .content
+        .insert(
+            i_idx + 1,
+            crate::mnx::SequenceItem::Event(new_blank_event(outer_dur)),
+        );
 
-    let new_event_idx = tuplet_end;
-    Some((current_yaml, new_event_idx))
+    Some(tuplet_end)
+}
+
+pub fn fill_tuplet_rests_and_add_blank(yaml: &str, event_idx: usize) -> Option<(String, usize)> {
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    let target_idx = fill_tuplet_rests_and_add_blank_in_doc(&mut doc, event_idx)?;
+    let new_yaml = serde_saphyr::to_string(&doc).ok()?;
+    Some((new_yaml, target_idx))
 }
 
 #[cfg(test)]
@@ -1376,279 +871,198 @@ parts:
     }
 }
 
+pub fn set_note_bend_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    string_val: u8,
+    bend_str: &str,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    let target_note = if let Some(idx) = ev.notes.iter().position(|n| n.string == Some(string_val))
+    {
+        ev.notes.get_mut(idx)
+    } else {
+        ev.notes.first_mut()
+    };
+    if let Some(note) = target_note {
+        note.bend = if bend_str.is_empty() {
+            None
+        } else {
+            Some(bend_str.to_string())
+        };
+        true
+    } else {
+        false
+    }
+}
+
 pub fn set_note_bend_in_yaml(
     yaml: &str,
     event_idx: usize,
     string_val: u8,
     bend_str: &str,
 ) -> String {
-    let event_ranges = find_all_event_ranges(yaml);
-    if let Some(er) = event_ranges.get(event_idx) {
-        // Find the note that corresponds to this string_val
-        let mut target_range_val = None;
-        for (_i, r) in er.note_ranges.iter().enumerate() {
-            let note_text = &yaml[r.clone()];
-            if let Some(s) = get_note_string_from_text(note_text) {
-                if s == string_val {
-                    target_range_val = Some(r.clone());
-                    break;
-                }
-            }
-        }
-
-        let range_to_use = target_range_val.unwrap_or(er.total_range.clone());
-        let mut result = yaml.to_string();
-        let note_text = &result[range_to_use.clone()];
-
-        // Remove existing bend if it exists
-        let mut text_without_bend = note_text.to_string();
-        if let Some(bend_start) = text_without_bend.find("bend: ") {
-            let mut bend_end = if let Some(end_idx) = text_without_bend[bend_start..].find('\n') {
-                bend_start + end_idx + 1
-            } else {
-                text_without_bend.len()
-            };
-            // Also consume any indentation spaces on the next line so we don't leave a dangling indent before the next property
-            while bend_end < text_without_bend.len()
-                && text_without_bend.as_bytes()[bend_end] == b' '
-            {
-                bend_end += 1;
-            }
-            text_without_bend.replace_range(bend_start..bend_end, "");
-        }
-
-        // Add new bend
-        if !bend_str.is_empty() {
-            let insert_point = if let Some(pos) = text_without_bend.find("pitch: ") {
-                pos
-            } else if let Some(pos) = text_without_bend.find("string: ") {
-                pos
-            } else {
-                0
-            };
-
-            // Find exact indentation of the line where we're inserting
-            if let Some(newline_pos) = text_without_bend[..insert_point].rfind('\n') {
-                let indent_str = &text_without_bend[newline_pos + 1..insert_point];
-                // if it contains a dash, we want to align after the dash
-                if let Some(_dash_pos) = indent_str.find("- ") {
-                    // indent should be spaces equivalent to length of indent_str up to and including dash_pos + 2
-                    // wait, we can just use spaces equal to the visual offset
-                    // let's just generate spaces
-                }
-            }
-
-            // Simpler robust approach: just count spaces immediately preceding `insert_point`
-            let mut spaces_count = 0;
-            let mut cursor = insert_point;
-            while cursor > 0 {
-                cursor -= 1;
-                let c = text_without_bend.chars().nth(cursor).unwrap();
-                if c == ' ' {
-                    spaces_count += 1;
-                } else if c == '-' {
-                    spaces_count += 1;
-                } else if c == '\n' {
-                    break;
-                } else {
-                    break;
-                }
-            }
-            let indent_str = " ".repeat(spaces_count);
-
-            text_without_bend.insert_str(
-                insert_point,
-                &format!("bend: \"{}\"\n{}", bend_str, indent_str),
-            );
-        }
-
-        result.replace_range(range_to_use, &text_without_bend);
-        return result;
+    let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml) else {
+        return yaml.to_string();
+    };
+    if !set_note_bend_in_doc(&mut doc, event_idx, string_val, bend_str) {
+        return yaml.to_string();
     }
-    yaml.to_string()
+    serde_saphyr::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
 }
-pub fn set_global_measure_property(yaml: &str, target_m_idx: usize, prop_name: &str, prop_value: &str) -> String {
-    let lines: Vec<&str> = yaml.lines().collect();
-    let mut in_global_section = false;
-    let mut in_global_measures = false;
-    let mut measures_header_line = None;
-    let mut m_idx = -1;
-    let mut measure_indent = 0usize;
-    
-    let mut first_measure_line = None;
-    let mut last_measure_line = None;
-    let mut last_global_line = None;
 
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let indent = line.len() - line.trim_start().len();
-
-        if trimmed == "global:" {
-            in_global_section = true;
-        } else if in_global_section && trimmed == "measures:" {
-            in_global_measures = true;
-            measures_header_line = Some(i);
-        } else if in_global_measures && trimmed.starts_with("- ") {
-            if measure_indent == 0 { measure_indent = indent; }
-            if indent == measure_indent {
-                m_idx += 1;
-                last_global_line = Some(i);
-                if m_idx == target_m_idx as i32 {
-                    first_measure_line = Some(i);
-                    last_measure_line = Some(i);
-                } else if m_idx > target_m_idx as i32 {
-                    break;
-                }
-            } else if m_idx == target_m_idx as i32 {
-                last_measure_line = Some(i);
-                last_global_line = Some(i);
-            } else if m_idx < target_m_idx as i32 {
-                last_global_line = Some(i);
-            }
-        } else if in_global_measures && m_idx >= 0 {
-            if !trimmed.is_empty() && indent > measure_indent {
-                if m_idx == target_m_idx as i32 {
-                    last_measure_line = Some(i);
-                }
-                last_global_line = Some(i);
-            } else if !trimmed.is_empty() && indent <= measure_indent {
-                break;
-            }
-        }
+pub fn set_global_measure_property_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    target_m_idx: usize,
+    prop_name: &str,
+    prop_value: &str,
+) {
+    while doc.global.measures.len() <= target_m_idx {
+        doc.global
+            .measures
+            .push(crate::mnx::GlobalMeasure::default());
     }
-
-    if let Some(start) = first_measure_line {
-        let end = last_measure_line.unwrap_or(start);
-        
-        let mut existing_idx = None;
-        for i in start..=end {
-            let trimmed = lines[i].trim();
-            if trimmed.starts_with(&format!("{}:", prop_name)) {
-                existing_idx = Some(i);
-                break;
-            }
+    let gm = &mut doc.global.measures[target_m_idx];
+    match prop_name {
+        "repeatStart" => {
+            gm.repeat_start = Some(crate::mnx::RepeatStart {});
         }
-        
-        let child_indent = " ".repeat(measure_indent + 2);
-        let prop_line = format!("{}{}: {}", child_indent, prop_name, prop_value);
-        
-        let mut result = String::new();
-        if let Some(e_idx) = existing_idx {
-            // Replace existing
-            for i in 0..e_idx {
-                result.push_str(lines[i]); result.push('\n');
-            }
-            result.push_str(&prop_line); result.push('\n');
-            for i in (e_idx + 1)..lines.len() {
-                result.push_str(lines[i]); result.push('\n');
-            }
-        } else if lines[start].trim() == "- {}" {
-            // Replace the empty "- {}"
-            for i in 0..start {
-                result.push_str(lines[i]); result.push('\n');
-            }
-            result.push_str(&format!("{}- {}: {}", " ".repeat(measure_indent), prop_name, prop_value));
-            result.push('\n');
-            for i in (start + 1)..lines.len() {
-                result.push_str(lines[i]); result.push('\n');
-            }
-        } else {
-            // Insert after the start line
-            for i in 0..=start {
-                result.push_str(lines[i]); result.push('\n');
-            }
-            result.push_str(&prop_line); result.push('\n');
-            for i in (start + 1)..lines.len() {
-                result.push_str(lines[i]); result.push('\n');
-            }
+        "repeatEnd" => {
+            gm.repeat_end = serde_saphyr::from_str::<crate::mnx::RepeatEnd>(prop_value)
+                .ok()
+                .or(Some(crate::mnx::RepeatEnd { times: 2 }));
         }
-        return result.trim_end_matches('\n').to_string() + if yaml.ends_with('\n') { "\n" } else { "" };
-    }
-    
-    // If measure not found, pad global measures up to target_m_idx
-    if in_global_measures {
-        let insert_after = last_global_line.or(measures_header_line).unwrap_or(0);
-        let m_indent_str = " ".repeat(if measure_indent > 0 { measure_indent } else { 4 });
-        let mut result = String::new();
-        for i in 0..=insert_after {
-            result.push_str(lines[i]); result.push('\n');
+        "barline" => {
+            gm.barline = serde_saphyr::from_str::<crate::mnx::Barline>(prop_value).ok();
         }
-        for curr in (m_idx + 1)..=(target_m_idx as i32) {
-            if curr == target_m_idx as i32 {
-                result.push_str(&format!("{}- {}: {}\n", m_indent_str, prop_name, prop_value));
+        "ending" => {
+            gm.ending = serde_saphyr::from_str::<crate::mnx::Ending>(prop_value).ok();
+        }
+        "systemBreak" => {
+            gm.system_break = if prop_value.trim() == "true" {
+                Some(true)
             } else {
-                result.push_str(&format!("{}- {{}}\n", m_indent_str));
+                None
+            };
+        }
+        "pageBreak" => {
+            gm.page_break = if prop_value.trim() == "true" {
+                Some(true)
+            } else {
+                None
+            };
+        }
+        "number" => {
+            gm.number = prop_value.trim().parse::<u32>().ok();
+        }
+        _ => {}
+    }
+}
+
+pub fn set_global_measure_property(
+    yaml: &str,
+    target_m_idx: usize,
+    prop_name: &str,
+    prop_value: &str,
+) -> String {
+    let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml) else {
+        return yaml.to_string();
+    };
+    set_global_measure_property_in_doc(&mut doc, target_m_idx, prop_name, prop_value);
+    serde_saphyr::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
+}
+
+pub fn insert_grace_before_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
+    if doc.find_event_grace_info(event_idx).is_some() {
+        return false;
+    }
+    if event_idx > 0 {
+        if let Some(prev_info) = doc.find_event_grace_info(event_idx - 1) {
+            if prev_info.event_range.end == event_idx {
+                return false;
             }
         }
-        for i in (insert_after + 1)..lines.len() {
-            result.push_str(lines[i]); result.push('\n');
-        }
-        return result.trim_end_matches('\n').to_string() + if yaml.ends_with('\n') { "\n" } else { "" };
     }
 
-    yaml.to_string()
+    let paths = doc.get_flattened_event_paths();
+    let Some(&crate::mnx::AstPath::TopLevel(m_idx, s_idx, i_idx)) = paths.get(event_idx) else {
+        return false;
+    };
+
+    let grace_dur = crate::mnx::Duration {
+        base: "eighth".to_string(),
+        dots: None,
+        multiple: None,
+    };
+    let grace = crate::mnx::Grace {
+        item_type: "grace".to_string(),
+        content: vec![crate::mnx::SequenceItem::Event(new_rest_event(grace_dur))],
+    };
+
+    let Some(part) = doc.parts.first_mut() else {
+        return false;
+    };
+    let Some(measure) = part.measures.get_mut(m_idx) else {
+        return false;
+    };
+    let Some(seq) = measure.sequences.get_mut(s_idx) else {
+        return false;
+    };
+    seq.content
+        .insert(i_idx, crate::mnx::SequenceItem::Grace(grace));
+    true
 }
+
 pub fn insert_grace_before_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {
-    if let Ok(doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml) {
-        if doc.find_event_grace_info(event_idx).is_some() {
-            return None;
-        }
-        if event_idx > 0 {
-            if let Some(prev_info) = doc.find_event_grace_info(event_idx - 1) {
-                if prev_info.event_range.end == event_idx {
-                    return None;
-                }
-            }
-        }
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !insert_grace_before_in_doc(&mut doc, event_idx) {
+        return None;
     }
-    let event_ranges = find_all_event_ranges(yaml);
-    let er = event_ranges.get(event_idx)?;
-    let event_text = yaml.get(er.total_range.clone())?;
-
-    let first_line_start = event_text.find('-').unwrap_or(0);
-    let before_dash = &event_text[..first_line_start];
-    let indent_len = before_dash
-        .rfind('\n')
-        .map(|p| before_dash.len() - p - 1)
-        .unwrap_or(before_dash.len());
-    
-    let dash_indent = " ".repeat(indent_len);
-    let prop_indent = " ".repeat(indent_len + 2);
-    let inner_dash_indent = " ".repeat(indent_len + 4);
-
-    let mut grace_yaml = String::new();
-    grace_yaml.push_str(&format!("{}- type: grace\n", dash_indent));
-    grace_yaml.push_str(&format!("{}content:\n", prop_indent));
-    grace_yaml.push_str(&format!("{}- duration: {{ base: eighth }}\n", inner_dash_indent));
-    grace_yaml.push_str(&format!("{}  rest: {{}}\n", inner_dash_indent));
-    
-    let mut result = yaml.to_string();
-    result.insert_str(er.total_range.start, &grace_yaml);
-    Some(result)
+    serde_saphyr::to_string(&doc).ok()
 }
+
+pub fn append_blank_note_to_grace_block_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    e_idx: usize,
+) -> bool {
+    if doc.find_event_grace_info(e_idx).is_none() {
+        return false;
+    }
+    let paths = doc.get_flattened_event_paths();
+    let Some(&crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _)) = paths.get(e_idx) else {
+        return false;
+    };
+
+    let grace_dur = crate::mnx::Duration {
+        base: "eighth".to_string(),
+        dots: None,
+        multiple: None,
+    };
+    if let Some(crate::mnx::SequenceItem::Grace(g)) = doc
+        .parts
+        .first_mut()
+        .and_then(|p| p.measures.get_mut(m_idx))
+        .and_then(|m| m.sequences.get_mut(s_idx))
+        .and_then(|s| s.content.get_mut(i_idx))
+    {
+        g.content
+            .push(crate::mnx::SequenceItem::Event(new_rest_event(grace_dur)));
+        true
+    } else {
+        false
+    }
+}
+
 pub fn append_blank_note_to_grace_block_in_yaml(yaml: &str, e_idx: usize) -> Option<String> {
-    let doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
-    let info = doc.find_event_grace_info(e_idx)?;
-    let event_ranges = find_all_event_ranges(yaml);
-    
-    // We want to append to the end of the grace block's content array.
-    // The last event in the grace block is at info.event_range.end - 1.
-    let last_er = event_ranges.get(info.event_range.end - 1)?;
-    let last_event_text = yaml.get(last_er.total_range.clone())?;
-    
-    let first_line_start = last_event_text.find('-').unwrap_or(0);
-    let before_dash = &last_event_text[..first_line_start];
-    let indent_len = before_dash
-        .rfind('\n')
-        .map(|p| before_dash.len() - p - 1)
-        .unwrap_or(before_dash.len());
-    let inner_dash_indent = " ".repeat(indent_len);
-    
-    let mut new_event_yaml = String::new();
-    new_event_yaml.push_str(&format!("\n{}- duration: {{ base: eighth }}\n", inner_dash_indent));
-    new_event_yaml.push_str(&format!("{}  rest: {{}}", inner_dash_indent));
-    
-    let mut result = yaml.to_string();
-    result.insert_str(last_er.total_range.end, &new_event_yaml);
-    Some(result)
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !append_blank_note_to_grace_block_in_doc(&mut doc, e_idx) {
+        return None;
+    }
+    serde_saphyr::to_string(&doc).ok()
 }

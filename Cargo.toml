@@ -15,4 +15,11 @@ midir = "0.10"
 printpdf = "0.7"
 epaint_default_fonts = "0.36"
 
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+
 

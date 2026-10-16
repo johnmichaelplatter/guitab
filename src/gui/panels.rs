@@ -174,7 +174,12 @@ impl MnxEditorApp {
             let mut arpeggio_up_clicked = false;
             let mut arpeggio_down_clicked = false;
             let mut harmonic_clicked = false;
-            let has_text_focus = ui.memory(|m| m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor")));
+            let has_text_focus = self.is_editing_lyric
+                || self.active_dialog != ActiveDialog::None
+                || ui.memory(|m| {
+                    m.has_focus(egui::Id::new("bpm_input"))
+                        || m.has_focus(egui::Id::new("yaml_source_editor"))
+                });
 
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Duration:").strong());
@@ -964,7 +969,8 @@ impl MnxEditorApp {
                 ui.label("PB Range: ±");
                 let mut pb_range_val = self.pitch_bend_range as i32;
                 if ui.add(egui::DragValue::new(&mut pb_range_val).range(1..=48).speed(0.2)).on_hover_text("Pitch bend range in semitones (1 - 48)").changed() {
-                    self.pitch_bend_range = pb_range_val.clamp(1, 48) as u8;
+                    let new_pb = pb_range_val.clamp(1, 48) as u8;
+                    self.set_pitch_bend_range_in_yaml(new_pb);
                 }
                 ui.label("st");
 
@@ -982,13 +988,13 @@ impl MnxEditorApp {
                         .map(|p| p.num_strings())
                         .unwrap_or(6) as u8;
                     if self.is_mpe_mode {
-                        self.pitch_bend_range = 48;
+                        self.set_pitch_bend_range_in_yaml(48);
                         self.string_channel_map.clear();
                         for s in 1..=num_strings {
                             self.string_channel_map.insert(s, s + 1);
                         }
                     } else {
-                        self.pitch_bend_range = 2;
+                        self.set_pitch_bend_range_in_yaml(2);
                         self.string_channel_map.clear();
                         for s in 1..=num_strings {
                             self.string_channel_map.insert(s, s);
@@ -1024,7 +1030,14 @@ impl MnxEditorApp {
                                 6 => ("E", 2),
                                 7 => ("B", 1),
                                 8 => ("F#", 1),
-                                _ => ("", 0),
+                                9 => ("C#", 1),
+                                10 => ("G#", 0),
+                                11 => ("D#", 0),
+                                12 => ("A#", 0),
+                                13 => ("F", 0),
+                                14 => ("C", 0),
+                                15 => ("G", 0),
+                                _ => ("E", 2),
                             };
                             tunings_text.push(step.to_string());
                             tunings_octave.push(octave);

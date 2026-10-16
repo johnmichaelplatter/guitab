@@ -460,6 +460,7 @@ pub struct Tempo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub bpm: f64,
+    #[serde(with = "flow_req")]
     pub value: Duration,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
@@ -493,6 +494,12 @@ pub struct Instrument {
         skip_serializing_if = "Option::is_none"
     )]
     pub fret_step_multiplier: Option<u8>,
+    #[serde(
+        rename = "pitchBendRange",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pitch_bend_range: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capo: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -570,9 +577,17 @@ pub struct Grace {
     pub content: Vec<SequenceItem>,
 }
 
+fn default_tuplet_type() -> Option<String> {
+    Some("tuplet".to_string())
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Tuplet {
-    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "type",
+        default = "default_tuplet_type",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub item_type: Option<String>,
     pub inner: TupletDuration,
     pub outer: TupletDuration,
@@ -754,8 +769,8 @@ impl Part {
     pub fn get_string_tuning(&self, string: u8) -> Option<Pitch> {
         if let Some(inst) = &self.instrument {
             if let Some(tunings) = &inst.tuning {
-                if let Some(t) = tunings.iter().find(|t| t.string == string) {
-                    return Some(t.pitch.clone());
+                if !tunings.is_empty() {
+                    return tunings.iter().find(|t| t.string == string).map(|t| t.pitch.clone());
                 }
             }
         }

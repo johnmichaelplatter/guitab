@@ -76,6 +76,7 @@ pub enum PlaybackEventKind {
     Tempo(u32),
     Midi { channel: u4, message: MidiMessage },
     EventMarker(usize),
+    EndOfTrack,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +90,7 @@ enum InternalEventKind {
     Tempo(u32),
     Midi { channel: u4, message: MidiMessage },
     EventMarker(usize),
+    EndOfTrack,
 }
 
 pub struct PlaybackTrackGenerator<'a> {
@@ -907,6 +909,13 @@ impl<'a> PlaybackTrackGenerator<'a> {
                 },
             });
         }
+
+        if final_ticks > 0 {
+            self.abs_events.push(InternalAbsoluteEvent {
+                time_ticks: final_ticks,
+                kind: InternalEventKind::EndOfTrack,
+            });
+        }
     }
 
     fn resolve_deltas(mut self) -> Vec<PlaybackEvent> {
@@ -933,6 +942,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
                     playback_events.push(PlaybackEvent {
                         delta_ticks: delta,
                         kind: PlaybackEventKind::EventMarker(idx),
+                    });
+                }
+                InternalEventKind::EndOfTrack => {
+                    playback_events.push(PlaybackEvent {
+                        delta_ticks: delta,
+                        kind: PlaybackEventKind::EndOfTrack,
                     });
                 }
             }
@@ -1171,8 +1186,8 @@ pub fn generate_midi<'a>(doc: &MnxDocument, options: MidiOptions) -> Smf<'a> {
                 });
                 accumulated_delta = 0;
             }
-            PlaybackEventKind::EventMarker(_) => {
-                // Internal to player sequencer; omit from standard SMF
+            PlaybackEventKind::EventMarker(_) | PlaybackEventKind::EndOfTrack => {
+                // Internal to player sequencer; omit from standard SMF (accumulated_delta is carried into EndOfTrack below)
             }
         }
     }
@@ -1253,10 +1268,22 @@ pub struct NotePreview {
     pub velocity: midly::num::u7,
 }
 
+struct CachedMidiConnection {
+    port_index: usize,
+    conn: midir::MidiOutputConnection,
+}
+
 pub struct MidiPlayer {
     stop_signal: std::sync::Arc<std::sync::atomic::AtomicBool>,
     current_event: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    connection: std::sync::Arc<std::sync::Mutex<Option<CachedMidiConnection>>>,
     handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for MidiPlayer {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl MidiPlayer {
@@ -1264,8 +1291,32 @@ impl MidiPlayer {
         Self {
             stop_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_event: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1)),
+            connection: std::sync::Arc::new(std::sync::Mutex::new(None)),
             handle: None,
         }
+    }
+
+    fn ensure_connection(&self, port_index: usize) -> Result<(), String> {
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+        if let Some(cached) = guard.as_ref() {
+            if cached.port_index == port_index {
+                return Ok(());
+            }
+        }
+        let midi_out = midir::MidiOutput::new("mnx_tab_cli_player")
+            .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
+        let ports = midi_out.ports();
+        let port = ports
+            .get(port_index)
+            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
+        let conn = midi_out
+            .connect(port, "mnx_output")
+            .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
+        *guard = Some(CachedMidiConnection { port_index, conn });
+        Ok(())
     }
 
     pub fn is_playing(&self) -> bool {
@@ -1292,10 +1343,11 @@ impl MidiPlayer {
 
     pub fn stop(&mut self) {
         self.stop_signal
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.current_event
-            .store(-1, std::sync::atomic::Ordering::Relaxed);
+            .store(-1, std::sync::atomic::Ordering::SeqCst);
         if let Some(h) = self.handle.take() {
+            h.thread().unpark();
             let _ = h.join();
         }
     }
@@ -1307,19 +1359,9 @@ impl MidiPlayer {
         port_index: usize,
     ) -> Result<(), String> {
         self.stop();
+        self.ensure_connection(port_index)?;
 
         let (track, ppq) = generate_playback_track(doc, options);
-
-        let midi_out = midir::MidiOutput::new("mnx_tab_cli_player")
-            .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
-        let ports = midi_out.ports();
-        let port = ports
-            .get(port_index)
-            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
-
-        let mut conn_out = midi_out
-            .connect(port, "mnx_playback")
-            .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
 
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.stop_signal = stop_flag.clone();
@@ -1327,31 +1369,34 @@ impl MidiPlayer {
         let current_event_tracker = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1));
         self.current_event = current_event_tracker.clone();
 
+        let conn_arc = self.connection.clone();
+
         let handle = std::thread::spawn(move || {
             let mut tempo_micros_per_beat = 500_000.0_f64;
+            let mut next_deadline = std::time::Instant::now();
 
             for event in track {
-                if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
 
-                // Sleep for delta time
                 let delta_ticks = event.delta_ticks as f64;
                 if delta_ticks > 0.0 {
                     let micros = delta_ticks * (tempo_micros_per_beat / ppq);
-                    let sleep_dur = std::time::Duration::from_micros(micros.round() as u64);
+                    next_deadline += std::time::Duration::from_micros(micros.round() as u64);
 
-                    // Sleep in small chunks of 5ms to stay responsive to stop requests
-                    let start_sleep = std::time::Instant::now();
-                    while start_sleep.elapsed() < sleep_dur {
-                        if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    loop {
+                        if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
                             break;
                         }
-                        let rem = sleep_dur.saturating_sub(start_sleep.elapsed());
-                        std::thread::sleep(rem.min(std::time::Duration::from_millis(5)));
+                        let now = std::time::Instant::now();
+                        if now >= next_deadline {
+                            break;
+                        }
+                        std::thread::park_timeout(next_deadline - now);
                     }
 
-                    if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
                         break;
                     }
                 }
@@ -1363,21 +1408,29 @@ impl MidiPlayer {
                     PlaybackEventKind::Midi { channel, message } => {
                         let bytes = serialize_midi_message(channel, &message);
                         if !bytes.is_empty() {
-                            let _ = conn_out.send(&bytes);
+                            if let Ok(mut guard) = conn_arc.lock() {
+                                if let Some(cached) = guard.as_mut() {
+                                    let _ = cached.conn.send(&bytes);
+                                }
+                            }
                         }
                     }
                     PlaybackEventKind::EventMarker(idx) => {
                         current_event_tracker
                             .store(idx as i64, std::sync::atomic::Ordering::Relaxed);
                     }
+                    PlaybackEventKind::EndOfTrack => {}
                 }
             }
 
-            // Send All Notes Off (CC 123) and Reset All Controllers (CC 121) to all 16 channels on stop/finish
-            for ch in 0..16 {
-                let status_cc = 0xB0 | ch;
-                let _ = conn_out.send(&[status_cc, 123, 0]); // All notes off
-                let _ = conn_out.send(&[status_cc, 121, 0]); // Reset controllers
+            if let Ok(mut guard) = conn_arc.lock() {
+                if let Some(cached) = guard.as_mut() {
+                    for ch in 0..16 {
+                        let status_cc = 0xB0 | ch;
+                        let _ = cached.conn.send(&[status_cc, 123, 0]);
+                        let _ = cached.conn.send(&[status_cc, 121, 0]);
+                    }
+                }
             }
 
             current_event_tracker.store(-1, std::sync::atomic::Ordering::Relaxed);
@@ -1402,74 +1455,75 @@ impl MidiPlayer {
             return Ok(());
         }
 
-        let midi_out = midir::MidiOutput::new("mnx_tab_cli_preview")
-            .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
-        let ports = midi_out.ports();
-        let port = ports
-            .get(port_index)
-            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
+        self.ensure_connection(port_index)?;
 
-        let mut conn_out = midi_out
-            .connect(port, "mnx_preview")
-            .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
-
-        if is_mpe {
-            send_mpe_configuration(&mut conn_out, member_channels.min(15));
-        }
-
-        // Send pitch bend sensitivity RPN to channels involved
-        for n in &notes {
-            let ch = n.channel.as_int();
-            let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
-            let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
-            let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
-            let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
-        }
-
-        // Send Pitch Bend and Note On messages immediately
-        for n in &notes {
-            if let Some(pb_val) = n.pitch_bend {
-                let pb_msg = midly::MidiMessage::PitchBend {
-                    bend: midly::PitchBend(midly::num::u14::from(pb_val)),
-                };
-                let bytes = serialize_midi_message(n.channel, &pb_msg);
-                if !bytes.is_empty() {
-                    let _ = conn_out.send(&bytes);
+        if let Ok(mut guard) = self.connection.lock() {
+            if let Some(cached) = guard.as_mut() {
+                let conn_out = &mut cached.conn;
+                if is_mpe {
+                    send_mpe_configuration(conn_out, member_channels.min(15));
                 }
-            }
-            let note_on = midly::MidiMessage::NoteOn {
-                key: n.key,
-                vel: n.velocity,
-            };
-            let bytes = serialize_midi_message(n.channel, &note_on);
-            if !bytes.is_empty() {
-                let _ = conn_out.send(&bytes);
+
+                for n in &notes {
+                    let ch = n.channel.as_int();
+                    let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
+                    let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
+                    let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
+                    let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
+                }
+
+                for n in &notes {
+                    if let Some(pb_val) = n.pitch_bend {
+                        let pb_msg = midly::MidiMessage::PitchBend {
+                            bend: midly::PitchBend(midly::num::u14::from(pb_val)),
+                        };
+                        let bytes = serialize_midi_message(n.channel, &pb_msg);
+                        if !bytes.is_empty() {
+                            let _ = conn_out.send(&bytes);
+                        }
+                    }
+                    let note_on = midly::MidiMessage::NoteOn {
+                        key: n.key,
+                        vel: n.velocity,
+                    };
+                    let bytes = serialize_midi_message(n.channel, &note_on);
+                    if !bytes.is_empty() {
+                        let _ = conn_out.send(&bytes);
+                    }
+                }
             }
         }
 
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.stop_signal = stop_flag.clone();
+        let conn_arc = self.connection.clone();
 
         let handle = std::thread::spawn(move || {
-            let sleep_dur = std::time::Duration::from_millis(duration_ms);
-            let start_sleep = std::time::Instant::now();
-            while start_sleep.elapsed() < sleep_dur {
-                if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(duration_ms);
+            loop {
+                if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
-                let rem = sleep_dur.saturating_sub(start_sleep.elapsed());
-                std::thread::sleep(rem.min(std::time::Duration::from_millis(10)));
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                std::thread::park_timeout(deadline - now);
             }
 
-            // Send Note Off for all notes and reset pitch bend
-            for n in &notes {
-                let note_off = midly::MidiMessage::NoteOff {
-                    key: n.key,
-                    vel: midly::num::u7::from(64),
-                };
-                let bytes = serialize_midi_message(n.channel, &note_off);
-                if !bytes.is_empty() {
-                    let _ = conn_out.send(&bytes);
+            if let Ok(mut guard) = conn_arc.lock() {
+                if let Some(cached) = guard.as_mut() {
+                    for n in &notes {
+                        let note_off = midly::MidiMessage::NoteOff {
+                            key: n.key,
+                            vel: midly::num::u7::from(64),
+                        };
+                        let bytes = serialize_midi_message(n.channel, &note_off);
+                        if !bytes.is_empty() {
+                            let _ = cached.conn.send(&bytes);
+                        }
+                    }
                 }
             }
         });

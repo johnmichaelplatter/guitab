@@ -5,22 +5,20 @@ use eframe::egui::{self};
 impl MnxEditorApp {
 
     pub(crate) fn action_remove_tempo_change(&mut self, target_id: &str) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             for measure in &mut doc.global.measures {
                 measure.tempo_changes.retain(|tc| tc.target.as_deref() != Some(target_id));
                 measure.tempos.retain(|t| t.id.as_deref() != Some(target_id));
             }
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-            }
-        }
+            Some(())
+        });
     }
 
     pub(crate) fn action_insert_tempo_change(&mut self, event_idx: usize, end_bpm: f64, dur_beats: f64, bend_str: &str, existing_target_id: Option<String>) {
         if let Some(tid) = existing_target_id {
             self.action_remove_tempo_change(&tid);
         }
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             let mut start_m_idx = 0;
             let mut start_offset = 0.0;
             let mut found = false;
@@ -131,14 +129,12 @@ impl MnxEditorApp {
             };
             
             doc.global.measures[start_m_idx].tempo_changes.push(tempo_change);
-
-            let new_yaml = serde_saphyr::to_string(&doc).unwrap();
-            self.update_yaml(new_yaml);
-        }
+            Some(())
+        });
     }
 
     pub(crate) fn insert_tempo(&mut self, bpm: f64, duration_value: &str, dots: u32, event_idx: usize) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             let mut target_m_idx = 0;
             let mut sum_quarter_beats = 0.0;
             let mut found = false;
@@ -211,11 +207,8 @@ impl MnxEditorApp {
             } else {
                 tempos.push(tempo);
             }
-            
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-            }
-        }
+            Some(())
+        });
     }
 
 
@@ -554,10 +547,7 @@ impl MnxEditorApp {
             self.editing_string = Some(s);
         }
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 
     pub fn is_selected_note_tapped(&self) -> bool {
@@ -634,6 +624,7 @@ impl MnxEditorApp {
         false
     }
 
+    #[allow(dead_code)]
     pub fn update_yaml_and_clean_ties(&mut self, new_yaml: String) {
         if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&new_yaml) {
             doc.clean_dangling_ties();
@@ -650,11 +641,13 @@ impl MnxEditorApp {
 
     pub fn convert_selected_to_rest(&mut self) {
         if let Some(e_idx) = self.selected_event_idx {
-            if let Some(new_yaml) =
-                crate::yaml_editor::convert_event_to_rest(&self.yaml_text, e_idx)
-            {
-                self.update_yaml_and_clean_ties(new_yaml);
-            }
+            self.mutate_doc_and_clean_ties(|doc| {
+                if crate::yaml_editor::convert_event_to_rest_in_doc(doc, e_idx) {
+                    Some(())
+                } else {
+                    None
+                }
+            });
             if self.is_editing_fret {
                 self.is_editing_fret = false;
                 self.editing_fret_buf.clear();
@@ -680,11 +673,9 @@ impl MnxEditorApp {
                 };
             } else {
                 if self.is_editing_fret {
-                    if let Some((new_yaml, new_idx)) =
-                        crate::yaml_editor::fill_tuplet_rests_and_add_blank(&self.yaml_text, e_idx)
-                    {
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
+                    if let Some(new_idx) = self.mutate_doc(|doc| {
+                        crate::yaml_editor::fill_tuplet_rests_and_add_blank_in_doc(doc, e_idx)
+                    }) {
                         self.selected_event_idx = Some(new_idx);
                         self.is_editing_fret = true;
                         self.editing_fret_buf.clear();
@@ -713,12 +704,13 @@ impl MnxEditorApp {
                 base: new_base.to_string(),
                 dots: cur_dur.dots,
             };
-            if let Some(new_yaml) =
-                update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration)
-            {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
+            self.mutate_doc(|doc| {
+                if update_event_duration_in_doc(doc, e_idx, &new_duration) {
+                    Some(())
+                } else {
+                    None
+                }
+            });
         }
     }
 
@@ -749,12 +741,13 @@ impl MnxEditorApp {
                 },
                 dots: if is_dotted { None } else { Some(1) },
             };
-            if let Some(new_yaml) =
-                update_event_duration_in_yaml(&self.yaml_text, e_idx, &new_duration)
-            {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
+            self.mutate_doc(|doc| {
+                if update_event_duration_in_doc(doc, e_idx, &new_duration) {
+                    Some(())
+                } else {
+                    None
+                }
+            });
         }
     }
 
@@ -773,14 +766,17 @@ impl MnxEditorApp {
                 dots: None,
             });
 
-        println!("Adding measure to yaml...");
-        if let Some(new_yaml) = add_measure_to_yaml(&self.yaml_text, &last_duration) {
-            println!("Updating yaml...");
-            self.update_yaml(new_yaml);
-            println!("Process and render...");
-            self.process_and_render();
-
-            let total_events = find_all_event_ranges(&self.yaml_text).len();
+        if self
+            .mutate_doc(|doc| {
+                if add_measure_to_doc(doc, &last_duration) {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .is_some()
+        {
+            let total_events = self.cached_event_ranges.len();
             if total_events > 0 {
                 self.selected_event_idx = Some(total_events - 1);
             }
@@ -874,10 +870,7 @@ impl MnxEditorApp {
         let part = doc.parts.first_mut().unwrap();
         crate::rebar::rebar_part(part, &mut doc.global.measures);
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 
     pub fn is_selected_event_strummed(&self, dir: &str) -> bool {
@@ -955,10 +948,7 @@ impl MnxEditorApp {
                 }
             }
         }
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 
     pub fn action_toggle_accent(&mut self) {
@@ -995,10 +985,7 @@ impl MnxEditorApp {
                 }
             }
         }
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
     pub fn action_add_slur(&mut self) {
         let event_idx = match self.selected_event_idx {
@@ -1063,10 +1050,7 @@ impl MnxEditorApp {
         }
 
         if toggled_off {
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
+            self.apply_mutated_doc(doc);
             return;
         }
 
@@ -1116,10 +1100,7 @@ impl MnxEditorApp {
                 });
             }
 
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
+            self.apply_mutated_doc(doc);
         } else {
             // No notes following on same string.
             self.pending_slur = Some((event_idx, cur_string));
@@ -1195,10 +1176,7 @@ impl MnxEditorApp {
         }
 
         if toggled_off {
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
+            self.apply_mutated_doc(doc);
             return;
         }
 
@@ -1267,10 +1245,7 @@ impl MnxEditorApp {
                     }
                 }
 
-                if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
+                self.apply_mutated_doc(doc);
                 return;
             }
         }
@@ -1515,10 +1490,7 @@ impl MnxEditorApp {
             });
         }
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 
     pub fn action_toggle_tap(&mut self) {
@@ -1603,10 +1575,7 @@ impl MnxEditorApp {
             self.editing_string = Some(s);
         }
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 
     pub fn action_toggle_harmonic(&mut self) {
@@ -1683,10 +1652,7 @@ impl MnxEditorApp {
             }
             self.selected_note_idx_in_event = Some(note_idx);
             self.editing_string = Some(string_num);
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
+            self.apply_mutated_doc(doc);
             return;
         }
 
@@ -1723,10 +1689,7 @@ impl MnxEditorApp {
             }
             self.selected_note_idx_in_event = Some(note_idx);
             self.editing_string = Some(string_num);
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
+            self.apply_mutated_doc(doc);
         } else {
             self.active_dialog = ActiveDialog::NaturalHarmonicPrompt {
                 event_idx,
@@ -1771,10 +1734,7 @@ impl crate::gui::MnxEditorApp {
                 note.muted = if is_muted { None } else { Some(true) };
             }
         }
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 }
 
@@ -1903,10 +1863,7 @@ impl crate::gui::MnxEditorApp {
                 });
         }
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 }
 
@@ -1929,10 +1886,13 @@ impl crate::gui::MnxEditorApp {
                         }
                     }
                 }
-                if let Some(new_yaml) = crate::yaml_editor::insert_grace_before_in_yaml(&self.yaml_text, e_idx) {
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
+                self.mutate_doc(|doc| {
+                    if crate::yaml_editor::insert_grace_before_in_doc(doc, e_idx) {
+                        Some(())
+                    } else {
+                        None
+                    }
+                });
             }
         }
     }
@@ -1993,27 +1953,22 @@ impl crate::gui::MnxEditorApp {
             return;
         }
 
-        doc.clean_dangling_ties();
+        self.apply_mutated_doc_and_clean_ties(doc);
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-
-            let total_events = crate::yaml_editor::find_all_event_ranges(&self.yaml_text).len();
-            if total_events == 0 {
-                self.selected_event_idx = None;
-            } else if e_idx < total_events {
-                self.selected_event_idx = Some(e_idx);
-            } else {
-                self.selected_event_idx = Some(total_events - 1);
-            }
-
-            self.is_editing_fret = false;
-            self.editing_fret_buf.clear();
-            self.selected_note_idx_in_event = None;
-            self.editing_string = None;
-            self.selection_anchor = None;
+        let total_events = self.cached_event_ranges.len();
+        if total_events == 0 {
+            self.selected_event_idx = None;
+        } else if e_idx < total_events {
+            self.selected_event_idx = Some(e_idx);
+        } else {
+            self.selected_event_idx = Some(total_events - 1);
         }
+
+        self.is_editing_fret = false;
+        self.editing_fret_buf.clear();
+        self.selected_note_idx_in_event = None;
+        self.editing_string = None;
+        self.selection_anchor = None;
     }
 
     pub(crate) fn load_lyric_buf_for_selected(&mut self) {
@@ -2036,7 +1991,7 @@ impl crate::gui::MnxEditorApp {
     }
 
     pub(crate) fn action_set_event_lyric(&mut self, event_idx: usize, lyric_text: &str) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             let paths = doc.get_flattened_event_paths();
             if let Some(path) = paths.get(event_idx) {
                 if let Some(ev) = doc.get_event_mut_at_path(*path) {
@@ -2064,77 +2019,60 @@ impl crate::gui::MnxEditorApp {
                             line: None,
                         }]);
                     }
-                    if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
-                    }
+                    return Some(());
                 }
             }
-        }
+            None
+        });
     }
 
     pub(crate) fn action_toggle_system_break(&mut self, m_idx: usize) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             while doc.global.measures.len() <= m_idx {
                 doc.global.measures.push(crate::mnx::GlobalMeasure::default());
             }
             let cur = doc.global.measures[m_idx].system_break.unwrap_or(false);
             doc.global.measures[m_idx].system_break = if cur { None } else { Some(true) };
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
-        }
+            Some(())
+        });
     }
 
     pub(crate) fn action_toggle_page_break(&mut self, m_idx: usize) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             while doc.global.measures.len() <= m_idx {
                 doc.global.measures.push(crate::mnx::GlobalMeasure::default());
             }
             let cur = doc.global.measures[m_idx].page_break.unwrap_or(false);
             doc.global.measures[m_idx].page_break = if cur { None } else { Some(true) };
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
-        }
+            Some(())
+        });
     }
 
     pub(crate) fn action_set_element_offset(&mut self, element_id: &str, dx: f32, dy: f32) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             let layout = doc.layout.get_or_insert_with(Default::default);
             if dx.abs() < 0.1 && dy.abs() < 0.1 {
                 layout.offsets.remove(element_id);
             } else {
                 layout.offsets.insert(element_id.to_string(), crate::mnx::Offset2D { dx, dy });
             }
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
-        }
+            Some(())
+        });
     }
 
     pub(crate) fn action_set_layout_page_size(&mut self, page_size: &str) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             let layout = doc.layout.get_or_insert_with(Default::default);
             layout.page_size = page_size.to_string();
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
-        }
+            Some(())
+        });
     }
 
     pub(crate) fn action_set_layout_measure_numbers(&mut self, setting: &str) {
-        if let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(&self.yaml_text) {
+        self.mutate_doc(|doc| {
             let layout = doc.layout.get_or_insert_with(Default::default);
             layout.measure_numbers = setting.to_string();
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-            }
-        }
+            Some(())
+        });
     }
 }

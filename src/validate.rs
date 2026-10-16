@@ -90,7 +90,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
         let step_multiplier = part.step_multiplier();
 
         let tuning_calc = EdoTuning::new(edo);
-        let harmonic_table = crate::harmonic::HarmonicLookupTable::from_part(part);
+        let mut harmonic_table: Option<crate::harmonic::HarmonicLookupTable> = None;
         let num_measures = part.measures.len();
 
         for (m_idx, measure) in part.measures.iter().enumerate() {
@@ -155,7 +155,9 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                             }
 
                             if let Some(harmonic) = &note.harmonic {
-                                match harmonic_table.validate_harmonic(string, harmonic) {
+                                let table = harmonic_table
+                                    .get_or_insert_with(|| crate::harmonic::HarmonicLookupTable::from_part(part));
+                                match table.validate_harmonic(string, harmonic) {
                                     Ok(_) => {}
                                     Err(h_err) => {
                                         errors.push(ValidationError {

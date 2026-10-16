@@ -1643,4 +1643,237 @@ parts:
         let layout = doc.layout.as_ref().unwrap();
         assert!(!layout.offsets.contains_key("ending_0"));
     }
+
+    #[test]
+    fn test_start_new_tab_microtonal_tuning_preserves_alter() {
+        let mut app = MnxEditorApp::default();
+        let edo = 24;
+        let step_multiplier = 1;
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    octave: 4,
+                    alter: Some(crate::mnx::Alteration::Value(0.5)),
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch {
+                    step: "B".to_string(),
+                    octave: 3,
+                    alter: Some(crate::mnx::Alteration::Value(-0.5)),
+                },
+            },
+        ];
+        app.start_new_tab(2, edo, step_multiplier, tunings);
+        assert!(app.validation_errors.is_empty(), "errors: {:?}", app.validation_errors);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let inst = doc.parts[0].instrument.as_ref().unwrap();
+        assert_eq!(inst.micro_fret_divisions, Some(24));
+        let parsed_tunings = inst.tuning.as_ref().unwrap();
+        assert_eq!(parsed_tunings.len(), 2);
+        assert_eq!(
+            parsed_tunings[0].pitch.alter,
+            Some(crate::mnx::Alteration::Value(0.5))
+        );
+        assert_eq!(
+            parsed_tunings[1].pitch.alter,
+            Some(crate::mnx::Alteration::Value(-0.5))
+        );
+    }
+
+    #[test]
+    fn test_translate_instrument_setup_all_parameters() {
+        let mut app = MnxEditorApp::default();
+        // Default tab is 6 strings, 41 EDO, step_multiplier 2.
+        // Translate simultaneously to 4 strings, 24 EDO, step_multiplier 2, with custom open tunings:
+        let new_tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "G".to_string(),
+                    octave: 3,
+                    alter: Some(crate::mnx::Alteration::Value(0.5)),
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch {
+                    step: "D".to_string(),
+                    octave: 3,
+                    alter: None,
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch {
+                    step: "A".to_string(),
+                    octave: 2,
+                    alter: None,
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    octave: 2,
+                    alter: None,
+                },
+            },
+        ];
+
+        app.translate_instrument_setup(4, 24, 2, new_tunings);
+        assert!(
+            app.validation_errors.is_empty(),
+            "Expected 0 validation errors after translating all instrument setup params, got: {:?}",
+            app.validation_errors
+        );
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let inst = doc.parts[0].instrument.as_ref().unwrap();
+        assert_eq!(inst.micro_fret_divisions, Some(24));
+        assert_eq!(inst.fret_step_multiplier, Some(2));
+        assert_eq!(inst.tuning.as_ref().unwrap().len(), 4);
+        assert_eq!(
+            inst.tuning.as_ref().unwrap()[0].pitch.alter,
+            Some(crate::mnx::Alteration::Value(0.5))
+        );
+        // Ensure no note references string > 4
+        for m in &doc.parts[0].measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    for note in &ev.notes {
+                        if let Some(s) = note.string {
+                            assert!(s >= 1 && s <= 4, "Note string {} out of range 1..=4", s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_pitch_bend_range_yaml_roundtrip() {
+        let mut app = MnxEditorApp::default();
+        assert_eq!(app.pitch_bend_range, 2);
+
+        app.set_pitch_bend_range_in_yaml(12);
+        assert_eq!(app.pitch_bend_range, 12);
+        assert!(app.yaml_text.contains("pitchBendRange: 12"));
+
+        // Simulate saving and reloading YAML into a fresh app
+        let saved_yaml = app.yaml_text.clone();
+        let mut app2 = MnxEditorApp::default();
+        app2.update_yaml(saved_yaml);
+        app2.process_and_render();
+        assert_eq!(app2.pitch_bend_range, 12);
+    }
+
+    #[test]
+    fn test_muted_note_overwrite_and_re_mute() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(4);
+        app.is_editing_fret = true;
+
+        // 1. Type "x" to make note muted
+        app.editing_fret_buf = "x".to_string();
+        assert!(app.commit_fret_edit());
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let note = ev0.notes.iter().find(|n| n.string == Some(4)).unwrap();
+        assert_eq!(note.muted, Some(true));
+        assert_eq!(note.fret, Some(0));
+
+        // 2. Type "x" again on an already-muted note -> should stay muted!
+        app.editing_fret_buf = "x".to_string();
+        assert!(app.commit_fret_edit());
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let note = ev0.notes.iter().find(|n| n.string == Some(4)).unwrap();
+        assert_eq!(note.muted, Some(true));
+        assert_eq!(note.fret, Some(0));
+
+        // 3. Type "7" on the muted note -> should overwrite muted note with fret 7!
+        app.editing_fret_buf = "7".to_string();
+        assert!(app.commit_fret_edit());
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let note = ev0.notes.iter().find(|n| n.string == Some(4)).unwrap();
+        assert_eq!(note.muted, None);
+        assert_eq!(note.fret, Some(7));
+    }
+
+    #[test]
+    fn test_playback_track_trailing_rest_and_muted_note_hold_duration() {
+        let mut app = MnxEditorApp::default();
+        // Convert the final event (index 7) to a rest
+        let last_idx = app.cached_event_ranges.len() - 1;
+        app.selected_event_idx = Some(last_idx);
+        app.convert_selected_to_rest();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let (events, _) = crate::midi::generate_playback_track(
+            doc,
+            crate::midi::MidiOptions::default(),
+        );
+
+        // Find the position of EventMarker(last_idx) and check that total duration after it > 0
+        let pos = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e.kind,
+                    crate::midi::PlaybackEventKind::EventMarker(idx) if idx == last_idx
+                )
+            })
+            .expect("Expected EventMarker for trailing rest");
+        let remaining_ticks: u32 =
+            events[pos + 1..].iter().map(|e| e.delta_ticks).sum();
+        assert!(
+            remaining_ticks >= 240,
+            "Expected trailing rest to hold selection for >=240 ticks before EndOfTrack, got {}",
+            remaining_ticks
+        );
+    }
+
+    #[test]
+    fn test_profile_woman_of_the_hour() {
+        let yaml = std::fs::read_to_string("woman of the hour.yaml").unwrap();
+        let t0 = std::time::Instant::now();
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&yaml).unwrap();
+        let t_parse = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        let ser = serde_saphyr::to_string(&doc).unwrap();
+        let t_ser = t1.elapsed();
+
+        let t2 = std::time::Instant::now();
+        let ranges = crate::yaml_editor::find_all_event_ranges(&ser);
+        let t_ranges = t2.elapsed();
+
+        let t3 = std::time::Instant::now();
+        let _errs = crate::validate::validate_mnx(&doc);
+        let t_val = t3.elapsed();
+
+        let t4 = std::time::Instant::now();
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
+        let mut dl = crate::layout::display_list::DisplayList::new();
+        for p in &pages {
+            crate::pdf_export::populate_page_display_list(&doc, p, &mut dl);
+        }
+        let t_layout = t4.elapsed();
+
+        println!(
+            "PROFILE woman of the hour.yaml ({} bytes, {} events): parse={:?}, ser={:?}, ranges={:?}, validate={:?}, layout={:?}",
+            yaml.len(),
+            ranges.len(),
+            t_parse,
+            t_ser,
+            t_ranges,
+            t_val,
+            t_layout
+        );
+    }
 }

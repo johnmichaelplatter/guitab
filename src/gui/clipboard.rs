@@ -342,12 +342,9 @@ impl MnxEditorApp {
             });
             crate::rebar::rebar_part(part, &mut doc.global.measures);
 
-            if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-                self.selection_anchor = None;
-                self.selected_event_idx = Some(min_idx);
-            }
+            self.apply_mutated_doc(doc);
+            self.selection_anchor = None;
+            self.selected_event_idx = Some(min_idx);
             return;
         }
 
@@ -405,12 +402,9 @@ impl MnxEditorApp {
             }
         }
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-            self.selection_anchor = None;
-            self.selected_event_idx = Some(min_idx);
-        }
+        self.apply_mutated_doc(doc);
+        self.selection_anchor = None;
+        self.selected_event_idx = Some(min_idx);
     }
 
     pub(crate) fn rebuild_part_with_rebar(
@@ -561,11 +555,7 @@ impl MnxEditorApp {
             }
         }
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-            self.process_and_render();
-        }
+        self.apply_mutated_doc(doc);
     }
 
     pub fn action_cut_time(&mut self) {
@@ -634,13 +624,9 @@ impl MnxEditorApp {
 
         Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, vec![]);
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-            self.process_and_render();
-            self.selected_event_idx = Some(min_idx);
-            self.selection_anchor = None;
-        }
+        self.apply_mutated_doc(doc);
+        self.selected_event_idx = Some(min_idx);
+        self.selection_anchor = None;
     }
 
     fn distribute_tempos(
@@ -966,15 +952,10 @@ impl MnxEditorApp {
         Self::distribute_tempos(&mut doc.global.measures, part, pasted_tempos_abs, pasted_tcs_abs);
 
         let cb_count = self.clipboard_event_count();
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-            self.process_and_render();
-
-            if cb_count > 0 {
-                self.selection_anchor = Some(cursor);
-                self.selected_event_idx = Some(cursor + cb_count - 1);
-            }
+        self.apply_mutated_doc(doc);
+        if cb_count > 0 {
+            self.selection_anchor = Some(cursor);
+            self.selected_event_idx = Some(cursor + cb_count - 1);
         }
     }
 
@@ -1149,15 +1130,10 @@ impl MnxEditorApp {
         Self::distribute_tempos(&mut doc.global.measures, part, pasted_tempos_abs, pasted_tcs_abs);
 
         let cb_count = self.clipboard_event_count();
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-            self.process_and_render();
-
-            if cb_count > 0 {
-                self.selection_anchor = Some(cursor);
-                self.selected_event_idx = Some(cursor + cb_count - 1);
-            }
+        self.apply_mutated_doc(doc);
+        if cb_count > 0 {
+            self.selection_anchor = Some(cursor);
+            self.selected_event_idx = Some(cursor + cb_count - 1);
         }
     }
 
@@ -1229,15 +1205,10 @@ impl MnxEditorApp {
         Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, vec![]);
 
         let cb_count = self.clipboard_event_count();
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
-            self.process_and_render();
-
-            if cb_count > 0 {
-                self.selection_anchor = Some(cursor);
-                self.selected_event_idx = Some(cursor + cb_count - 1);
-            }
+        self.apply_mutated_doc(doc);
+        if cb_count > 0 {
+            self.selection_anchor = Some(cursor);
+            self.selected_event_idx = Some(cursor + cb_count - 1);
         }
     }
 

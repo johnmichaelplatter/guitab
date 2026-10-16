@@ -103,6 +103,7 @@ pub struct MnxEditorApp {
     pub view_mode: ViewMode,
     pub selected_layout_element_id: Option<String>,
     pub is_dragging_layout_element: bool,
+    pub(crate) cached_event_ranges: Vec<crate::yaml_editor::EventRange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,11 +168,15 @@ pub enum ActiveDialog {
         is_new_tab: bool,
     },
     ConfirmEdoChange {
+        new_num_strings: u8,
         new_edo: u8,
         new_step_multiplier: u8,
+        new_tunings: Vec<crate::mnx::StringTuning>,
     },
     ConfirmTuningChange {
         new_num_strings: u8,
+        new_edo: u8,
+        new_step_multiplier: u8,
         new_tunings: Vec<crate::mnx::StringTuning>,
     },
     BendEditor {
@@ -197,7 +202,11 @@ impl Default for MnxEditorApp {
         let initial_yaml = fs::read_to_string("example.yaml")
             .unwrap_or_else(|_| String::from("# Could not load example.yaml"));
 
-        let ports = crate::midi::get_midi_output_ports();
+        let ports = if cfg!(test) {
+            Vec::new()
+        } else {
+            crate::midi::get_midi_output_ports()
+        };
         let selected_port = ports.first().map(|p| p.id);
 
         let mut app = Self {
@@ -233,6 +242,7 @@ impl Default for MnxEditorApp {
             view_mode: ViewMode::Continuous,
             selected_layout_element_id: None,
             is_dragging_layout_element: false,
+            cached_event_ranges: Vec::new(),
         };
 
         app.process_and_render();
@@ -480,49 +490,118 @@ impl MnxEditorApp {
         }
     }
 
+    pub fn sync_from_parsed_doc(&mut self, doc: MnxDocument) {
+        let errors = validate::validate_mnx(&doc);
+
+        // Store formatted error strings for the bottom panel UI
+        self.validation_errors = errors
+            .iter()
+            .map(|err| {
+                if err.string > 0 {
+                    format!(
+                        "Measure {}, Event {}: {}",
+                        err.measure_idx,
+                        err.event_idx + 1,
+                        err.message
+                    )
+                } else {
+                    format!("Measure {}: {}", err.measure_idx, err.message)
+                }
+            })
+            .collect();
+
+        // Sync BPM from YAML if a tempo directive is present
+        let yaml_bpm = doc
+            .global
+            .measures
+            .iter()
+            .flat_map(|m| m.tempos.iter())
+            .find_map(|t| Some(t.bpm));
+        if let Some(bpm) = yaml_bpm {
+            let formatted = if bpm.fract() == 0.0 {
+                format!("{:.0}", bpm)
+            } else {
+                format!("{}", bpm)
+            };
+            // Only update the text buf when it differs in value, to avoid overwriting while user types
+            if self.bpm_buf.trim().parse::<f64>().ok() != Some(bpm) {
+                self.bpm_buf = formatted;
+            }
+        }
+
+        // Sync pitch bend range from YAML if stored on the instrument
+        if let Some(pb) = doc
+            .parts
+            .first()
+            .and_then(|p| p.instrument.as_ref())
+            .and_then(|i| i.pitch_bend_range)
+        {
+            self.pitch_bend_range = pb.clamp(1, 48);
+        }
+
+        self.parsed_errors = errors;
+        self.parsed_mnx = Some(doc);
+    }
+
+    pub fn apply_mutated_doc(&mut self, doc: MnxDocument) {
+        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+            self.update_yaml(new_yaml);
+            self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);
+            self.sync_from_parsed_doc(doc);
+        }
+    }
+
+    pub fn apply_mutated_doc_and_clean_ties(&mut self, mut doc: MnxDocument) {
+        doc.clean_dangling_ties();
+        self.apply_mutated_doc(doc);
+    }
+
+    pub fn mutate_doc<F, R>(&mut self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut MnxDocument) -> Option<R>,
+    {
+        let mut doc = self
+            .parsed_mnx
+            .take()
+            .or_else(|| serde_saphyr::from_str::<MnxDocument>(&self.yaml_text).ok())?;
+        match f(&mut doc) {
+            Some(res) => {
+                self.apply_mutated_doc(doc);
+                Some(res)
+            }
+            None => {
+                self.parsed_mnx = Some(doc);
+                None
+            }
+        }
+    }
+
+    pub fn mutate_doc_and_clean_ties<F, R>(&mut self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut MnxDocument) -> Option<R>,
+    {
+        let mut doc = self
+            .parsed_mnx
+            .take()
+            .or_else(|| serde_saphyr::from_str::<MnxDocument>(&self.yaml_text).ok())?;
+        match f(&mut doc) {
+            Some(res) => {
+                doc.clean_dangling_ties();
+                self.apply_mutated_doc(doc);
+                Some(res)
+            }
+            None => {
+                self.parsed_mnx = Some(doc);
+                None
+            }
+        }
+    }
+
     pub fn process_and_render(&mut self) {
+        self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(doc) => {
-                let errors = validate::validate_mnx(&doc);
-
-                // Store formatted error strings for the bottom panel UI
-                self.validation_errors = errors
-                    .iter()
-                    .map(|err| {
-                        if err.string > 0 {
-                            format!(
-                                "Measure {}, Event {}: {}",
-                                err.measure_idx,
-                                err.event_idx + 1,
-                                err.message
-                            )
-                        } else {
-                            format!("Measure {}: {}", err.measure_idx, err.message)
-                        }
-                    })
-                    .collect();
-
-                // Sync BPM from YAML if a tempo directive is present
-                let yaml_bpm = doc
-                    .global
-                    .measures
-                    .iter()
-                    .flat_map(|m| m.tempos.iter())
-                    .find_map(|t| Some(t.bpm));
-                if let Some(bpm) = yaml_bpm {
-                    let formatted = if bpm.fract() == 0.0 {
-                        format!("{:.0}", bpm)
-                    } else {
-                        format!("{}", bpm)
-                    };
-                    // Only update the text buf when it differs in value, to avoid overwriting while user types
-                    if self.bpm_buf.trim().parse::<f64>().ok() != Some(bpm) {
-                        self.bpm_buf = formatted;
-                    }
-                }
-
-                self.parsed_errors = errors;
-                self.parsed_mnx = Some(doc);
+                self.sync_from_parsed_doc(doc);
             }
             Err(e) => {
                 self.parsed_mnx = None;
@@ -531,6 +610,28 @@ impl MnxEditorApp {
             }
         }
     }
+
+    pub fn set_pitch_bend_range_in_yaml(&mut self, pb_range: u8) {
+        let clamped = pb_range.clamp(1, 48);
+        self.pitch_bend_range = clamped;
+        self.mutate_doc(|doc| {
+            let part = doc.parts.first_mut()?;
+            if let Some(inst) = &mut part.instrument {
+                inst.pitch_bend_range = Some(clamped);
+            } else {
+                part.instrument = Some(crate::mnx::Instrument {
+                    name: "Guitar".to_string(),
+                    micro_fret_divisions: None,
+                    fret_step_multiplier: None,
+                    pitch_bend_range: Some(clamped),
+                    capo: None,
+                    tuning: None,
+                });
+            }
+            Some(())
+        });
+    }
+
     pub fn is_modified(&self) -> bool {
         self.yaml_text != self.saved_yaml
     }
@@ -548,7 +649,13 @@ impl MnxEditorApp {
                 6 => ("E", 2),
                 7 => ("B", 1),
                 8 => ("F#", 1),
-                _ => ("", 0),
+                9 => ("C#", 1),
+                10 => ("G#", 0),
+                11 => ("D#", 0),
+                12 => ("A#", 0),
+                13 => ("F", 0),
+                14 => ("C", 0),
+                _ => ("G", 0),
             };
             tunings_text.push(step.to_string());
             tunings_octave.push(octave);
@@ -570,34 +677,55 @@ impl MnxEditorApp {
         step_multiplier: u8,
         tunings: Vec<crate::mnx::StringTuning>,
     ) {
-        let mut tunings_str = String::new();
-        for t in &tunings {
-            tunings_str.push_str(&format!(
-                "        - string: {}\n          pitch: {{ step: \"{}\", octave: {} }}\n",
-                t.string, t.pitch.step, t.pitch.octave
-            ));
-        }
+        let doc = MnxDocument {
+            mnx: crate::mnx::MnxMeta { version: 1 },
+            title: None,
+            subtitle: None,
+            composer: None,
+            global: crate::mnx::Global {
+                measures: vec![crate::mnx::GlobalMeasure {
+                    time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                    ..Default::default()
+                }],
+            },
+            parts: vec![crate::mnx::Part {
+                instrument: Some(crate::mnx::Instrument {
+                    name: "Guitar".to_string(),
+                    micro_fret_divisions: Some(edo),
+                    fret_step_multiplier: Some(step_multiplier),
+                    pitch_bend_range: if self.pitch_bend_range != 2 {
+                        Some(self.pitch_bend_range)
+                    } else {
+                        None
+                    },
+                    capo: None,
+                    tuning: Some(tunings),
+                }),
+                measures: vec![crate::mnx::Measure {
+                    beams: None,
+                    arpeggios: None,
+                    sequences: vec![crate::mnx::Sequence {
+                        content: vec![crate::mnx::SequenceItem::Event(crate::mnx::Event {
+                            markings: None,
+                            id: None,
+                            duration: crate::mnx::Duration {
+                                base: "quarter".to_string(),
+                                dots: None,
+                                multiple: None,
+                            },
+                            notes: Vec::new(),
+                            rest: Some(crate::mnx::Rest {}),
+                            slurs: None,
+                            lyrics: None,
+                        })],
+                        beams: None,
+                    }],
+                }],
+            }],
+            layout: None,
+        };
 
-        let new_yaml = format!(
-            r#"mnx:
-  version: 1
-global:
-  measures:
-    - time: {{ count: 4, unit: 4 }}
-parts:
-  - instrument:
-      name: "Guitar"
-      microFretDivisions: {}
-      fretStepMultiplier: {}
-      tuning:
-{}    measures:
-      - sequences:
-          - content:
-              - duration: {{ base: quarter }}
-                rest: {{}}
-"#,
-            edo, step_multiplier, tunings_str
-        );
+        let new_yaml = serde_saphyr::to_string(&doc).unwrap_or_default();
 
         self.update_yaml(new_yaml.clone());
         self.saved_yaml = new_yaml;
@@ -607,7 +735,8 @@ parts:
         self.is_editing_fret = false;
         self.editing_fret_buf.clear();
         self.editing_string = None;
-        self.process_and_render();
+        self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);
+        self.sync_from_parsed_doc(doc);
     }
 
     pub fn new_file(&mut self) {
@@ -680,9 +809,8 @@ parts:
 
 impl eframe::App for MnxEditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui_extras::install_image_loaders(ui.ctx());
-
         if self.duration_textures.is_none() {
+            egui_extras::install_image_loaders(ui.ctx());
             self.duration_textures = Some(DurationTextures::load(ui.ctx()));
         }
 
@@ -701,7 +829,7 @@ impl eframe::App for MnxEditorApp {
             }
         }
 
-        let event_ranges = find_all_event_ranges(&self.yaml_text);
+        let event_ranges = self.cached_event_ranges.clone();
         let total_events = event_ranges.len();
         let text_edit_id = egui::Id::new("yaml_source_editor");
 

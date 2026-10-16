@@ -45,21 +45,28 @@ impl MnxEditorApp {
                         .and_then(|d| d.parts.first())
                         .and_then(|part| calculate_pitch_for_string_fret(part, cur_str, new_fret));
 
-                    if let Some(new_yaml) = set_or_add_note_on_string(
-                        &self.yaml_text,
-                        e_idx,
-                        cur_str,
-                        new_fret,
-                        new_pitch.as_ref(),
-                    ) {
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
+                    let res = self.mutate_doc(|doc| {
+                        if set_or_add_note_on_string_in_doc(
+                            doc,
+                            e_idx,
+                            cur_str,
+                            new_fret,
+                            new_pitch.as_ref(),
+                        ) {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if res.is_some() {
                         self.select_note_on_string(e_idx, cur_str);
                         if !is_x {
                             self.preview_selected_sound();
                         }
-                        self.resolve_pending_slur();
-                        self.process_and_render();
+                        if self.pending_slur.is_some() {
+                            self.resolve_pending_slur();
+                        }
                         if is_x {
                             self.action_toggle_mute();
                         }
@@ -140,21 +147,28 @@ impl MnxEditorApp {
 
         if seq_beats + dur_beats <= max_beats + 1e-4 {
             // Measure has room: insert new non-tuple blank note after the tuplet in this measure
-            if let Some((new_yaml, new_idx)) = crate::yaml_editor::insert_blank_note_after_tuplet(
-                &self.yaml_text,
-                e_idx,
-                &final_note_base,
-            ) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
+            if let Some(new_idx) = self.mutate_doc(|doc| {
+                crate::yaml_editor::insert_blank_note_after_tuplet_in_doc(
+                    doc,
+                    e_idx,
+                    &final_note_base,
+                )
+            }) {
                 return Some(new_idx);
             }
         } else if is_last_measure {
             // Measure is full, and it's the last measure: add a new measure with blank note
-            if let Some(new_yaml) = crate::yaml_editor::add_measure_to_yaml(&self.yaml_text, &dur) {
-                self.update_yaml(new_yaml);
-                self.process_and_render();
-                let new_total = find_all_event_ranges(&self.yaml_text).len();
+            if self
+                .mutate_doc(|doc| {
+                    if crate::yaml_editor::add_measure_to_doc(doc, &dur) {
+                        Some(())
+                    } else {
+                        None
+                    }
+                })
+                .is_some()
+            {
+                let new_total = self.cached_event_ranges.len();
                 return Some(new_total.saturating_sub(1));
             }
         } else {
@@ -203,46 +217,44 @@ impl MnxEditorApp {
                 let at_final_event = e_idx >= total_events.saturating_sub(1);
                 if at_final_event {
                     let mut added_idx = None;
-                    if let Some(doc) = &self.parsed_mnx {
-                        if let Some(part) = doc.parts.first() {
-                            if let Some(last_measure) = part.measures.last() {
-                                if let Some(last_seq) = last_measure.sequences.first() {
-                                    if let Some(last_event) =
-                                        last_seq.flattened_events().last().copied()
-                                    {
-                                        let m_idx = part.measures.len() - 1;
-                                        let final_dur = &last_event.duration;
-                                        let dur_beats =
-                                            validate::duration_to_quarter_beats(final_dur);
-                                        let time_sig =
-                                            validate::get_time_signature_for_measure(doc, m_idx);
-                                        let max_beats =
-                                            (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
-                                        let curr_beats: f64 = last_seq.total_beats();
+                    let measure_info = self.parsed_mnx.as_ref().and_then(|doc| {
+                        let part = doc.parts.first()?;
+                        let last_measure = part.measures.last()?;
+                        let last_seq = last_measure.sequences.first()?;
+                        let last_event = last_seq.flattened_events().last().copied()?;
+                        let m_idx = part.measures.len() - 1;
+                        let final_dur = last_event.duration.clone();
+                        let dur_beats = validate::duration_to_quarter_beats(&final_dur);
+                        let time_sig = validate::get_time_signature_for_measure(doc, m_idx);
+                        let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+                        let curr_beats: f64 = last_seq.total_beats();
+                        Some((final_dur, curr_beats + dur_beats <= max_beats + 1e-4))
+                    });
 
-                                        if curr_beats + dur_beats <= max_beats + 1e-4 {
-                                            if let Some(new_yaml) = add_blank_note_to_last_measure(
-                                                &self.yaml_text,
-                                                final_dur,
-                                            ) {
-                                                self.update_yaml(new_yaml);
-                                                self.process_and_render();
-                                                let new_total =
-                                                    find_all_event_ranges(&self.yaml_text).len();
-                                                if new_total > 0 {
-                                                    added_idx = Some(new_total - 1);
-                                                }
-                                            }
-                                        } else {
-                                            self.add_measure_to_end();
-                                            let new_total =
-                                                find_all_event_ranges(&self.yaml_text).len();
-                                            if new_total > 0 {
-                                                added_idx = Some(new_total - 1);
-                                            }
-                                        }
+                    if let Some((final_dur, fits_in_measure)) = measure_info {
+                        if fits_in_measure {
+                            if self
+                                .mutate_doc(|doc| {
+                                    if crate::yaml_editor::add_blank_note_to_last_measure_in_doc(
+                                        doc, &final_dur,
+                                    ) {
+                                        Some(())
+                                    } else {
+                                        None
                                     }
+                                })
+                                .is_some()
+                            {
+                                let new_total = self.cached_event_ranges.len();
+                                if new_total > 0 {
+                                    added_idx = Some(new_total - 1);
                                 }
+                            }
+                        } else {
+                            self.add_measure_to_end();
+                            let new_total = self.cached_event_ranges.len();
+                            if new_total > 0 {
+                                added_idx = Some(new_total - 1);
                             }
                         }
                     }
@@ -264,7 +276,7 @@ impl MnxEditorApp {
 
     pub(crate) fn retreat_to_prev_note_in_edit_mode(&mut self, cur_str: Option<u8>) {
         if let Some(e_idx) = self.selected_event_idx {
-            let total_events = find_all_event_ranges(&self.yaml_text).len();
+            let total_events = self.cached_event_ranges.len();
             let at_final_event = e_idx >= total_events.saturating_sub(1);
             let is_final_blank = at_final_event
                 && self
@@ -278,9 +290,16 @@ impl MnxEditorApp {
                     .unwrap_or(false);
 
             if is_final_blank {
-                if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
+                if self
+                    .mutate_doc(|doc| {
+                        if crate::yaml_editor::remove_last_blank_event_in_doc(doc) {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    })
+                    .is_some()
+                {
                     self.selected_event_idx = Some(e_idx.saturating_sub(1));
                     self.editing_string = cur_str;
                     self.editing_fret_buf.clear();
@@ -368,7 +387,8 @@ impl MnxEditorApp {
         }
 
         if ui.memory(|m| {
-            m.has_focus(egui::Id::new("bpm_input")) || m.has_focus(egui::Id::new("yaml_editor"))
+            m.has_focus(egui::Id::new("bpm_input"))
+                || m.has_focus(egui::Id::new("yaml_source_editor"))
         }) {
             return;
         }
@@ -587,14 +607,17 @@ impl MnxEditorApp {
                     false
                 };
 
+                let mut committed = false;
                 if !self.editing_fret_buf.trim().is_empty() {
-                    self.commit_fret_edit();
+                    committed = self.commit_fret_edit();
                 }
 
-                if let (Some(e_idx), Some(s)) = (e_idx_opt, cur_str) {
-                    if is_current_str_existing {
-                        self.select_note_on_string(e_idx, s);
-                        self.preview_selected_sound();
+                if !committed {
+                    if let (Some(e_idx), Some(s)) = (e_idx_opt, cur_str) {
+                        if is_current_str_existing {
+                            self.select_note_on_string(e_idx, s);
+                            self.preview_selected_sound();
+                        }
                     }
                 }
                 self.editing_fret_buf.clear();
@@ -646,8 +669,18 @@ impl MnxEditorApp {
                             }
                         }
                     }
-                    if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
-                        self.update_yaml_and_clean_ties(new_yaml);
+                    if self
+                        .mutate_doc_and_clean_ties(|doc| {
+                            if crate::yaml_editor::remove_note_on_string_in_doc(
+                                doc, e_idx, cur_str,
+                            ) {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some()
+                    {
                         self.selected_note_idx_in_event = None;
                     }
                 }
@@ -668,8 +701,18 @@ impl MnxEditorApp {
                             }
                         }
                     }
-                    if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, cur_str) {
-                        self.update_yaml_and_clean_ties(new_yaml);
+                    if self
+                        .mutate_doc_and_clean_ties(|doc| {
+                            if crate::yaml_editor::remove_note_on_string_in_doc(
+                                doc, e_idx, cur_str,
+                            ) {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some()
+                    {
                         self.editing_fret_buf.clear();
                         self.selected_note_idx_in_event = None;
                     }
@@ -781,8 +824,18 @@ impl MnxEditorApp {
                         if note_count > 1 && self.selected_note_idx_in_event.is_some() {
                             let n_idx = self.selected_note_idx_in_event.unwrap();
                             if let Some(s) = self.get_string_for_note(e_idx, n_idx) {
-                                if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
-                                    self.update_yaml_and_clean_ties(new_yaml);
+                                if self
+                                    .mutate_doc_and_clean_ties(|doc| {
+                                        if crate::yaml_editor::remove_note_on_string_in_doc(
+                                            doc, e_idx, s,
+                                        ) {
+                                            Some(())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .is_some()
+                                {
                                     self.selected_note_idx_in_event = None;
                                     return;
                                 }
@@ -795,17 +848,31 @@ impl MnxEditorApp {
 
                 if let Some(n_idx) = self.selected_note_idx_in_event {
                     if let Some(s) = self.get_string_for_note(e_idx, n_idx) {
-                        if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
-                            self.update_yaml_and_clean_ties(new_yaml);
+                        if self
+                            .mutate_doc_and_clean_ties(|doc| {
+                                if crate::yaml_editor::remove_note_on_string_in_doc(doc, e_idx, s) {
+                                    Some(())
+                                } else {
+                                    None
+                                }
+                            })
+                            .is_some()
+                        {
                             self.selected_note_idx_in_event = None;
                             return;
                         }
                     }
                 } else if self.is_selected_event_rest() {
-                    if let Some(new_yaml) =
-                        crate::yaml_editor::convert_rest_to_blank(&self.yaml_text, e_idx)
+                    if self
+                        .mutate_doc_and_clean_ties(|doc| {
+                            if crate::yaml_editor::convert_rest_to_blank_in_doc(doc, e_idx) {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some()
                     {
-                        self.update_yaml_and_clean_ties(new_yaml);
                         return;
                     }
                 }
@@ -823,10 +890,17 @@ impl MnxEditorApp {
                         .unwrap_or(false);
 
                 if is_final_blank {
-                    if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
-                        let new_total = find_all_event_ranges(&self.yaml_text).len();
+                    if self
+                        .mutate_doc(|doc| {
+                            if crate::yaml_editor::remove_last_blank_event_in_doc(doc) {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        })
+                        .is_some()
+                    {
+                        let new_total = self.cached_event_ranges.len();
                         if new_total > 0 {
                             let prior_idx = new_total - 1;
                             let prior_str =
@@ -848,10 +922,13 @@ impl MnxEditorApp {
                         .or_else(|| self.find_primary_string_for_event(e_idx));
 
                     if let Some(s) = target_str {
-                        if let Some(new_yaml) = remove_note_on_string(&self.yaml_text, e_idx, s) {
-                            self.update_yaml(new_yaml);
-                            self.process_and_render();
-                        }
+                        let _ = self.mutate_doc_and_clean_ties(|doc| {
+                            if crate::yaml_editor::remove_note_on_string_in_doc(doc, e_idx, s) {
+                                Some(())
+                            } else {
+                                None
+                            }
+                        });
                     }
 
                     if e_idx > 0 {
@@ -936,10 +1013,17 @@ impl MnxEditorApp {
 
                     if is_final_blank {
                         // If nothing is entered into this blank note, shifting focus back to the left removes it
-                        if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                            self.update_yaml(new_yaml);
-                            self.process_and_render();
-                            let new_total = find_all_event_ranges(&self.yaml_text).len();
+                        if self
+                            .mutate_doc(|doc| {
+                                if crate::yaml_editor::remove_last_blank_event_in_doc(doc) {
+                                    Some(())
+                                } else {
+                                    None
+                                }
+                            })
+                            .is_some()
+                        {
+                            let new_total = self.cached_event_ranges.len();
                             if new_total > 0 {
                                 self.selected_event_idx = Some(new_total.saturating_sub(1));
                             } else {
@@ -988,53 +1072,48 @@ impl MnxEditorApp {
                                 // Rule 3: Moving further to the right of a final blank note has no effect.
                             } else if shift_down {
                                 // DO NOT create measures while multi-selecting
-                            } else if let Some(doc) = &self.parsed_mnx {
-                                if let Some(part) = doc.parts.first() {
-                                    if let Some(last_measure) = part.measures.last() {
-                                        if let Some(last_seq) = last_measure.sequences.first() {
-                                            if let Some(last_event) =
-                                                last_seq.flattened_events().last().copied()
-                                            {
-                                                let m_idx = part.measures.len() - 1;
-                                                let final_dur = &last_event.duration;
-                                                let dur_beats =
-                                                    validate::duration_to_quarter_beats(final_dur);
-                                                let time_sig =
-                                                    validate::get_time_signature_for_measure(
-                                                        doc, m_idx,
-                                                    );
-                                                let max_beats = (time_sig.count as f64)
-                                                    * (4.0 / time_sig.unit as f64);
-                                                let curr_beats: f64 = last_seq.total_beats();
+                            } else {
+                                let measure_info = self.parsed_mnx.as_ref().and_then(|doc| {
+                                    let part = doc.parts.first()?;
+                                    let last_measure = part.measures.last()?;
+                                    let last_seq = last_measure.sequences.first()?;
+                                    let last_event = last_seq.flattened_events().last().copied()?;
+                                    let m_idx = part.measures.len() - 1;
+                                    let final_dur = last_event.duration.clone();
+                                    let dur_beats = validate::duration_to_quarter_beats(&final_dur);
+                                    let time_sig = validate::get_time_signature_for_measure(doc, m_idx);
+                                    let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+                                    let curr_beats: f64 = last_seq.total_beats();
+                                    Some((final_dur, curr_beats + dur_beats <= max_beats + 1e-4))
+                                });
 
-                                                if curr_beats + dur_beats <= max_beats + 1e-4 {
-                                                    // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
-                                                    if let Some(new_yaml) =
-                                                        add_blank_note_to_last_measure(
-                                                            &self.yaml_text,
-                                                            final_dur,
-                                                        )
-                                                    {
-                                                        self.update_yaml(new_yaml);
-                                                        self.process_and_render();
-                                                        let new_total =
-                                                            find_all_event_ranges(&self.yaml_text)
-                                                                .len();
-                                                        if new_total > 0 {
-                                                            self.selected_event_idx =
-                                                                Some(new_total - 1);
-                                                        }
-                                                        self.selected_note_idx_in_event = None;
-                                                        self.editing_string = None;
-                                                        self.preview_selected_sound();
-                                                    }
+                                if let Some((final_dur, fits_in_measure)) = measure_info {
+                                    if fits_in_measure {
+                                        // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
+                                        if self
+                                            .mutate_doc(|doc| {
+                                                if crate::yaml_editor::add_blank_note_to_last_measure_in_doc(
+                                                    doc, &final_dur,
+                                                ) {
+                                                    Some(())
                                                 } else {
-                                                    // Rule 2: Bar has been filled up -> add new measure with blank note
-                                                    self.add_measure_to_end();
-                                                    self.preview_selected_sound();
+                                                    None
                                                 }
+                                            })
+                                            .is_some()
+                                        {
+                                            let new_total = self.cached_event_ranges.len();
+                                            if new_total > 0 {
+                                                self.selected_event_idx = Some(new_total - 1);
                                             }
+                                            self.selected_note_idx_in_event = None;
+                                            self.editing_string = None;
+                                            self.preview_selected_sound();
                                         }
+                                    } else {
+                                        // Rule 2: Bar has been filled up -> add new measure with blank note
+                                        self.add_measure_to_end();
+                                        self.preview_selected_sound();
                                     }
                                 }
                             }
@@ -1141,74 +1220,66 @@ impl MnxEditorApp {
             return;
         }
 
-        let mut doc = match self.parsed_mnx.clone() {
-            Some(d) => d,
-            None => return,
-        };
+        self.mutate_doc(|doc| {
+            let flattened_events = doc.get_flattened_event_paths();
 
-        let flattened_events = doc.get_flattened_event_paths();
-
-        if start_idx >= flattened_events.len() || cur_idx >= flattened_events.len() {
-            self.pending_slur = None;
-            return;
-        }
-
-        let start_path = flattened_events[start_idx];
-        let cur_path = flattened_events[cur_idx];
-
-        let mut start_note_id = None;
-        let mut target_ev_id = None;
-        let mut target_note_id = None;
-
-        // Give the target event and note IDs
-        if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
-            if ev_cur.id.is_none() {
-                ev_cur.id = Some(format!("ev_tgt_{}", start_idx));
+            if start_idx >= flattened_events.len() || cur_idx >= flattened_events.len() {
+                return None;
             }
-            target_ev_id = ev_cur.id.clone();
 
-            if let Some(n) = ev_cur.notes.iter_mut().find(|n| n.string == Some(cur_str)) {
-                if n.id.is_none() {
-                    n.id = Some(format!("note_tgt_{}_{}", start_idx, cur_idx));
+            let start_path = flattened_events[start_idx];
+            let cur_path = flattened_events[cur_idx];
+
+            let mut start_note_id = None;
+            let mut target_ev_id = None;
+            let mut target_note_id = None;
+
+            // Give the target event and note IDs
+            if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
+                if ev_cur.id.is_none() {
+                    ev_cur.id = Some(format!("ev_tgt_{}", start_idx));
                 }
-                target_note_id = n.id.clone();
-            }
-        }
+                target_ev_id = ev_cur.id.clone();
 
-        if target_note_id.is_none() {
-            self.pending_slur = None;
-            return;
-        }
-
-        // Give the start note an ID and append the slur
-        if let Some(ev_start) = doc.get_event_mut_at_path(start_path) {
-            if let Some(n) = ev_start
-                .notes
-                .iter_mut()
-                .find(|n| n.string == Some(slur_str))
-            {
-                if n.id.is_none() {
-                    n.id = Some(format!("note_src_{}_{}", start_idx, cur_idx));
+                if let Some(n) = ev_cur.notes.iter_mut().find(|n| n.string == Some(cur_str)) {
+                    if n.id.is_none() {
+                        n.id = Some(format!("note_tgt_{}_{}", start_idx, cur_idx));
+                    }
+                    target_note_id = n.id.clone();
                 }
-                start_note_id = n.id.clone();
             }
 
-            if start_note_id.is_some() {
-                if ev_start.slurs.is_none() {
-                    ev_start.slurs = Some(Vec::new());
+            if target_note_id.is_none() {
+                return None;
+            }
+
+            // Give the start note an ID and append the slur
+            if let Some(ev_start) = doc.get_event_mut_at_path(start_path) {
+                if let Some(n) = ev_start
+                    .notes
+                    .iter_mut()
+                    .find(|n| n.string == Some(slur_str))
+                {
+                    if n.id.is_none() {
+                        n.id = Some(format!("note_src_{}_{}", start_idx, cur_idx));
+                    }
+                    start_note_id = n.id.clone();
                 }
-                ev_start.slurs.as_mut().unwrap().push(crate::mnx::Slur {
-                    target: target_ev_id.unwrap(),
-                    side: Some("up".to_string()),
-                    start_note: start_note_id,
-                    end_note: target_note_id,
-                });
-            }
-        }
 
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-        }
+                if start_note_id.is_some() {
+                    if ev_start.slurs.is_none() {
+                        ev_start.slurs = Some(Vec::new());
+                    }
+                    ev_start.slurs.as_mut().unwrap().push(crate::mnx::Slur {
+                        target: target_ev_id.unwrap(),
+                        side: Some("up".to_string()),
+                        start_note: start_note_id,
+                        end_note: target_note_id,
+                    });
+                }
+            }
+            Some(())
+        });
         self.pending_slur = None;
     }
     
@@ -1216,30 +1287,44 @@ impl MnxEditorApp {
         &mut self,
         e_idx: usize,
     ) -> Option<usize> {
-        let doc = self.parsed_mnx.as_ref()?;
-        let info = doc.find_event_grace_info(e_idx)?;
+        let is_eligible = {
+            let doc = self.parsed_mnx.as_ref()?;
+            let info = doc.find_event_grace_info(e_idx)?;
 
-        // Must be the final event of the grace block
-        if e_idx != info.event_range.end - 1 {
+            // Must be the final event of the grace block
+            if e_idx != info.event_range.end - 1 {
+                return None;
+            }
+
+            let part = doc.parts.first()?;
+            let flat_events = part
+                .measures
+                .iter()
+                .flat_map(|m| m.sequences.iter())
+                .flat_map(|s| s.flattened_events())
+                .collect::<Vec<_>>();
+            let cur_ev = flat_events.get(e_idx)?;
+            if cur_ev.notes.is_empty() && cur_ev.rest.is_none() {
+                return None; // Still blank, don't advance
+            }
+            true
+        };
+
+        if !is_eligible {
             return None;
         }
 
-        let part = doc.parts.first()?;
-        let flat_events = part
-            .measures
-            .iter()
-            .flat_map(|m| m.sequences.iter())
-            .flat_map(|s| s.flattened_events())
-            .collect::<Vec<_>>();
-        let cur_ev = flat_events.get(e_idx)?;
-        if cur_ev.notes.is_empty() && cur_ev.rest.is_none() {
-            return None; // Still blank, don't advance
-        }
-
         // Add blank note to grace block
-        if let Some(new_yaml) = crate::yaml_editor::append_blank_note_to_grace_block_in_yaml(&self.yaml_text, e_idx) {
-            self.update_yaml(new_yaml);
-            self.process_and_render();
+        if self
+            .mutate_doc(|doc| {
+                if crate::yaml_editor::append_blank_note_to_grace_block_in_doc(doc, e_idx) {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .is_some()
+        {
             return Some(e_idx + 1);
         }
         None
