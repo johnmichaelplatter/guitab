@@ -2099,4 +2099,612 @@ impl crate::gui::MnxEditorApp {
             Some(())
         });
     }
+
+    pub fn action_shift_selected_frets(&mut self, delta_fret: i32) {
+        let cursor = match self.selected_event_idx {
+            Some(c) => c,
+            None => return,
+        };
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+
+        let single_note_idx = if min_idx == max_idx {
+            self.selected_note_idx_in_event
+        } else {
+            None
+        };
+
+        let mut doc = match self.parsed_mnx.as_ref() {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let part_meta = match doc.parts.first() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let paths = doc.get_flattened_event_paths();
+        let mut changed = false;
+
+        for e_idx in min_idx..=max_idx {
+            let Some(&path) = paths.get(e_idx) else {
+                continue;
+            };
+            let Some(ev) = doc.get_event_mut_at_path(path) else {
+                continue;
+            };
+
+            if let Some(n_idx) = single_note_idx {
+                if let Some(note) = ev.notes.get_mut(n_idx) {
+                    let cur_fret = note.fret.unwrap_or(0);
+                    let new_fret = (cur_fret + delta_fret).max(0);
+                    if note.fret != Some(new_fret) {
+                        note.fret = Some(new_fret);
+                        if let Some(s) = note.string {
+                            if let Some(new_pitch) =
+                                calculate_pitch_for_string_fret(&part_meta, s, new_fret)
+                            {
+                                note.pitch = new_pitch;
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+            } else {
+                for note in &mut ev.notes {
+                    let cur_fret = note.fret.unwrap_or(0);
+                    let new_fret = (cur_fret + delta_fret).max(0);
+                    if note.fret != Some(new_fret) {
+                        note.fret = Some(new_fret);
+                        if let Some(s) = note.string {
+                            if let Some(new_pitch) =
+                                calculate_pitch_for_string_fret(&part_meta, s, new_fret)
+                            {
+                                note.pitch = new_pitch;
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if changed {
+            self.apply_mutated_doc_and_clean_ties(doc);
+            self.preview_selected_sound();
+        }
+    }
+
+    pub fn action_shift_selected_strings(&mut self, delta_string: i8) {
+        let cursor = match self.selected_event_idx {
+            Some(c) => c,
+            None => return,
+        };
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+
+        let single_note_idx = if min_idx == max_idx {
+            self.selected_note_idx_in_event
+        } else {
+            None
+        };
+
+        let mut doc = match self.parsed_mnx.as_ref() {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let part_meta = match doc.parts.first() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        let num_strings = part_meta.num_strings().max(1) as u8;
+
+        let paths = doc.get_flattened_event_paths();
+        let mut changed = false;
+        let mut single_new_string: Option<u8> = None;
+
+        for e_idx in min_idx..=max_idx {
+            let Some(&path) = paths.get(e_idx) else {
+                continue;
+            };
+            let Some(ev) = doc.get_event_mut_at_path(path) else {
+                continue;
+            };
+
+            if let Some(n_idx) = single_note_idx {
+                if n_idx < ev.notes.len() {
+                    let cur_str = ev.notes[n_idx].string.unwrap_or(1) as i8;
+                    let new_str = (cur_str + delta_string).clamp(1, num_strings as i8) as u8;
+                    if new_str != cur_str as u8 {
+                        let mut moved_note = ev.notes.remove(n_idx);
+                        ev.notes.retain(|n| n.string != Some(new_str));
+                        moved_note.string = Some(new_str);
+                        let fret = moved_note.fret.unwrap_or(0);
+                        if let Some(new_pitch) =
+                            calculate_pitch_for_string_fret(&part_meta, new_str, fret)
+                        {
+                            moved_note.pitch = new_pitch;
+                        }
+                        ev.notes.push(moved_note);
+                        ev.notes.sort_by_key(|n| n.string.unwrap_or(0));
+                        single_new_string = Some(new_str);
+                        changed = true;
+                    }
+                }
+            } else if !ev.notes.is_empty() {
+                let mut old_notes = std::mem::take(&mut ev.notes);
+                if delta_string < 0 {
+                    old_notes.sort_by_key(|n| n.string.unwrap_or(1));
+                } else {
+                    old_notes.sort_by_key(|n| std::cmp::Reverse(n.string.unwrap_or(1)));
+                }
+                let mut new_notes: Vec<crate::mnx::Note> = Vec::with_capacity(old_notes.len());
+                for mut note in old_notes {
+                    let cur_str = note.string.unwrap_or(1) as i8;
+                    let new_str = (cur_str + delta_string).clamp(1, num_strings as i8) as u8;
+                    if new_str != cur_str as u8 {
+                        note.string = Some(new_str);
+                        let fret = note.fret.unwrap_or(0);
+                        if let Some(new_pitch) =
+                            calculate_pitch_for_string_fret(&part_meta, new_str, fret)
+                        {
+                            note.pitch = new_pitch;
+                        }
+                        changed = true;
+                    }
+                    new_notes.retain(|n| n.string != Some(new_str));
+                    new_notes.push(note);
+                }
+                new_notes.sort_by_key(|n| n.string.unwrap_or(0));
+                ev.notes = new_notes;
+            }
+        }
+
+        if changed {
+            self.apply_mutated_doc_and_clean_ties(doc);
+            if let Some(new_str) = single_new_string {
+                self.editing_string = Some(new_str);
+                self.select_note_on_string(min_idx, new_str);
+            } else if let Some(s) = self.editing_string {
+                let new_s = (s as i8 + delta_string).clamp(1, num_strings as i8) as u8;
+                self.editing_string = Some(new_s);
+            }
+            self.preview_selected_sound();
+        }
+    }
+
+    pub fn action_move_selected_by_grid(&mut self, direction: i8) {
+        let cursor = match self.selected_event_idx {
+            Some(c) => c,
+            None => return,
+        };
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+
+        let grid_beats = self.current_grid_beats();
+        if grid_beats <= 1e-4 {
+            return;
+        }
+
+        let mut doc = match self.parsed_mnx.as_ref() {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let part = match doc.parts.first_mut() {
+            Some(p) => p,
+            None => return,
+        };
+
+        // Flatten all items with their event index span and beat interval [b0, b1]
+        struct TimedItem {
+            item: crate::mnx::SequenceItem,
+            start_ev: usize,
+            end_ev: usize,
+            b0: f64,
+            b1: f64,
+        }
+
+        let mut timed_items: Vec<TimedItem> = Vec::new();
+        let mut cur_ev = 0usize;
+        let mut cur_beat = 0.0f64;
+
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for item in &seq.content {
+                    let ev_count = match item {
+                        crate::mnx::SequenceItem::Event(_) => 1,
+                        crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                        crate::mnx::SequenceItem::Grace(g) => g.content.len(),
+                    };
+                    let beats = item.total_beats();
+                    let start_ev = cur_ev;
+                    let end_ev = cur_ev + ev_count.saturating_sub(1);
+                    let b0 = cur_beat;
+                    let b1 = cur_beat + beats;
+                    timed_items.push(TimedItem {
+                        item: item.clone(),
+                        start_ev,
+                        end_ev,
+                        b0,
+                        b1,
+                    });
+                    cur_ev += ev_count;
+                    cur_beat = b1;
+                }
+            }
+        }
+
+        let mut sel_start_beat: Option<f64> = None;
+        let mut sel_end_beat: f64 = 0.0;
+        let mut has_selected_notes = false;
+
+        for ti in &timed_items {
+            if ti.start_ev <= max_idx && ti.end_ev >= min_idx {
+                if sel_start_beat.is_none() {
+                    sel_start_beat = Some(ti.b0);
+                }
+                sel_end_beat = ti.b1;
+                match &ti.item {
+                    crate::mnx::SequenceItem::Event(ev) => {
+                        if !ev.notes.is_empty() {
+                            has_selected_notes = true;
+                        }
+                    }
+                    crate::mnx::SequenceItem::Tuplet(t) => {
+                        for sub in &t.content {
+                            if let crate::mnx::SequenceItem::Event(sev) = sub {
+                                if !sev.notes.is_empty() {
+                                    has_selected_notes = true;
+                                }
+                            }
+                        }
+                    }
+                    crate::mnx::SequenceItem::Grace(g) => {
+                        for sub in &g.content {
+                            if let crate::mnx::SequenceItem::Event(sev) = sub {
+                                if !sev.notes.is_empty() {
+                                    has_selected_notes = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(sel_start) = sel_start_beat else {
+            return;
+        };
+        let sel_beats = sel_end_beat - sel_start;
+        if !has_selected_notes || sel_beats <= 1e-4 {
+            return;
+        }
+
+        if direction < 0 && sel_start <= 1e-4 {
+            return;
+        }
+
+        let new_start_beat = if direction > 0 {
+            sel_start + grid_beats
+        } else {
+            (sel_start - grid_beats).max(0.0)
+        };
+        if (new_start_beat - sel_start).abs() <= 1e-4 {
+            return;
+        }
+        let new_end_beat = new_start_beat + sel_beats;
+
+        let make_rest_events = |beats: f64| -> Vec<crate::mnx::SequenceItem> {
+            if beats <= 1e-4 {
+                return Vec::new();
+            }
+            let template = crate::mnx::Event {
+                id: None,
+                duration: crate::mnx::Duration {
+                    base: "quarter".to_string(),
+                    dots: None,
+                    multiple: None,
+                },
+                notes: vec![],
+                rest: Some(crate::mnx::Rest {}),
+                slurs: None,
+                markings: None,
+                lyrics: None,
+            };
+            crate::rebar::greedy_split_event_duration(template, beats)
+                .into_iter()
+                .map(crate::mnx::SequenceItem::Event)
+                .collect()
+        };
+
+        let single_note_idx = if min_idx == max_idx {
+            self.selected_note_idx_in_event
+        } else {
+            None
+        };
+        let mut moved_single_note_string: Option<u8> = None;
+
+        // Build base_timeline (with vacated selection replaced by rests or remaining chord notes)
+        // and moved_items
+        let mut base_items: Vec<crate::mnx::SequenceItem> = Vec::new();
+        let mut raw_moved_items: Vec<crate::mnx::SequenceItem> = Vec::new();
+
+        for ti in timed_items {
+            if ti.start_ev <= max_idx && ti.end_ev >= min_idx {
+                if let (Some(n_idx), crate::mnx::SequenceItem::Event(ev)) =
+                    (single_note_idx, &ti.item)
+                {
+                    if ev.notes.len() > 1 && n_idx < ev.notes.len() {
+                        let mut rem_ev = ev.clone();
+                        let moved_note = rem_ev.notes.remove(n_idx);
+                        moved_single_note_string = moved_note.string;
+                        base_items.push(crate::mnx::SequenceItem::Event(rem_ev));
+
+                        let mut mov_ev = ev.clone();
+                        mov_ev.id = Some(crate::rebar::generate_uuid());
+                        mov_ev.notes = vec![moved_note];
+                        mov_ev.rest = None;
+                        raw_moved_items.push(crate::mnx::SequenceItem::Event(mov_ev));
+                        continue;
+                    } else if let Some(n) = ev.notes.get(n_idx) {
+                        moved_single_note_string = n.string;
+                    }
+                }
+                raw_moved_items.push(ti.item);
+                base_items.extend(make_rest_events(ti.b1 - ti.b0));
+            } else {
+                base_items.push(ti.item);
+            }
+        }
+
+        // Coalesce contiguous self-tied events in raw_moved_items so notes split across a barline
+        // can recombine if moved inside a single bar (or re-split cleanly at the new barline).
+        let mut moved_items: Vec<crate::mnx::SequenceItem> = Vec::new();
+        let mut idx = 0;
+        while idx < raw_moved_items.len() {
+            if let crate::mnx::SequenceItem::Event(ev_first) = &raw_moved_items[idx] {
+                let mut combined_beats =
+                    crate::validate::duration_to_quarter_beats(&ev_first.duration);
+                let mut end_idx = idx;
+                while end_idx + 1 < raw_moved_items.len() {
+                    let (
+                        crate::mnx::SequenceItem::Event(prev_ev),
+                        crate::mnx::SequenceItem::Event(next_ev),
+                    ) = (&raw_moved_items[end_idx], &raw_moved_items[end_idx + 1])
+                    else {
+                        break;
+                    };
+                    if prev_ev.notes.is_empty()
+                        || prev_ev.notes.len() != next_ev.notes.len()
+                        || !prev_ev.notes.iter().all(|pn| {
+                            let Some(ties) = &pn.ties else {
+                                return false;
+                            };
+                            next_ev.notes.iter().any(|nn| {
+                                nn.string == pn.string
+                                    && nn.fret == pn.fret
+                                    && nn
+                                        .id
+                                        .as_ref()
+                                        .map_or(false, |id| ties.iter().any(|t| &t.target == id))
+                            })
+                        })
+                    {
+                        break;
+                    }
+                    combined_beats +=
+                        crate::validate::duration_to_quarter_beats(&next_ev.duration);
+                    end_idx += 1;
+                }
+                if end_idx > idx {
+                    let mut merged_ev = ev_first.clone();
+                    if let crate::mnx::SequenceItem::Event(last_ev) = &raw_moved_items[end_idx] {
+                        for (m_n, l_n) in merged_ev.notes.iter_mut().zip(last_ev.notes.iter()) {
+                            m_n.ties = l_n.ties.clone();
+                        }
+                    }
+                    for chunk in crate::rebar::greedy_split_event_duration(merged_ev, combined_beats)
+                    {
+                        moved_items.push(crate::mnx::SequenceItem::Event(chunk));
+                    }
+                    idx = end_idx + 1;
+                    continue;
+                }
+            }
+            moved_items.push(raw_moved_items[idx].clone());
+            idx += 1;
+        }
+
+        // Overwrite [new_start_beat, new_end_beat] in base_items with moved_items
+        let mut final_items: Vec<crate::mnx::SequenceItem> = Vec::new();
+        let mut b_cursor = 0.0f64;
+        let mut inserted = false;
+
+        for item in base_items {
+            let item_beats = item.total_beats();
+            let b0 = b_cursor;
+            let b1 = b0 + item_beats;
+            b_cursor = b1;
+
+            if !inserted && b0 >= new_start_beat - 1e-4 {
+                final_items.extend(moved_items.clone());
+                inserted = true;
+            }
+
+            if item_beats <= 1e-4 {
+                // Grace note: keep if outside [new_start_beat, new_end_beat)
+                if b0 < new_start_beat - 1e-4 || b0 >= new_end_beat - 1e-4 {
+                    final_items.push(item);
+                }
+                continue;
+            }
+
+            if b1 <= new_start_beat + 1e-4 || b0 >= new_end_beat - 1e-4 {
+                final_items.push(item);
+            } else {
+                // Item overlaps [new_start_beat, new_end_beat]
+                if b0 < new_start_beat - 1e-4 {
+                    let pre_beats = new_start_beat - b0;
+                    match &item {
+                        crate::mnx::SequenceItem::Event(ev) => {
+                            let mut pre_ev = ev.clone();
+                            pre_ev.slurs = None;
+                            for n in &mut pre_ev.notes {
+                                n.ties = None;
+                            }
+                            for chunk in
+                                crate::rebar::greedy_split_event_duration(pre_ev, pre_beats)
+                            {
+                                final_items.push(crate::mnx::SequenceItem::Event(chunk));
+                            }
+                        }
+                        _ => {
+                            final_items.extend(make_rest_events(pre_beats));
+                        }
+                    }
+                }
+
+                if !inserted {
+                    final_items.extend(moved_items.clone());
+                    inserted = true;
+                }
+
+                if b1 > new_end_beat + 1e-4 {
+                    let post_beats = b1 - new_end_beat;
+                    match &item {
+                        crate::mnx::SequenceItem::Event(ev) => {
+                            let mut post_ev = ev.clone();
+                            post_ev.id = Some(crate::rebar::generate_uuid());
+                            for n in &mut post_ev.notes {
+                                n.id = Some(crate::rebar::generate_uuid());
+                            }
+                            for chunk in
+                                crate::rebar::greedy_split_event_duration(post_ev, post_beats)
+                            {
+                                final_items.push(crate::mnx::SequenceItem::Event(chunk));
+                            }
+                        }
+                        _ => {
+                            final_items.extend(make_rest_events(post_beats));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !inserted {
+            if new_start_beat > b_cursor + 1e-4 {
+                final_items.extend(make_rest_events(new_start_beat - b_cursor));
+            }
+            final_items.extend(moved_items);
+        }
+
+        Self::rebuild_part_with_rebar(part, &mut doc.global.measures, final_items, vec![]);
+
+        // Coalesce contiguous pure-rest events in measures overlapping the affected beat range
+        // so repeated sub-beat nudges merge trailing/leading rests cleanly into standard durations.
+        let affected_start = sel_start.min(new_start_beat);
+        let affected_end = sel_end_beat.max(new_end_beat);
+        let mut m_beat = 0.0f64;
+        for m in &mut part.measures {
+            let mut m_dur = 0.0f64;
+            for seq in &m.sequences {
+                let sd: f64 = seq.content.iter().map(|it| it.total_beats()).sum();
+                m_dur = m_dur.max(sd);
+            }
+            let m_start = m_beat;
+            let m_end = m_beat + m_dur;
+            m_beat = m_end;
+
+            if m_end >= affected_start - 1e-4 && m_start <= affected_end + 1e-4 {
+                for seq in &mut m.sequences {
+                    let old_content = std::mem::take(&mut seq.content);
+                    let mut coalesced: Vec<crate::mnx::SequenceItem> = Vec::new();
+                    let mut pending_rest_beats = 0.0f64;
+
+                    for item in old_content {
+                        let is_pure_rest = match &item {
+                            crate::mnx::SequenceItem::Event(ev) => {
+                                ev.notes.is_empty()
+                                    && ev.lyrics.is_none()
+                                    && ev.markings.is_none()
+                            }
+                            _ => false,
+                        };
+                        if is_pure_rest {
+                            pending_rest_beats += item.total_beats();
+                        } else {
+                            if pending_rest_beats > 1e-4 {
+                                coalesced.extend(make_rest_events(pending_rest_beats));
+                                pending_rest_beats = 0.0;
+                            }
+                            coalesced.push(item);
+                        }
+                    }
+                    if pending_rest_beats > 1e-4 {
+                        coalesced.extend(make_rest_events(pending_rest_beats));
+                    }
+                    seq.content = coalesced;
+                }
+            }
+        }
+
+        self.apply_mutated_doc_and_clean_ties(doc);
+
+        // Update selection to track the moved note(s) at [new_start_beat, new_end_beat]
+        if let Some(updated_doc) = &self.parsed_mnx {
+            if let Some(updated_part) = updated_doc.parts.first() {
+                let mut ev_idx = 0usize;
+                let mut beat = 0.0f64;
+                let mut new_min_ev: Option<usize> = None;
+                let mut new_max_ev: Option<usize> = None;
+
+                for m in &updated_part.measures {
+                    for seq in &m.sequences {
+                        for item in &seq.content {
+                            let ev_count = match item {
+                                crate::mnx::SequenceItem::Event(_) => 1,
+                                crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                                crate::mnx::SequenceItem::Grace(g) => g.content.len(),
+                            };
+                            let b = item.total_beats();
+                            let b0 = beat;
+                            let b1 = beat + b;
+                            if b > 1e-4
+                                && b0 >= new_start_beat - 1e-3
+                                && b1 <= new_end_beat + 1e-3
+                            {
+                                if new_min_ev.is_none() {
+                                    new_min_ev = Some(ev_idx);
+                                }
+                                new_max_ev = Some(ev_idx + ev_count.saturating_sub(1));
+                            }
+                            ev_idx += ev_count;
+                            beat = b1;
+                        }
+                    }
+                }
+
+                if let (Some(n_min), Some(n_max)) = (new_min_ev, new_max_ev) {
+                    if n_min == n_max {
+                        self.selected_event_idx = Some(n_min);
+                        self.selection_anchor = None;
+                        if let Some(s) = moved_single_note_string {
+                            self.editing_string = Some(s);
+                            self.select_note_on_string(n_min, s);
+                        }
+                    } else {
+                        self.selection_anchor = Some(n_min);
+                        self.selected_event_idx = Some(n_max);
+                        self.selected_note_idx_in_event = None;
+                    }
+                }
+            }
+        }
+
+        self.preview_selected_sound();
+    }
 }

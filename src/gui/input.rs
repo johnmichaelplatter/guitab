@@ -985,80 +985,42 @@ impl MnxEditorApp {
                 self.editing_fret_buf.clear();
                 self.is_editing_fret = true;
             } else if left_pressed || right_pressed || up_pressed || down_pressed {
-                let shift_down = ui.input(|i| i.modifiers.shift);
-                if left_pressed || right_pressed {
-                    if shift_down {
-                        if self.selection_anchor.is_none() {
-                            self.selection_anchor = self.selected_event_idx;
-                        }
-                    } else {
-                        self.selection_anchor = None;
+                let (shift_down, alt_down) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+                if alt_down && (left_pressed || right_pressed) {
+                    if right_pressed {
+                        self.action_move_selected_by_grid(1);
+                    } else if left_pressed {
+                        self.action_move_selected_by_grid(-1);
                     }
-                }
-
-                // Left / Right arrow navigation: moves between events, always selecting all notes in target event
-                if left_pressed {
-                    let at_final_event =
-                        self.selected_event_idx == Some(total_events.saturating_sub(1));
-                    let is_final_blank = at_final_event
-                        && self
-                            .parsed_mnx
-                            .as_ref()
-                            .and_then(|d| d.parts.first())
-                            .and_then(|p| p.measures.last())
-                            .and_then(|m| m.sequences.first())
-                            .and_then(|s| s.flattened_events().last().copied())
-                            .map(|e| e.notes.is_empty() && e.rest.is_none())
-                            .unwrap_or(false);
-
-                    if is_final_blank {
-                        // If nothing is entered into this blank note, shifting focus back to the left removes it
-                        if self
-                            .mutate_doc(|doc| {
-                                if crate::yaml_editor::remove_last_blank_event_in_doc(doc) {
-                                    Some(())
-                                } else {
-                                    None
-                                }
-                            })
-                            .is_some()
-                        {
-                            let new_total = self.cached_event_ranges.len();
-                            if new_total > 0 {
-                                self.selected_event_idx = Some(new_total.saturating_sub(1));
-                            } else {
-                                self.selected_event_idx = None;
+                } else if alt_down && (up_pressed || down_pressed) {
+                    if up_pressed {
+                        self.action_shift_selected_strings(-1);
+                    } else if down_pressed {
+                        self.action_shift_selected_strings(1);
+                    }
+                } else if shift_down && (up_pressed || down_pressed) {
+                    if up_pressed {
+                        self.action_shift_selected_frets(1);
+                    } else if down_pressed {
+                        self.action_shift_selected_frets(-1);
+                    }
+                } else {
+                    if left_pressed || right_pressed {
+                        if shift_down {
+                            if self.selection_anchor.is_none() {
+                                self.selection_anchor = self.selected_event_idx;
                             }
-                            self.selected_note_idx_in_event = None;
-                            self.editing_string = None;
-                            self.preview_selected_sound();
+                        } else {
+                            self.selection_anchor = None;
                         }
-                    } else {
-                        self.selected_event_idx = match self.selected_event_idx {
-                            Some(idx) => Some(idx.saturating_sub(1)),
-                            None => Some(total_events.saturating_sub(1)),
-                        };
-                        self.selected_note_idx_in_event = None;
-                        self.editing_string = None;
-                        self.preview_selected_sound();
                     }
-                }
-                if right_pressed {
-                    let cur_e_idx = self.selected_event_idx;
-                    let tuplet_next =
-                        cur_e_idx.and_then(|e_i| self.handle_tuplet_right_arrow(e_i, total_events));
 
-                    if let Some(next_idx) = tuplet_next {
-                        self.selected_event_idx = Some(next_idx);
-                        self.selected_note_idx_in_event = None;
-                        self.editing_string = None;
-                        self.preview_selected_sound();
-                    } else {
+                    // Left / Right arrow navigation: moves between events, always selecting all notes in target event
+                    if left_pressed {
                         let at_final_event =
                             self.selected_event_idx == Some(total_events.saturating_sub(1));
-
-                        if at_final_event {
-                            let is_final_blank = self
+                        let is_final_blank = at_final_event
+                            && self
                                 .parsed_mnx
                                 .as_ref()
                                 .and_then(|d| d.parts.first())
@@ -1068,131 +1030,193 @@ impl MnxEditorApp {
                                 .map(|e| e.notes.is_empty() && e.rest.is_none())
                                 .unwrap_or(false);
 
-                            if is_final_blank {
-                                // Rule 3: Moving further to the right of a final blank note has no effect.
-                            } else if shift_down {
-                                // DO NOT create measures while multi-selecting
-                            } else {
-                                let measure_info = self.parsed_mnx.as_ref().and_then(|doc| {
-                                    let part = doc.parts.first()?;
-                                    let last_measure = part.measures.last()?;
-                                    let last_seq = last_measure.sequences.first()?;
-                                    let last_event = last_seq.flattened_events().last().copied()?;
-                                    let m_idx = part.measures.len() - 1;
-                                    let final_dur = last_event.duration.clone();
-                                    let dur_beats = validate::duration_to_quarter_beats(&final_dur);
-                                    let time_sig = validate::get_time_signature_for_measure(doc, m_idx);
-                                    let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
-                                    let curr_beats: f64 = last_seq.total_beats();
-                                    Some((final_dur, curr_beats + dur_beats <= max_beats + 1e-4))
-                                });
-
-                                if let Some((final_dur, fits_in_measure)) = measure_info {
-                                    if fits_in_measure {
-                                        // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
-                                        if self
-                                            .mutate_doc(|doc| {
-                                                if crate::yaml_editor::add_blank_note_to_last_measure_in_doc(
-                                                    doc, &final_dur,
-                                                ) {
-                                                    Some(())
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .is_some()
-                                        {
-                                            let new_total = self.cached_event_ranges.len();
-                                            if new_total > 0 {
-                                                self.selected_event_idx = Some(new_total - 1);
-                                            }
-                                            self.selected_note_idx_in_event = None;
-                                            self.editing_string = None;
-                                            self.preview_selected_sound();
-                                        }
+                        if is_final_blank {
+                            // If nothing is entered into this blank note, shifting focus back to the left removes it
+                            if self
+                                .mutate_doc(|doc| {
+                                    if crate::yaml_editor::remove_last_blank_event_in_doc(doc) {
+                                        Some(())
                                     } else {
-                                        // Rule 2: Bar has been filled up -> add new measure with blank note
-                                        self.add_measure_to_end();
-                                        self.preview_selected_sound();
+                                        None
                                     }
+                                })
+                                .is_some()
+                            {
+                                let new_total = self.cached_event_ranges.len();
+                                if new_total > 0 {
+                                    self.selected_event_idx = Some(new_total.saturating_sub(1));
+                                } else {
+                                    self.selected_event_idx = None;
                                 }
+                                self.selected_note_idx_in_event = None;
+                                self.editing_string = None;
+                                self.preview_selected_sound();
                             }
                         } else {
-                            // Standard Right Arrow navigation
                             self.selected_event_idx = match self.selected_event_idx {
-                                Some(idx) => Some((idx + 1).min(total_events - 1)),
-                                None => Some(0),
+                                Some(idx) => Some(idx.saturating_sub(1)),
+                                None => Some(total_events.saturating_sub(1)),
                             };
                             self.selected_note_idx_in_event = None;
                             self.editing_string = None;
                             self.preview_selected_sound();
                         }
                     }
-                }
+                    if right_pressed {
+                        let cur_e_idx = self.selected_event_idx;
+                        let tuplet_next = cur_e_idx
+                            .and_then(|e_i| self.handle_tuplet_right_arrow(e_i, total_events));
 
-                // Up / Down arrow navigation: selects individual notes in a chord
-                if up_pressed || down_pressed {
-                    if let Some(e_idx) = self.selected_event_idx {
-                        if let Some(er) = event_ranges.get(e_idx) {
-                            let note_count = er.note_ranges.len();
-                            if note_count > 1 {
-                                // Order notes visually from top string to bottom string (string 1..N)
-                                let mut note_order: Vec<usize> = (0..note_count).collect();
-                                if let Some(doc) = &self.parsed_mnx {
-                                    if let Some(part) = doc.parts.first() {
-                                        let mut cur_e = 0;
-                                        'find_ev: for m in &part.measures {
-                                            for seq in &m.sequences {
-                                                for ev in seq.flattened_events() {
-                                                    if cur_e == e_idx {
-                                                        note_order.sort_by_key(|&n_i| {
-                                                            ev.notes
-                                                                .get(n_i)
-                                                                .and_then(|n| n.string)
-                                                                .unwrap_or(255)
-                                                        });
-                                                        break 'find_ev;
+                        if let Some(next_idx) = tuplet_next {
+                            self.selected_event_idx = Some(next_idx);
+                            self.selected_note_idx_in_event = None;
+                            self.editing_string = None;
+                            self.preview_selected_sound();
+                        } else {
+                            let at_final_event =
+                                self.selected_event_idx == Some(total_events.saturating_sub(1));
+
+                            if at_final_event {
+                                let is_final_blank = self
+                                    .parsed_mnx
+                                    .as_ref()
+                                    .and_then(|d| d.parts.first())
+                                    .and_then(|p| p.measures.last())
+                                    .and_then(|m| m.sequences.first())
+                                    .and_then(|s| s.flattened_events().last().copied())
+                                    .map(|e| e.notes.is_empty() && e.rest.is_none())
+                                    .unwrap_or(false);
+
+                                if is_final_blank {
+                                    // Rule 3: Moving further to the right of a final blank note has no effect.
+                                } else if shift_down {
+                                    // DO NOT create measures while multi-selecting
+                                } else {
+                                    let measure_info = self.parsed_mnx.as_ref().and_then(|doc| {
+                                        let part = doc.parts.first()?;
+                                        let last_measure = part.measures.last()?;
+                                        let last_seq = last_measure.sequences.first()?;
+                                        let last_event =
+                                            last_seq.flattened_events().last().copied()?;
+                                        let m_idx = part.measures.len() - 1;
+                                        let final_dur = last_event.duration.clone();
+                                        let dur_beats =
+                                            validate::duration_to_quarter_beats(&final_dur);
+                                        let time_sig =
+                                            validate::get_time_signature_for_measure(doc, m_idx);
+                                        let max_beats =
+                                            (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+                                        let curr_beats: f64 = last_seq.total_beats();
+                                        Some((final_dur, curr_beats + dur_beats <= max_beats + 1e-4))
+                                    });
+
+                                    if let Some((final_dur, fits_in_measure)) = measure_info {
+                                        if fits_in_measure {
+                                            // Rule 1: Measure would NOT be completed by additional note -> add blank note to current measure
+                                            if self
+                                                .mutate_doc(|doc| {
+                                                    if crate::yaml_editor::add_blank_note_to_last_measure_in_doc(
+                                                        doc, &final_dur,
+                                                    ) {
+                                                        Some(())
+                                                    } else {
+                                                        None
                                                     }
-                                                    cur_e += 1;
+                                                })
+                                                .is_some()
+                                            {
+                                                let new_total = self.cached_event_ranges.len();
+                                                if new_total > 0 {
+                                                    self.selected_event_idx = Some(new_total - 1);
+                                                }
+                                                self.selected_note_idx_in_event = None;
+                                                self.editing_string = None;
+                                                self.preview_selected_sound();
+                                            }
+                                        } else {
+                                            // Rule 2: Bar has been filled up -> add new measure with blank note
+                                            self.add_measure_to_end();
+                                            self.preview_selected_sound();
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Standard Right Arrow navigation
+                                self.selected_event_idx = match self.selected_event_idx {
+                                    Some(idx) => Some((idx + 1).min(total_events - 1)),
+                                    None => Some(0),
+                                };
+                                self.selected_note_idx_in_event = None;
+                                self.editing_string = None;
+                                self.preview_selected_sound();
+                            }
+                        }
+                    }
+
+                    // Up / Down arrow navigation: selects individual notes in a chord
+                    if up_pressed || down_pressed {
+                        if let Some(e_idx) = self.selected_event_idx {
+                            if let Some(er) = event_ranges.get(e_idx) {
+                                let note_count = er.note_ranges.len();
+                                if note_count > 1 {
+                                    // Order notes visually from top string to bottom string (string 1..N)
+                                    let mut note_order: Vec<usize> = (0..note_count).collect();
+                                    if let Some(doc) = &self.parsed_mnx {
+                                        if let Some(part) = doc.parts.first() {
+                                            let mut cur_e = 0;
+                                            'find_ev: for m in &part.measures {
+                                                for seq in &m.sequences {
+                                                    for ev in seq.flattened_events() {
+                                                        if cur_e == e_idx {
+                                                            note_order.sort_by_key(|&n_i| {
+                                                                ev.notes
+                                                                    .get(n_i)
+                                                                    .and_then(|n| n.string)
+                                                                    .unwrap_or(255)
+                                                            });
+                                                            break 'find_ev;
+                                                        }
+                                                        cur_e += 1;
+                                                    }
                                                 }
                                             }
                                         }
                                     }
-                                }
 
-                                if up_pressed {
-                                    // Up: move to higher string (earlier in note_order)
-                                    self.selected_note_idx_in_event =
-                                        match self.selected_note_idx_in_event {
-                                            None => Some(note_order[0]),
-                                            Some(cur) => {
-                                                let cur_pos = note_order
-                                                    .iter()
-                                                    .position(|&x| x == cur)
-                                                    .unwrap_or(0);
-                                                let new_pos = cur_pos.saturating_sub(1);
-                                                Some(note_order[new_pos])
-                                            }
-                                        };
-                                }
+                                    if up_pressed {
+                                        // Up: move to higher string (earlier in note_order)
+                                        self.selected_note_idx_in_event =
+                                            match self.selected_note_idx_in_event {
+                                                None => Some(note_order[0]),
+                                                Some(cur) => {
+                                                    let cur_pos = note_order
+                                                        .iter()
+                                                        .position(|&x| x == cur)
+                                                        .unwrap_or(0);
+                                                    let new_pos = cur_pos.saturating_sub(1);
+                                                    Some(note_order[new_pos])
+                                                }
+                                            };
+                                    }
 
-                                if down_pressed {
-                                    // Down: move to lower string (later in note_order)
-                                    self.selected_note_idx_in_event =
-                                        match self.selected_note_idx_in_event {
-                                            None => Some(note_order[0]),
-                                            Some(cur) => {
-                                                let cur_pos = note_order
-                                                    .iter()
-                                                    .position(|&x| x == cur)
-                                                    .unwrap_or(0);
-                                                let new_pos = (cur_pos + 1).min(note_count - 1);
-                                                Some(note_order[new_pos])
-                                            }
-                                        };
-                                }
+                                    if down_pressed {
+                                        // Down: move to lower string (later in note_order)
+                                        self.selected_note_idx_in_event =
+                                            match self.selected_note_idx_in_event {
+                                                None => Some(note_order[0]),
+                                                Some(cur) => {
+                                                    let cur_pos = note_order
+                                                        .iter()
+                                                        .position(|&x| x == cur)
+                                                        .unwrap_or(0);
+                                                    let new_pos = (cur_pos + 1).min(note_count - 1);
+                                                    Some(note_order[new_pos])
+                                                }
+                                            };
+                                    }
 
-                                self.preview_selected_sound();
+                                    self.preview_selected_sound();
+                                }
                             }
                         }
                     }

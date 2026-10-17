@@ -340,6 +340,70 @@ impl MnxEditorApp {
                     }
 
                 }
+
+                // ── Current Grid Dropdown ────────────────────────────────────
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Current Grid:").strong());
+                ui.scope(|ui| {
+                    ui.spacing_mut().interact_size.y = 30.0;
+                    let combo_resp = egui::ComboBox::from_id_salt("current_grid_combo")
+                        .width(42.0)
+                        .selected_text("")
+                        .show_ui(ui, |ui| {
+                            ui.spacing_mut().interact_size.y = 18.0;
+                            ui.selectable_value(
+                                &mut self.current_grid,
+                                "half".to_string(),
+                                egui::RichText::new("\u{ECA3}")
+                                    .family(egui::FontFamily::Name("BravuraText".into()))
+                                    .size(20.0),
+                            );
+                            ui.selectable_value(
+                                &mut self.current_grid,
+                                "quarter".to_string(),
+                                egui::RichText::new("\u{ECA5}")
+                                    .family(egui::FontFamily::Name("BravuraText".into()))
+                                    .size(20.0),
+                            );
+                            ui.selectable_value(
+                                &mut self.current_grid,
+                                "eighth".to_string(),
+                                egui::RichText::new("\u{ECA7}")
+                                    .family(egui::FontFamily::Name("BravuraText".into()))
+                                    .size(20.0),
+                            );
+                            ui.selectable_value(
+                                &mut self.current_grid,
+                                "16th".to_string(),
+                                egui::RichText::new("\u{ECA9}")
+                                    .family(egui::FontFamily::Name("BravuraText".into()))
+                                    .size(20.0),
+                            );
+                        });
+
+                    let c_rect = combo_resp.response.rect;
+                    if ui.is_rect_visible(c_rect) {
+                        let visuals = ui.style().interact(&combo_resp.response);
+                        let glyph = match self.current_grid.as_str() {
+                            "half" => "\u{ECA3}",
+                            "eighth" => "\u{ECA7}",
+                            "16th" | "sixteenth" => "\u{ECA9}",
+                            _ => "\u{ECA5}",
+                        };
+                        let font_id =
+                            egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
+                        ui.painter().text(
+                            egui::pos2(c_rect.left() + 13.0, c_rect.center().y - 4.0),
+                            egui::Align2::CENTER_CENTER,
+                            glyph,
+                            font_id,
+                            visuals.text_color(),
+                        );
+                    }
+                });
+
                 // ── Insert TS Button ─────────────────────────────────────────
                 ui.add_space(8.0);
                 ui.separator();

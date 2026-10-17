@@ -1959,4 +1959,192 @@ parts:
             t_layout
         );
     }
+
+    #[test]
+    fn test_shift_selected_frets_up_and_down() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time:
+        count: 4
+        unit: 4
+parts:
+  - name: Guitar
+    measures:
+      - sequences:
+          - content:
+              - type: event
+                duration:
+                  base: quarter
+                notes:
+                  - pitch:
+                      step: E
+                      octave: 4
+                    string: 1
+                    fret: 0
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = false;
+
+        // Shift+Up -> fret 0 -> 1 (F4 on string 1)
+        app.action_shift_selected_frets(1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev.notes[0].fret, Some(1));
+        assert_eq!(ev.notes[0].pitch.step, "F");
+        assert_eq!(ev.notes[0].pitch.octave, 4);
+
+        // Shift+Down -> fret 1 -> 0 (E4 on string 1)
+        app.action_shift_selected_frets(-1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev.notes[0].fret, Some(0));
+        assert_eq!(ev.notes[0].pitch.step, "E");
+        assert_eq!(ev.notes[0].pitch.octave, 4);
+
+        // Clamped at 0 when shifting down again
+        app.action_shift_selected_frets(-1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev.notes[0].fret, Some(0));
+    }
+
+    #[test]
+    fn test_shift_selected_strings_and_overwrite() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time:
+        count: 4
+        unit: 4
+parts:
+  - name: Guitar
+    measures:
+      - sequences:
+          - content:
+              - type: event
+                duration:
+                  base: quarter
+                notes:
+                  - pitch:
+                      step: E
+                      octave: 4
+                    string: 1
+                    fret: 0
+                  - pitch:
+                      step: C
+                      octave: 4
+                    string: 2
+                    fret: 1
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+        app.selected_event_idx = Some(0);
+        app.selected_note_idx_in_event = Some(1); // Select note on string 2 (fret 1)
+        app.is_editing_fret = false;
+
+        // Alt+Up shifts the selected note from string 2 -> string 1, overwriting the existing string 1 note
+        app.action_shift_selected_strings(-1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev.notes.len(), 1);
+        assert_eq!(ev.notes[0].string, Some(1));
+        assert_eq!(ev.notes[0].fret, Some(1));
+        assert_eq!(ev.notes[0].pitch.step, "F");
+        assert_eq!(ev.notes[0].pitch.octave, 4);
+
+        // Alt+Down shifts it back to string 2 (fret 1 -> C4)
+        app.action_shift_selected_strings(1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev.notes.len(), 1);
+        assert_eq!(ev.notes[0].string, Some(2));
+        assert_eq!(ev.notes[0].fret, Some(1));
+        assert_eq!(ev.notes[0].pitch.step, "C");
+        assert_eq!(ev.notes[0].pitch.octave, 4);
+    }
+
+    #[test]
+    fn test_move_selected_by_grid_overwrites_and_leaves_rests() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time:
+        count: 4
+        unit: 4
+parts:
+  - name: Guitar
+    measures:
+      - sequences:
+          - content:
+              - type: event
+                duration:
+                  base: quarter
+                notes:
+                  - pitch:
+                      step: E
+                      octave: 4
+                    string: 1
+                    fret: 0
+              - type: event
+                duration:
+                  base: quarter
+                notes:
+                  - pitch:
+                      step: G
+                      octave: 4
+                    string: 1
+                    fret: 3
+              - type: event
+                duration:
+                  base: half
+                rest: {}
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+        app.selected_event_idx = Some(0);
+        app.current_grid = "quarter".to_string();
+        app.is_editing_fret = false;
+
+        // Alt+Right moves the first quarter note (fret 0) right by 1 quarter beat:
+        // - Beat 0..1 becomes a quarter rest
+        // - Beat 1..2 is overwritten with the moved note (fret 0, replacing fret 3)
+        // - Beat 2..4 remains a half rest
+        app.action_move_selected_by_grid(1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let events = doc.parts[0].measures[0].sequences[0].flattened_events();
+        assert_eq!(events.len(), 3);
+        assert!(events[0].rest.is_some() && events[0].notes.is_empty());
+        assert_eq!(events[0].duration.base, "quarter");
+        assert_eq!(events[1].notes.len(), 1);
+        assert_eq!(events[1].notes[0].fret, Some(0));
+        assert_eq!(events[1].duration.base, "quarter");
+        assert!(events[2].rest.is_some() && events[2].notes.is_empty());
+        assert_eq!(events[2].duration.base, "half");
+        assert_eq!(app.selected_event_idx, Some(1));
+
+        // Alt+Left moves the selected note (now at event 1, beat 1..2) back left by 1 quarter beat:
+        // - Beat 0..1 becomes the moved note (fret 0)
+        // - Beat 1..4 coalesces into rests (dotted half rest = 3 beats)
+        app.action_move_selected_by_grid(-1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let events = doc.parts[0].measures[0].sequences[0].flattened_events();
+        assert_eq!(events[0].notes.len(), 1);
+        assert_eq!(events[0].notes[0].fret, Some(0));
+        assert_eq!(events[0].duration.base, "quarter");
+        let total_beats = doc.parts[0].measures[0].sequences[0].total_beats();
+        assert!((total_beats - 4.0).abs() < 1e-4);
+        assert_eq!(app.selected_event_idx, Some(0));
+    }
 }

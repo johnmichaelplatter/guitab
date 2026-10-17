@@ -104,6 +104,7 @@ pub struct MnxEditorApp {
     pub selected_layout_element_id: Option<String>,
     pub is_dragging_layout_element: bool,
     pub(crate) cached_event_ranges: Vec<crate::yaml_editor::EventRange>,
+    pub(crate) current_grid: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +244,7 @@ impl Default for MnxEditorApp {
             selected_layout_element_id: None,
             is_dragging_layout_element: false,
             cached_event_ranges: Vec::new(),
+            current_grid: String::from("quarter"),
         };
 
         app.process_and_render();
@@ -251,6 +253,16 @@ impl Default for MnxEditorApp {
 }
 
 impl MnxEditorApp {
+    pub(crate) fn current_grid_beats(&self) -> f64 {
+        match self.current_grid.as_str() {
+            "half" => 2.0,
+            "quarter" => 1.0,
+            "eighth" => 0.5,
+            "16th" | "sixteenth" => 0.25,
+            _ => 1.0,
+        }
+    }
+
     pub fn push_undo_state(&mut self) {
         if self.undo_stack.last() != Some(&self.yaml_text) {
             self.undo_stack.push(self.yaml_text.clone());
