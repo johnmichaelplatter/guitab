@@ -49,10 +49,15 @@ pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalM
         let ts = current_ts.clone();
 
         if m_idx >= global_measures.len() {
-            global_measures.push(crate::mnx::GlobalMeasure {
-                time: Some(ts.clone()),
-                ..Default::default()
-            });
+            let gm = if global_measures.is_empty() {
+                crate::mnx::GlobalMeasure {
+                    time: Some(ts.clone()),
+                    ..Default::default()
+                }
+            } else {
+                crate::mnx::GlobalMeasure::default()
+            };
+            global_measures.push(gm);
         }
 
         let mut remaining_capacity = (ts.count as f64) * 4.0 / (ts.unit as f64);

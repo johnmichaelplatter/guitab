@@ -100,7 +100,14 @@ impl MnxEditorApp {
             
             // Ensure global measures exist up to end_m_idx
             while doc.global.measures.len() <= end_m_idx.max(start_m_idx) {
-                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                if doc.global.measures.is_empty() {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure {
+                        time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                        ..Default::default()
+                    });
+                } else {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                }
             }
 
             // Create target tempo object
@@ -169,7 +176,14 @@ impl MnxEditorApp {
             }
 
             while doc.global.measures.len() <= target_m_idx {
-                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                if doc.global.measures.is_empty() {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure {
+                        time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                        ..Default::default()
+                    });
+                } else {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                }
             }
 
             let location = if sum_quarter_beats > 0.001 {
@@ -794,16 +808,15 @@ impl MnxEditorApp {
         };
 
         while doc.global.measures.len() <= m_idx {
-            let ts = doc
-                .global
-                .measures
-                .last()
-                .and_then(|gm| gm.time.clone())
-                .unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
-            doc.global.measures.push(crate::mnx::GlobalMeasure {
-                time: Some(ts),
-                ..Default::default()
-            });
+            if doc.global.measures.is_empty() {
+                let ts = crate::mnx::TimeSignature { count: 4, unit: 4 };
+                doc.global.measures.push(crate::mnx::GlobalMeasure {
+                    time: Some(ts),
+                    ..Default::default()
+                });
+            } else {
+                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+            }
         }
 
         doc.global.measures[m_idx].time = Some(crate::mnx::TimeSignature { count, unit });
@@ -1271,20 +1284,9 @@ impl MnxEditorApp {
             }
         }
 
-        let time_sig_count = doc
-            .global
-            .measures
-            .get(cur_m)
-            .and_then(|gm| gm.time.as_ref())
-            .map(|t| t.count)
-            .unwrap_or(4);
-        let time_sig_unit = doc
-            .global
-            .measures
-            .get(cur_m)
-            .and_then(|gm| gm.time.as_ref())
-            .map(|t| t.unit)
-            .unwrap_or(4);
+        let cur_ts = crate::validate::get_time_signature_for_measure(&doc, cur_m);
+        let time_sig_count = cur_ts.count;
+        let time_sig_unit = cur_ts.unit;
         let measure_total_beats = (time_sig_count as f64) * (4.0 / (time_sig_unit as f64));
 
         let available_beats = (measure_total_beats - used_beats).max(0.0);
@@ -1409,12 +1411,16 @@ impl MnxEditorApp {
                 doc.parts[0].measures.push(new_m);
 
                 if next_m >= doc.global.measures.len() {
-                    let gm = crate::mnx::GlobalMeasure {
-                        time: Some(crate::mnx::TimeSignature {
-                            count: time_sig_count,
-                            unit: time_sig_unit,
-                        }),
-                        ..Default::default()
+                    let gm = if doc.global.measures.is_empty() {
+                        crate::mnx::GlobalMeasure {
+                            time: Some(crate::mnx::TimeSignature {
+                                count: time_sig_count,
+                                unit: time_sig_unit,
+                            }),
+                            ..Default::default()
+                        }
+                    } else {
+                        crate::mnx::GlobalMeasure::default()
                     };
                     doc.global.measures.push(gm);
                 }
@@ -1464,12 +1470,16 @@ impl MnxEditorApp {
                 doc.parts[0].measures.push(new_m);
 
                 if next_m >= doc.global.measures.len() {
-                    let gm = crate::mnx::GlobalMeasure {
-                        time: Some(crate::mnx::TimeSignature {
-                            count: time_sig_count,
-                            unit: time_sig_unit,
-                        }),
-                        ..Default::default()
+                    let gm = if doc.global.measures.is_empty() {
+                        crate::mnx::GlobalMeasure {
+                            time: Some(crate::mnx::TimeSignature {
+                                count: time_sig_count,
+                                unit: time_sig_unit,
+                            }),
+                            ..Default::default()
+                        }
+                    } else {
+                        crate::mnx::GlobalMeasure::default()
                     };
                     doc.global.measures.push(gm);
                 }
@@ -2029,7 +2039,14 @@ impl crate::gui::MnxEditorApp {
     pub(crate) fn action_toggle_system_break(&mut self, m_idx: usize) {
         self.mutate_doc(|doc| {
             while doc.global.measures.len() <= m_idx {
-                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                if doc.global.measures.is_empty() {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure {
+                        time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                        ..Default::default()
+                    });
+                } else {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                }
             }
             let cur = doc.global.measures[m_idx].system_break.unwrap_or(false);
             doc.global.measures[m_idx].system_break = if cur { None } else { Some(true) };
@@ -2040,7 +2057,14 @@ impl crate::gui::MnxEditorApp {
     pub(crate) fn action_toggle_page_break(&mut self, m_idx: usize) {
         self.mutate_doc(|doc| {
             while doc.global.measures.len() <= m_idx {
-                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                if doc.global.measures.is_empty() {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure {
+                        time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                        ..Default::default()
+                    });
+                } else {
+                    doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+                }
             }
             let cur = doc.global.measures[m_idx].page_break.unwrap_or(false);
             doc.global.measures[m_idx].page_break = if cur { None } else { Some(true) };

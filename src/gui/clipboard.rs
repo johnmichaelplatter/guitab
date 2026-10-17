@@ -653,11 +653,15 @@ impl MnxEditorApp {
 
         // Expand global_measures if needed
         while global_measures.len() < part.measures.len() {
-            let last_ts = global_measures.last().and_then(|g| g.time.clone()).unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
-            global_measures.push(crate::mnx::GlobalMeasure {
-                time: Some(last_ts),
-                ..Default::default()
-            });
+            if global_measures.is_empty() {
+                let last_ts = crate::mnx::TimeSignature { count: 4, unit: 4 };
+                global_measures.push(crate::mnx::GlobalMeasure {
+                    time: Some(last_ts),
+                    ..Default::default()
+                });
+            } else {
+                global_measures.push(crate::mnx::GlobalMeasure::default());
+            }
         }
 
         for (mut t, abs_beat) in pasted_tempos {

@@ -421,18 +421,15 @@ pub fn add_measure_to_doc(
     doc: &mut crate::mnx::MnxDocument,
     duration: &crate::mnx::Duration,
 ) -> bool {
-    let last_time = doc
-        .global
-        .measures
-        .iter()
-        .rev()
-        .find_map(|m| m.time)
-        .unwrap_or(crate::mnx::TimeSignature { count: 4, unit: 4 });
-
-    doc.global.measures.push(crate::mnx::GlobalMeasure {
-        time: Some(last_time),
-        ..Default::default()
-    });
+    if doc.global.measures.is_empty() {
+        let last_time = crate::mnx::TimeSignature { count: 4, unit: 4 };
+        doc.global.measures.push(crate::mnx::GlobalMeasure {
+            time: Some(last_time),
+            ..Default::default()
+        });
+    } else {
+        doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+    }
 
     let Some(part) = doc.parts.first_mut() else {
         return false;
@@ -924,9 +921,16 @@ pub fn set_global_measure_property_in_doc(
     prop_value: &str,
 ) {
     while doc.global.measures.len() <= target_m_idx {
-        doc.global
-            .measures
-            .push(crate::mnx::GlobalMeasure::default());
+        if doc.global.measures.is_empty() {
+            doc.global.measures.push(crate::mnx::GlobalMeasure {
+                time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                ..Default::default()
+            });
+        } else {
+            doc.global
+                .measures
+                .push(crate::mnx::GlobalMeasure::default());
+        }
     }
     let gm = &mut doc.global.measures[target_m_idx];
     match prop_name {

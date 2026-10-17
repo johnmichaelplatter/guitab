@@ -186,6 +186,11 @@ parts:
         let updated_doc =
             serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated doc should parse");
         assert_eq!(updated_doc.global.measures.len(), 4);
+        assert_eq!(
+            updated_doc.global.measures[3].time,
+            None,
+            "Measure 4 must not have an explicit time block"
+        );
         let part = &updated_doc.parts[0];
         assert_eq!(part.measures.len(), 4);
 
@@ -244,6 +249,9 @@ layout:
         assert_eq!(doc.parts[0].measures.len(), 2, "Part should have 2 measures");
         assert_eq!(doc.global.measures.len(), 2, "Global should have 2 measures");
         assert!(doc.layout.is_some(), "Layout should be preserved");
+        assert!(doc.global.measures[0].time.is_some(), "Measure 0 must have a time signature");
+        assert_eq!(doc.global.measures[1].time, None, "Measure 1 must omit time signature");
+        assert!(updated.contains("- {}"), "Measure 1 must be serialized as - {{}}");
 
         // 2. Measure 0 notes must still be the original note, NOT displaced by an insertion at top
         let m0_events = doc.parts[0].measures[0].sequences[0].flattened_events();
@@ -267,6 +275,79 @@ layout:
         assert!(seq_positions[0] > parts_measures_pos, "Measure 0 must be after measures:");
         assert!(seq_positions[1] > seq_positions[0], "Measure 1 must be after measure 0");
         assert!(seq_positions[1] < layout_pos, "Measure 1 must be before layout:");
+    }
+
+    #[test]
+    fn test_new_measure_omits_time_block_after_bar_1() {
+        let yaml = r#"mnx:
+  version: 1
+global:
+  measures:
+  - time: {count: 3, unit: 4}
+parts:
+- instrument:
+    name: Guitar
+  measures:
+  - sequences:
+    - content:
+      - duration: {base: half, dots: 1}
+        notes:
+        - {fret: 0, pitch: {octave: 4, step: E}, string: 1}
+"#;
+        let dur = crate::mnx::Duration {
+            multiple: None,
+            base: "half".to_string(),
+            dots: Some(1),
+        };
+
+        // Add bar 2
+        let updated = add_measure_to_yaml(yaml, &dur).expect("Should add measure 2");
+        let doc = serde_saphyr::from_str::<MnxDocument>(&updated).expect("Updated YAML must parse");
+        assert_eq!(doc.global.measures.len(), 2);
+        assert_eq!(
+            doc.global.measures[0].time,
+            Some(crate::mnx::TimeSignature { count: 3, unit: 4 })
+        );
+        assert_eq!(
+            doc.global.measures[1].time, None,
+            "Bar 2 should not have a time block"
+        );
+        assert!(
+            updated.contains("- {}"),
+            "Bar 2 should be serialized as an empty mapping '- {{}}'"
+        );
+
+        // Effective time signature for bar 2 should inherit from bar 1 (3/4)
+        let ts_bar2 = crate::validate::get_time_signature_for_measure(&doc, 1);
+        assert_eq!(
+            ts_bar2,
+            crate::mnx::TimeSignature { count: 3, unit: 4 }
+        );
+
+        // Add bar 3 (with a quarter note; bar 3 is the final measure so under-capacity is allowed)
+        let dur_quarter = crate::mnx::Duration {
+            multiple: None,
+            base: "quarter".to_string(),
+            dots: None,
+        };
+        let updated3 = add_measure_to_yaml(&updated, &dur_quarter).expect("Should add measure 3");
+        let doc3 = serde_saphyr::from_str::<MnxDocument>(&updated3).expect("Updated YAML must parse");
+        assert_eq!(doc3.global.measures.len(), 3);
+        assert_eq!(
+            doc3.global.measures[0].time,
+            Some(crate::mnx::TimeSignature { count: 3, unit: 4 })
+        );
+        assert_eq!(doc3.global.measures[1].time, None);
+        assert_eq!(doc3.global.measures[2].time, None);
+
+        // Validation should pass with 0 errors
+        let errors = crate::validate::validate_mnx(&doc3);
+        assert_eq!(
+            errors.len(),
+            0,
+            "Validation errors: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -1840,7 +1921,9 @@ parts:
 
     #[test]
     fn test_profile_woman_of_the_hour() {
-        let yaml = std::fs::read_to_string("woman of the hour.yaml").unwrap();
+        let Ok(yaml) = std::fs::read_to_string("woman of the hour.yaml") else {
+            return;
+        };
         let t0 = std::time::Instant::now();
         let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&yaml).unwrap();
         let t_parse = t0.elapsed();
