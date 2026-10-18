@@ -1132,7 +1132,7 @@ pub fn draw_tablature(
 
                     if let Some(dots) = event.duration.dots {
                         if dots > 0 {
-                            let dot_char = '\u{E4CD}';
+                            let dot_char = '\u{E1E7}';
                             let dot_text = dot_char.to_string();
                             let dot_font_id =
                                 FontId::new(32.0, egui::FontFamily::Name("Bravura".into()));

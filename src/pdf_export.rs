@@ -900,9 +900,9 @@ pub fn populate_page_display_list(
                                         dl.push(DrawItem {
                                             id: rest_id,
                                             kind: DrawKind::Text {
-                                                pos: Pos2::new(ev_x + 10.0, staff_mid_y),
+                                                pos: Pos2::new(ev_x + 6.0, staff_mid_y),
                                                 align: Align2::CENTER_CENTER,
-                                                text: "\u{E4CD}".to_string(),
+                                                text: "\u{E1E7}".to_string(),
                                                 font_id: FontId::new(26.0, egui::FontFamily::Name("Bravura".into())),
                                                 color: text_color,
                                             },
