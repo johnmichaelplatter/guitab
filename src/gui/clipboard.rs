@@ -79,7 +79,7 @@ impl MnxEditorApp {
 
                         if let Some(gm) = doc.global.measures.get(m_idx) {
                             for tempo in &gm.tempos {
-                                let offset_beats = parse_loc(&tempo.location);
+                                let offset_beats = tempo.location.as_ref().map(|p| p.to_quarter_beats()).unwrap_or(0.0);
                                 if offset_beats >= current_beat - 0.001 && offset_beats < current_beat + item_beats - 0.001 {
                                     copied_tempos.push((tempo.clone(), global_measure_beat + offset_beats));
                                 }
@@ -167,7 +167,7 @@ impl MnxEditorApp {
         
         let mut final_copied_tempos: Vec<crate::mnx::Tempo> = copied_tempos.into_iter().map(|(mut t, abs_beat)| {
             let rel = abs_beat - selection_start_beat;
-            t.location = Some(format!("{}/16", (rel * 4.0).round() as i32));
+            t.location = crate::mnx::Position::from_quarter_beats(rel);
             t
         }).collect();
         
@@ -333,11 +333,12 @@ impl MnxEditorApp {
 
             part.measures.clear();
             part.measures.push(crate::mnx::Measure {
+                comment: None,
                 beams: None,
                 arpeggios: None,
                 sequences: vec![crate::mnx::Sequence {
+                    comment: None,
                     content: flat_items,
-                    beams: None,
                 }],
             });
             crate::rebar::rebar_part(part, &mut doc.global.measures);
@@ -423,11 +424,12 @@ impl MnxEditorApp {
 
         part.measures.clear();
         part.measures.push(crate::mnx::Measure {
+            comment: None,
             beams: None,
             arpeggios: None,
             sequences: vec![crate::mnx::Sequence {
+                comment: None,
                 content: flat_items,
-                beams: None,
             }],
         });
         crate::rebar::rebar_part(part, global_measures);
@@ -676,7 +678,7 @@ impl MnxEditorApp {
             }
             let measure_start = measure_start_beats[m_idx];
             let rel = abs_beat - measure_start;
-            t.location = Some(format!("{}/16", (rel * 4.0).round() as i32));
+            t.location = crate::mnx::Position::from_quarter_beats(rel);
             global_measures[m_idx].tempos.push(t);
         }
 
@@ -945,7 +947,7 @@ impl MnxEditorApp {
         };
 
         let pasted_tempos_abs: Vec<_> = pasted_tempos.into_iter().map(|t| {
-            let rel = parse_loc(&t.location);
+            let rel = t.location.as_ref().map(|p| p.to_quarter_beats()).unwrap_or(0.0);
             (t, dest_beat + rel)
         }).collect();
         let pasted_tcs_abs: Vec<_> = pasted_tcs.into_iter().map(|tc| {
@@ -1123,7 +1125,7 @@ impl MnxEditorApp {
         };
 
         let pasted_tempos_abs: Vec<_> = pasted_tempos.into_iter().map(|t| {
-            let rel = parse_loc(&t.location);
+            let rel = t.location.as_ref().map(|p| p.to_quarter_beats()).unwrap_or(0.0);
             (t, dest_beat + rel)
         }).collect();
         let pasted_tcs_abs: Vec<_> = pasted_tcs.into_iter().map(|tc| {
@@ -1174,6 +1176,8 @@ impl MnxEditorApp {
                             slurs: None,
                             markings: None,
                             lyrics: None,
+                            comment: None,
+                            ext: crate::mnx::EventExt::default(),
                         };
                         flat_items.push(crate::mnx::SequenceItem::Event(rest_ev));
                         inserted = true;
@@ -1202,6 +1206,8 @@ impl MnxEditorApp {
                 slurs: None,
                 markings: None,
                 lyrics: None,
+                comment: None,
+                ext: crate::mnx::EventExt::default(),
             };
             flat_items.push(crate::mnx::SequenceItem::Event(rest_ev));
         }

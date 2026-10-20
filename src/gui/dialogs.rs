@@ -622,8 +622,7 @@ impl MnxEditorApp {
                         .parsed_mnx
                         .as_ref()
                         .and_then(|d| d.parts.first())
-                        .and_then(|p| p.instrument.as_ref())
-                        .and_then(|i| i.micro_fret_divisions)
+                        .and_then(|p| p.micro_fret_divisions)
                         .unwrap_or(12) as u32;
                     curve_editor.ui(ui, rect, pb_range, mfd);
 
@@ -926,9 +925,7 @@ impl MnxEditorApp {
                             new_tunings: tunings,
                         };
                     } else if num_strings != old_num_strings
-                        || part
-                            .and_then(|p| p.instrument.as_ref().and_then(|i| i.tuning.as_ref()))
-                            != Some(&tunings)
+                        || part.and_then(|p| p.tuning.as_ref()) != Some(&tunings)
                     {
                         self.active_dialog = ActiveDialog::ConfirmTuningChange {
                             new_num_strings: num_strings,
@@ -1009,17 +1006,12 @@ impl MnxEditorApp {
                                 note.harmonic = Some(crate::mnx::Harmonic {
                                     touch,
                                     sounding_note: Box::new(crate::mnx::Note {
-                                        muted: None,
                                         id: None,
                                         pitch: sounding_pitch,
-                                        string: None,
-                                        fret: None,
-                                        accidental: None,
+                                        accidental_display: None,
                                         ties: None,
-                                        tap: None,
-                                        slide: None,
-                                        bend: None,
-                                        harmonic: None,
+                                        comment: None,
+                                        ext: crate::mnx::NoteExt::default(),
                                     }),
                                 });
                             }
@@ -1083,19 +1075,12 @@ impl MnxEditorApp {
         let new_tuning = crate::edo::EdoTuning::new(new_edo as u32);
         let step_mult = (new_step_multiplier.max(1)) as i32;
 
-        let inst = doc.parts[0]
-            .instrument
-            .get_or_insert_with(|| crate::mnx::Instrument {
-                name: "Electric Guitar".to_string(),
-                capo: None,
-                micro_fret_divisions: None,
-                fret_step_multiplier: None,
-                pitch_bend_range: None,
-                tuning: None,
-            });
-        inst.micro_fret_divisions = Some(new_edo);
-        inst.fret_step_multiplier = Some(new_step_multiplier);
-        inst.tuning = Some(new_tunings.clone());
+        if doc.parts[0].name.is_none() {
+            doc.parts[0].name = Some("Electric Guitar".to_string());
+        }
+        doc.parts[0].micro_fret_divisions = Some(new_edo);
+        doc.parts[0].fret_step_multiplier = Some(new_step_multiplier);
+        doc.parts[0].tuning = Some(new_tunings.clone());
 
         if let Some(s) = self.editing_string {
             if s > new_num_strings {

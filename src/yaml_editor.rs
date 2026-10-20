@@ -195,25 +195,16 @@ pub fn get_note_string_from_text(note_text: &str) -> Option<u8> {
 
 fn new_blank_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
     crate::mnx::Event {
-        markings: None,
-        id: None,
         duration,
-        notes: Vec::new(),
-        rest: None,
-        slurs: None,
-        lyrics: None,
+        ..Default::default()
     }
 }
 
 fn new_rest_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
     crate::mnx::Event {
-        markings: None,
-        id: None,
         duration,
-        notes: Vec::new(),
         rest: Some(crate::mnx::Rest {}),
-        slurs: None,
-        lyrics: None,
+        ..Default::default()
     }
 }
 
@@ -288,17 +279,13 @@ pub fn set_or_add_note_on_string_in_doc(
             octave: 4,
         });
         ev.notes.push(crate::mnx::Note {
-            muted: None,
-            id: None,
             pitch,
-            string: Some(target_string),
-            fret: Some(new_fret),
-            accidental: None,
-            ties: None,
-            tap: None,
-            slide: None,
-            bend: None,
-            harmonic: None,
+            ext: crate::mnx::NoteExt {
+                string: Some(target_string),
+                fret: Some(new_fret),
+                ..Default::default()
+            },
+            ..Default::default()
         });
     }
     true
@@ -435,13 +422,14 @@ pub fn add_measure_to_doc(
         return false;
     };
     part.measures.push(crate::mnx::Measure {
+        comment: None,
         beams: None,
         arpeggios: None,
         sequences: vec![crate::mnx::Sequence {
+            comment: None,
             content: vec![crate::mnx::SequenceItem::Event(new_blank_event(
                 duration.clone(),
             ))],
-            beams: None,
         }],
     });
     true

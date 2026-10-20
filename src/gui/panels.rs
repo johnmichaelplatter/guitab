@@ -570,7 +570,7 @@ impl MnxEditorApp {
                                             let m_start2 = measure_start_beats.get(m_idx2).copied().unwrap_or(0.0);
                                             for t in &gm2.tempos {
                                                 if t.id.as_ref() == Some(tid) {
-                                                    let t_beat = m_start2 + parse_loc(&t.location);
+                                                    let t_beat = m_start2 + t.location.as_ref().map(|p| p.to_quarter_beats()).unwrap_or(0.0);
                                                     if cursor_beat <= t_beat + 0.001 {
                                                         existing_target = Some(tid.clone());
                                                         start_bpm = t.bpm.to_string();

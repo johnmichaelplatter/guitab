@@ -1,33 +1,36 @@
 ---
 mnx:
   version: 1
-layout:
-  pageSize: letter
-  measureNumbers: systemStart
-  margins:
-    top: 54
-    bottom: 54
-    left: 45
-    right: 45
-  offsets:
-    ending_0:
-      dx: 0
-      dy: -4
-    lyric_0_0:
-      dx: 0
-      dy: 2
+_x:
+  layout:
+    pageSize: letter
+    measureNumbers: systemStart
+    margins:
+      top: 54
+      bottom: 54
+      left: 45
+      right: 45
+    offsets:
+      ending_0:
+        dx: 0
+        dy: -4
+      lyric_0_0:
+        dx: 0
+        dy: 2
 global:
   measures:
     - time: { count: 4, unit: 4 }
       ending: { duration: 1, numbers: [1], open: false }
       repeatEnd: { times: 2 }
     - ending: { duration: 1, numbers: [2], open: true }
-      systemBreak: true
-    - pageBreak: true
+      _x:
+        systemBreak: true
+    - _x:
+        pageBreak: true
     - {}
 parts:
-  - instrument:
-      name: "Acoustic Guitar"
+  - name: "Acoustic Guitar"
+    _x:
       microFretDivisions: 12
     measures:
       - sequences:
@@ -35,63 +38,86 @@ parts:
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 0
+                    _x:
+                      string: 1
+                      fret: 0
                 lyrics:
-                  - text: "Ooh_"
-                    extender: true
+                  lines:
+                    "1":
+                      text: "Ooh_"
+                      _x:
+                        extender: true
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: B, octave: 3 }
-                    string: 2
-                    fret: 0
+                    _x:
+                      string: 2
+                      fret: 0
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: G, octave: 3 }
-                    string: 3
-                    fret: 0
+                    _x:
+                      string: 3
+                      fret: 0
                 lyrics:
-                  - text: "sing-"
-                    syllabic: begin
+                  lines:
+                    "1":
+                      text: "sing-"
+                      type: start
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: D, octave: 4 }
-                    string: 2
-                    fret: 3
+                    _x:
+                      string: 2
+                      fret: 3
                 lyrics:
-                  - text: "ing"
-                    syllabic: end
+                  lines:
+                    "1":
+                      text: "ing"
+                      type: end
       - sequences:
           - content:
               - duration: { base: half }
                 notes:
                   - pitch: { step: C, octave: 4 }
-                    string: 2
-                    fret: 1
+                    _x:
+                      string: 2
+                      fret: 1
                 lyrics:
-                  - text: "bright"
+                  lines:
+                    "1":
+                      text: "bright"
               - duration: { base: half }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 0
+                    _x:
+                      string: 1
+                      fret: 0
                 lyrics:
-                  - text: "light"
+                  lines:
+                    "1":
+                      text: "light"
       - sequences:
           - content:
               - duration: { base: whole }
                 notes:
                   - pitch: { step: A, octave: 3 }
-                    string: 3
-                    fret: 2
+                    _x:
+                      string: 3
+                      fret: 2
                 lyrics:
-                  - text: "dawn"
+                  lines:
+                    "1":
+                      text: "dawn"
       - sequences:
           - content:
               - duration: { base: whole }
                 notes:
                   - pitch: { step: E, octave: 2 }
-                    string: 6
-                    fret: 0
+                    _x:
+                      string: 6
+                      fret: 0
                 lyrics:
-                  - text: "home"
+                  lines:
+                    "1":
+                      text: "home"

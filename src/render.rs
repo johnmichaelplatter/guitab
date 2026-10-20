@@ -268,7 +268,8 @@ pub fn event_text_width(
 pub fn event_lyric_width(event: &crate::mnx::Event) -> f32 {
     if let Some(lyrics) = &event.lyrics {
         let max_chars = lyrics
-            .iter()
+            .lines
+            .values()
             .map(|l| l.text.chars().count())
             .max()
             .unwrap_or(0);
@@ -440,9 +441,7 @@ pub fn draw_tablature(
     // ── String labels ────────────────────────────────────────────────────────
 
     let mut prefixes: Vec<String> = (1..=num_strings).map(|i| i.to_string()).collect();
-    if let Some(inst) = &part.instrument
-        && let Some(tuning) = &inst.tuning
-    {
+    if let Some(tuning) = &part.tuning {
         for t in tuning {
             if t.string >= 1 && (t.string as usize) <= num_strings {
                 prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch, part.edo());
@@ -596,22 +595,24 @@ pub fn draw_tablature(
 
     // ── Instrument name + EDO header ──────────────────────────────────────────
 
-    if let Some(inst) = &part.instrument {
+    if part.name.is_some() || part.micro_fret_divisions.is_some() {
         let header_x = rect.min.x + margin_left;
         let name_y = rect.min.y + 14.0;
         let edo_y = rect.min.y + 32.0;
 
-        // Bold instrument name
-        painter.text(
-            Pos2::new(header_x, name_y),
-            egui::Align2::LEFT_CENTER,
-            &inst.name,
-            FontId::new(20.0, egui::FontFamily::Proportional),
-            ui.visuals().strong_text_color(),
-        );
+        if let Some(name) = &part.name {
+            // Bold instrument name
+            painter.text(
+                Pos2::new(header_x, name_y),
+                egui::Align2::LEFT_CENTER,
+                name,
+                FontId::new(20.0, egui::FontFamily::Proportional),
+                ui.visuals().strong_text_color(),
+            );
+        }
 
         // Plain "N EDO" subtitle
-        if let Some(divisions) = inst.micro_fret_divisions {
+        if let Some(divisions) = part.micro_fret_divisions {
             painter.text(
                 Pos2::new(header_x, edo_y),
                 egui::Align2::LEFT_CENTER,
@@ -921,13 +922,11 @@ pub fn draw_tablature(
                                 for m_i in 0..=m_idx {
                                     if let Some(gm_prev) = g.measures.get(m_i) {
                                         for t in &gm_prev.tempos {
-                                            let t_beat = if let Some(s) = &t.location {
-                                                if let Some((n, d)) = s.split_once('/') {
-                                                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
-                                                        if den > 0.0 { (num / den) * 4.0 } else { 0.0 }
-                                                    } else { 0.0 }
-                                                } else { 0.0 }
-                                            } else { 0.0 };
+                                            let t_beat = t
+                                                .location
+                                                .as_ref()
+                                                .map(|p| p.to_quarter_beats())
+                                                .unwrap_or(0.0);
                                             if m_i < m_idx || t_beat <= tc_beat + 0.001 {
                                                 if Some(t.id.clone().unwrap_or_default()) != tc.target {
                                                     current_bpm = t.bpm;
@@ -958,18 +957,11 @@ pub fn draw_tablature(
                         }
 
                         for tempo in &gm.tempos {
-
-                            let tempo_beat = if let Some(s) = &tempo.location {
-                                if let Some((n, d)) = s.split_once('/') {
-                                    if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
-                                        if den > 0.0 {
-                                            (num / den) * 4.0
-                                        } else { 0.0 }
-                                    } else { 0.0 }
-                                } else { 0.0 }
-                            } else {
-                                0.0
-                            };
+                            let tempo_beat = tempo
+                                .location
+                                .as_ref()
+                                .map(|p| p.to_quarter_beats())
+                                .unwrap_or(0.0);
                             let is_last = e_idx == num_events - 1;
                             let in_range = if is_last {
                                 tempo_beat >= start_beat - 0.001 && tempo_beat <= end_beat + 0.001
@@ -1264,13 +1256,15 @@ pub fn draw_tablature(
                     }
                 }
 
-                if let Some(markings) = &event.markings {
+                if event.markings.as_ref().and_then(|m| m.accent.as_ref()).is_some()
+                    || event.bow_direction.is_some()
+                {
                     let font_size = 28.0;
                     let markings_font_id =
                         FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
                     let mut marking_y = min_string_y - 20.0; // Place above the chord
 
-                    if markings.accent.is_some() {
+                    if event.markings.as_ref().and_then(|m| m.accent.as_ref()).is_some() {
                         let galley = painter.layout_no_wrap(
                             "\u{E4A0}".to_string(), // articAccentAbove
                             markings_font_id.clone(),
@@ -1282,7 +1276,7 @@ pub fn draw_tablature(
                         marking_y -= 15.0;
                     }
 
-                    if let Some(bow) = &markings.bow_direction {
+                    if let Some(bow) = &event.bow_direction {
                         let glyph = if bow.direction == "up" {
                             "\u{EB70}"
                         } else {
@@ -1590,14 +1584,18 @@ pub fn draw_tablature(
                         is_editing: true,
                     });
                 } else if let Some(lyrics) = &event.lyrics {
-                    for (line_idx, lyric) in lyrics.iter().enumerate() {
-                        let line = lyric.line.map(|l| (l.saturating_sub(1)) as usize).unwrap_or(line_idx);
+                    for (line_idx, (line_key, lyric)) in lyrics.lines.iter().enumerate() {
+                        let line = line_key
+                            .parse::<usize>()
+                            .ok()
+                            .map(|l| l.saturating_sub(1))
+                            .unwrap_or(line_idx);
                         rendered_lyrics.push(RenderedLyric {
                             event_idx: flat_event_idx,
                             x: current_x,
                             text: lyric.text.clone(),
-                            syllabic: lyric.syllabic.clone(),
-                            extender: lyric.extender,
+                            syllabic: lyric.line_type.clone(),
+                            extender: lyric.ext.extender,
                             line,
                             is_editing: false,
                         });
@@ -2004,21 +2002,11 @@ pub fn draw_tablature(
     let mut beam_from: Vec<Option<usize>> = vec![None; n];
 
     for (m_idx, measure) in part.measures.iter().enumerate() {
-        let explicit_beams: Vec<&crate::mnx::BeamGroup> = measure
+        let all_explicit_beams: Vec<&crate::mnx::BeamGroup> = measure
             .beams
             .as_ref()
             .map(|b| b.iter().collect())
             .unwrap_or_default();
-        let seq_beams: Vec<&crate::mnx::BeamGroup> = measure
-            .sequences
-            .iter()
-            .filter_map(|s| s.beams.as_ref())
-            .flat_map(|b| b.iter())
-            .collect();
-        let all_explicit_beams: Vec<&crate::mnx::BeamGroup> = explicit_beams
-            .into_iter()
-            .chain(seq_beams.into_iter())
-            .collect();
 
         if !all_explicit_beams.is_empty() {
             for bg in all_explicit_beams {
@@ -2198,10 +2186,11 @@ pub fn draw_tablature(
         let char_count = lyr.text.chars().count();
         let text_w = (char_count as f32) * 7.5;
 
-        // Draw hyphens between split syllables (syllabic == begin or middle or ends with '-')
-        let is_split = lyr.syllabic.as_deref() == Some("begin")
-            || lyr.syllabic.as_deref() == Some("middle")
-            || lyr.text.ends_with('-');
+        // Draw hyphens between split syllables (type == start or middle or ends with '-')
+        let is_split = matches!(
+            lyr.syllabic.as_deref(),
+            Some("start") | Some("begin") | Some("middle")
+        ) || lyr.text.ends_with('-');
         if is_split {
             if let Some(next_lyr) = rendered_lyrics.get(i + 1) {
                 if next_lyr.line == lyr.line && next_lyr.x > lyr.x {
@@ -3280,42 +3269,30 @@ mod tests {
 
     #[test]
     fn test_event_text_width_calculations() {
-        use crate::mnx::{Duration, Event, Harmonic, Note, Pitch};
+        use crate::mnx::{Duration, Event, Harmonic, Note, NoteExt, Pitch};
 
         let dummy = |fret: i32, harmonic: Option<f64>| Note {
             pitch: Pitch { step: "C".into(), alter: None, octave: 4 },
-            accidental: None,
-            fret: Some(fret),
-            string: Some(1),
-            id: None,
-            muted: None,
-            ties: None,
-            tap: None,
-            slide: None,
-            bend: None,
-            harmonic: harmonic.map(|t| Harmonic {
-                touch: t,
-                sounding_note: Box::new(Note {
-                    pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
-                    accidental: None,
-                    fret: None,
-                    string: None,
-                    id: None,
-                    muted: None,
-                    ties: None,
-                    tap: None,
-                    slide: None,
-                    bend: None,
-                    harmonic: None,
+            ext: NoteExt {
+                fret: Some(fret),
+                string: Some(1),
+                harmonic: harmonic.map(|t| Harmonic {
+                    touch: t,
+                    sounding_note: Box::new(Note {
+                        pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
+                        ..Default::default()
+                    }),
                 }),
-            }),
+                ..Default::default()
+            },
+            ..Default::default()
         };
 
         // Single digit note (fret 7)
         let single_digit_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(7, None)],
-            id: None, rest: None, slurs: None, markings: None, lyrics: None,
+            ..Default::default()
         };
         assert!((event_text_width(&single_digit_ev, false, None) - 8.45).abs() < 1e-4);
         assert!((event_text_width(&single_digit_ev, true, None) - 6.05).abs() < 1e-4);
@@ -3324,7 +3301,7 @@ mod tests {
         let double_digit_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(12, None)],
-            id: None, rest: None, slurs: None, markings: None, lyrics: None,
+            ..Default::default()
         };
         assert!((event_text_width(&double_digit_ev, false, None) - 16.90).abs() < 1e-4);
 
@@ -3332,7 +3309,7 @@ mod tests {
         let harmonic_12_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(12, Some(12.0))],
-            id: None, rest: None, slurs: None, markings: None, lyrics: None,
+            ..Default::default()
         };
         assert!((event_text_width(&harmonic_12_ev, false, None) - 33.80).abs() < 1e-4);
 
@@ -3340,7 +3317,7 @@ mod tests {
         let harmonic_3_9_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(4, Some(3.9))],
-            id: None, rest: None, slurs: None, markings: None, lyrics: None,
+            ..Default::default()
         };
         assert!((event_text_width(&harmonic_3_9_ev, false, None) - 42.25).abs() < 1e-4);
 
@@ -3348,7 +3325,7 @@ mod tests {
         let harmonic_20_5_ev = Event {
             duration: Duration { base: "quarter".into(), dots: None, multiple: None },
             notes: vec![dummy(21, Some(20.5))],
-            id: None, rest: None, slurs: None, markings: None, lyrics: None,
+            ..Default::default()
         };
         assert!((event_text_width(&harmonic_20_5_ev, false, None) - 50.70).abs() < 1e-4);
         assert!((event_text_width(&harmonic_20_5_ev, true, None) - 36.30).abs() < 1e-4);
@@ -3356,7 +3333,7 @@ mod tests {
 
     #[test]
     fn test_calculate_event_spacing_wide_entries() {
-        use crate::mnx::{Duration, Event, Harmonic, Note, Pitch};
+        use crate::mnx::{Duration, Event, Harmonic, Note, NoteExt, Pitch};
 
         let quarter_d = Duration { base: "quarter".into(), dots: None, multiple: None };
         let sixteenth_d = Duration { base: "16th".into(), dots: None, multiple: None };
@@ -3365,37 +3342,21 @@ mod tests {
             duration: dur,
             notes: vec![Note {
                 pitch: Pitch { step: "C".into(), alter: None, octave: 4 },
-                accidental: None,
-                id: None,
-                string: Some(1),
-                fret: Some(fret),
-                harmonic: harmonic.map(|t| Harmonic {
-                    touch: t,
-                    sounding_note: Box::new(Note {
-                        pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
-                        accidental: None,
-                        fret: None,
-                        string: None,
-                        id: None,
-                        muted: None,
-                        ties: None,
-                        tap: None,
-                        slide: None,
-                        bend: None,
-                        harmonic: None,
+                ext: NoteExt {
+                    string: Some(1),
+                    fret: Some(fret),
+                    harmonic: harmonic.map(|t| Harmonic {
+                        touch: t,
+                        sounding_note: Box::new(Note {
+                            pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
+                            ..Default::default()
+                        }),
                     }),
-                }),
-                muted: None,
-                ties: None,
-                slide: None,
-                tap: None,
-                bend: None,
+                    ..Default::default()
+                },
+                ..Default::default()
             }],
-            id: None,
-            rest: None,
-            slurs: None,
-            markings: None,
-            lyrics: None,
+            ..Default::default()
         };
 
         let ev_single = make_note_ev(quarter_d.clone(), 7, None);
@@ -3450,36 +3411,35 @@ mod tests {
 
     #[test]
     fn test_lyric_rod_stretching() {
-        use crate::mnx::{Duration, Event, Lyric};
+        use crate::mnx::{Duration, Event, EventLyrics, LyricLine};
+        use std::collections::BTreeMap;
 
         let sixteenth_d = Duration { base: "16th".into(), dots: None, multiple: None };
+        let mut lines1 = BTreeMap::new();
+        lines1.insert(
+            "1".into(),
+            LyricLine {
+                text: "extraordinary".into(),
+                ..Default::default()
+            },
+        );
         let ev_lyric = Event {
             duration: sixteenth_d.clone(),
-            notes: vec![],
-            id: None,
-            rest: None,
-            slurs: None,
-            markings: None,
-            lyrics: Some(vec![Lyric {
-                text: "extraordinary".into(),
-                syllabic: None,
-                extender: None,
-                line: None,
-            }]),
+            lyrics: Some(EventLyrics { lines: lines1 }),
+            ..Default::default()
         };
+        let mut lines2 = BTreeMap::new();
+        lines2.insert(
+            "1".into(),
+            LyricLine {
+                text: "voice".into(),
+                ..Default::default()
+            },
+        );
         let ev_next = Event {
             duration: sixteenth_d.clone(),
-            notes: vec![],
-            id: None,
-            rest: None,
-            slurs: None,
-            markings: None,
-            lyrics: Some(vec![Lyric {
-                text: "voice".into(),
-                syllabic: None,
-                extender: None,
-                line: None,
-            }]),
+            lyrics: Some(EventLyrics { lines: lines2 }),
+            ..Default::default()
         };
 
         // Natural 16th base spacing is 22.5.

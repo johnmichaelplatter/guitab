@@ -96,7 +96,7 @@ impl MnxEditorApp {
                 }
             }
 
-            let end_location = get_fraction(end_offset);
+            let end_location = crate::mnx::Position::from_quarter_beats(end_offset);
             
             // Ensure global measures exist up to end_m_idx
             while doc.global.measures.len() <= end_m_idx.max(start_m_idx) {
@@ -186,23 +186,7 @@ impl MnxEditorApp {
                 }
             }
 
-            let location = if sum_quarter_beats > 0.001 {
-                let num = (sum_quarter_beats * 1000.0).round() as u32;
-                let den = 4000;
-                
-                let mut a = num;
-                let mut b = den;
-                while b != 0 {
-                    let t = b;
-                    b = a % b;
-                    a = t;
-                }
-                let s_num = num / a;
-                let s_den = den / a;
-                Some(format!("{}/{}", s_num, s_den))
-            } else {
-                None
-            };
+            let location = crate::mnx::Position::from_quarter_beats(sum_quarter_beats);
             
             let tempo = crate::mnx::Tempo {
                 id: None,
@@ -212,7 +196,7 @@ impl MnxEditorApp {
                     dots: if dots > 0 { Some(dots) } else { None },
                     multiple: None,
                 },
-                location: location.clone(),
+                location,
             };
             
             let tempos = &mut doc.global.measures[target_m_idx].tempos;
@@ -892,10 +876,8 @@ impl MnxEditorApp {
                 let flattened = doc.get_flattened_event_paths();
                 if idx < flattened.len() {
                     if let Some(ev) = doc.get_event_at_path(flattened[idx]) {
-                        if let Some(markings) = &ev.markings {
-                            if let Some(bow) = &markings.bow_direction {
-                                return bow.direction == dir;
-                            }
+                        if let Some(bow) = &ev.bow_direction {
+                            return bow.direction == dir;
                         }
                     }
                 }
@@ -934,31 +916,13 @@ impl MnxEditorApp {
             return;
         }
         if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
-            let mut cur_dir = None;
-            if let Some(m) = &ev.markings {
-                if let Some(b) = &m.bow_direction {
-                    cur_dir = Some(b.direction.clone());
-                }
-            }
+            let cur_dir = ev.bow_direction.as_ref().map(|b| b.direction.clone());
             if cur_dir.as_deref() == Some(dir) {
-                if let Some(m) = &mut ev.markings {
-                    m.bow_direction = None;
-                    if m.accent.is_none() {
-                        ev.markings = None;
-                    }
-                }
+                ev.bow_direction = None;
             } else {
-                if ev.markings.is_none() {
-                    ev.markings = Some(crate::mnx::EventMarkings {
-                        accent: None,
-                        bow_direction: None,
-                    });
-                }
-                if let Some(m) = &mut ev.markings {
-                    m.bow_direction = Some(crate::mnx::BowDirection {
-                        direction: dir.to_string(),
-                    });
-                }
+                ev.bow_direction = Some(crate::mnx::BowDirection {
+                    direction: dir.to_string(),
+                });
             }
         }
         self.apply_mutated_doc(doc);
@@ -980,22 +944,11 @@ impl MnxEditorApp {
         if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
             let has_accent = ev.markings.as_ref().map_or(false, |m| m.accent.is_some());
             if has_accent {
-                if let Some(m) = &mut ev.markings {
-                    m.accent = None;
-                    if m.bow_direction.is_none() {
-                        ev.markings = None;
-                    }
-                }
+                ev.markings = None;
             } else {
-                if ev.markings.is_none() {
-                    ev.markings = Some(crate::mnx::EventMarkings {
-                        accent: None,
-                        bow_direction: None,
-                    });
-                }
-                if let Some(m) = &mut ev.markings {
-                    m.accent = Some(crate::mnx::Accent {});
-                }
+                ev.markings = Some(crate::mnx::EventMarkings {
+                    accent: Some(crate::mnx::Accent {}),
+                });
             }
         }
         self.apply_mutated_doc(doc);
@@ -1309,20 +1262,21 @@ impl MnxEditorApp {
                 notes: vec![crate::mnx::Note {
                     id: Some(id.clone()),
                     pitch: cur_pitch,
-                    string: Some(cur_string),
-                    fret: cur_fret,
                     ties: None,
-                    accidental: None,
-                    tap: None,
-                    bend: None,
-                    muted: None,
-                    slide: None,
-                    harmonic: None,
+                    accidental_display: None,
+                    comment: None,
+                    ext: crate::mnx::NoteExt {
+                        string: Some(cur_string),
+                        fret: cur_fret,
+                        ..Default::default()
+                    },
                 }],
                 rest: None,
                 slurs: None,
                 markings: None,
                 lyrics: None,
+                comment: None,
+                ext: crate::mnx::EventExt::default(),
             };
             next_target_id = id;
             doc.parts[0].measures[cur_m].sequences[cur_s]
@@ -1349,22 +1303,23 @@ impl MnxEditorApp {
                 notes: vec![crate::mnx::Note {
                     id: Some(id1.clone()),
                     pitch: cur_pitch.clone(),
-                    string: Some(cur_string),
-                    fret: cur_fret,
                     ties: Some(vec![crate::mnx::Tie {
                         target: id2.clone(),
                     }]),
-                    accidental: None,
-                    tap: None,
-                    bend: None,
-                    muted: None,
-                    slide: None,
-                    harmonic: None,
+                    accidental_display: None,
+                    comment: None,
+                    ext: crate::mnx::NoteExt {
+                        string: Some(cur_string),
+                        fret: cur_fret,
+                        ..Default::default()
+                    },
                 }],
                 rest: None,
                 slurs: None,
                 markings: None,
                 lyrics: None,
+                comment: None,
+                ext: crate::mnx::EventExt::default(),
             };
 
             let ev2 = crate::mnx::Event {
@@ -1373,20 +1328,21 @@ impl MnxEditorApp {
                 notes: vec![crate::mnx::Note {
                     id: Some(id2.clone()),
                     pitch: cur_pitch,
-                    string: Some(cur_string),
-                    fret: cur_fret,
                     ties: None,
-                    accidental: None,
-                    tap: None,
-                    bend: None,
-                    muted: None,
-                    slide: None,
-                    harmonic: None,
+                    accidental_display: None,
+                    comment: None,
+                    ext: crate::mnx::NoteExt {
+                        string: Some(cur_string),
+                        fret: cur_fret,
+                        ..Default::default()
+                    },
                 }],
                 rest: None,
                 slurs: None,
                 markings: None,
                 lyrics: None,
+                comment: None,
+                ext: crate::mnx::EventExt::default(),
             };
 
             next_target_id = id1;
@@ -1398,10 +1354,11 @@ impl MnxEditorApp {
             let next_m = cur_m + 1;
             if next_m >= doc.parts[0].measures.len() {
                 let mut new_m = crate::mnx::Measure {
+                    comment: None,
                     arpeggios: None,
                     sequences: vec![crate::mnx::Sequence {
+                        comment: None,
                         content: Vec::new(),
-                        beams: None,
                     }],
                     beams: None,
                 };
@@ -1437,30 +1394,32 @@ impl MnxEditorApp {
                 notes: vec![crate::mnx::Note {
                     id: Some(id2.clone()),
                     pitch: cur_pitch,
-                    string: Some(cur_string),
-                    fret: cur_fret,
                     ties: None,
-                    accidental: None,
-                    tap: None,
-                    bend: None,
-                    muted: None,
-                    slide: None,
-                    harmonic: None,
+                    accidental_display: None,
+                    comment: None,
+                    ext: crate::mnx::NoteExt {
+                        string: Some(cur_string),
+                        fret: cur_fret,
+                        ..Default::default()
+                    },
                 }],
                 rest: None,
                 slurs: None,
                 markings: None,
                 lyrics: None,
+                comment: None,
+                ext: crate::mnx::EventExt::default(),
             };
 
             next_target_id = id2;
             let next_m = cur_m + 1;
             if next_m >= doc.parts[0].measures.len() {
                 let mut new_m = crate::mnx::Measure {
+                    comment: None,
                     arpeggios: None,
                     sequences: vec![crate::mnx::Sequence {
+                        comment: None,
                         content: Vec::new(),
-                        beams: None,
                     }],
                     beams: None,
                 };
@@ -1682,17 +1641,12 @@ impl MnxEditorApp {
                     n.harmonic = Some(crate::mnx::Harmonic {
                         touch: node.touch_fret,
                         sounding_note: Box::new(crate::mnx::Note {
-                            muted: None,
                             id: None,
                             pitch: node.sounding_pitch.clone(),
-                            string: None,
-                            fret: None,
-                            accidental: None,
+                            accidental_display: None,
                             ties: None,
-                            tap: None,
-                            slide: None,
-                            bend: None,
-                            harmonic: None,
+                            comment: None,
+                            ext: crate::mnx::NoteExt::default(),
                         }),
                     });
                 }
@@ -1813,6 +1767,40 @@ impl crate::gui::MnxEditorApp {
         let path = flattened[event_idx];
         let m_idx = path.m_idx();
 
+        // Compute beat offset in measure for Arpeggio.position
+        let mut beat_offset_in_measure = 0.0;
+        if let Some(part) = doc.parts.first() {
+            if let Some(m) = part.measures.get(m_idx) {
+                if let Some(seq) = m.sequences.first() {
+                    let mut events_scaled = Vec::new();
+                    crate::midi::walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                    let mut m_start_ev_idx = 0;
+                    for (prev_m, pm) in part.measures.iter().enumerate() {
+                        if prev_m == m_idx {
+                            break;
+                        }
+                        for ps in &pm.sequences {
+                            for item in &ps.content {
+                                m_start_ev_idx += match item {
+                                    crate::mnx::SequenceItem::Event(_) => 1,
+                                    crate::mnx::SequenceItem::Tuplet(t) => t.content.len(),
+                                    crate::mnx::SequenceItem::Grace(g) => g.content.len(),
+                                };
+                            }
+                        }
+                    }
+                    let rel_ev_idx = event_idx.saturating_sub(m_start_ev_idx);
+                    for (k, (e, scale)) in events_scaled.iter().enumerate() {
+                        if k == rel_ev_idx {
+                            break;
+                        }
+                        beat_offset_in_measure += crate::validate::duration_to_quarter_beats(&e.duration) * scale;
+                    }
+                }
+            }
+        }
+        let arp_position = Some(crate::mnx::Position::from_quarter_beats_including_zero(beat_offset_in_measure));
+
         let mut first_id = String::new();
         let mut last_id = String::new();
         if let Some(ev) = doc.get_event_mut_at_path(path) {
@@ -1853,6 +1841,7 @@ impl crate::gui::MnxEditorApp {
                 }
             } else {
                 arps[idx].direction = Some(dir.to_string());
+                arps[idx].position = arp_position;
             }
         } else {
             if measure.arpeggios.is_none() {
@@ -1863,7 +1852,7 @@ impl crate::gui::MnxEditorApp {
                 .as_mut()
                 .unwrap()
                 .push(crate::mnx::Arpeggio {
-                    position: None,
+                    position: arp_position,
                     span: crate::mnx::Span {
                         start: first_id,
                         end: last_id,
@@ -1989,9 +1978,10 @@ impl crate::gui::MnxEditorApp {
                 if let Some(path) = paths.get(e_idx) {
                     if let Some(ev) = doc.get_event_at_path(*path) {
                         if let Some(lyrics) = &ev.lyrics {
-                            if let Some(l) = lyrics.first() {
-                                let ext_suffix = if l.extender == Some(true) { "_" } else { "" };
-                                self.editing_lyric_buf = format!("{}{}", l.text, ext_suffix);
+                            if let Some((_key, l)) = lyrics.lines.iter().next() {
+                                let hyphen_suffix = if matches!(l.line_type.as_deref(), Some("start") | Some("middle")) && !l.text.ends_with('-') { "-" } else { "" };
+                                let ext_suffix = if l.ext.extender == Some(true) { "_" } else { "" };
+                                self.editing_lyric_buf = format!("{}{}{}", l.text, hyphen_suffix, ext_suffix);
                             }
                         }
                     }
@@ -2009,11 +1999,12 @@ impl crate::gui::MnxEditorApp {
                     if trimmed.is_empty() {
                         ev.lyrics = None;
                     } else {
-                        let has_hyphen = trimmed.ends_with('-');
+                        let without_ext = trimmed.trim_end_matches('_');
                         let has_extender = trimmed.ends_with('_');
-                        let clean_text = trimmed.trim_end_matches('_').to_string();
-                        let syllabic = if has_hyphen {
-                            Some("begin".to_string())
+                        let has_hyphen = without_ext.ends_with('-');
+                        let clean_text = without_ext.trim_end_matches('-').to_string();
+                        let line_type = if has_hyphen {
+                            Some("start".to_string())
                         } else {
                             None
                         };
@@ -2022,12 +2013,17 @@ impl crate::gui::MnxEditorApp {
                         } else {
                             None
                         };
-                        ev.lyrics = Some(vec![crate::mnx::Lyric {
-                            text: clean_text,
-                            syllabic,
-                            extender,
-                            line: None,
-                        }]);
+                        let mut lines = std::collections::BTreeMap::new();
+                        lines.insert(
+                            "1".to_string(),
+                            crate::mnx::LyricLine {
+                                text: clean_text,
+                                line_type,
+                                comment: None,
+                                ext: crate::mnx::LyricLineExt { extender },
+                            },
+                        );
+                        ev.lyrics = Some(crate::mnx::EventLyrics { lines });
                     }
                     return Some(());
                 }
@@ -2381,7 +2377,7 @@ impl crate::gui::MnxEditorApp {
         let sel_beats = sel_end_beat - sel_start;
         if !has_selected_notes || sel_beats <= 1e-4 {
             return;
-        }
+        };
 
         if direction < 0 && sel_start <= 1e-4 {
             return;
@@ -2413,6 +2409,8 @@ impl crate::gui::MnxEditorApp {
                 slurs: None,
                 markings: None,
                 lyrics: None,
+                comment: None,
+                ext: crate::mnx::EventExt::default(),
             };
             crate::rebar::greedy_split_event_duration(template, beats)
                 .into_iter()

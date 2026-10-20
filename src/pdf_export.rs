@@ -38,8 +38,7 @@ pub fn generate_score_pdf_bytes(
     let title = doc
         .parts
         .first()
-        .and_then(|p| p.instrument.as_ref())
-        .map(|i| i.name.as_str())
+        .and_then(|p| p.name.as_deref())
         .unwrap_or("Score");
 
     let (pdf_doc, page_idx, layer_idx) =
@@ -267,7 +266,7 @@ pub fn populate_page_display_list(
             .title
             .as_deref()
             .or_else(|| doc.layout.as_ref().and_then(|l| l.title.as_deref()))
-            .or_else(|| part.instrument.as_ref().map(|i| i.name.as_str()))
+            .or_else(|| part.name.as_deref())
             .unwrap_or("Title");
 
         if !title_text.is_empty() {
@@ -285,9 +284,7 @@ pub fn populate_page_display_list(
         }
 
         let edo_sub = part
-            .instrument
-            .as_ref()
-            .and_then(|i| i.micro_fret_divisions)
+            .micro_fret_divisions
             .map(|divs| format!("{} EDO", divs));
         let subtitle_text = doc
             .subtitle
@@ -1009,15 +1006,20 @@ pub fn populate_page_display_list(
                                 // Draw lyrics if present
                                 if let Some(lyrics) = &ev.lyrics {
                                     let stem_bot = last_string_y + 26.0;
-                                    for (l_i, lyr) in lyrics.iter().enumerate() {
+                                    for (l_i, (_line_key, lyr)) in lyrics.lines.iter().enumerate() {
                                         let lyr_y = stem_bot + 10.0 + (l_i as f32) * 14.0;
                                         let lyric_id = Some(format!("lyric_{}_{}", m_idx, ev_idx_in_m));
+                                        let display_text = if matches!(lyr.line_type.as_deref(), Some("start") | Some("middle")) && !lyr.text.ends_with('-') {
+                                            format!("{}-", lyr.text)
+                                        } else {
+                                            lyr.text.clone()
+                                        };
                                         dl.push(DrawItem {
                                             id: lyric_id.clone(),
                                             kind: DrawKind::Text {
                                                 pos: Pos2::new(ev_x, lyr_y),
                                                 align: Align2::CENTER_CENTER,
-                                                text: lyr.text.clone(),
+                                                text: display_text,
                                                 font_id: FontId::proportional(11.0),
                                                 color: text_color,
                                             },
@@ -1025,7 +1027,7 @@ pub fn populate_page_display_list(
                                         });
 
                                         // Melisma extender line
-                                        if lyr.extender == Some(true) || lyr.text.ends_with('_') {
+                                        if lyr.ext.extender == Some(true) || lyr.text.ends_with('_') {
                                             let text_w = (lyr.text.chars().count() as f32) * 6.5;
                                             let start_x = ev_x + text_w * 0.5 + 2.0;
                                             let end_x = ev_x + ev_w * ev_scale * 0.9;
@@ -1057,21 +1059,11 @@ pub fn populate_page_display_list(
 
         for m_idx in system.measure_range.clone() {
             if let Some(measure) = part.measures.get(m_idx) {
-                let explicit_beams: Vec<&crate::mnx::BeamGroup> = measure
+                let all_explicit_beams: Vec<&crate::mnx::BeamGroup> = measure
                     .beams
                     .as_ref()
                     .map(|b| b.iter().collect())
                     .unwrap_or_default();
-                let seq_beams: Vec<&crate::mnx::BeamGroup> = measure
-                    .sequences
-                    .iter()
-                    .filter_map(|s| s.beams.as_ref())
-                    .flat_map(|b| b.iter())
-                    .collect();
-                let all_explicit_beams: Vec<&crate::mnx::BeamGroup> = explicit_beams
-                    .into_iter()
-                    .chain(seq_beams.into_iter())
-                    .collect();
 
                 if !all_explicit_beams.is_empty() {
                     for bg in all_explicit_beams {
@@ -1495,8 +1487,8 @@ global:
     - time: { count: 4, unit: 4 }
     - {}
 parts:
-  - instrument:
-      name: "Classical Guitar"
+  - name: "Classical Guitar"
+    _x:
       microFretDivisions: 12
     measures:
       - sequences:
@@ -1504,25 +1496,33 @@ parts:
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 0
+                    _x:
+                      string: 1
+                      fret: 0
                 lyrics:
-                  - text: "Sing"
+                  lines:
+                    "1":
+                      text: "Sing"
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: B, octave: 3 }
-                    string: 2
-                    fret: 0
+                    _x:
+                      string: 2
+                      fret: 0
                 lyrics:
-                  - text: "loud_"
-                    extender: true
+                  lines:
+                    "1":
+                      text: "loud_"
+                      _x:
+                        extender: true
       - sequences:
           - content:
               - duration: { base: half }
                 notes:
                   - pitch: { step: G, octave: 3 }
-                    string: 3
-                    fret: 0
+                    _x:
+                      string: 3
+                      fret: 0
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
         let pages = crate::layout::compute_score_layout(&doc, 0.0);
@@ -1538,22 +1538,24 @@ parts:
         let yaml = r#"---
 mnx:
   version: 1
-layout:
-  pageSize: letter
-  measureNumbers: all
-  offsets:
-    ending_0: { dx: 10.0, dy: -5.0 }
-    lyric_0_0: { dx: 2.0, dy: 4.0 }
+_x:
+  layout:
+    pageSize: letter
+    measureNumbers: all
+    offsets:
+      ending_0: { dx: 10.0, dy: -5.0 }
+      lyric_0_0: { dx: 2.0, dy: 4.0 }
 global:
   measures:
     - time: { count: 4, unit: 4 }
       ending: { duration: 1, numbers: [1], open: false }
-    - pageBreak: true
+    - _x:
+        pageBreak: true
       ending: { duration: 1, numbers: [2], open: true }
     - {}
 parts:
-  - instrument:
-      name: "Acoustic Guitar"
+  - name: "Acoustic Guitar"
+    _x:
       microFretDivisions: 12
     measures:
       - sequences:
@@ -1561,30 +1563,37 @@ parts:
               - duration: { base: half }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 0
+                    _x:
+                      string: 1
+                      fret: 0
                 lyrics:
-                  - text: "Ooh_"
-                    extender: true
+                  lines:
+                    "1":
+                      text: "Ooh_"
+                      _x:
+                        extender: true
               - duration: { base: half }
                 notes:
                   - pitch: { step: B, octave: 3 }
-                    string: 2
-                    fret: 0
+                    _x:
+                      string: 2
+                      fret: 0
       - sequences:
           - content:
               - duration: { base: whole }
                 notes:
                   - pitch: { step: G, octave: 3 }
-                    string: 3
-                    fret: 0
+                    _x:
+                      string: 3
+                      fret: 0
       - sequences:
           - content:
               - duration: { base: whole }
                 notes:
                   - pitch: { step: D, octave: 3 }
-                    string: 4
-                    fret: 0
+                    _x:
+                      string: 4
+                      fret: 0
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
         let pages = crate::layout::compute_score_layout(&doc, 0.0);
@@ -1610,8 +1619,8 @@ global:
     - time: { count: 4, unit: 4 }
       repeatEnd: { times: 2 }
 parts:
-  - instrument:
-      name: "Electric Guitar"
+  - name: "Electric Guitar"
+    _x:
       microFretDivisions: 12
     measures:
       - sequences:
@@ -1620,10 +1629,11 @@ parts:
                 notes:
                   - id: "n1"
                     pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 0
                     ties:
                       - target: "n2"
+                    _x:
+                      string: 1
+                      fret: 0
                 slurs:
                   - target: "ev2"
               - id: "ev2"
@@ -1631,8 +1641,9 @@ parts:
                 notes:
                   - id: "n2"
                     pitch: { step: F, alter: 1, octave: 4 }
-                    string: 1
-                    fret: 2
+                    _x:
+                      string: 1
+                      fret: 2
               - duration: { base: quarter }
                 rest: {}
       - sequences:
@@ -1644,23 +1655,27 @@ parts:
                   - duration: { base: eighth }
                     notes:
                       - pitch: { step: G, octave: 3 }
-                        string: 3
-                        fret: 0
+                        _x:
+                          string: 3
+                          fret: 0
                   - duration: { base: eighth }
                     notes:
                       - pitch: { step: A, octave: 3 }
-                        string: 3
-                        fret: 2
+                        _x:
+                          string: 3
+                          fret: 2
                   - duration: { base: eighth }
                     notes:
                       - pitch: { step: B, octave: 3 }
-                        string: 3
-                        fret: 4
+                        _x:
+                          string: 3
+                          fret: 4
               - duration: { base: half }
                 notes:
                   - pitch: { step: C, octave: 4 }
-                    string: 2
-                    fret: 1
+                    _x:
+                      string: 2
+                      fret: 1
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
         let pages = crate::layout::compute_score_layout(&doc, 0.0);
@@ -1756,8 +1771,8 @@ global:
         - bpm: 100
           value: { base: quarter }
 parts:
-  - instrument:
-      name: "Guitar"
+  - name: "Guitar"
+    _x:
       microFretDivisions: 12
     measures:
       - sequences:
@@ -1771,17 +1786,19 @@ parts:
                     notes:
                       - id: "n1"
                         pitch: { step: E, octave: 4 }
-                        string: 1
-                        fret: 0
                         ties: [{ target: "e2" }]
+                        _x:
+                          string: 1
+                          fret: 0
                     slurs: [{ target: "e2" }]
                   - id: "e2"
                     duration: { base: eighth }
                     notes:
                       - id: "n2"
                         pitch: { step: G, octave: 4 }
-                        string: 1
-                        fret: 3
+                        _x:
+                          string: 1
+                          fret: 3
                   - id: "e3"
                     duration: { base: eighth }
                     rest: {}
@@ -1851,29 +1868,28 @@ global:
     - {}
     - {}
 parts:
-  - instrument:
-      name: "Guitar"
+  - name: "Guitar"
     measures:
       - sequences:
           - content:
               - duration: { base: quarter }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: B, octave: 3 }, string: 2, fret: 0 }]
+                notes: [{ pitch: { step: B, octave: 3 }, _x: { string: 2, fret: 0 } }]
               - duration: { base: half }
-                notes: [{ pitch: { step: G, octave: 3 }, string: 3, fret: 0 }]
+                notes: [{ pitch: { step: G, octave: 3 }, _x: { string: 3, fret: 0 } }]
       - sequences:
           - content:
               - duration: { base: whole }
-                notes: [{ pitch: { step: D, octave: 3 }, string: 4, fret: 0 }]
+                notes: [{ pitch: { step: D, octave: 3 }, _x: { string: 4, fret: 0 } }]
       - sequences:
           - content:
               - duration: { base: whole }
-                notes: [{ pitch: { step: A, octave: 2 }, string: 5, fret: 0 }]
+                notes: [{ pitch: { step: A, octave: 2 }, _x: { string: 5, fret: 0 } }]
       - sequences:
           - content:
               - duration: { base: whole }
-                notes: [{ pitch: { step: E, octave: 2 }, string: 6, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 2 }, _x: { string: 6, fret: 0 } }]
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
         let pages = crate::layout::compute_score_layout(&doc, 0.0);
@@ -1897,27 +1913,26 @@ global:
   measures:
     - time: { count: 4, unit: 4 }
 parts:
-  - instrument:
-      name: "Guitar"
+  - name: "Guitar"
     measures:
       - sequences:
           - content:
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
 "#;
         let doc_4_4: MnxDocument = serde_saphyr::from_str(yaml_4_4).unwrap();
         let pages_4_4 = crate::layout::compute_score_layout(&doc_4_4, 0.0);
@@ -1950,23 +1965,22 @@ global:
   measures:
     - time: { count: 3, unit: 4 }
 parts:
-  - instrument:
-      name: "Guitar"
+  - name: "Guitar"
     measures:
       - sequences:
           - content:
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
 "#;
         let doc_3_4: MnxDocument = serde_saphyr::from_str(yaml_3_4).unwrap();
         let pages_3_4 = crate::layout::compute_score_layout(&doc_3_4, 0.0);
@@ -2002,81 +2016,80 @@ global:
     - {}
     - {}
 parts:
-  - instrument:
-      name: "Guitar"
+  - name: "Guitar"
     measures:
       - sequences:
           - content:
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
       - sequences:
           - content:
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
       - sequences:
           - content:
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
       - sequences:
           - content:
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: eighth }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
         let pages = crate::layout::compute_score_layout(&doc, 0.0);

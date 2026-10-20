@@ -265,11 +265,16 @@ impl MnxDocument {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct MnxDocument {
-    pub mnx: MnxMeta,
-    pub global: Global,
-    pub parts: Vec<Part>,
+pub fn deserialize_ext<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct DocumentExt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,6 +283,44 @@ pub struct MnxDocument {
     pub composer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<ScoreLayout>,
+}
+
+impl DocumentExt {
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.subtitle.is_none()
+            && self.composer.is_none()
+            && self.layout.is_none()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MnxDocument {
+    pub mnx: MnxMeta,
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "DocumentExt::is_empty"
+    )]
+    pub ext: DocumentExt,
+    pub global: Global,
+    pub parts: Vec<Part>,
+}
+
+impl std::ops::Deref for MnxDocument {
+    type Target = DocumentExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for MnxDocument {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
 }
 
 fn default_page_size() -> String {
@@ -367,6 +410,8 @@ pub struct MnxMeta {
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct Global {
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     #[serde(default)]
     pub measures: Vec<GlobalMeasure>,
 }
@@ -387,6 +432,32 @@ pub struct Ending {
     pub numbers: Vec<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct GlobalMeasureExt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "tempoChange")]
+    pub tempo_changes: Vec<TempoChange>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "systemBreak"
+    )]
+    pub system_break: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "pageBreak"
+    )]
+    pub page_break: Option<bool>,
+}
+
+impl GlobalMeasureExt {
+    pub fn is_empty(&self) -> bool {
+        self.tempo_changes.is_empty()
+            && self.system_break.is_none()
+            && self.page_break.is_none()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
@@ -411,22 +482,30 @@ pub struct GlobalMeasure {
     pub ending: Option<Ending>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tempos: Vec<Tempo>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "tempoChange")]
-    pub tempo_changes: Vec<TempoChange>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "systemBreak"
-    )]
-    pub system_break: Option<bool>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "pageBreak"
-    )]
-    pub page_break: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "GlobalMeasureExt::is_empty"
+    )]
+    pub ext: GlobalMeasureExt,
+}
+
+impl std::ops::Deref for GlobalMeasure {
+    type Target = GlobalMeasureExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for GlobalMeasure {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -443,7 +522,6 @@ pub struct Barline {
     #[serde(rename = "type")]
     pub barline_type: String,
 }
-
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct TempoChange {
@@ -462,8 +540,8 @@ pub struct Tempo {
     pub bpm: f64,
     #[serde(with = "flow_req")]
     pub value: Duration,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
+    pub location: Option<Position>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
@@ -472,16 +550,8 @@ pub struct TimeSignature {
     pub unit: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct Part {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instrument: Option<Instrument>,
-    pub measures: Vec<Measure>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct Instrument {
-    pub name: String,
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct PartExt {
     #[serde(
         rename = "microFretDivisions",
         default,
@@ -506,6 +576,50 @@ pub struct Instrument {
     pub tuning: Option<Vec<StringTuning>>,
 }
 
+impl PartExt {
+    pub fn is_empty(&self) -> bool {
+        self.micro_fret_divisions.is_none()
+            && self.fret_step_multiplier.is_none()
+            && self.pitch_bend_range.is_none()
+            && self.capo.is_none()
+            && self.tuning.is_none()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct Part {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "shortName", default, skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "PartExt::is_empty"
+    )]
+    pub ext: PartExt,
+    #[serde(default)]
+    pub measures: Vec<Measure>,
+}
+
+impl std::ops::Deref for Part {
+    type Target = PartExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for Part {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct StringTuning {
     pub string: u8,
@@ -513,9 +627,43 @@ pub struct StringTuning {
     pub pitch: Pitch,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct Position {
+    #[serde(with = "flow_seq_req")]
     pub fraction: [u32; 2],
+}
+
+impl Position {
+    pub fn from_quarter_beats(offset: f64) -> Option<Self> {
+        if offset > 0.001 {
+            let num = (offset * 1000.0).round() as u32;
+            let den = 4000;
+            let mut a = num;
+            let mut b = den;
+            while b != 0 {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            Some(Self {
+                fraction: [num / a, den / a],
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn from_quarter_beats_including_zero(offset: f64) -> Self {
+        Self::from_quarter_beats(offset).unwrap_or(Self { fraction: [0, 1] })
+    }
+
+    pub fn to_quarter_beats(&self) -> f64 {
+        if self.fraction[1] == 0 {
+            0.0
+        } else {
+            (self.fraction[0] as f64 / self.fraction[1] as f64) * 4.0
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -526,8 +674,9 @@ pub struct Span {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Arpeggio {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub position: Option<Position>,
+    #[serde(with = "flow_req")]
     pub span: Span,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<String>,
@@ -545,20 +694,24 @@ pub struct BeamGroup {
     pub direction: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Measure {
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beams: Option<Vec<BeamGroup>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arpeggios: Option<Vec<Arpeggio>>,
+    #[serde(default)]
     pub sequences: Vec<Sequence>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Sequence {
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(default)]
     pub content: Vec<SequenceItem>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub beams: Option<Vec<BeamGroup>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -568,7 +721,6 @@ pub enum SequenceItem {
     Grace(Grace),
     Event(Event),
 }
-
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Grace {
@@ -617,18 +769,63 @@ pub struct Slur {
     pub end_note: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct Lyric {
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub syllabic: Option<String>,
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct LyricLineExt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extender: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+impl LyricLineExt {
+    pub fn is_empty(&self) -> bool {
+        self.extender.is_none()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct LyricLine {
+    pub text: String,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub line_type: Option<String>,
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "LyricLineExt::is_empty"
+    )]
+    pub ext: LyricLineExt,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct EventLyrics {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub lines: std::collections::BTreeMap<String, LyricLine>,
+}
+
+impl EventLyrics {
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct EventExt {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "bowDirection"
+    )]
+    pub bow_direction: Option<BowDirection>,
+}
+
+impl EventExt {
+    pub fn is_empty(&self) -> bool {
+        self.bow_direction.is_none()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markings: Option<EventMarkings>,
@@ -643,13 +840,35 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slurs: Option<Vec<Slur>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lyrics: Option<Vec<Lyric>>,
+    pub lyrics: Option<EventLyrics>,
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "EventExt::is_empty"
+    )]
+    pub ext: EventExt,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+impl std::ops::Deref for Event {
+    type Target = EventExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for Event {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Rest {}
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Duration {
     pub base: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -663,28 +882,27 @@ pub struct Tie {
     pub target: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Tap {}
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Slide {}
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct Note {
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct AccidentalDisplay {
+    pub show: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cautionary: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct NoteExt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    #[serde(with = "flow_req")]
-    pub pitch: Pitch,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub string: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fret: Option<i32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accidental: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ties: Option<Vec<Tie>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub tap: Option<Tap>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
@@ -693,6 +911,57 @@ pub struct Note {
     pub bend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harmonic: Option<Harmonic>,
+}
+
+impl NoteExt {
+    pub fn is_empty(&self) -> bool {
+        self.muted.is_none()
+            && self.string.is_none()
+            && self.fret.is_none()
+            && self.tap.is_none()
+            && self.slide.is_none()
+            && self.bend.is_none()
+            && self.harmonic.is_none()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct Note {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(with = "flow_req")]
+    pub pitch: Pitch,
+    #[serde(
+        rename = "accidentalDisplay",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "flow_opt"
+    )]
+    pub accidental_display: Option<AccidentalDisplay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ties: Option<Vec<Tie>>,
+    #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "NoteExt::is_empty"
+    )]
+    pub ext: NoteExt,
+}
+
+impl std::ops::Deref for Note {
+    type Target = NoteExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for Note {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -739,7 +1008,7 @@ impl fmt::Display for Alteration {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Pitch {
     pub step: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -767,11 +1036,12 @@ impl Pitch {
 }
 impl Part {
     pub fn get_string_tuning(&self, string: u8) -> Option<Pitch> {
-        if let Some(inst) = &self.instrument {
-            if let Some(tunings) = &inst.tuning {
-                if !tunings.is_empty() {
-                    return tunings.iter().find(|t| t.string == string).map(|t| t.pitch.clone());
-                }
+        if let Some(tunings) = &self.ext.tuning {
+            if !tunings.is_empty() {
+                return tunings
+                    .iter()
+                    .find(|t| t.string == string)
+                    .map(|t| t.pitch.clone());
             }
         }
 
@@ -793,27 +1063,21 @@ impl Part {
     }
 
     pub fn capo_fret(&self) -> u8 {
-        self.instrument.as_ref().and_then(|i| i.capo).unwrap_or(0)
+        self.ext.capo.unwrap_or(0)
     }
 
     pub fn edo(&self) -> u32 {
-        self.instrument
-            .as_ref()
-            .and_then(|i| i.micro_fret_divisions)
-            .unwrap_or(12) as u32
+        self.ext.micro_fret_divisions.unwrap_or(12) as u32
     }
 
     pub fn step_multiplier(&self) -> i32 {
-        self.instrument
-            .as_ref()
-            .and_then(|i| i.fret_step_multiplier)
-            .unwrap_or(1) as i32
+        self.ext.fret_step_multiplier.unwrap_or(1) as i32
     }
 
     pub fn num_strings(&self) -> usize {
-        self.instrument
+        self.ext
+            .tuning
             .as_ref()
-            .and_then(|inst| inst.tuning.as_ref())
             .and_then(|tuning| tuning.iter().map(|t| t.string).max())
             .unwrap_or(6)
             .max(1) as usize
@@ -1026,10 +1290,11 @@ parts:
                 notes:
                   - id: n1
                     pitch: { step: C, octave: 3 }
-                    string: 6
-                    fret: 8
                     ties:
                       - target: n2
+                    _x:
+                      string: 6
+                      fret: 8
                 slurs:
                   - target: ev2
                     side: up
@@ -1040,8 +1305,9 @@ parts:
                 notes:
                   - id: n2
                     pitch: { step: D, octave: 3 }
-                    string: 6
-                    fret: 10
+                    _x:
+                      string: 6
+                      fret: 10
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX");
         let measure = &doc.parts[0].measures[0];
@@ -1085,10 +1351,11 @@ parts:
                 notes:
                   - id: n1
                     pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 0
                     ties:
                       - target: rest_ev
+                    _x:
+                      string: 1
+                      fret: 0
               - id: rest_ev
                 duration: { base: quarter }
                 rest: {}
@@ -1123,9 +1390,10 @@ parts:
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 12
-                    tap: {}
+                    _x:
+                      string: 1
+                      fret: 12
+                      tap: {}
 "#;
         let doc: MnxDocument =
             serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with tap");
@@ -1194,33 +1462,41 @@ parts:
               - duration: { base: quarter }
                 notes: []
                 lyrics:
-                  - text: Ooh
-                    extender: true
+                  lines:
+                    "1":
+                      text: Ooh
+                      type: whole
+                      _x:
+                        extender: true
               - duration: { base: eighth }
                 notes: []
                 lyrics:
-                  - text: "con-"
-                    syllabic: begin
+                  lines:
+                    "1":
+                      text: "con-"
+                      type: start
               - duration: { base: eighth }
                 notes: []
                 lyrics:
-                  - text: cert
-                    syllabic: end
+                  lines:
+                    "1":
+                      text: cert
+                      type: end
 "#;
         let doc: MnxDocument = serde_saphyr::from_str(yaml).expect("Failed to deserialize MNX with lyrics");
         let content = &doc.parts[0].measures[0].sequences[0].content;
         assert_eq!(content.len(), 3);
         if let SequenceItem::Event(ev) = &content[0] {
-            let lyr = &ev.lyrics.as_ref().unwrap()[0];
+            let lyr = ev.lyrics.as_ref().unwrap().lines.get("1").unwrap();
             assert_eq!(lyr.text, "Ooh");
-            assert_eq!(lyr.extender, Some(true));
+            assert_eq!(lyr.ext.extender, Some(true));
         } else {
             panic!("Expected Event");
         }
         if let SequenceItem::Event(ev) = &content[1] {
-            let lyr = &ev.lyrics.as_ref().unwrap()[0];
+            let lyr = ev.lyrics.as_ref().unwrap().lines.get("1").unwrap();
             assert_eq!(lyr.text, "con-");
-            assert_eq!(lyr.syllabic.as_deref(), Some("begin"));
+            assert_eq!(lyr.line_type.as_deref(), Some("start"));
         } else {
             panic!("Expected Event");
         }
@@ -1230,22 +1506,51 @@ parts:
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct EventMarkings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub accent: Option<Accent>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "bowDirection"
-    )]
-    pub bow_direction: Option<BowDirection>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+impl EventMarkings {
+    pub fn is_empty(&self) -> bool {
+        self.accent.is_none()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Accent {}
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct BowDirection {
     pub direction: String,
 }
+
+impl Serialize for BowDirection {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Helper<'a> {
+            direction: &'a str,
+        }
+        FlowMap(Helper {
+            direction: &self.direction,
+        })
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BowDirection {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Helper {
+            Map { direction: String },
+            Str(String),
+        }
+        match Helper::deserialize(deserializer)? {
+            Helper::Map { direction } => Ok(BowDirection { direction }),
+            Helper::Str(direction) => Ok(BowDirection { direction }),
+        }
+    }
+}
+

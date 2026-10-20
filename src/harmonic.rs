@@ -626,21 +626,20 @@ mod tests {
         let h_valid = Harmonic {
             touch: 12.0,
             sounding_note: Box::new(Note {
-                muted: None,
                 id: None,
                 pitch: Pitch {
                     step: "E".to_string(),
                     alter: None,
                     octave: 5,
                 },
-                string: Some(1),
-                fret: Some(12),
-                accidental: None,
+                accidental_display: None,
                 ties: None,
-                tap: None,
-                slide: None,
-                bend: None,
-                harmonic: None,
+                comment: None,
+                ext: crate::mnx::NoteExt {
+                    string: Some(1),
+                    fret: Some(12),
+                    ..Default::default()
+                },
             }),
         };
         assert!(table.validate_harmonic(1, &h_valid).is_ok());
@@ -649,21 +648,20 @@ mod tests {
         let h_invalid_touch = Harmonic {
             touch: 4.5,
             sounding_note: Box::new(Note {
-                muted: None,
                 id: None,
                 pitch: Pitch {
                     step: "E".to_string(),
                     alter: None,
                     octave: 5,
                 },
-                string: Some(1),
-                fret: Some(5),
-                accidental: None,
+                accidental_display: None,
                 ties: None,
-                tap: None,
-                slide: None,
-                bend: None,
-                harmonic: None,
+                comment: None,
+                ext: crate::mnx::NoteExt {
+                    string: Some(1),
+                    fret: Some(5),
+                    ..Default::default()
+                },
             }),
         };
         assert!(table.validate_harmonic(1, &h_invalid_touch).is_err());
@@ -672,21 +670,20 @@ mod tests {
         let h_invalid_pitch = Harmonic {
             touch: 12.0,
             sounding_note: Box::new(Note {
-                muted: None,
                 id: None,
                 pitch: Pitch {
                     step: "C".to_string(),
                     alter: None,
                     octave: 5,
                 },
-                string: Some(1),
-                fret: Some(12),
-                accidental: None,
+                accidental_display: None,
                 ties: None,
-                tap: None,
-                slide: None,
-                bend: None,
-                harmonic: None,
+                comment: None,
+                ext: crate::mnx::NoteExt {
+                    string: Some(1),
+                    fret: Some(12),
+                    ..Default::default()
+                },
             }),
         };
         assert!(table.validate_harmonic(1, &h_invalid_pitch).is_err());

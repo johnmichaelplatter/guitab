@@ -427,19 +427,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
         for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
             if m_idx < self.doc.global.measures.len() {
                 let gm = &self.doc.global.measures[m_idx];
-                let parse_loc = |loc: &Option<String>| -> f64 {
-                    if let Some(s) = loc {
-                        if let Some((n, d)) = s.split_once('/') {
-                            if let (Ok(num), Ok(den)) = (n.parse::<f64>(), d.parse::<f64>()) {
-                                if den > 0.0 { return (num / den) * 4.0; }
-                            }
-                        }
-                    }
-                    0.0
+                let parse_pos = |loc: &Option<crate::mnx::Position>| -> f64 {
+                    loc.as_ref().map(|p| p.to_quarter_beats()).unwrap_or(0.0)
                 };
                 let m_start = measure_start_ticks[fm_idx];
                 for tempo in &gm.tempos {
-                    let offset_beats = parse_loc(&tempo.location);
+                    let offset_beats = parse_pos(&tempo.location);
                     let tempo_ticks = m_start + (offset_beats * self.options.ppq.as_int() as f64) as u32;
                     if tempo_ticks <= start_tick_offset {
                         tempo_at_start = tempo.bpm * crate::validate::duration_to_quarter_beats(&tempo.value);
@@ -472,9 +465,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
                     }
                     0.0
                 };
+                let parse_pos = |loc: &Option<crate::mnx::Position>| -> f64 {
+                    loc.as_ref().map(|p| p.to_quarter_beats()).unwrap_or(0.0)
+                };
 
                 for tempo in &gm.tempos {
-                    let offset_beats = parse_loc(&tempo.location);
+                    let offset_beats = parse_pos(&tempo.location);
                     let tempo_ticks = current_time_ticks + (offset_beats * self.options.ppq.as_int() as f64) as u32;
                     let eff_bpm = tempo.bpm * crate::validate::duration_to_quarter_beats(&tempo.value);
                     
@@ -503,7 +499,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 if m2 < self.doc.global.measures.len() {
                                     for t in &self.doc.global.measures[m2].tempos {
                                         if t.id.as_ref() == Some(tid) {
-                                            let off = parse_loc(&t.location);
+                                            let off = parse_pos(&t.location);
                                             target_ticks = measure_start_ticks[fm2] + (off * self.options.ppq.as_int() as f64) as u32;
                                             target_bpm = t.bpm * crate::validate::duration_to_quarter_beats(&t.value);
                                             found = true;
@@ -1869,30 +1865,35 @@ parts:
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 0
+                    _x:
+                      string: 1
+                      fret: 0
               - type: grace
                 content:
                   - duration: { base: eighth }
                     notes:
                       - pitch: { step: G, octave: 4 }
-                        string: 1
-                        fret: 3
+                        _x:
+                          string: 1
+                          fret: 3
                   - duration: { base: eighth }
                     notes:
                       - pitch: { step: A, octave: 4 }
-                        string: 1
-                        fret: 5
+                        _x:
+                          string: 1
+                          fret: 5
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: B, octave: 4 }
-                    string: 1
-                    fret: 7
+                    _x:
+                      string: 1
+                      fret: 7
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: C, octave: 5 }
-                    string: 1
-                    fret: 8
+                    _x:
+                      string: 1
+                      fret: 8
 "#;
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
@@ -1951,29 +1952,29 @@ parts:
       - sequences:
           - content:
               - duration: { base: quarter }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: E, octave: 4 }, string: 1, fret: 0 }]
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
       - sequences:
           - content:
               - type: grace
                 content:
                   - duration: { base: eighth }
-                    notes: [{ pitch: { step: G, octave: 4 }, string: 1, fret: 3 }]
+                    notes: [{ pitch: { step: G, octave: 4 }, _x: { string: 1, fret: 3 } }]
                   - duration: { base: eighth }
-                    notes: [{ pitch: { step: A, octave: 4 }, string: 1, fret: 5 }]
+                    notes: [{ pitch: { step: A, octave: 4 }, _x: { string: 1, fret: 5 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: B, octave: 4 }, string: 1, fret: 7 }]
+                notes: [{ pitch: { step: B, octave: 4 }, _x: { string: 1, fret: 7 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: C, octave: 5 }, string: 1, fret: 8 }]
+                notes: [{ pitch: { step: C, octave: 5 }, _x: { string: 1, fret: 8 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: D, octave: 5 }, string: 1, fret: 10 }]
+                notes: [{ pitch: { step: D, octave: 5 }, _x: { string: 1, fret: 10 } }]
               - duration: { base: quarter }
-                notes: [{ pitch: { step: E, octave: 5 }, string: 1, fret: 12 }]
+                notes: [{ pitch: { step: E, octave: 5 }, _x: { string: 1, fret: 12 } }]
 "#;
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
@@ -2020,8 +2021,8 @@ global:
   measures:
     - time: { count: 4, unit: 4 }
 parts:
-  - instrument:
-      name: "Standard Guitar"
+  - name: "Standard Guitar"
+    _x:
       microFretDivisions: 12
       fretStepMultiplier: 1
       tuning:
@@ -2034,42 +2035,46 @@ parts:
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 12
-                    harmonic:
-                      touch: 12.0
-                      soundingNote:
-                        pitch: { step: E, octave: 5 }
+                    _x:
+                      string: 1
+                      fret: 12
+                      harmonic:
+                        touch: 12.0
+                        soundingNote:
+                          pitch: { step: E, octave: 5 }
               # Harmonic 2: touch 7.0 -> sounding B5 (MIDI 83). Without harmonic, fret 7 is B4 (MIDI 71)!
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 7
-                    harmonic:
-                      touch: 7.0
-                      soundingNote:
-                        pitch: { step: B, alter: 0.02, octave: 5 }
+                    _x:
+                      string: 1
+                      fret: 7
+                      harmonic:
+                        touch: 7.0
+                        soundingNote:
+                          pitch: { step: B, alter: 0.02, octave: 5 }
               # Harmonic 3: touch 5.0 -> sounding E6 (MIDI 88). Without harmonic, fret 5 is A4 (MIDI 69)!
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 5
-                    harmonic:
-                      touch: 5.0
-                      soundingNote:
-                        pitch: { step: E, octave: 6 }
+                    _x:
+                      string: 1
+                      fret: 5
+                      harmonic:
+                        touch: 5.0
+                        soundingNote:
+                          pitch: { step: E, octave: 6 }
               # Harmonic 4: touch 3.9 -> sounding G6 (alter 0.863, MIDI ~92). Without harmonic, fret 4 is G#4 (MIDI 68)!
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 4
-                    harmonic:
-                      touch: 3.9
-                      soundingNote:
-                        pitch: { step: G, alter: 0.863, octave: 6 }
+                    _x:
+                      string: 1
+                      fret: 4
+                      harmonic:
+                        touch: 3.9
+                        soundingNote:
+                          pitch: { step: G, alter: 0.863, octave: 6 }
 "#;
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
@@ -2137,8 +2142,8 @@ global:
   measures:
     - time: { count: 4, unit: 4 }
 parts:
-  - instrument:
-      name: "Standard Guitar"
+  - name: "Standard Guitar"
+    _x:
       microFretDivisions: 12
       fretStepMultiplier: 1
       tuning:
@@ -2151,23 +2156,25 @@ parts:
                 notes:
                   - id: h1
                     pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 7
                     ties: [{ target: h2 }]
-                    harmonic:
-                      touch: 7.0
-                      soundingNote:
-                        pitch: { step: B, alter: 0.02, octave: 5 }
+                    _x:
+                      string: 1
+                      fret: 7
+                      harmonic:
+                        touch: 7.0
+                        soundingNote:
+                          pitch: { step: B, alter: 0.02, octave: 5 }
               - duration: { base: half }
                 notes:
                   - id: h2
                     pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 7
-                    harmonic:
-                      touch: 7.0
-                      soundingNote:
-                        pitch: { step: B, alter: 0.02, octave: 5 }
+                    _x:
+                      string: 1
+                      fret: 7
+                      harmonic:
+                        touch: 7.0
+                        soundingNote:
+                          pitch: { step: B, alter: 0.02, octave: 5 }
 "#;
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let (track, _) = generate_playback_track(&doc, MidiOptions::default());

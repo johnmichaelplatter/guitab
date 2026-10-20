@@ -288,8 +288,8 @@ mnx:
 global:
   measures: []
 parts:
-  - instrument:
-      name: "Capo Guitar"
+  - name: "Capo Guitar"
+    _x:
       microFretDivisions: 12
       fretStepMultiplier: 1
       capo: 2

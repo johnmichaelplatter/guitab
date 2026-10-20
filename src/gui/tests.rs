@@ -131,19 +131,20 @@ global:
   measures:
     - time: { count: 4, unit: 4 }
 parts:
-  - instrument:
-      name: "Guitar"
+  - name: "Guitar"
     measures:
       - sequences:
           - content:
               - duration: { base: whole }
                 notes:
                   - pitch: { step: C, octave: 3 }
-                    string: 5
-                    fret: 3
+                    _x:
+                      string: 5
+                      fret: 3
                   - pitch: { step: E, octave: 3 }
-                    string: 4
-                    fret: 2
+                    _x:
+                      string: 4
+                      fret: 2
 "#;
         // Remove note on string 4
         let updated = remove_note_on_string(yaml, 0, 4).expect("Should remove note on string 4");
@@ -220,8 +221,8 @@ global:
   measures:
   - time: {count: 4, unit: 4}
 parts:
-- instrument:
-    name: Guitar
+- name: Guitar
+  _x:
     tuning:
     - string: 1
       pitch: {octave: 4, step: E}
@@ -232,9 +233,11 @@ parts:
     - content:
       - duration: {base: quarter}
         notes:
-        - {fret: 0, pitch: {octave: 4, step: E}, string: 1}
-layout:
-  pageSize: letter
+        - pitch: {octave: 4, step: E}
+          _x: {fret: 0, string: 1}
+_x:
+  layout:
+    pageSize: letter
 "#;
         let dur = crate::mnx::Duration {
             multiple: None,
@@ -274,7 +277,7 @@ layout:
         assert_eq!(seq_positions.len(), 2, "Should have two measures");
         assert!(seq_positions[0] > parts_measures_pos, "Measure 0 must be after measures:");
         assert!(seq_positions[1] > seq_positions[0], "Measure 1 must be after measure 0");
-        assert!(seq_positions[1] < layout_pos, "Measure 1 must be before layout:");
+        assert!(layout_pos < parts_pos, "Document _x.layout must be preserved before parts:");
     }
 
     #[test]
@@ -285,14 +288,14 @@ global:
   measures:
   - time: {count: 3, unit: 4}
 parts:
-- instrument:
-    name: Guitar
+- name: Guitar
   measures:
   - sequences:
     - content:
       - duration: {base: half, dots: 1}
         notes:
-        - {fret: 0, pitch: {octave: 4, step: E}, string: 1}
+        - pitch: {octave: 4, step: E}
+          _x: {fret: 0, string: 1}
 "#;
         let dur = crate::mnx::Duration {
             multiple: None,
@@ -358,32 +361,47 @@ parts:
             dots: None,
         };
 
-        for filename in &["example.yaml", "example_layout_lyrics.yaml"] {
+        for filename in &[
+            "example.yaml",
+            "example_endings.yaml",
+            "example_harmonics.yaml",
+            "example_layout_lyrics.yaml",
+            "c scale.yaml",
+            "chord example.yaml",
+        ] {
             let path = std::path::Path::new(filename);
             if !path.exists() {
                 continue;
             }
             let raw_yaml = std::fs::read_to_string(path).expect("Read yaml");
             
-            // 1. Raw hand-crafted YAML
+            // 1. Raw hand-crafted YAML must parse and reserialize cleanly
             let raw_doc = serde_saphyr::from_str::<MnxDocument>(&raw_yaml).expect("Parse raw");
-            let initial_m_count = raw_doc.parts[0].measures.len();
-            let updated_raw = add_measure_to_yaml(&raw_yaml, &dur).expect("Add measure to raw");
-            let parsed_raw = serde_saphyr::from_str::<MnxDocument>(&updated_raw).expect("Parse updated raw");
-            assert_eq!(parsed_raw.parts[0].measures.len(), initial_m_count + 1);
-            assert_eq!(parsed_raw.global.measures.len(), initial_m_count + 1);
-
-            // 2. serde_saphyr serialized YAML (Layout mode style)
             let reserialized = serde_saphyr::to_string(&raw_doc).expect("Serialize with serde_saphyr");
-            let updated_reserialized = add_measure_to_yaml(&reserialized, &dur).expect("Add measure to reserialized");
-            let parsed_reserialized = serde_saphyr::from_str::<MnxDocument>(&updated_reserialized).expect("Parse updated reserialized");
-            assert_eq!(parsed_reserialized.parts[0].measures.len(), initial_m_count + 1);
-            assert_eq!(parsed_reserialized.global.measures.len(), initial_m_count + 1);
+            let reparsed = serde_saphyr::from_str::<MnxDocument>(&reserialized).expect("Reparse reserialized");
+            assert_eq!(raw_doc, reparsed, "Roundtrip equality failed for {}", filename);
 
-            // Ensure layout block is still present and valid if it was present
-            if raw_doc.layout.is_some() {
-                assert!(parsed_raw.layout.is_some());
-                assert!(parsed_reserialized.layout.is_some());
+            if matches!(
+                *filename,
+                "example.yaml" | "example_endings.yaml" | "example_harmonics.yaml" | "example_layout_lyrics.yaml"
+            ) {
+                let initial_m_count = raw_doc.parts[0].measures.len();
+                let updated_raw = add_measure_to_yaml(&raw_yaml, &dur).expect("Add measure to raw");
+                let parsed_raw = serde_saphyr::from_str::<MnxDocument>(&updated_raw).expect("Parse updated raw");
+                assert_eq!(parsed_raw.parts[0].measures.len(), initial_m_count + 1);
+                assert_eq!(parsed_raw.global.measures.len(), initial_m_count + 1);
+
+                // 2. serde_saphyr serialized YAML (Layout mode style)
+                let updated_reserialized = add_measure_to_yaml(&reserialized, &dur).expect("Add measure to reserialized");
+                let parsed_reserialized = serde_saphyr::from_str::<MnxDocument>(&updated_reserialized).expect("Parse updated reserialized");
+                assert_eq!(parsed_reserialized.parts[0].measures.len(), initial_m_count + 1);
+                assert_eq!(parsed_reserialized.global.measures.len(), initial_m_count + 1);
+
+                // Ensure layout block is still present and valid if it was present
+                if raw_doc.layout.is_some() {
+                    assert!(parsed_raw.layout.is_some());
+                    assert!(parsed_reserialized.layout.is_some());
+                }
             }
         }
     }
@@ -1477,18 +1495,21 @@ parts:
                   - duration: { base: eighth }
                     notes:
                       - pitch: { step: G, octave: 4 }
-                        string: 1
-                        fret: 3
+                        _x:
+                          string: 1
+                          fret: 3
                   - duration: { base: eighth }
                     notes:
                       - pitch: { step: A, octave: 4 }
-                        string: 1
-                        fret: 5
+                        _x:
+                          string: 1
+                          fret: 5
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: C, octave: 4 }
-                    string: 2
-                    fret: 1
+                    _x:
+                      string: 2
+                      fret: 1
 "#;
         let mut app = MnxEditorApp::default();
         app.yaml_text = yaml.to_string();
@@ -1526,8 +1547,8 @@ global:
   measures:
     - time: { count: 4, unit: 4 }
 parts:
-  - instrument:
-      name: "Standard Guitar"
+  - name: "Standard Guitar"
+    _x:
       microFretDivisions: 12
       fretStepMultiplier: 1
       tuning:
@@ -1541,8 +1562,9 @@ parts:
                 notes:
                   - id: n1
                     pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 12
+                    _x:
+                      string: 1
+                      fret: 12
 "#
         .to_string();
         app.process_and_render();
@@ -1587,8 +1609,8 @@ global:
   measures:
     - time: { count: 4, unit: 4 }
 parts:
-  - instrument:
-      name: "Standard Guitar"
+  - name: "Standard Guitar"
+    _x:
       microFretDivisions: 12
       fretStepMultiplier: 1
       tuning:
@@ -1602,8 +1624,9 @@ parts:
                 notes:
                   - id: n1
                     pitch: { step: E, octave: 4 }
-                    string: 1
-                    fret: 4
+                    _x:
+                      string: 1
+                      fret: 4
 "#
         .to_string();
         app.process_and_render();
@@ -1637,17 +1660,12 @@ parts:
         ev.notes[0].harmonic = Some(crate::mnx::Harmonic {
             touch: node.touch_fret,
             sounding_note: Box::new(crate::mnx::Note {
-                muted: None,
                 id: None,
                 pitch: node.sounding_pitch.clone(),
-                string: None,
-                fret: None,
-                accidental: None,
+                accidental_display: None,
                 ties: None,
-                tap: None,
-                slide: None,
-                bend: None,
-                harmonic: None,
+                comment: None,
+                ext: crate::mnx::NoteExt::default(),
             }),
         });
         let new_yaml = serde_saphyr::to_string(&doc).unwrap();
@@ -1670,8 +1688,8 @@ parts:
         assert!(app.yaml_text.contains("extender: true"));
 
         app.action_set_event_lyric(0, "con-");
-        assert!(app.yaml_text.contains("text: \"con-\"") || app.yaml_text.contains("text: con-"));
-        assert!(app.yaml_text.contains("syllabic: begin"));
+        assert!(app.yaml_text.contains("text: \"con\"") || app.yaml_text.contains("text: con"));
+        assert!(app.yaml_text.contains("type: start"));
 
         app.action_set_event_lyric(0, "");
         assert!(!app.yaml_text.contains("lyrics:"));
@@ -1751,9 +1769,9 @@ parts:
         app.start_new_tab(2, edo, step_multiplier, tunings);
         assert!(app.validation_errors.is_empty(), "errors: {:?}", app.validation_errors);
         let doc = app.parsed_mnx.as_ref().unwrap();
-        let inst = doc.parts[0].instrument.as_ref().unwrap();
-        assert_eq!(inst.micro_fret_divisions, Some(24));
-        let parsed_tunings = inst.tuning.as_ref().unwrap();
+        let part = &doc.parts[0];
+        assert_eq!(part.micro_fret_divisions, Some(24));
+        let parsed_tunings = part.tuning.as_ref().unwrap();
         assert_eq!(parsed_tunings.len(), 2);
         assert_eq!(
             parsed_tunings[0].pitch.alter,
@@ -1812,12 +1830,12 @@ parts:
             app.validation_errors
         );
         let doc = app.parsed_mnx.as_ref().unwrap();
-        let inst = doc.parts[0].instrument.as_ref().unwrap();
-        assert_eq!(inst.micro_fret_divisions, Some(24));
-        assert_eq!(inst.fret_step_multiplier, Some(2));
-        assert_eq!(inst.tuning.as_ref().unwrap().len(), 4);
+        let part = &doc.parts[0];
+        assert_eq!(part.micro_fret_divisions, Some(24));
+        assert_eq!(part.fret_step_multiplier, Some(2));
+        assert_eq!(part.tuning.as_ref().unwrap().len(), 4);
         assert_eq!(
-            inst.tuning.as_ref().unwrap()[0].pitch.alter,
+            part.tuning.as_ref().unwrap()[0].pitch.alter,
             Some(crate::mnx::Alteration::Value(0.5))
         );
         // Ensure no note references string > 4
@@ -1975,15 +1993,15 @@ parts:
     measures:
       - sequences:
           - content:
-              - type: event
-                duration:
+              - duration:
                   base: quarter
                 notes:
                   - pitch:
                       step: E
                       octave: 4
-                    string: 1
-                    fret: 0
+                    _x:
+                      string: 1
+                      fret: 0
 "#;
         let mut app = MnxEditorApp::default();
         app.update_yaml(yaml.trim().to_string());
@@ -2029,20 +2047,21 @@ parts:
     measures:
       - sequences:
           - content:
-              - type: event
-                duration:
+              - duration:
                   base: quarter
                 notes:
                   - pitch:
                       step: E
                       octave: 4
-                    string: 1
-                    fret: 0
+                    _x:
+                      string: 1
+                      fret: 0
                   - pitch:
                       step: C
                       octave: 4
-                    string: 2
-                    fret: 1
+                    _x:
+                      string: 2
+                      fret: 1
 "#;
         let mut app = MnxEditorApp::default();
         app.update_yaml(yaml.trim().to_string());
@@ -2087,26 +2106,25 @@ parts:
     measures:
       - sequences:
           - content:
-              - type: event
-                duration:
+              - duration:
                   base: quarter
                 notes:
                   - pitch:
                       step: E
                       octave: 4
-                    string: 1
-                    fret: 0
-              - type: event
-                duration:
+                    _x:
+                      string: 1
+                      fret: 0
+              - duration:
                   base: quarter
                 notes:
                   - pitch:
                       step: G
                       octave: 4
-                    string: 1
-                    fret: 3
-              - type: event
-                duration:
+                    _x:
+                      string: 1
+                      fret: 3
+              - duration:
                   base: half
                 rest: {}
 "#;

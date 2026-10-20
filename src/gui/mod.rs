@@ -541,12 +541,11 @@ impl MnxEditorApp {
             }
         }
 
-        // Sync pitch bend range from YAML if stored on the instrument
+        // Sync pitch bend range from YAML if stored on the part
         if let Some(pb) = doc
             .parts
             .first()
-            .and_then(|p| p.instrument.as_ref())
-            .and_then(|i| i.pitch_bend_range)
+            .and_then(|p| p.pitch_bend_range)
         {
             self.pitch_bend_range = pb.clamp(1, 48);
         }
@@ -628,17 +627,9 @@ impl MnxEditorApp {
         self.pitch_bend_range = clamped;
         self.mutate_doc(|doc| {
             let part = doc.parts.first_mut()?;
-            if let Some(inst) = &mut part.instrument {
-                inst.pitch_bend_range = Some(clamped);
-            } else {
-                part.instrument = Some(crate::mnx::Instrument {
-                    name: "Guitar".to_string(),
-                    micro_fret_divisions: None,
-                    fret_step_multiplier: None,
-                    pitch_bend_range: Some(clamped),
-                    capo: None,
-                    tuning: None,
-                });
+            part.pitch_bend_range = Some(clamped);
+            if part.name.is_none() {
+                part.name = Some("Guitar".to_string());
             }
             Some(())
         });
@@ -691,18 +682,21 @@ impl MnxEditorApp {
     ) {
         let doc = MnxDocument {
             mnx: crate::mnx::MnxMeta { version: 1 },
-            title: None,
-            subtitle: None,
-            composer: None,
+            comment: None,
+            ext: crate::mnx::DocumentExt::default(),
             global: crate::mnx::Global {
+                comment: None,
                 measures: vec![crate::mnx::GlobalMeasure {
                     time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
                     ..Default::default()
                 }],
             },
             parts: vec![crate::mnx::Part {
-                instrument: Some(crate::mnx::Instrument {
-                    name: "Guitar".to_string(),
+                id: None,
+                name: Some("Guitar".to_string()),
+                short_name: None,
+                comment: None,
+                ext: crate::mnx::PartExt {
                     micro_fret_divisions: Some(edo),
                     fret_step_multiplier: Some(step_multiplier),
                     pitch_bend_range: if self.pitch_bend_range != 2 {
@@ -712,11 +706,13 @@ impl MnxEditorApp {
                     },
                     capo: None,
                     tuning: Some(tunings),
-                }),
+                },
                 measures: vec![crate::mnx::Measure {
+                    comment: None,
                     beams: None,
                     arpeggios: None,
                     sequences: vec![crate::mnx::Sequence {
+                        comment: None,
                         content: vec![crate::mnx::SequenceItem::Event(crate::mnx::Event {
                             markings: None,
                             id: None,
@@ -729,12 +725,12 @@ impl MnxEditorApp {
                             rest: Some(crate::mnx::Rest {}),
                             slurs: None,
                             lyrics: None,
+                            comment: None,
+                            ext: crate::mnx::EventExt::default(),
                         })],
-                        beams: None,
                     }],
                 }],
             }],
-            layout: None,
         };
 
         let new_yaml = serde_saphyr::to_string(&doc).unwrap_or_default();

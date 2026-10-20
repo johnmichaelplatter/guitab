@@ -10,59 +10,65 @@ global:
     - {}
     - {}
 parts:
-  - instrument:
-      name: "Guitar"
+  - name: "Guitar"
     measures:
       - sequences:
           - content:
               - duration: { base: half, dots: 1 }
                 notes:
                   - pitch: { step: C, octave: 5 }
-                    string: 1
-                    fret: 8
+                    _x:
+                      string: 1
+                      fret: 8
       - sequences:
           - content:
               - duration: { base: half, dots: 1 }
                 notes:
                   - pitch: { step: E, octave: 5 }
-                    string: 1
-                    fret: 12
+                    _x:
+                      string: 1
+                      fret: 12
       - sequences:
           - content:
               - duration: { base: half }
                 notes:
                   - pitch: { step: E, octave: 5 }
-                    string: 1
-                    fret: 12
+                    _x:
+                      string: 1
+                      fret: 12
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: D, octave: 5 }
-                    string: 1
-                    fret: 10
+                    _x:
+                      string: 1
+                      fret: 10
       - sequences:
           - content:
               - duration: { base: half, dots: 1 }
                 notes:
                   - pitch: { step: G, octave: 5 }
-                    string: 1
-                    fret: 15
+                    _x:
+                      string: 1
+                      fret: 15
       - sequences:
           - content:
               - duration: { base: half }
                 notes:
                   - pitch: { step: G, octave: 5 }
-                    string: 1
-                    fret: 15
+                    _x:
+                      string: 1
+                      fret: 15
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: F, octave: 5 }
-                    string: 1
-                    fret: 13
+                    _x:
+                      string: 1
+                      fret: 13
       - sequences:
           - content:
               - duration: { base: half, dots: 1 }
                 notes:
                   - pitch: { step: E, octave: 5 }
-                    string: 1
-                    fret: 12
-
+                    _x:
+                      string: 1
+                      fret: 12

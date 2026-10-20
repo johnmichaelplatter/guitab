@@ -6,8 +6,8 @@ global:
     - time: { count: 4, unit: 4 }
     - time: { count: 4, unit: 4 }
 parts:
-  - instrument:
-      name: "Kite Guitar"
+  - name: "Kite Guitar"
+    _x:
       microFretDivisions: 41
       fretStepMultiplier: 2
       capo: 0
@@ -34,93 +34,112 @@ parts:
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: C, octave: 3 }
-                    string: 7
-                    fret: 12
+                    _x:
+                      string: 7
+                      fret: 12
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: D, octave: 3 }
-                    string: 6
-                    fret: 9
+                    _x:
+                      string: 6
+                      fret: 9
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: E, alter: '-1\41', octave: 3 }
-                    string: 6
-                    fret: 12
+                    _x:
+                      string: 6
+                      fret: 12
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: F, octave: 3 }
-                    string: 6
-                    fret: 14
+                    _x:
+                      string: 6
+                      fret: 14
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: G, octave: 3 }
-                    string: 5
-                    fret: 12
+                    _x:
+                      string: 5
+                      fret: 12
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: A, alter: '-1\41', octave: 3 }
-                    string: 5
-                    fret: 15
+                    _x:
+                      string: 5
+                      fret: 15
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: B, alter: '-1\41', octave: 3 }
-                    string: 4
-                    fret: 12
+                    _x:
+                      string: 4
+                      fret: 12
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: C, octave: 4 }
-                    string: 4
-                    fret: 14
+                    _x:
+                      string: 4
+                      fret: 14
       - sequences:
           - content:
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: D, octave: 4 }
-                    string: 3
-                    fret: 12
+                    _x:
+                      string: 3
+                      fret: 12
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: E, alter: '-1\41', octave: 4 }
-                    string: 3
-                    fret: 15
+                    _x:
+                      string: 3
+                      fret: 15
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: F, octave: 4 }
-                    string: 3
-                    fret: 17
+                    _x:
+                      string: 3
+                      fret: 17
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: G, octave: 4 }
-                    string: 2
-                    fret: 12
+                    _x:
+                      string: 2
+                      fret: 12
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: A, alter: '-1\41', octave: 4 }
-                    string: 2
-                    fret: 15
+                    _x:
+                      string: 2
+                      fret: 15
               - duration: { base: eighth }
                 notes:
                   - pitch: { step: B, alter: '-1\41', octave: 4 }
-                    string: 1
-                    fret: 12
+                    _x:
+                      string: 1
+                      fret: 12
               - duration: { base: quarter }
                 notes:
                   - pitch: { step: C, octave: 5 }
-                    string: 1
-                    fret: 14
+                    _x:
+                      string: 1
+                      fret: 14
       - sequences:
           - content:
               - duration: { base: whole }
                 notes:
                   - pitch: { step: C, octave: 5 }
-                    string: 1
-                    fret: 14
+                    _x:
+                      string: 1
+                      fret: 14
                   - pitch: { step: G, octave: 4 }
-                    string: 2
-                    fret: 12
+                    _x:
+                      string: 2
+                      fret: 12
                   - pitch: { step: E, alter: '-1\41', octave: 4 }
-                    string: 3
-                    fret: 15
+                    _x:
+                      string: 3
+                      fret: 15
                   - pitch: { step: C, octave: 4 }
-                    string: 4
-                    fret: 14
+                    _x:
+                      string: 4
+                      fret: 14
