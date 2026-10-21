@@ -1946,6 +1946,19 @@ parts:
         let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&yaml).unwrap();
         let t_parse = t0.elapsed();
 
+        assert_eq!(doc.parts[0].name.as_deref(), Some("Guitar"));
+        assert!(doc.parts[0].tuning.is_some());
+        for m in &doc.parts[0].measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    for note in &ev.notes {
+                        assert!(note.string.is_some(), "Note missing _x.string: {:?}", note);
+                        assert!(note.fret.is_some(), "Note missing _x.fret: {:?}", note);
+                    }
+                }
+            }
+        }
+
         let t1 = std::time::Instant::now();
         let ser = serde_saphyr::to_string(&doc).unwrap();
         let t_ser = t1.elapsed();
@@ -1955,8 +1968,9 @@ parts:
         let t_ranges = t2.elapsed();
 
         let t3 = std::time::Instant::now();
-        let _errs = crate::validate::validate_mnx(&doc);
+        let errs = crate::validate::validate_mnx(&doc);
         let t_val = t3.elapsed();
+        assert!(errs.is_empty(), "Validation errors in woman of the hour.yaml: {:?}", errs);
 
         let t4 = std::time::Instant::now();
         let pages = crate::layout::compute_score_layout(&doc, 0.0);

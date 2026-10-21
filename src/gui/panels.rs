@@ -37,6 +37,9 @@ impl MnxEditorApp {
                         }
                     }
                 }
+                if ui.button("Export .mnx...").clicked() {
+                    self.export_mnx_file();
+                }
 
                 ui.separator();
 

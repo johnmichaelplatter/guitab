@@ -813,6 +813,42 @@ impl MnxEditorApp {
             false
         }
     }
+
+    pub(crate) fn export_mnx_file(&mut self) -> bool {
+        let default_name = self
+            .current_file_path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .map(|stem| format!("{}.mnx", stem))
+            .unwrap_or_else(|| "score.mnx".to_string());
+
+        if let Some(mut path) = rfd::FileDialog::new()
+            .add_filter("MNX Document", &["mnx"])
+            .set_file_name(&default_name)
+            .save_file()
+        {
+            if path.extension().and_then(|e| e.to_str()) != Some("mnx") {
+                path.set_extension("mnx");
+            }
+            match crate::mnx::export_yaml_to_mnx_json(&self.yaml_text) {
+                Ok(json_str) => {
+                    if let Err(e) = fs::write(&path, json_str) {
+                        self.validation_errors = vec![format!("Failed to export .mnx file: {}", e)];
+                        false
+                    } else {
+                        true
+                    }
+                }
+                Err(e) => {
+                    self.validation_errors = vec![format!("Failed to export .mnx file: {}", e)];
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
 }
 
 impl eframe::App for MnxEditorApp {

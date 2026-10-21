@@ -270,7 +270,18 @@ where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ExtOrVendor<T> {
+        Vendor { ursine: T },
+        Direct(T),
+    }
+    Ok(Option::<ExtOrVendor<T>>::deserialize(d)?
+        .map(|v| match v {
+            ExtOrVendor::Vendor { ursine } => ursine,
+            ExtOrVendor::Direct(t) => t,
+        })
+        .unwrap_or_default())
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
@@ -997,6 +1008,30 @@ impl Alteration {
             }
         }
     }
+
+    /// Converts an EDO fraction (`m\n` or `m/n`) or float alteration into a 3-digit decimal
+    /// `Alteration::Value` using `12 * ln(2^(m/n)) / ln(2)`.
+    pub fn to_three_digit_decimal(&self) -> Alteration {
+        let raw = match self {
+            Alteration::Value(v) => *v,
+            Alteration::Fraction(s) => {
+                if let Some((num, den)) = s.split_once(|c| c == '\\' || c == '/') {
+                    let m = num.trim().parse::<f64>().unwrap_or(0.0);
+                    let n = den.trim().parse::<f64>().unwrap_or(12.0);
+                    if n != 0.0 {
+                        12.0 * (2.0_f64.powf(m / n)).ln() / 2.0_f64.ln()
+                    } else {
+                        0.0
+                    }
+                } else {
+                    s.trim().parse::<f64>().unwrap_or(0.0)
+                }
+            }
+        };
+        let rounded = (raw * 1000.0).round() / 1000.0;
+        let clean = if rounded == 0.0 { 0.0 } else { rounded };
+        Alteration::Value(clean)
+    }
 }
 
 impl fmt::Display for Alteration {
@@ -1265,6 +1300,433 @@ impl MnxDocument {
         }
         None
     }
+
+    /// Converts all `Pitch.alter` values across the document (tuning, notes, and harmonic sounding notes)
+    /// from EDO fractions (`m\n`) or floats into 3-digit decimal `Alteration::Value` floats.
+    pub fn prepare_for_mnx_export(&mut self) {
+        fn convert_note(note: &mut Note) {
+            if let Some(alt) = &note.pitch.alter {
+                note.pitch.alter = Some(alt.to_three_digit_decimal());
+            }
+            if let Some(h) = &mut note.ext.harmonic {
+                convert_note(&mut h.sounding_note);
+            }
+        }
+
+        fn convert_items(items: &mut [SequenceItem]) {
+            for item in items {
+                match item {
+                    SequenceItem::Event(ev) => {
+                        for note in &mut ev.notes {
+                            convert_note(note);
+                        }
+                    }
+                    SequenceItem::Tuplet(t) => convert_items(&mut t.content),
+                    SequenceItem::Grace(g) => convert_items(&mut g.content),
+                }
+            }
+        }
+
+        for part in &mut self.parts {
+            if let Some(tunings) = &mut part.ext.tuning {
+                for t in tunings {
+                    if let Some(alt) = &t.pitch.alter {
+                        t.pitch.alter = Some(alt.to_three_digit_decimal());
+                    }
+                }
+            }
+            for measure in &mut part.measures {
+                for seq in &mut measure.sequences {
+                    convert_items(&mut seq.content);
+                }
+            }
+        }
+    }
+}
+
+/// Parses `yaml_text` (automatically stripping any `#comments`), converts all `alter` fields
+/// (`m\n`) to 3-digit decimals via `12 * ln(2^(m/n)) / ln(2)`, and serializes to pretty-printed `.mnx` JSON.
+pub fn export_yaml_to_mnx_json(yaml_text: &str) -> Result<String, String> {
+    let mut doc: MnxDocument =
+        serde_saphyr::from_str(yaml_text).map_err(|e| format!("YAML parse error: {}", e))?;
+    doc.prepare_for_mnx_export();
+    to_mnx_json_string(&doc)
+}
+
+/// Serializes an `MnxDocument` to pretty-printed JSON.
+pub fn to_mnx_json_string<T: Serialize>(value: &T) -> Result<String, String> {
+    let mut ser = JsonSerializer {
+        out: String::new(),
+        indent: 0,
+    };
+    value.serialize(&mut ser).map_err(|e| e.0)?;
+    ser.out.push('\n');
+    Ok(ser.out)
+}
+
+#[derive(Debug)]
+struct JsonError(String);
+
+impl fmt::Display for JsonError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for JsonError {}
+
+impl serde::ser::Error for JsonError {
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        JsonError(msg.to_string())
+    }
+}
+
+struct JsonSerializer {
+    out: String,
+    indent: usize,
+}
+
+impl JsonSerializer {
+    fn push_indent(&mut self) {
+        for _ in 0..self.indent {
+            self.out.push_str("  ");
+        }
+    }
+
+    fn write_escaped_str(&mut self, v: &str) {
+        self.out.push('"');
+        for ch in v.chars() {
+            match ch {
+                '"' => self.out.push_str("\\\""),
+                '\\' => self.out.push_str("\\\\"),
+                '\x08' => self.out.push_str("\\b"),
+                '\x0c' => self.out.push_str("\\f"),
+                '\n' => self.out.push_str("\\n"),
+                '\r' => self.out.push_str("\\r"),
+                '\t' => self.out.push_str("\\t"),
+                c if (c as u32) < 0x20 => {
+                    self.out.push_str(&format!("\\u{:04x}", c as u32));
+                }
+                c => self.out.push(c),
+            }
+        }
+        self.out.push('"');
+    }
+}
+
+struct JsonSeqSerializer<'a> {
+    ser: &'a mut JsonSerializer,
+    first: bool,
+}
+
+struct JsonMapSerializer<'a> {
+    ser: &'a mut JsonSerializer,
+    first: bool,
+}
+
+impl<'a> Serializer for &'a mut JsonSerializer {
+    type Ok = ();
+    type Error = JsonError;
+    type SerializeSeq = JsonSeqSerializer<'a>;
+    type SerializeTuple = JsonSeqSerializer<'a>;
+    type SerializeTupleStruct = JsonSeqSerializer<'a>;
+    type SerializeTupleVariant = serde::ser::Impossible<(), JsonError>;
+    type SerializeMap = JsonMapSerializer<'a>;
+    type SerializeStruct = JsonMapSerializer<'a>;
+    type SerializeStructVariant = serde::ser::Impossible<(), JsonError>;
+
+    fn serialize_bool(self, v: bool) -> Result<(), Self::Error> {
+        self.out.push_str(if v { "true" } else { "false" });
+        Ok(())
+    }
+
+    fn serialize_i8(self, v: i8) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_i16(self, v: i16) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_i32(self, v: i32) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_i64(self, v: i64) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_u8(self, v: u8) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_u16(self, v: u16) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_u32(self, v: u32) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_u64(self, v: u64) -> Result<(), Self::Error> {
+        self.out.push_str(&v.to_string());
+        Ok(())
+    }
+
+    fn serialize_f32(self, v: f32) -> Result<(), Self::Error> {
+        self.serialize_f64(v as f64)
+    }
+
+    fn serialize_f64(self, v: f64) -> Result<(), Self::Error> {
+        let rounded = (v * 1000.0).round() / 1000.0;
+        let clean = if rounded == 0.0 { 0.0 } else { rounded };
+        if (clean - clean.round()).abs() < 1e-9 {
+            self.out.push_str(&(clean.round() as i64).to_string());
+        } else {
+            self.out.push_str(&clean.to_string());
+        }
+        Ok(())
+    }
+
+    fn serialize_char(self, v: char) -> Result<(), Self::Error> {
+        let mut buf = [0u8; 4];
+        self.write_escaped_str(v.encode_utf8(&mut buf));
+        Ok(())
+    }
+
+    fn serialize_str(self, v: &str) -> Result<(), Self::Error> {
+        self.write_escaped_str(v);
+        Ok(())
+    }
+
+    fn serialize_bytes(self, _v: &[u8]) -> Result<(), Self::Error> {
+        Err(JsonError("bytes unsupported".to_string()))
+    }
+
+    fn serialize_none(self) -> Result<(), Self::Error> {
+        self.out.push_str("null");
+        Ok(())
+    }
+
+    fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<(), Self::Error> {
+        value.serialize(self)
+    }
+
+    fn serialize_unit(self) -> Result<(), Self::Error> {
+        self.out.push_str("{}");
+        Ok(())
+    }
+
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<(), Self::Error> {
+        self.out.push_str("{}");
+        Ok(())
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        variant: &'static str,
+    ) -> Result<(), Self::Error> {
+        self.write_escaped_str(variant);
+        Ok(())
+    }
+
+    fn serialize_newtype_struct<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<(), Self::Error> {
+        value.serialize(self)
+    }
+
+    fn serialize_newtype_variant<T: ?Sized + Serialize>(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        value: &T,
+    ) -> Result<(), Self::Error> {
+        value.serialize(self)
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        self.out.push('[');
+        self.indent += 1;
+        Ok(JsonSeqSerializer {
+            ser: self,
+            first: true,
+        })
+    }
+
+    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        self.serialize_seq(Some(len))
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        self.serialize_seq(Some(len))
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        Err(JsonError("tuple variant unsupported".to_string()))
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        self.out.push('{');
+        self.indent += 1;
+        Ok(JsonMapSerializer {
+            ser: self,
+            first: true,
+        })
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeStruct, Self::Error> {
+        self.serialize_map(Some(len))
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        Err(JsonError("struct variant unsupported".to_string()))
+    }
+}
+
+impl<'a> serde::ser::SerializeSeq for JsonSeqSerializer<'a> {
+    type Ok = ();
+    type Error = JsonError;
+
+    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        if !self.first {
+            self.ser.out.push(',');
+        }
+        self.first = false;
+        self.ser.out.push('\n');
+        self.ser.push_indent();
+        value.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<(), Self::Error> {
+        self.ser.indent -= 1;
+        if !self.first {
+            self.ser.out.push('\n');
+            self.ser.push_indent();
+        }
+        self.ser.out.push(']');
+        Ok(())
+    }
+}
+
+impl<'a> serde::ser::SerializeTuple for JsonSeqSerializer<'a> {
+    type Ok = ();
+    type Error = JsonError;
+
+    fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        serde::ser::SerializeSeq::serialize_element(self, value)
+    }
+
+    fn end(self) -> Result<(), Self::Error> {
+        serde::ser::SerializeSeq::end(self)
+    }
+}
+
+impl<'a> serde::ser::SerializeTupleStruct for JsonSeqSerializer<'a> {
+    type Ok = ();
+    type Error = JsonError;
+
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        serde::ser::SerializeSeq::serialize_element(self, value)
+    }
+
+    fn end(self) -> Result<(), Self::Error> {
+        serde::ser::SerializeSeq::end(self)
+    }
+}
+
+impl<'a> serde::ser::SerializeMap for JsonMapSerializer<'a> {
+    type Ok = ();
+    type Error = JsonError;
+
+    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Self::Error> {
+        if !self.first {
+            self.ser.out.push(',');
+        }
+        self.first = false;
+        self.ser.out.push('\n');
+        self.ser.push_indent();
+        key.serialize(&mut *self.ser)?;
+        self.ser.out.push_str(": ");
+        Ok(())
+    }
+
+    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
+        value.serialize(&mut *self.ser)
+    }
+
+    fn end(self) -> Result<(), Self::Error> {
+        self.ser.indent -= 1;
+        if !self.first {
+            self.ser.out.push('\n');
+            self.ser.push_indent();
+        }
+        self.ser.out.push('}');
+        Ok(())
+    }
+}
+
+impl<'a> serde::ser::SerializeStruct for JsonMapSerializer<'a> {
+    type Ok = ();
+    type Error = JsonError;
+
+    fn serialize_field<T: ?Sized + Serialize>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> Result<(), Self::Error> {
+        if key == "_x" {
+            serde::ser::SerializeMap::serialize_key(self, key)?;
+            self.ser.out.push_str("{\n");
+            self.ser.indent += 1;
+            self.ser.push_indent();
+            self.ser.out.push_str("\"ursine\": ");
+            value.serialize(&mut *self.ser)?;
+            self.ser.indent -= 1;
+            self.ser.out.push('\n');
+            self.ser.push_indent();
+            self.ser.out.push('}');
+            Ok(())
+        } else {
+            serde::ser::SerializeMap::serialize_entry(self, key, value)
+        }
+    }
+
+    fn end(self) -> Result<(), Self::Error> {
+        serde::ser::SerializeMap::end(self)
+    }
 }
 
 #[cfg(test)]
@@ -1503,6 +1965,59 @@ parts:
         let out = serde_saphyr::to_string(&doc).expect("Failed to serialize MNX with lyrics");
         let doc2: MnxDocument = serde_saphyr::from_str(&out).expect("Failed to deserialize serialized lyrics");
         assert_eq!(doc, doc2);
+    }
+
+    #[test]
+    fn test_export_yaml_to_mnx_json() {
+        let yaml = r#"# Top-level comment to strip
+mnx:
+  version: 1 # inline comment
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Kite Guitar"
+    _x:
+      microFretDivisions: 41
+      fretStepMultiplier: 2
+      tuning:
+        - string: 1
+          pitch: { step: E, alter: '1\41', octave: 4 }
+    measures:
+      - sequences:
+          - content:
+              # Event comment
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: F, alter: '-8\41', octave: 4 }
+                    _x:
+                      string: 1
+                      fret: 2
+                      harmonic:
+                        touch: 12
+                        soundingNote:
+                          pitch: { step: F, alter: '2\41', octave: 5 }
+"#;
+        let json_str = export_yaml_to_mnx_json(yaml).expect("Should export to MNX JSON");
+        assert!(!json_str.contains('#'), "Comments must be stripped");
+        assert!(!json_str.contains("\\41"), "EDO fractions must be converted to decimals");
+        assert!(json_str.contains("\"ursine\": {"), "_x must be wrapped under vendor 'ursine': {}", json_str);
+        assert!(json_str.contains("\"alter\": 0.293"), "1\\41 -> 0.293 in JSON: {}", json_str);
+        assert!(json_str.contains("\"alter\": -2.341"), "-8\\41 -> -2.341 in JSON: {}", json_str);
+        assert!(json_str.contains("\"alter\": 0.585"), "2\\41 -> 0.585 in JSON: {}", json_str);
+
+        // JSON is valid YAML 1.2, so serde_saphyr can parse the exported .mnx JSON back into MnxDocument!
+        let parsed: MnxDocument = serde_saphyr::from_str(&json_str).expect("Exported .mnx JSON must parse cleanly");
+        assert_eq!(
+            parsed.parts[0].tuning.as_ref().unwrap()[0].pitch.alter,
+            Some(Alteration::Value(0.293))
+        );
+        let ev = parsed.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev.notes[0].pitch.alter, Some(Alteration::Value(-2.341)));
+        assert_eq!(
+            ev.notes[0].harmonic.as_ref().unwrap().sounding_note.pitch.alter,
+            Some(Alteration::Value(0.585))
+        );
     }
 }
 
