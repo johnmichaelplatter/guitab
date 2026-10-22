@@ -1024,10 +1024,11 @@ pub fn populate_page_display_list(
                                     for (l_i, (line_key, lyr)) in lyrics.lines.iter().enumerate() {
                                         let line_num = line_key.parse::<usize>().ok().map(|n| n.saturating_sub(1)).unwrap_or(l_i);
                                         let lyr_y = stem_bot + 10.0 + (line_num as f32) * 14.0;
+                                        let curr_ev_idx = ev_idx_in_m.saturating_sub(1);
                                         let lyric_id = if line_num == 0 {
-                                            Some(format!("lyric_{}_{}", m_idx, ev_idx_in_m))
+                                            Some(format!("lyric_{}_{}", m_idx, curr_ev_idx))
                                         } else {
-                                            Some(format!("lyric_{}_{}_{}", m_idx, ev_idx_in_m, line_num + 1))
+                                            Some(format!("lyric_{}_{}_{}", m_idx, curr_ev_idx, line_num + 1))
                                         };
                                         let clean_text = lyr.text.trim_end_matches('-').trim_end_matches('_').to_string();
                                         let is_split = matches!(lyr.line_type.as_deref(), Some("start") | Some("begin") | Some("middle")) || lyr.text.ends_with('-');
@@ -1035,7 +1036,7 @@ pub fn populate_page_display_list(
 
                                         system_lyrics.push(SystemLyric {
                                             m_idx,
-                                            ev_idx_in_m,
+                                            ev_idx_in_m: curr_ev_idx,
                                             line_num,
                                             x: ev_x,
                                             y: lyr_y,

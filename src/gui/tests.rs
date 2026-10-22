@@ -1857,6 +1857,83 @@ parts:
     }
 
     #[test]
+    fn test_lyric_dialog_clear_and_enter_deletes_lyric() {
+        let mut app = MnxEditorApp::default();
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        // 1. Add a lyric to event 0
+        app.action_set_event_lyric_line(0, 1, "testword", None, None);
+        assert!(app.get_event_lyric_line(0, 1).is_some());
+
+        // 2. Open dialog on event 0 (like double-clicking or navigating)
+        app.open_lyric_dialog(0, 1);
+        match &app.active_dialog {
+            ActiveDialog::LyricEditor { event_idx, line_idx, syllable_buf, .. } => {
+                assert_eq!(*event_idx, 0);
+                assert_eq!(*line_idx, 1);
+                assert_eq!(syllable_buf, "testword");
+            }
+            _ => panic!("Expected LyricEditor dialog"),
+        }
+
+        // 3. Clear the word in the buffer
+        if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
+            syllable_buf.clear();
+        }
+
+        // 4. Hit Enter
+        let mut enter_input = egui::RawInput::default();
+        enter_input.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out = ctx.run_ui(enter_input, |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        // 5. Verify lyric was removed and dialog closed
+        assert_eq!(app.active_dialog, ActiveDialog::None);
+        assert!(app.get_event_lyric_line(0, 1).is_none(), "Lyric should be deleted after clearing and hitting Enter");
+
+        // 6. Test clearing via Space navigation: add lyric to event 1, open dialog, clear, press Space
+        app.action_set_event_lyric_line(1, 1, "anotherword", None, None);
+        assert!(app.get_event_lyric_line(1, 1).is_some());
+
+        app.open_lyric_dialog(1, 1);
+        if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
+            syllable_buf.clear();
+        }
+
+        let mut space_input = egui::RawInput::default();
+        space_input.events.push(egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out = ctx.run_ui(space_input, |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        // Event 1 lyric should now be deleted, and dialog moved to event 2
+        assert!(app.get_event_lyric_line(1, 1).is_none(), "Lyric on event 1 should be deleted after clearing and pressing Space");
+        match &app.active_dialog {
+            ActiveDialog::LyricEditor { event_idx, line_idx, .. } => {
+                assert_eq!(*event_idx, 2);
+                assert_eq!(*line_idx, 1);
+            }
+            _ => panic!("Expected LyricEditor to advance to event 2"),
+        }
+    }
+
+    #[test]
     fn test_multi_line_lyrics_layout_and_pdf_height() {
         let mut app = MnxEditorApp::default();
         app.action_set_event_lyric_line(0, 1, "Line1", None, None);

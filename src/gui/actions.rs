@@ -2039,12 +2039,19 @@ impl crate::gui::MnxEditorApp {
                     let clean_text = text.trim().to_string();
                     let line_key = line_idx.max(1).to_string();
                     if clean_text.is_empty() && extender != Some(true) {
+                        let mut changed = false;
                         if let Some(lyrics) = &mut ev.lyrics {
-                            lyrics.lines.remove(&line_key);
+                            if lyrics.lines.remove(&line_key).is_some() {
+                                changed = true;
+                            }
                             if lyrics.lines.is_empty() {
                                 ev.lyrics = None;
                             }
                         }
+                        if changed {
+                            return Some(());
+                        }
+                        return None;
                     } else {
                         if ev.lyrics.is_none() {
                             ev.lyrics = Some(crate::mnx::EventLyrics {

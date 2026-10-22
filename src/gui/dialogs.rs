@@ -860,14 +860,12 @@ impl MnxEditorApp {
                                 close_dialog = true;
                             } else if enter_pressed || ok_btn.clicked() {
                                 let clean = syllable_buf.trim();
-                                if !clean.is_empty() {
-                                    let l_type = if *in_word {
-                                        Some("end".to_string())
-                                    } else {
-                                        None
-                                    };
-                                    lyric_action = Some((curr_ev, curr_line, clean.to_string(), l_type, None));
-                                }
+                                let l_type = if *in_word && !clean.is_empty() {
+                                    Some("end".to_string())
+                                } else {
+                                    None
+                                };
+                                lyric_action = Some((curr_ev, curr_line, clean.to_string(), l_type, None));
                                 close_dialog = true;
                             } else if hyphen_typed {
                                 while syllable_buf.ends_with('-') {
@@ -895,7 +893,7 @@ impl MnxEditorApp {
                                     syllable_buf.pop();
                                 }
                                 let clean = syllable_buf.trim();
-                                let l_type = if *in_word {
+                                let l_type = if *in_word && !clean.is_empty() {
                                     Some("end".to_string())
                                 } else {
                                     None
@@ -918,20 +916,18 @@ impl MnxEditorApp {
                                     syllable_buf.pop();
                                 }
                                 let clean = syllable_buf.trim();
-                                if !clean.is_empty() {
-                                    let l_type = if *in_word {
-                                        Some("end".to_string())
-                                    } else {
-                                        None
-                                    };
-                                    lyric_action = Some((
-                                        curr_ev,
-                                        curr_line,
-                                        clean.to_string(),
-                                        l_type,
-                                        None,
-                                    ));
-                                }
+                                let l_type = if *in_word && !clean.is_empty() {
+                                    Some("end".to_string())
+                                } else {
+                                    None
+                                };
+                                lyric_action = Some((
+                                    curr_ev,
+                                    curr_line,
+                                    clean.to_string(),
+                                    l_type,
+                                    None,
+                                ));
                                 let next_ev = curr_ev + 1;
                                 if next_ev < total_events {
                                     lyric_advance = Some((next_ev, curr_line, false));
@@ -940,37 +936,33 @@ impl MnxEditorApp {
                                 }
                             } else if down_pressed {
                                 let clean = syllable_buf.trim();
-                                if !clean.is_empty() {
-                                    let l_type = if *in_word {
-                                        Some("end".to_string())
-                                    } else {
-                                        None
-                                    };
-                                    lyric_action = Some((
-                                        curr_ev,
-                                        curr_line,
-                                        clean.to_string(),
-                                        l_type,
-                                        None,
-                                    ));
-                                }
+                                let l_type = if *in_word && !clean.is_empty() {
+                                    Some("end".to_string())
+                                } else {
+                                    None
+                                };
+                                lyric_action = Some((
+                                    curr_ev,
+                                    curr_line,
+                                    clean.to_string(),
+                                    l_type,
+                                    None,
+                                ));
                                 lyric_advance = Some((curr_ev, curr_line + 1, false));
                             } else if up_pressed && curr_line > 1 {
                                 let clean = syllable_buf.trim();
-                                if !clean.is_empty() {
-                                    let l_type = if *in_word {
-                                        Some("end".to_string())
-                                    } else {
-                                        None
-                                    };
-                                    lyric_action = Some((
-                                        curr_ev,
-                                        curr_line,
-                                        clean.to_string(),
-                                        l_type,
-                                        None,
-                                    ));
-                                }
+                                let l_type = if *in_word && !clean.is_empty() {
+                                    Some("end".to_string())
+                                } else {
+                                    None
+                                };
+                                lyric_action = Some((
+                                    curr_ev,
+                                    curr_line,
+                                    clean.to_string(),
+                                    l_type,
+                                    None,
+                                ));
                                 lyric_advance = Some((curr_ev, curr_line - 1, false));
                             }
                         });
