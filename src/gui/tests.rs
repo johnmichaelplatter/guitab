@@ -1696,6 +1696,251 @@ parts:
     }
 
     #[test]
+    fn test_multi_line_lyrics_action_and_retrieval() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+
+        // Set line 1
+        app.action_set_event_lyric_line(0, 1, "Verse1", None, None);
+        // Set line 2
+        app.action_set_event_lyric_line(0, 2, "Verse2", None, None);
+
+        let l1 = app.get_event_lyric_line(0, 1).expect("Line 1 should exist");
+        assert_eq!(l1.text, "Verse1");
+        let l2 = app.get_event_lyric_line(0, 2).expect("Line 2 should exist");
+        assert_eq!(l2.text, "Verse2");
+
+        // Remove line 1 only; line 2 must remain
+        app.action_set_event_lyric_line(0, 1, "", None, None);
+        assert!(app.get_event_lyric_line(0, 1).is_none());
+        assert_eq!(app.get_event_lyric_line(0, 2).unwrap().text, "Verse2");
+
+        // Remove line 2; lyrics field should now be completely None
+        app.action_set_event_lyric_line(0, 2, "", None, None);
+        assert!(app.get_event_lyric_line(0, 2).is_none());
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.get_event_at_path(doc.get_flattened_event_paths()[0]).unwrap();
+        assert!(ev.lyrics.is_none());
+    }
+
+    #[test]
+    fn test_lyric_dialog_hyphenation_and_melisma_flow() {
+        let mut app = MnxEditorApp::default();
+        app.open_lyric_dialog(0, 1);
+        match &app.active_dialog {
+            ActiveDialog::LyricEditor { event_idx, line_idx, syllable_buf, in_word } => {
+                assert_eq!(*event_idx, 0);
+                assert_eq!(*line_idx, 1);
+                assert!(syllable_buf.is_empty());
+                assert!(!*in_word);
+            }
+            _ => panic!("Expected LyricEditor dialog"),
+        }
+
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        // 1. Simulate typing "hap-" on event 0: initiates start, advances to event 1 with in_word = true
+        if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
+            *syllable_buf = "hap-".to_string();
+        }
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        // Event 0 should now have "hap" with type "start"
+        let l0 = app.get_event_lyric_line(0, 1).expect("Event 0 should have lyric");
+        assert_eq!(l0.text, "hap");
+        assert_eq!(l0.line_type.as_deref(), Some("start"));
+
+        // Dialog should now be on event 1 with in_word = true
+        match &app.active_dialog {
+            ActiveDialog::LyricEditor { event_idx, line_idx, in_word, .. } => {
+                assert_eq!(*event_idx, 1);
+                assert_eq!(*line_idx, 1);
+                assert!(*in_word, "in_word must be true following hyphen");
+            }
+            _ => panic!("Expected LyricEditor on event 1"),
+        }
+
+        // 2. Simulate typing "py " (Space) on event 1: finishes word with type "end", advances to event 2
+        if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
+            *syllable_buf = "py ".to_string();
+        }
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        let l1 = app.get_event_lyric_line(1, 1).expect("Event 1 should have lyric");
+        assert_eq!(l1.text, "py");
+        assert_eq!(l1.line_type.as_deref(), Some("end"));
+
+        // Dialog should now be on event 2 with in_word = false
+        match &app.active_dialog {
+            ActiveDialog::LyricEditor { event_idx, in_word, .. } => {
+                assert_eq!(*event_idx, 2);
+                assert!(!*in_word);
+            }
+            _ => panic!("Expected LyricEditor on event 2"),
+        }
+
+        // 3. Simulate typing "sing_" on event 2: melisma extender, advances to event 3
+        if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
+            *syllable_buf = "sing_".to_string();
+        }
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        let l2 = app.get_event_lyric_line(2, 1).expect("Event 2 should have lyric");
+        assert_eq!(l2.text, "sing");
+        assert_eq!(l2.ext.extender, Some(true));
+
+        // 4. On event 3, type "_" alone: melisma extend continues on event 3, advances to event 4
+        if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
+            *syllable_buf = "_".to_string();
+        }
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        let l3 = app.get_event_lyric_line(3, 1).expect("Event 3 should have lyric");
+        assert_eq!(l3.text, "");
+        assert_eq!(l3.ext.extender, Some(true));
+
+        // 5. On event 4, press Down arrow: moves to line 2 on event 4
+        let mut raw_input = egui::RawInput::default();
+        raw_input.events.push(egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out = ctx.run_ui(raw_input, |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        match &app.active_dialog {
+            ActiveDialog::LyricEditor { event_idx, line_idx, .. } => {
+                assert_eq!(*event_idx, 4);
+                assert_eq!(*line_idx, 2, "ArrowDown should navigate to Line 2");
+            }
+            _ => panic!("Expected LyricEditor on Line 2"),
+        }
+
+        // 6. Type "chorus" and press Enter: commits and exits dialog
+        if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
+            *syllable_buf = "chorus".to_string();
+        }
+        let mut enter_input = egui::RawInput::default();
+        enter_input.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out = ctx.run_ui(enter_input, |ui| {
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        let l4_line2 = app.get_event_lyric_line(4, 2).expect("Event 4 should have Line 2 lyric");
+        assert_eq!(l4_line2.text, "chorus");
+        assert_eq!(app.active_dialog, ActiveDialog::None, "Enter must accept input and close dialog");
+    }
+
+    #[test]
+    fn test_multi_line_lyrics_layout_and_pdf_height() {
+        let mut app = MnxEditorApp::default();
+        app.action_set_event_lyric_line(0, 1, "Line1", None, None);
+        app.action_set_event_lyric_line(0, 2, "Line2", None, None);
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let pages = crate::layout::compute_score_layout(doc, 0.0);
+        assert!(!pages.is_empty());
+
+        let mut dl = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list(doc, &pages[0], &mut dl);
+
+        // Verify both Line 1 and Line 2 exist in display list with different Y positions
+        let line1_item = dl.items.iter().find(|i| match &i.kind {
+            crate::layout::display_list::DrawKind::Text { text, .. } => text == "Line1",
+            _ => false,
+        }).expect("Line 1 item should exist");
+        let line2_item = dl.items.iter().find(|i| match &i.kind {
+            crate::layout::display_list::DrawKind::Text { text, .. } => text == "Line2",
+            _ => false,
+        }).expect("Line 2 item should exist");
+
+        if let (crate::layout::display_list::DrawKind::Text { pos: p1, text: t1, .. },
+                crate::layout::display_list::DrawKind::Text { pos: p2, text: t2, .. }) = (&line1_item.kind, &line2_item.kind) {
+            assert_eq!(t1, "Line1");
+            assert_eq!(t2, "Line2");
+            assert!(p2.y > p1.y, "Line 2 Y ({}) must be below Line 1 Y ({})", p2.y, p1.y);
+            assert!((p2.y - p1.y - 14.0).abs() < 0.1, "Line 2 should be exactly 14.0pt below Line 1");
+        } else {
+            panic!("Expected text draw items for lyrics");
+        }
+    }
+
+    #[test]
+    fn test_split_syllable_hyphen_centered_between_boundaries() {
+        let mut app = MnxEditorApp::default();
+        // Set event 0 to "hap" (type start) and event 1 to "py" (type end)
+        app.action_set_event_lyric_line(0, 1, "hap", Some("start".to_string()), None);
+        app.action_set_event_lyric_line(1, 1, "py", Some("end".to_string()), None);
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let pages = crate::layout::compute_score_layout(doc, 0.0);
+        assert!(!pages.is_empty());
+
+        let mut dl = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list(doc, &pages[0], &mut dl);
+
+        // Find "hap", "py", and the hyphen "-"
+        let hap_item = dl.items.iter().find(|i| match &i.kind {
+            crate::layout::display_list::DrawKind::Text { text, .. } => text == "hap",
+            _ => false,
+        }).expect("'hap' item should exist without trailing '-'");
+
+        let py_item = dl.items.iter().find(|i| match &i.kind {
+            crate::layout::display_list::DrawKind::Text { text, .. } => text == "py",
+            _ => false,
+        }).expect("'py' item should exist");
+
+        let hyphen_item = dl.items.iter().find(|i| match &i.kind {
+            crate::layout::display_list::DrawKind::Text { text, .. } => text == "-",
+            _ => false,
+        }).expect("hyphen '-' item should exist");
+
+        if let (crate::layout::display_list::DrawKind::Text { pos: p_hap, .. },
+                crate::layout::display_list::DrawKind::Text { pos: p_py, .. },
+                crate::layout::display_list::DrawKind::Text { pos: p_hyphen, .. }) = (&hap_item.kind, &py_item.kind, &hyphen_item.kind) {
+            let w1 = ("hap".chars().count() as f32) * 6.5;
+            let end_of_first = p_hap.x + w1 * 0.5;
+
+            let w2 = ("py".chars().count() as f32) * 6.5;
+            let beg_of_second = p_py.x - w2 * 0.5;
+
+            let expected_hyphen_x = (end_of_first + beg_of_second) * 0.5;
+            assert!(
+                (p_hyphen.x - expected_hyphen_x).abs() < 1e-3,
+                "Hyphen X ({}) should be exactly midway between end of first syllable ({}) and beginning of second ({})",
+                p_hyphen.x,
+                end_of_first,
+                beg_of_second
+            );
+        }
+    }
+
+    #[test]
     fn test_layout_mode_breaks_and_settings() {
         let mut app = MnxEditorApp::default();
         

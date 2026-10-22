@@ -404,7 +404,7 @@ pub struct TablatureOptions<'a> {
 pub fn draw_tablature(
     ui: &mut egui::Ui,
     opts: TablatureOptions<'_>,
-) -> (egui::Response, Option<(usize, Option<usize>)>, bool) {
+) -> (egui::Response, Option<(usize, Option<usize>)>, bool, Option<(usize, usize)>) {
     let part = opts.part;
     let global = opts.global;
     let errors = opts.errors;
@@ -417,7 +417,7 @@ pub fn draw_tablature(
 
     let num_strings = part.num_strings();
     if num_strings == 0 {
-        return (ui.label("No strings found."), None, false);
+        return (ui.label("No strings found."), None, false, None);
     }
 
     // ── Layout constants ─────────────────────────────────────────────────────
@@ -561,14 +561,21 @@ pub fn draw_tablature(
     let has_tempos = global
         .map(|g| g.measures.iter().any(|m| !m.tempos.is_empty() || !m.tempo_changes.is_empty()))
         .unwrap_or(false);
-    let has_lyrics = part.measures.iter().any(|m| {
-        m.sequences.iter().any(|s| {
-            s.flattened_events()
-                .iter()
-                .any(|e| e.lyrics.as_ref().map(|l| !l.is_empty()).unwrap_or(false))
-        })
-    });
-    let lyrics_row_h = if has_lyrics || opts.is_editing_lyric { 28.0 } else { 0.0 };
+    let max_lyric_lines = part.measures.iter().map(|m| {
+        m.sequences.iter().map(|s| {
+            s.flattened_events().iter().map(|e| {
+                e.lyrics.as_ref().map(|l| {
+                    l.lines.keys().filter_map(|k| k.parse::<usize>().ok()).max().unwrap_or(l.lines.len())
+                }).unwrap_or(0)
+            }).max().unwrap_or(0)
+        }).max().unwrap_or(0)
+    }).max().unwrap_or(0);
+    let effective_lines = if opts.is_editing_lyric { max_lyric_lines.max(1) } else { max_lyric_lines };
+    let lyrics_row_h = if effective_lines > 0 {
+        (effective_lines as f32) * 18.0 + 10.0
+    } else {
+        0.0
+    };
 
     let top_pad = if has_endings && has_tempos {
         130.0_f32
@@ -2162,10 +2169,25 @@ pub fn draw_tablature(
     }
 
     // ── Draw Lyrics ────────────────────────────────────────────────────────────
+    let mut double_clicked_lyric: Option<(usize, usize)> = None;
     let lyrics_y = stem_bot_y + 16.0;
     for (i, lyr) in rendered_lyrics.iter().enumerate() {
         let y = lyrics_y + (lyr.line as f32) * 18.0;
         let font_id = FontId::proportional(13.0);
+
+        let clean_text = lyr.text.trim_end_matches('-').trim_end_matches('_');
+        let char_count = clean_text.chars().count();
+        let text_w = (char_count as f32) * 7.5;
+        let hit_w = text_w.max(24.0);
+        let hit_rect = Rect::from_center_size(Pos2::new(lyr.x, y), egui::vec2(hit_w, 18.0));
+        let lyr_resp = ui.interact(
+            hit_rect,
+            egui::Id::new(("rendered_lyric_hit", lyr.event_idx, lyr.line)),
+            egui::Sense::click(),
+        );
+        if lyr_resp.double_clicked() {
+            double_clicked_lyric = Some((lyr.event_idx, lyr.line + 1));
+        }
 
         if lyr.is_editing {
             let display_text = if lyr.text.is_empty() { "|" } else { &lyr.text };
@@ -2173,18 +2195,15 @@ pub fn draw_tablature(
             let text_rect = Rect::from_center_size(Pos2::new(lyr.x, y), text_galley.size());
             painter.rect_filled(text_rect.expand(3.0), 3.0, Color32::from_rgb(50, 110, 200));
             painter.galley(text_rect.min, text_galley, Color32::WHITE);
-        } else {
+        } else if !clean_text.is_empty() {
             painter.text(
                 Pos2::new(lyr.x, y),
                 egui::Align2::CENTER_CENTER,
-                &lyr.text,
+                clean_text,
                 font_id.clone(),
                 note_color,
             );
         }
-
-        let char_count = lyr.text.chars().count();
-        let text_w = (char_count as f32) * 7.5;
 
         // Draw hyphens between split syllables (type == start or middle or ends with '-')
         let is_split = matches!(
@@ -2192,11 +2211,18 @@ pub fn draw_tablature(
             Some("start") | Some("begin") | Some("middle")
         ) || lyr.text.ends_with('-');
         if is_split {
-            if let Some(next_lyr) = rendered_lyrics.get(i + 1) {
-                if next_lyr.line == lyr.line && next_lyr.x > lyr.x {
-                    let dist = next_lyr.x - lyr.x;
-                    if dist > 26.0 {
-                        let hyphen_x = (lyr.x + next_lyr.x) * 0.5;
+            if let Some(next_lyr) = rendered_lyrics[i + 1..].iter().find(|l| l.line == lyr.line) {
+                if next_lyr.x > lyr.x {
+                    let first_clean = lyr.text.trim_end_matches('-').trim_end_matches('_');
+                    let first_galley = painter.layout_no_wrap(first_clean.to_string(), font_id.clone(), note_color);
+                    let end_of_first = lyr.x + first_galley.size().x * 0.5;
+
+                    let next_clean = next_lyr.text.trim_end_matches('-').trim_end_matches('_');
+                    let next_galley = painter.layout_no_wrap(next_clean.to_string(), font_id.clone(), note_color);
+                    let beg_of_second = next_lyr.x - next_galley.size().x * 0.5;
+
+                    if beg_of_second > end_of_first + 4.0 {
+                        let hyphen_x = (end_of_first + beg_of_second) * 0.5;
                         painter.text(
                             Pos2::new(hyphen_x, y),
                             egui::Align2::CENTER_CENTER,
@@ -2212,12 +2238,10 @@ pub fn draw_tablature(
         // Draw melisma extender line "_" if extender == Some(true) or text ends with '_'
         let has_extender = lyr.extender == Some(true) || lyr.text.ends_with('_');
         if has_extender {
-            let next_target_x = if let Some(next_lyr) = rendered_lyrics.get(i + 1) {
-                if next_lyr.line == lyr.line {
-                    Some(next_lyr.x - (next_lyr.text.chars().count() as f32 * 3.75) - 4.0)
-                } else {
-                    None
-                }
+            let next_target_x = if let Some(next_lyr) = rendered_lyrics[i + 1..].iter().find(|l| l.line == lyr.line) {
+                let next_clean = next_lyr.text.trim_end_matches('-').trim_end_matches('_');
+                let next_galley = painter.layout_no_wrap(next_clean.to_string(), font_id.clone(), note_color);
+                Some(next_lyr.x - next_galley.size().x * 0.5 - 4.0)
             } else {
                 None
             };
@@ -2230,8 +2254,12 @@ pub fn draw_tablature(
                     .unwrap_or(lyr.x + text_w * 0.5 + 20.0)
             });
 
-            let start_x = lyr.x + text_w * 0.5 + 3.0;
-            if end_x > start_x + 4.0 {
+            let start_x = if clean_text.is_empty() {
+                lyr.x - 10.0
+            } else {
+                lyr.x + text_w * 0.5 + 3.0
+            };
+            if end_x > start_x + 3.0 {
                 let baseline_y = y + 6.0;
                 painter.line_segment(
                     [Pos2::new(start_x, baseline_y), Pos2::new(end_x, baseline_y)],
@@ -2343,7 +2371,7 @@ pub fn draw_tablature(
         }
     }
 
-    (response, clicked_selection, add_bar_clicked)
+    (response, clicked_selection, add_bar_clicked, double_clicked_lyric)
 }
 
 #[cfg(test)]
@@ -2404,7 +2432,7 @@ mod tests {
                 scroll_to_selected: false,
                 pitch_bend_range: 2,
             };
-            let (_resp, _clicked, _add_bar) = draw_tablature(ui, opts);
+            let (_resp, _clicked, _add_bar, _lyric_dc) = draw_tablature(ui, opts);
         });
         output.textures_delta.clear();
     }

@@ -72,6 +72,8 @@ impl MnxEditorApp {
 
         let mut close_dialog = false;
         let mut apply_action = None;
+        let mut lyric_action: Option<(usize, usize, String, Option<String>, Option<bool>)> = None;
+        let mut lyric_advance: Option<(usize, usize, bool)> = None;
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
@@ -792,10 +794,213 @@ impl MnxEditorApp {
                         });
                     });
             }
+            ActiveDialog::LyricEditor {
+                event_idx,
+                line_idx,
+                syllable_buf,
+                in_word,
+            } => {
+                let curr_ev = *event_idx;
+                let curr_line = *line_idx;
+                let total_events = self
+                    .parsed_mnx
+                    .as_ref()
+                    .map(|d| d.get_flattened_event_paths().len())
+                    .unwrap_or(0);
+
+                egui::Window::new(format!("Lyrics - Line {}", curr_line))
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("Event {} / {}", curr_ev + 1, total_events))
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("(Line {})", curr_line)).italics(),
+                            );
+                        });
+
+                        ui.add_space(4.0);
+
+                        let text_edit_id = ui.make_persistent_id("lyric_syllable_input");
+                        let text_edit = egui::TextEdit::singleline(syllable_buf)
+                            .id(text_edit_id)
+                            .desired_width(180.0)
+                            .hint_text("Syllable...");
+
+                        let resp = ui.add(text_edit);
+                        resp.request_focus();
+
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Space: Next | -: Hyphenate | _: Extend | ↑/↓: Line",
+                            )
+                            .size(10.5)
+                            .color(ui.visuals().weak_text_color()),
+                        );
+
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let ok_btn = ui.button("OK");
+                            let cancel_btn = ui.button("Cancel");
+
+                            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                            let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+                            let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+                            let space_pressed = ui.input(|i| i.key_pressed(egui::Key::Space))
+                                || syllable_buf.ends_with(' ');
+                            let hyphen_typed = syllable_buf.ends_with('-');
+                            let underscore_typed = syllable_buf.ends_with('_');
+
+                            if esc_pressed || cancel_btn.clicked() {
+                                close_dialog = true;
+                            } else if enter_pressed || ok_btn.clicked() {
+                                let clean = syllable_buf.trim();
+                                if !clean.is_empty() {
+                                    let l_type = if *in_word {
+                                        Some("end".to_string())
+                                    } else {
+                                        None
+                                    };
+                                    lyric_action = Some((curr_ev, curr_line, clean.to_string(), l_type, None));
+                                }
+                                close_dialog = true;
+                            } else if hyphen_typed {
+                                while syllable_buf.ends_with('-') {
+                                    syllable_buf.pop();
+                                }
+                                let clean = syllable_buf.trim();
+                                if !clean.is_empty() {
+                                    let l_type = if *in_word { "middle" } else { "start" };
+                                    lyric_action = Some((
+                                        curr_ev,
+                                        curr_line,
+                                        clean.to_string(),
+                                        Some(l_type.to_string()),
+                                        None,
+                                    ));
+                                }
+                                let next_ev = curr_ev + 1;
+                                if next_ev < total_events {
+                                    lyric_advance = Some((next_ev, curr_line, true));
+                                } else {
+                                    close_dialog = true;
+                                }
+                            } else if underscore_typed {
+                                while syllable_buf.ends_with('_') {
+                                    syllable_buf.pop();
+                                }
+                                let clean = syllable_buf.trim();
+                                let l_type = if *in_word {
+                                    Some("end".to_string())
+                                } else {
+                                    None
+                                };
+                                lyric_action = Some((
+                                    curr_ev,
+                                    curr_line,
+                                    clean.to_string(),
+                                    l_type,
+                                    Some(true),
+                                ));
+                                let next_ev = curr_ev + 1;
+                                if next_ev < total_events {
+                                    lyric_advance = Some((next_ev, curr_line, false));
+                                } else {
+                                    close_dialog = true;
+                                }
+                            } else if space_pressed {
+                                while syllable_buf.ends_with(' ') {
+                                    syllable_buf.pop();
+                                }
+                                let clean = syllable_buf.trim();
+                                if !clean.is_empty() {
+                                    let l_type = if *in_word {
+                                        Some("end".to_string())
+                                    } else {
+                                        None
+                                    };
+                                    lyric_action = Some((
+                                        curr_ev,
+                                        curr_line,
+                                        clean.to_string(),
+                                        l_type,
+                                        None,
+                                    ));
+                                }
+                                let next_ev = curr_ev + 1;
+                                if next_ev < total_events {
+                                    lyric_advance = Some((next_ev, curr_line, false));
+                                } else {
+                                    close_dialog = true;
+                                }
+                            } else if down_pressed {
+                                let clean = syllable_buf.trim();
+                                if !clean.is_empty() {
+                                    let l_type = if *in_word {
+                                        Some("end".to_string())
+                                    } else {
+                                        None
+                                    };
+                                    lyric_action = Some((
+                                        curr_ev,
+                                        curr_line,
+                                        clean.to_string(),
+                                        l_type,
+                                        None,
+                                    ));
+                                }
+                                lyric_advance = Some((curr_ev, curr_line + 1, false));
+                            } else if up_pressed && curr_line > 1 {
+                                let clean = syllable_buf.trim();
+                                if !clean.is_empty() {
+                                    let l_type = if *in_word {
+                                        Some("end".to_string())
+                                    } else {
+                                        None
+                                    };
+                                    lyric_action = Some((
+                                        curr_ev,
+                                        curr_line,
+                                        clean.to_string(),
+                                        l_type,
+                                        None,
+                                    ));
+                                }
+                                lyric_advance = Some((curr_ev, curr_line - 1, false));
+                            }
+                        });
+                    });
+            }
+        }
+
+        if let Some((ev, line, text, l_type, ext)) = lyric_action {
+            self.action_set_event_lyric_line(ev, line, &text, l_type, ext);
         }
 
         if close_dialog {
             self.active_dialog = ActiveDialog::None;
+        } else if let Some((next_ev, next_line, next_in_word)) = lyric_advance {
+            self.selected_event_idx = Some(next_ev);
+            self.needs_scroll = true;
+            let mut loaded_text = String::new();
+            let mut loaded_in_word = next_in_word;
+            if let Some(lyr) = self.get_event_lyric_line(next_ev, next_line) {
+                loaded_text = lyr.text.clone();
+                if matches!(lyr.line_type.as_deref(), Some("start") | Some("middle")) {
+                    loaded_in_word = true;
+                }
+            }
+            self.active_dialog = ActiveDialog::LyricEditor {
+                event_idx: next_ev,
+                line_idx: next_line,
+                syllable_buf: loaded_text,
+                in_word: loaded_in_word,
+            };
         }
 
         if let Some(action) = apply_action {

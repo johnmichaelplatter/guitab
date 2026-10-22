@@ -30,15 +30,19 @@ pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLay
     let line_spacing = 11.0_f32;
     let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
 
-    let has_lyrics = doc.parts.first().map(|p| {
-        p.measures.iter().any(|m| {
-            m.sequences.iter().any(|s| {
-                s.flattened_events().iter().any(|e| e.lyrics.as_ref().map(|l| !l.is_empty()).unwrap_or(false))
-            })
-        })
-    }).unwrap_or(false);
+    let max_lyric_lines = doc.parts.first().map(|p| {
+        p.measures.iter().map(|m| {
+            m.sequences.iter().map(|s| {
+                s.flattened_events().iter().map(|e| {
+                    e.lyrics.as_ref().map(|l| {
+                        l.lines.keys().filter_map(|k| k.parse::<usize>().ok()).max().unwrap_or(l.lines.len())
+                    }).unwrap_or(0)
+                }).max().unwrap_or(0)
+            }).max().unwrap_or(0)
+        }).max().unwrap_or(0)
+    }).unwrap_or(0);
 
-    let lyrics_extra = if has_lyrics { 14.0_f32 } else { 0.0_f32 };
+    let lyrics_extra = if max_lyric_lines > 0 { (max_lyric_lines as f32) * 14.0_f32 } else { 0.0_f32 };
     let system_height = staff_height + 56.0 + lyrics_extra;
     let system_gap = 14.0_f32;
     let first_page_header_height = 75.0_f32;

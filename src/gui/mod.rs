@@ -196,6 +196,12 @@ pub enum ActiveDialog {
         end_m: usize,
         times_str: String,
     },
+    LyricEditor {
+        event_idx: usize,
+        line_idx: usize,
+        syllable_buf: String,
+        in_word: bool,
+    },
 }
 
 impl Default for MnxEditorApp {

@@ -738,10 +738,10 @@ impl MnxEditorApp {
             }
 
             let shift_l_pressed = ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::L));
-            if shift_l_pressed && self.selected_event_idx.is_some() {
-                self.is_editing_lyric = true;
+            if shift_l_pressed {
+                let e_idx = self.selected_event_idx.unwrap_or(0);
                 self.is_editing_fret = false;
-                self.load_lyric_buf_for_selected();
+                self.open_lyric_dialog(e_idx, 1);
                 ui.input_mut(|i| i.events.clear());
                 return;
             }

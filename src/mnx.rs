@@ -782,7 +782,7 @@ pub struct Slur {
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct LyricLineExt {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "extend", skip_serializing_if = "Option::is_none")]
     pub extender: Option<bool>,
 }
 

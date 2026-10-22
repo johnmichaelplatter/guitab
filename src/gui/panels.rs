@@ -613,6 +613,11 @@ impl MnxEditorApp {
                     };
                 }
 
+                if ui.button("Add Lyrics").on_hover_text("Add Lyrics (Shift+L)").clicked() {
+                    let start_event_idx = self.selected_event_idx.unwrap_or(0);
+                    self.open_lyric_dialog(start_event_idx, 1);
+                }
+
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -1302,7 +1307,7 @@ impl MnxEditorApp {
                     egui::ScrollArea::both().show(ui, |ui| {
                         if let Some(doc) = &self.parsed_mnx {
                             if let Some(part) = doc.parts.first() {
-                                let (_resp, clicked, add_bar_clicked) = render::draw_tablature(
+                                let (_resp, clicked, add_bar_clicked, double_clicked_lyric) = render::draw_tablature(
                                     ui,
                                     crate::render::TablatureOptions {
                                         part,
@@ -1321,7 +1326,11 @@ impl MnxEditorApp {
                                     },
                                 );
                                 self.needs_scroll = false;
-                                if add_bar_clicked {
+                                if let Some((ev_idx, line_idx)) = double_clicked_lyric {
+                                    self.selected_event_idx = Some(ev_idx);
+                                    self.selected_note_idx_in_event = None;
+                                    self.open_lyric_dialog(ev_idx, line_idx);
+                                } else if add_bar_clicked {
                                     self.add_measure_to_end();
                                 } else if let Some((clicked_event, clicked_note)) = clicked {
                                     self.needs_scroll = false;
@@ -1464,6 +1473,50 @@ impl MnxEditorApp {
                                     clicked_element_id = Some(Some(hit_id));
                                 } else {
                                     clicked_element_id = Some(None);
+                                }
+                            }
+                        }
+                    }
+
+                    if page_resp.double_clicked() {
+                        if let Some(mpos) = mouse_pos {
+                            if page_rect.contains(mpos) {
+                                let local_pos = egui::pos2(mpos.x - page_rect.min.x, mpos.y - page_rect.min.y);
+                                if let Some(hit_id) = dl.hit_test(local_pos) {
+                                    if hit_id.starts_with("lyric_") {
+                                        let parts: Vec<&str> = hit_id.split('_').collect();
+                                        if parts.len() >= 3 {
+                                            if let (Ok(m_idx), Ok(ev_in_m)) = (parts[1].parse::<usize>(), parts[2].parse::<usize>()) {
+                                                let line_idx = if parts.len() >= 4 {
+                                                    parts[3].parse::<usize>().unwrap_or(1)
+                                                } else {
+                                                    1
+                                                };
+                                                let mut flat_idx = 0;
+                                                let mut found = false;
+                                                if let Some(doc) = &self.parsed_mnx {
+                                                    if let Some(part) = doc.parts.first() {
+                                                        for (curr_m_idx, m) in part.measures.iter().enumerate() {
+                                                            for seq in &m.sequences {
+                                                                for (curr_ev_in_m, _) in seq.flattened_events().iter().enumerate() {
+                                                                    if curr_m_idx == m_idx && curr_ev_in_m == ev_in_m {
+                                                                        found = true;
+                                                                        break;
+                                                                    }
+                                                                    flat_idx += 1;
+                                                                }
+                                                                if found { break; }
+                                                            }
+                                                            if found { break; }
+                                                        }
+                                                    }
+                                                }
+                                                if found {
+                                                    self.open_lyric_dialog(flat_idx, line_idx);
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

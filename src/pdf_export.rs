@@ -240,6 +240,20 @@ pub fn generate_score_pdf_bytes(
     pdf_doc.save_to_bytes().map_err(|e| format!("Failed to save PDF: {:?}", e))
 }
 
+struct SystemLyric {
+    m_idx: usize,
+    ev_idx_in_m: usize,
+    line_num: usize,
+    x: f32,
+    y: f32,
+    clean_text: String,
+    is_split: bool,
+    has_extender: bool,
+    lyric_id: Option<String>,
+    ev_w: f32,
+    ev_scale: f32,
+}
+
 /// Populates a DisplayList with the score graphics for a specific page layout.
 pub fn populate_page_display_list(
     doc: &MnxDocument,
@@ -495,6 +509,7 @@ pub fn populate_page_display_list(
         let mut collected_slides: Vec<(usize, u8, i32, Pos2)> = Vec::new();
         let mut string_timeline: HashMap<u8, Vec<(usize, i32, Pos2)>> = HashMap::new();
         let mut tuplet_brackets: Vec<(usize, usize, f32, f32, u32, f32)> = Vec::new();
+        let mut system_lyrics: Vec<SystemLyric> = Vec::new();
 
         // Iterate measures in system
         for (rel_i, m_idx) in system.measure_range.clone().enumerate() {
@@ -1003,46 +1018,34 @@ pub fn populate_page_display_list(
                                     end_beat,
                                 });
 
-                                // Draw lyrics if present
+                                // Collect lyrics if present
                                 if let Some(lyrics) = &ev.lyrics {
                                     let stem_bot = last_string_y + 26.0;
-                                    for (l_i, (_line_key, lyr)) in lyrics.lines.iter().enumerate() {
-                                        let lyr_y = stem_bot + 10.0 + (l_i as f32) * 14.0;
-                                        let lyric_id = Some(format!("lyric_{}_{}", m_idx, ev_idx_in_m));
-                                        let display_text = if matches!(lyr.line_type.as_deref(), Some("start") | Some("middle")) && !lyr.text.ends_with('-') {
-                                            format!("{}-", lyr.text)
+                                    for (l_i, (line_key, lyr)) in lyrics.lines.iter().enumerate() {
+                                        let line_num = line_key.parse::<usize>().ok().map(|n| n.saturating_sub(1)).unwrap_or(l_i);
+                                        let lyr_y = stem_bot + 10.0 + (line_num as f32) * 14.0;
+                                        let lyric_id = if line_num == 0 {
+                                            Some(format!("lyric_{}_{}", m_idx, ev_idx_in_m))
                                         } else {
-                                            lyr.text.clone()
+                                            Some(format!("lyric_{}_{}_{}", m_idx, ev_idx_in_m, line_num + 1))
                                         };
-                                        dl.push(DrawItem {
-                                            id: lyric_id.clone(),
-                                            kind: DrawKind::Text {
-                                                pos: Pos2::new(ev_x, lyr_y),
-                                                align: Align2::CENTER_CENTER,
-                                                text: display_text,
-                                                font_id: FontId::proportional(11.0),
-                                                color: text_color,
-                                            },
-                                            z_index: 4,
-                                        });
+                                        let clean_text = lyr.text.trim_end_matches('-').trim_end_matches('_').to_string();
+                                        let is_split = matches!(lyr.line_type.as_deref(), Some("start") | Some("begin") | Some("middle")) || lyr.text.ends_with('-');
+                                        let has_extender = lyr.ext.extender == Some(true) || lyr.text.ends_with('_');
 
-                                        // Melisma extender line
-                                        if lyr.ext.extender == Some(true) || lyr.text.ends_with('_') {
-                                            let text_w = (lyr.text.chars().count() as f32) * 6.5;
-                                            let start_x = ev_x + text_w * 0.5 + 2.0;
-                                            let end_x = ev_x + ev_w * ev_scale * 0.9;
-                                            if end_x > start_x + 4.0 {
-                                                dl.push(DrawItem {
-                                                    id: lyric_id,
-                                                    kind: DrawKind::Line {
-                                                        from: Pos2::new(start_x, lyr_y + 5.0),
-                                                        to: Pos2::new(end_x, lyr_y + 5.0),
-                                                        stroke: Stroke::new(1.0, text_color),
-                                                    },
-                                                    z_index: 4,
-                                                });
-                                            }
-                                        }
+                                        system_lyrics.push(SystemLyric {
+                                            m_idx,
+                                            ev_idx_in_m,
+                                            line_num,
+                                            x: ev_x,
+                                            y: lyr_y,
+                                            clean_text,
+                                            is_split,
+                                            has_extender,
+                                            lyric_id,
+                                            ev_w,
+                                            ev_scale,
+                                        });
                                     }
                                 }
                             }
@@ -1469,6 +1472,79 @@ pub fn populate_page_display_list(
                 },
                 z_index: 5,
             });
+        }
+
+        // Draw lyrics for this system
+        for (i, lyr) in system_lyrics.iter().enumerate() {
+            if !lyr.clean_text.is_empty() {
+                dl.push(DrawItem {
+                    id: lyr.lyric_id.clone(),
+                    kind: DrawKind::Text {
+                        pos: Pos2::new(lyr.x, lyr.y),
+                        align: Align2::CENTER_CENTER,
+                        text: lyr.clean_text.clone(),
+                        font_id: FontId::proportional(11.0),
+                        color: text_color,
+                    },
+                    z_index: 4,
+                });
+            }
+
+            // Centered hyphen between split syllables
+            if lyr.is_split {
+                if let Some(next_lyr) = system_lyrics[i + 1..].iter().find(|l| l.line_num == lyr.line_num) {
+                    if next_lyr.x > lyr.x {
+                        let text_w1 = (lyr.clean_text.chars().count() as f32) * 6.5;
+                        let end_of_first = lyr.x + text_w1 * 0.5;
+
+                        let text_w2 = (next_lyr.clean_text.chars().count() as f32) * 6.5;
+                        let beg_of_second = next_lyr.x - text_w2 * 0.5;
+
+                        if beg_of_second > end_of_first + 4.0 {
+                            let hyphen_x = (end_of_first + beg_of_second) * 0.5;
+                            dl.push(DrawItem {
+                                id: Some(format!("lyric_hyphen_{}_{}", lyr.m_idx, lyr.ev_idx_in_m)),
+                                kind: DrawKind::Text {
+                                    pos: Pos2::new(hyphen_x, lyr.y),
+                                    align: Align2::CENTER_CENTER,
+                                    text: "-".to_string(),
+                                    font_id: FontId::proportional(11.0),
+                                    color: text_color,
+                                },
+                                z_index: 4,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Melisma extender line
+            if lyr.has_extender {
+                let text_w = (lyr.clean_text.chars().count() as f32) * 6.5;
+                let start_x = if lyr.clean_text.is_empty() {
+                    lyr.x - 4.0
+                } else {
+                    lyr.x + text_w * 0.5 + 2.0
+                };
+                let next_target_x = if let Some(next_lyr) = system_lyrics[i + 1..].iter().find(|l| l.line_num == lyr.line_num) {
+                    let next_w = (next_lyr.clean_text.chars().count() as f32) * 6.5;
+                    Some(next_lyr.x - next_w * 0.5 - 4.0)
+                } else {
+                    None
+                };
+                let end_x = next_target_x.unwrap_or(lyr.x + lyr.ev_w * lyr.ev_scale * 0.9);
+                if end_x > start_x + 2.0 {
+                    dl.push(DrawItem {
+                        id: lyr.lyric_id.clone(),
+                        kind: DrawKind::Line {
+                            from: Pos2::new(start_x, lyr.y + 5.0),
+                            to: Pos2::new(end_x, lyr.y + 5.0),
+                            stroke: Stroke::new(1.0, text_color),
+                        },
+                        z_index: 4,
+                    });
+                }
+            }
         }
     }
 }

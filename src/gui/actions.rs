@@ -1990,46 +1990,107 @@ impl crate::gui::MnxEditorApp {
         }
     }
 
-    pub(crate) fn action_set_event_lyric(&mut self, event_idx: usize, lyric_text: &str) {
+    pub(crate) fn get_event_lyric_line(&self, event_idx: usize, line_idx: usize) -> Option<crate::mnx::LyricLine> {
+        if let Some(doc) = &self.parsed_mnx {
+            let paths = doc.get_flattened_event_paths();
+            if let Some(path) = paths.get(event_idx) {
+                if let Some(ev) = doc.get_event_at_path(*path) {
+                    if let Some(lyrics) = &ev.lyrics {
+                        return lyrics.lines.get(&line_idx.to_string()).cloned();
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn open_lyric_dialog(&mut self, event_idx: usize, line_idx: usize) {
+        let mut syllable_buf = String::new();
+        let mut in_word = false;
+        let line_num = line_idx.max(1);
+        if let Some(lyr) = self.get_event_lyric_line(event_idx, line_num) {
+            syllable_buf = lyr.text.clone();
+            if matches!(lyr.line_type.as_deref(), Some("start") | Some("middle")) {
+                in_word = true;
+            }
+        }
+        self.selected_event_idx = Some(event_idx);
+        self.selected_note_idx_in_event = None;
+        self.active_dialog = ActiveDialog::LyricEditor {
+            event_idx,
+            line_idx: line_num,
+            syllable_buf,
+            in_word,
+        };
+    }
+
+    pub(crate) fn action_set_event_lyric_line(
+        &mut self,
+        event_idx: usize,
+        line_idx: usize,
+        text: &str,
+        line_type: Option<String>,
+        extender: Option<bool>,
+    ) {
         self.mutate_doc(|doc| {
             let paths = doc.get_flattened_event_paths();
             if let Some(path) = paths.get(event_idx) {
                 if let Some(ev) = doc.get_event_mut_at_path(*path) {
-                    let trimmed = lyric_text.trim();
-                    if trimmed.is_empty() {
-                        ev.lyrics = None;
+                    let clean_text = text.trim().to_string();
+                    let line_key = line_idx.max(1).to_string();
+                    if clean_text.is_empty() && extender != Some(true) {
+                        if let Some(lyrics) = &mut ev.lyrics {
+                            lyrics.lines.remove(&line_key);
+                            if lyrics.lines.is_empty() {
+                                ev.lyrics = None;
+                            }
+                        }
                     } else {
-                        let without_ext = trimmed.trim_end_matches('_');
-                        let has_extender = trimmed.ends_with('_');
-                        let has_hyphen = without_ext.ends_with('-');
-                        let clean_text = without_ext.trim_end_matches('-').to_string();
-                        let line_type = if has_hyphen {
-                            Some("start".to_string())
-                        } else {
-                            None
-                        };
-                        let extender = if has_extender {
-                            Some(true)
-                        } else {
-                            None
-                        };
-                        let mut lines = std::collections::BTreeMap::new();
-                        lines.insert(
-                            "1".to_string(),
-                            crate::mnx::LyricLine {
-                                text: clean_text,
-                                line_type,
-                                comment: None,
-                                ext: crate::mnx::LyricLineExt { extender },
-                            },
-                        );
-                        ev.lyrics = Some(crate::mnx::EventLyrics { lines });
+                        if ev.lyrics.is_none() {
+                            ev.lyrics = Some(crate::mnx::EventLyrics {
+                                lines: std::collections::BTreeMap::new(),
+                            });
+                        }
+                        if let Some(lyrics) = &mut ev.lyrics {
+                            lyrics.lines.insert(
+                                line_key,
+                                crate::mnx::LyricLine {
+                                    text: clean_text,
+                                    line_type,
+                                    comment: None,
+                                    ext: crate::mnx::LyricLineExt { extender },
+                                },
+                            );
+                        }
                     }
                     return Some(());
                 }
             }
             None
         });
+    }
+
+    pub(crate) fn action_set_event_lyric(&mut self, event_idx: usize, lyric_text: &str) {
+        let trimmed = lyric_text.trim();
+        if trimmed.is_empty() {
+            self.action_set_event_lyric_line(event_idx, 1, "", None, None);
+        } else {
+            let without_ext = trimmed.trim_end_matches('_');
+            let has_extender = trimmed.ends_with('_');
+            let has_hyphen = without_ext.ends_with('-');
+            let clean_text = without_ext.trim_end_matches('-').to_string();
+            let line_type = if has_hyphen {
+                Some("start".to_string())
+            } else {
+                None
+            };
+            let extender = if has_extender {
+                Some(true)
+            } else {
+                None
+            };
+            self.action_set_event_lyric_line(event_idx, 1, &clean_text, line_type, extender);
+        }
     }
 
     pub(crate) fn action_toggle_system_break(&mut self, m_idx: usize) {
