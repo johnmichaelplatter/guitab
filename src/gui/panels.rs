@@ -10,41 +10,292 @@ impl MnxEditorApp {
         total_events: usize,
     ) {
         egui::Panel::top("top_panel").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("New").clicked() {
-                    self.new_file();
-                }
-                if ui.button("Open").clicked() {
-                    self.open_file();
-                }
-                if ui.button("Save").clicked() {
-                    self.save_file();
-                }
-                if ui.button("Save As...").clicked() {
-                    self.save_as_file();
-                }
-                if ui.button("Export PDF...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("PDF Document", &["pdf"])
-                        .set_file_name("score.pdf")
-                        .save_file()
+            let cmd_label = if cfg!(target_os = "macos") {
+                "Cmd"
+            } else {
+                "Ctrl"
+            };
+
+            egui::MenuBar::new().ui(ui, |ui| {
+                // 1. File Menu
+                ui.menu_button("File", |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new("New")
+                                .shortcut_text(format!("{}+N", cmd_label)),
+                        )
+                        .clicked()
                     {
-                        if let Some(doc) = &self.parsed_mnx {
-                            let pages = crate::layout::compute_score_layout(doc, 0.0);
-                            if let Err(e) = crate::pdf_export::export_score_to_pdf(doc, &pages, &path) {
-                                eprintln!("Export PDF error: {}", e);
-                            }
+                        self.new_file();
+                        ui.close();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new("Open")
+                                .shortcut_text(format!("{}+O", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.open_file();
+                        ui.close();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new("Save")
+                                .shortcut_text(format!("{}+S", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.save_file();
+                        ui.close();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new("Save As")
+                                .shortcut_text(format!("{}+Shift+S", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.save_as_file();
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.menu_button("Export", |ui| {
+                        if ui.button("PDF").clicked() {
+                            self.export_pdf_file();
+                            ui.close();
+                        }
+                        if ui.button("MNX").clicked() {
+                            self.export_mnx_file();
+                            ui.close();
+                        }
+                    });
+                });
+
+                // 2. Edit Menu
+                ui.menu_button("Edit", |ui| {
+                    let can_undo = !self.undo_stack.is_empty();
+                    let can_redo = !self.redo_stack.is_empty();
+                    let has_selection = self.selected_event_idx.is_some();
+                    let has_clipboard = self.clipboard.is_some();
+
+                    if ui
+                        .add_enabled(
+                            can_undo,
+                            egui::Button::new("Undo")
+                                .shortcut_text(format!("{}+Z", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.undo();
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            can_redo,
+                            egui::Button::new("Redo")
+                                .shortcut_text(format!("{}+Shift+Z", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.redo();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            has_selection,
+                            egui::Button::new("Cut")
+                                .shortcut_text(format!("{}+X", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.action_cut_overwrite();
+                        ui.ctx().copy_text("mnx_tab_cli_data".to_string());
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_selection,
+                            egui::Button::new("Cut time")
+                                .shortcut_text(format!("{}+Shift+X", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.action_cut_time();
+                        ui.ctx().copy_text("mnx_tab_cli_data".to_string());
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_selection,
+                            egui::Button::new("Copy")
+                                .shortcut_text(format!("{}+C", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.action_copy();
+                        ui.ctx().copy_text("mnx_tab_cli_data".to_string());
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_selection && has_clipboard,
+                            egui::Button::new("Paste")
+                                .shortcut_text(format!("{}+V", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.action_paste_overwrite();
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_selection && has_clipboard,
+                            egui::Button::new("Paste insert")
+                                .shortcut_text(format!("{}+Shift+V", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.action_paste_insert();
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_selection,
+                            egui::Button::new("Duplicate")
+                                .shortcut_text(format!("{}+D", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.action_duplicate_overwrite();
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            has_selection,
+                            egui::Button::new("Duplicate insert")
+                                .shortcut_text(format!("{}+Shift+D", cmd_label)),
+                        )
+                        .clicked()
+                    {
+                        self.action_duplicate_insert();
+                        ui.close();
+                    }
+                });
+
+                // 3. View Menu
+                ui.menu_button("View", |ui| {
+                    let is_fullscreen = ui
+                        .ctx()
+                        .input(|i| i.viewport().fullscreen.unwrap_or(false));
+                    if ui.button("Toggle Full Screen").clicked() {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+                        ui.close();
+                    }
+
+                    let yaml_toggle_label = if self.show_yaml_panel {
+                        "Hide MNX YAML editor"
+                    } else {
+                        "Show MNX YAML editor"
+                    };
+                    if ui.button(yaml_toggle_label).clicked() {
+                        self.show_yaml_panel = !self.show_yaml_panel;
+                        ui.close();
+                    }
+
+                    let mode_toggle_label = match self.view_mode {
+                        ViewMode::Continuous => "Layout Mode",
+                        ViewMode::Layout => "Continuous Mode",
+                    };
+                    if ui.button(mode_toggle_label).clicked() {
+                        self.view_mode = match self.view_mode {
+                            ViewMode::Continuous => ViewMode::Layout,
+                            ViewMode::Layout => ViewMode::Continuous,
+                        };
+                        ui.close();
+                    }
+
+                    ui.separator();
+
+                    let current_page_size = self
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.layout.as_ref())
+                        .map(|l| l.page_size.as_str())
+                        .unwrap_or("letter");
+                    let is_a4 = current_page_size.eq_ignore_ascii_case("a4");
+
+                    ui.menu_button("Page Size", |ui| {
+                        if ui.selectable_label(!is_a4, "Letter (8.5 x 11)").clicked() {
+                            self.action_set_layout_page_size("letter");
+                            ui.close();
+                        }
+                        if ui.selectable_label(is_a4, "A4").clicked() {
+                            self.action_set_layout_page_size("a4");
+                            ui.close();
+                        }
+                    });
+
+                    let current_mn = self
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.layout.as_ref())
+                        .map(|l| l.measure_numbers.as_str())
+                        .unwrap_or("systemStart")
+                        .to_string();
+
+                    ui.menu_button("Bar Numbers", |ui| {
+                        if ui
+                            .selectable_label(
+                                current_mn != "all" && current_mn != "none",
+                                "System Start",
+                            )
+                            .clicked()
+                        {
+                            self.action_set_layout_measure_numbers("systemStart");
+                            ui.close();
+                        }
+                        if ui.selectable_label(current_mn == "all", "All Bars").clicked() {
+                            self.action_set_layout_measure_numbers("all");
+                            ui.close();
+                        }
+                        if ui.selectable_label(current_mn == "none", "None").clicked() {
+                            self.action_set_layout_measure_numbers("none");
+                            ui.close();
+                        }
+                    });
+
+                    if let Some(sel_id) = self.selected_layout_element_id.clone() {
+                        ui.separator();
+                        if ui
+                            .button(format!("Reset Offset ({})", sel_id))
+                            .clicked()
+                        {
+                            self.action_set_element_offset(&sel_id, 0.0, 0.0);
+                            ui.close();
                         }
                     }
-                }
-                if ui.button("Export .mnx...").clicked() {
-                    self.export_mnx_file();
-                }
+                });
+
+                // 4. Help Menu
+                ui.menu_button("Help", |ui| {
+                    if ui.button("Manual").clicked() {
+                        self.active_dialog = ActiveDialog::Manual;
+                        ui.close();
+                    }
+                    if ui.button("About").clicked() {
+                        self.active_dialog = ActiveDialog::About;
+                        ui.close();
+                    }
+                });
 
                 ui.separator();
 
                 // Display the current filename or "Untitled"
-                let file_name = self.current_file_path
+                let file_name = self
+                    .current_file_path
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
@@ -52,96 +303,41 @@ impl MnxEditorApp {
 
                 ui.label(egui::RichText::new(format!("Editing: {}", file_name)).italics());
 
-                ui.separator();
-                ui.label(egui::RichText::new("Mode:").strong());
-                let is_cont = self.view_mode == ViewMode::Continuous;
-                let is_lay = self.view_mode == ViewMode::Layout;
-                if ui.selectable_label(is_cont, "Continuous").clicked() {
-                    self.view_mode = ViewMode::Continuous;
-                }
-                if ui.selectable_label(is_lay, "Layout").clicked() {
-                    self.view_mode = ViewMode::Layout;
-                }
-
-                if self.view_mode == ViewMode::Layout {
-                    ui.separator();
-                    let current_page_size = self
-                        .parsed_mnx
-                        .as_ref()
-                        .and_then(|d| d.layout.as_ref())
-                        .map(|l| l.page_size.as_str())
-                        .unwrap_or("letter");
-                    let mut size_choice = if current_page_size.eq_ignore_ascii_case("a4") {
-                        "A4"
-                    } else {
-                        "Letter"
-                    };
-                    egui::ComboBox::from_label("Page")
-                        .selected_text(size_choice)
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_value(&mut size_choice, "Letter", "Letter").clicked() {
-                                self.action_set_layout_page_size("letter");
-                            }
-                            if ui.selectable_value(&mut size_choice, "A4", "A4").clicked() {
-                                self.action_set_layout_page_size("a4");
-                            }
-                        });
-
-                    let current_mn = self
-                        .parsed_mnx
-                        .as_ref()
-                        .and_then(|d| d.layout.as_ref())
-                        .map(|l| l.measure_numbers.as_str())
-                        .unwrap_or("systemStart");
-                    let mn_text = match current_mn {
-                        "all" => "All Bars",
-                        "none" => "None",
-                        _ => "System Start",
-                    };
-                    let mut mn_choice = mn_text;
-                    egui::ComboBox::from_label("Bar Numbers")
-                        .selected_text(mn_choice)
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_value(&mut mn_choice, "System Start", "System Start").clicked() {
-                                self.action_set_layout_measure_numbers("systemStart");
-                            }
-                            if ui.selectable_value(&mut mn_choice, "All Bars", "All Bars").clicked() {
-                                self.action_set_layout_measure_numbers("all");
-                            }
-                            if ui.selectable_value(&mut mn_choice, "None", "None").clicked() {
-                                self.action_set_layout_measure_numbers("none");
-                            }
-                        });
-
-                    if let Some(sel_id) = &self.selected_layout_element_id {
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new(format!("Offset: {}", sel_id))
-                                .color(Color32::from_rgb(0, 150, 255)),
-                        );
-                        if ui.button("Reset").clicked() {
-                            let id_to_reset = sel_id.clone();
-                            self.action_set_element_offset(&id_to_reset, 0.0, 0.0);
-                        }
-                    }
-                }
-
                 if let Some(sel) = self.selected_event_idx {
                     ui.separator();
                     if self.is_editing_fret {
                         ui.label(
-                            egui::RichText::new("EDIT FRET (type number, press Enter to commit, Esc to cancel)")
-                                .color(Color32::from_rgb(255, 175, 75))
-                                .strong(),
+                            egui::RichText::new(
+                                "EDIT FRET (type number, press Enter to commit, Esc to cancel)",
+                            )
+                            .color(Color32::from_rgb(255, 175, 75))
+                            .strong(),
                         );
                     } else {
                         let note_info = if let Some(n_idx) = self.selected_note_idx_in_event {
-                            let note_count = event_ranges.get(sel).map(|er| er.note_ranges.len()).unwrap_or(1);
-                            format!("Note {} of {} (note {}/{})", sel + 1, total_events, n_idx + 1, note_count)
+                            let note_count = event_ranges
+                                .get(sel)
+                                .map(|er| er.note_ranges.len())
+                                .unwrap_or(1);
+                            format!(
+                                "Note {} of {} (note {}/{})",
+                                sel + 1,
+                                total_events,
+                                n_idx + 1,
+                                note_count
+                            )
                         } else {
-                            let note_count = event_ranges.get(sel).map(|er| er.note_ranges.len()).unwrap_or(1);
+                            let note_count = event_ranges
+                                .get(sel)
+                                .map(|er| er.note_ranges.len())
+                                .unwrap_or(1);
                             if note_count > 1 {
-                                format!("Chord {} of {} ({} notes)", sel + 1, total_events, note_count)
+                                format!(
+                                    "Chord {} of {} ({} notes)",
+                                    sel + 1,
+                                    total_events,
+                                    note_count
+                                )
                             } else {
                                 format!("Note {} of {}", sel + 1, total_events)
                             }

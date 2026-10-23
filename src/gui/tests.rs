@@ -2501,4 +2501,27 @@ parts:
         assert!((total_beats - 4.0).abs() < 1e-4);
         assert_eq!(app.selected_event_idx, Some(0));
     }
+
+    #[test]
+    fn test_menu_view_and_help_state_toggles() {
+        let mut app = MnxEditorApp::default();
+        assert!(app.show_yaml_panel);
+        assert_eq!(app.view_mode, ViewMode::Continuous);
+        assert_eq!(app.active_dialog, ActiveDialog::None);
+
+        // Toggle YAML panel visibility
+        app.show_yaml_panel = !app.show_yaml_panel;
+        assert!(!app.show_yaml_panel);
+
+        // Toggle view mode
+        app.view_mode = ViewMode::Layout;
+        assert_eq!(app.view_mode, ViewMode::Layout);
+
+        // Help dialogs
+        app.active_dialog = ActiveDialog::Manual;
+        assert_eq!(app.active_dialog, ActiveDialog::Manual);
+        app.active_dialog = ActiveDialog::About;
+        assert_eq!(app.active_dialog, ActiveDialog::About);
+    }
 }
+

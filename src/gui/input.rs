@@ -405,6 +405,9 @@ impl MnxEditorApp {
         let v_pressed = ui.input(|i| i.key_pressed(egui::Key::V));
         let i_pressed = ui.input(|i| i.key_pressed(egui::Key::I));
         let d_pressed = ui.input(|i| i.key_pressed(egui::Key::D));
+        let n_pressed = ui.input(|i| i.key_pressed(egui::Key::N));
+        let o_pressed = ui.input(|i| i.key_pressed(egui::Key::O));
+        let s_pressed = ui.input(|i| i.key_pressed(egui::Key::S));
 
         let mut is_copy = false;
         let mut is_cut = false;
@@ -456,7 +459,23 @@ impl MnxEditorApp {
         }
 
         if cmd {
-            if y_pressed {
+            if n_pressed {
+                self.new_file();
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if o_pressed {
+                self.open_file();
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if s_pressed {
+                if shift_down {
+                    self.save_as_file();
+                } else {
+                    self.save_file();
+                }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if y_pressed {
                 self.redo();
                 ui.input_mut(|i| i.events.clear()); // consume
                 return;

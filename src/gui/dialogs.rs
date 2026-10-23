@@ -77,6 +77,50 @@ impl MnxEditorApp {
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
+            ActiveDialog::Manual => {
+                egui::Window::new("User Manual")
+                    .collapsible(false)
+                    .resizable(true)
+                    .default_width(480.0)
+                    .show(ctx, |ui| {
+                        ui.heading("MNX Tablature Editor — Manual");
+                        ui.separator();
+                        ui.label("Documentation placeholder — full user manual coming soon.");
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Quick Shortcuts:").strong());
+                        ui.label("• Arrow Keys: Move across events and strings");
+                        ui.label("• Enter / Number Keys: Edit fret on selected string");
+                        ui.label("• 1–6: Set note duration (Whole to 32nd)");
+                        ui.label("• . (Period): Toggle dotted duration");
+                        ui.label("• R: Convert event to rest");
+                        ui.label("• Shift+L: Open lyric syllable editor");
+                        ui.label("• Space (in Select mode): Play / Stop MIDI");
+                        ui.add_space(12.0);
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if ui.button("Close").clicked() || esc_pressed {
+                            close_dialog = true;
+                        }
+                    });
+            }
+            ActiveDialog::About => {
+                egui::Window::new("About")
+                    .collapsible(false)
+                    .resizable(false)
+                    .default_width(360.0)
+                    .show(ctx, |ui| {
+                        ui.heading("MNX Tablature Editor");
+                        ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                        ui.separator();
+                        ui.label(
+                            "A microtonal-ready guitar & fretted instrument tablature editor built on the W3C MNX specification with YAML editing, MPE/multi-channel MIDI playback, and PDF/MNX export.",
+                        );
+                        ui.add_space(12.0);
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if ui.button("Close").clicked() || esc_pressed {
+                            close_dialog = true;
+                        }
+                    });
+            }
             ActiveDialog::InsertEnding {
                 start_m,
                 end_m,

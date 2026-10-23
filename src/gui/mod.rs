@@ -101,6 +101,7 @@ pub struct MnxEditorApp {
     pub is_editing_lyric: bool,
     pub editing_lyric_buf: String,
     pub view_mode: ViewMode,
+    pub show_yaml_panel: bool,
     pub selected_layout_element_id: Option<String>,
     pub is_dragging_layout_element: bool,
     pub(crate) cached_event_ranges: Vec<crate::yaml_editor::EventRange>,
@@ -125,6 +126,8 @@ pub struct ClipboardData {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActiveDialog {
     None,
+    Manual,
+    About,
     InsertTimeSignature {
         count: u32,
         unit: u32,
@@ -247,6 +250,7 @@ impl Default for MnxEditorApp {
             is_editing_lyric: false,
             editing_lyric_buf: String::new(),
             view_mode: ViewMode::Continuous,
+            show_yaml_panel: true,
             selected_layout_element_id: None,
             is_dragging_layout_element: false,
             cached_event_ranges: Vec::new(),
@@ -820,6 +824,39 @@ impl MnxEditorApp {
         }
     }
 
+    pub(crate) fn export_pdf_file(&mut self) -> bool {
+        let default_name = self
+            .current_file_path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            .map(|stem| format!("{}.pdf", stem))
+            .unwrap_or_else(|| "score.pdf".to_string());
+
+        if let Some(mut path) = rfd::FileDialog::new()
+            .add_filter("PDF Document", &["pdf"])
+            .set_file_name(&default_name)
+            .save_file()
+        {
+            if path.extension().and_then(|e| e.to_str()) != Some("pdf") {
+                path.set_extension("pdf");
+            }
+            if let Some(doc) = &self.parsed_mnx {
+                let pages = crate::layout::compute_score_layout(doc, 0.0);
+                if let Err(e) = crate::pdf_export::export_score_to_pdf(doc, &pages, &path) {
+                    self.validation_errors = vec![format!("Failed to export PDF file: {}", e)];
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn export_mnx_file(&mut self) -> bool {
         let default_name = self
             .current_file_path
@@ -896,7 +933,7 @@ impl eframe::App for MnxEditorApp {
             }
         }
 
-        let editor_focused = ui.memory(|m| m.has_focus(text_edit_id));
+        let editor_focused = self.show_yaml_panel && ui.memory(|m| m.has_focus(text_edit_id));
 
         self.handle_keyboard_input(ui, editor_focused, &event_ranges, total_events);
 
@@ -906,8 +943,10 @@ impl eframe::App for MnxEditorApp {
         // 2. Bottom Panel for Errors (only shown if errors exist)
         self.render_error_panel(ui);
 
-        // 3. Right Pane: YAML Text Editor
-        self.render_yaml_panel(ui, text_edit_id, &event_ranges);
+        // 3. Right Pane: YAML Text Editor (optional)
+        if self.show_yaml_panel {
+            self.render_yaml_panel(ui, text_edit_id, &event_ranges);
+        }
 
         // 4. Left Pane: Render Output
         self.render_central_panel(ui);
