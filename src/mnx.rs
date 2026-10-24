@@ -194,6 +194,18 @@ impl MnxDocument {
 }
 
 impl MnxDocument {
+    pub fn score_title(&self) -> Option<&str> {
+        self.global.title.as_deref().or_else(|| self.ext.title.as_deref())
+    }
+
+    pub fn score_subtitle(&self) -> Option<&str> {
+        self.global.subtitle.as_deref().or_else(|| self.ext.subtitle.as_deref())
+    }
+
+    pub fn score_composer(&self) -> Option<&str> {
+        self.global.composer.as_deref().or_else(|| self.ext.composer.as_deref())
+    }
+
     pub fn clean_dangling_ties(&mut self) {
         let mut all_note_ids = std::collections::HashSet::new();
 
@@ -368,6 +380,8 @@ pub struct ScoreLayout {
     pub composer: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub offsets: std::collections::HashMap<String, Offset2D>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "lockedSystems")]
+    pub locked_systems: Vec<[usize; 2]>,
 }
 
 impl Default for ScoreLayout {
@@ -381,6 +395,7 @@ impl Default for ScoreLayout {
             subtitle: None,
             composer: None,
             offsets: std::collections::HashMap::new(),
+            locked_systems: Vec::new(),
         }
     }
 }
@@ -419,12 +434,48 @@ pub struct MnxMeta {
     pub version: u32,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct GlobalExt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer: Option<String>,
+}
+
+impl GlobalExt {
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.subtitle.is_none() && self.composer.is_none()
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
 pub struct Global {
     #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "GlobalExt::is_empty"
+    )]
+    pub ext: GlobalExt,
     #[serde(default)]
     pub measures: Vec<GlobalMeasure>,
+}
+
+impl std::ops::Deref for Global {
+    type Target = GlobalExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for Global {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
 }
 
 fn default_repeat_times() -> u32 {

@@ -50,7 +50,8 @@ pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLay
     let effective_base_spacing = if base_spacing > 0.0 { base_spacing } else { DEFAULT_LAYOUT_BASE_SPACING };
     let metrics = compute_measure_metrics(doc, effective_base_spacing);
     let content_w = (page_w - margins.left - margins.right).max(200.0);
-    let system_breaks = break_measures_into_systems(&metrics, content_w);
+    let locked_systems = doc.layout.as_ref().map(|l| l.locked_systems.as_slice()).unwrap_or(&[]);
+    let system_breaks = break_measures_into_systems(&metrics, content_w, locked_systems);
     let mut pages = pack_systems_into_pages(
         system_breaks,
         page_w,
@@ -97,7 +98,7 @@ mod tests {
             dummy_metrics(3, 150.0, 4.0),
         ];
 
-        let breaks = break_measures_into_systems(&measures, 500.0);
+        let breaks = break_measures_into_systems(&measures, 500.0, &[]);
         assert_eq!(breaks.len(), 2);
         assert_eq!(breaks[0].measure_range, 0..3);
         assert_eq!(breaks[1].measure_range, 3..4);
@@ -114,13 +115,32 @@ mod tests {
         measures[1].has_system_break = true;
         measures[2].has_page_break = true;
 
-        let breaks = break_measures_into_systems(&measures, 1000.0);
+        let breaks = break_measures_into_systems(&measures, 1000.0, &[]);
         assert_eq!(breaks.len(), 3);
         assert_eq!(breaks[0].measure_range, 0..2);
         assert!(!breaks[0].is_page_break);
         assert_eq!(breaks[1].measure_range, 2..3);
         assert!(breaks[1].is_page_break);
         assert_eq!(breaks[2].measure_range, 3..4);
+    }
+
+    #[test]
+    fn test_locked_system_spans_and_overrides_intermediate_system_break() {
+        let mut measures = vec![
+            dummy_metrics(0, 100.0, 4.0),
+            dummy_metrics(1, 100.0, 4.0),
+            dummy_metrics(2, 100.0, 4.0),
+            dummy_metrics(3, 100.0, 4.0),
+        ];
+        // Measure 1 previously had a system break
+        measures[1].has_system_break = true;
+
+        // When locked as system [0, 2], the intermediate system break at measure 1 is overridden
+        let breaks = break_measures_into_systems(&measures, 1000.0, &[[0, 2]]);
+        assert_eq!(breaks.len(), 2);
+        assert_eq!(breaks[0].measure_range, 0..3);
+        assert!(!breaks[0].is_page_break);
+        assert_eq!(breaks[1].measure_range, 3..4);
     }
 
     #[test]
@@ -135,7 +155,7 @@ mod tests {
         let margins = PageMargins { top: 40.0, bottom: 40.0, left: 50.0, right: 50.0 };
         let content_w = page_w - margins.left - margins.right; // 500.0
 
-        let breaks = break_measures_into_systems(&measures, content_w);
+        let breaks = break_measures_into_systems(&measures, content_w, &[]);
         let mut pages = pack_systems_into_pages(breaks, page_w, 800.0, &margins, 100.0, 20.0, 0.0);
 
         // Justify system 0

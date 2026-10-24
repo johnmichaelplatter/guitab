@@ -35,7 +35,7 @@ pub fn justify_systems(
             let mut widths = Vec::with_capacity(system_measures.len());
             let mut x_positions = Vec::with_capacity(system_measures.len());
 
-            let should_justify = (!is_last_system || justify_last_system) && slack > 0.0;
+            let should_justify = ((!is_last_system || justify_last_system) && slack > 0.0) || slack < 0.0;
 
             if should_justify && total_spring_stiffness > 0.0 {
                 let mut accumulated_slack = 0.0_f32;
@@ -50,7 +50,7 @@ pub fn justify_systems(
                         accumulated_slack += w_slack;
                         w_slack
                     };
-                    widths.push(m.min_width + measure_slack);
+                    widths.push((m.min_width + measure_slack).max(25.0));
                 }
             } else {
                 for m in &system_measures {

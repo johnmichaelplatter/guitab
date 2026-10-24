@@ -18,8 +18,12 @@ epaint_default_fonts = "0.36"
 [profile.dev]
 opt-level = 1
 
-[profile.dev.package."*"]
+[profile.release]
 opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
 
 
 

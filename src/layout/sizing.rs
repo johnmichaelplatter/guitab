@@ -107,6 +107,14 @@ pub fn compute_measure_metrics(doc: &MnxDocument, base_spacing: f32) -> Vec<Meas
             min_width += 12.0;
         }
 
+        let has_final_barline = gm
+            .and_then(|g| g.barline.as_ref())
+            .map(|b| b.barline_type == "final" || b.barline_type == "ending")
+            .unwrap_or(false);
+        if has_final_barline {
+            min_width += 6.0;
+        }
+
         // Clamp minimum measure width
         min_width = min_width.max(50.0);
         let spring_stiffness = if measure_beats > 0.0 {

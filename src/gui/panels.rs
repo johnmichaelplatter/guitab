@@ -182,6 +182,14 @@ impl MnxEditorApp {
                         self.action_duplicate_insert();
                         ui.close();
                     }
+                    ui.separator();
+                    if ui.button("Score Information...").clicked() {
+                        let title = self.parsed_mnx.as_ref().and_then(|d| d.score_title()).unwrap_or("").to_string();
+                        let subtitle = self.parsed_mnx.as_ref().and_then(|d| d.score_subtitle()).unwrap_or("").to_string();
+                        let composer = self.parsed_mnx.as_ref().and_then(|d| d.score_composer()).unwrap_or("").to_string();
+                        self.active_dialog = ActiveDialog::ScoreInfo { title, subtitle, composer };
+                        ui.close();
+                    }
                 });
 
                 // 3. View Menu
@@ -820,25 +828,7 @@ impl MnxEditorApp {
 
                 let bravura_font = egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
                 if ui.button(egui::RichText::new("\u{E040}").font(bravura_font.clone())).on_hover_text("Start Repeat").clicked() {
-                    let mut m_idx = 0;
-                    if let Some(doc) = &self.parsed_mnx {
-                        if let Some(part) = doc.parts.first() {
-                            if let Some(e_idx) = self.selected_event_idx {
-                                let mut count = 0;
-                                'find_m2: for (i, m) in part.measures.iter().enumerate() {
-                                    for seq in &m.sequences {
-                                        for _ in seq.flattened_events() {
-                                            if count == e_idx {
-                                                m_idx = i;
-                                                break 'find_m2;
-                                            }
-                                            count += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let m_idx = self.get_target_measure_for_layout_or_breaks();
                     let new_yaml = crate::yaml_editor::set_global_measure_property(
                         &self.yaml_text,
                         m_idx,
@@ -850,25 +840,7 @@ impl MnxEditorApp {
                 }
 
                 if ui.button(egui::RichText::new("\u{E041}").font(bravura_font.clone())).on_hover_text("End Repeat").clicked() {
-                    let mut m_idx = 0;
-                    if let Some(doc) = &self.parsed_mnx {
-                        if let Some(part) = doc.parts.first() {
-                            if let Some(e_idx) = self.selected_event_idx {
-                                let mut count = 0;
-                                'find_m3: for (i, m) in part.measures.iter().enumerate() {
-                                    for seq in &m.sequences {
-                                        for _ in seq.flattened_events() {
-                                            if count == e_idx {
-                                                m_idx = i;
-                                                break 'find_m3;
-                                            }
-                                            count += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let m_idx = self.get_target_measure_for_layout_or_breaks();
                     let new_yaml = crate::yaml_editor::set_global_measure_property(
                         &self.yaml_text,
                         m_idx,
@@ -880,31 +852,43 @@ impl MnxEditorApp {
                 }
 
                 if ui.button(egui::RichText::new("\u{E031}").font(bravura_font.clone())).on_hover_text("Double Barline").clicked() {
-                    let mut m_idx = 0;
-                    if let Some(doc) = &self.parsed_mnx {
-                        if let Some(part) = doc.parts.first() {
-                            if let Some(e_idx) = self.selected_event_idx {
-                                let mut count = 0;
-                                'find_m4: for (i, m) in part.measures.iter().enumerate() {
-                                    for seq in &m.sequences {
-                                        for _ in seq.flattened_events() {
-                                            if count == e_idx {
-                                                m_idx = i;
-                                                break 'find_m4;
-                                            }
-                                            count += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let new_yaml = crate::yaml_editor::set_global_measure_property(
-                        &self.yaml_text,
-                        m_idx,
-                        "barline",
-                        "{ type: double }"
-                    );
+                    let m_idx = self.get_target_measure_for_layout_or_breaks();
+                    let is_already_double = self.parsed_mnx.as_ref()
+                        .and_then(|doc| doc.global.measures.get(m_idx))
+                        .and_then(|gm| gm.barline.as_ref())
+                        .map(|b| b.barline_type == "double")
+                        .unwrap_or(false);
+                    let new_yaml = if is_already_double {
+                        crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
+                    } else {
+                        crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            m_idx,
+                            "barline",
+                            "{ type: double }"
+                        )
+                    };
+                    self.update_yaml(new_yaml);
+                    self.process_and_render();
+                }
+
+                if ui.button(egui::RichText::new("\u{E032}").font(bravura_font.clone())).on_hover_text("Ending Barline").clicked() {
+                    let m_idx = self.get_target_measure_for_layout_or_breaks();
+                    let is_already_final = self.parsed_mnx.as_ref()
+                        .and_then(|doc| doc.global.measures.get(m_idx))
+                        .and_then(|gm| gm.barline.as_ref())
+                        .map(|b| b.barline_type == "final" || b.barline_type == "ending")
+                        .unwrap_or(false);
+                    let new_yaml = if is_already_final {
+                        crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
+                    } else {
+                        crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            m_idx,
+                            "barline",
+                            "{ type: final }"
+                        )
+                    };
                     self.update_yaml(new_yaml);
                     self.process_and_render();
                 }
@@ -944,9 +928,9 @@ impl MnxEditorApp {
                     self.process_and_render();
                 }
 
-                let (start_m, _) = self.get_selected_measure_range();
+                let target_m = self.get_target_measure_for_layout_or_breaks();
                 let (is_system_break, is_page_break) = if let Some(doc) = &self.parsed_mnx {
-                    doc.global.measures.get(start_m).map(|gm| (gm.system_break.unwrap_or(false), gm.page_break.unwrap_or(false))).unwrap_or((false, false))
+                    doc.global.measures.get(target_m).map(|gm| (gm.system_break.unwrap_or(false), gm.page_break.unwrap_or(false))).unwrap_or((false, false))
                 } else {
                     (false, false)
                 };
@@ -955,16 +939,16 @@ impl MnxEditorApp {
                     .fit_to_exact_size(icon_size)
                     .tint(ui.visuals().text_color());
                 if ui.add_sized(btn_size, egui::Button::image(img_sys).selected(is_system_break)).on_hover_text("Toggle System Break").clicked() {
-                    let (start_m, _) = self.get_selected_measure_range();
-                    self.action_toggle_system_break(start_m);
+                    let target_m = self.get_target_measure_for_layout_or_breaks();
+                    self.action_toggle_system_break(target_m);
                 }
 
                 let img_page = egui::Image::new(include_image!("../../assets/page_break.svg"))
                     .fit_to_exact_size(icon_size)
                     .tint(ui.visuals().text_color());
                 if ui.add_sized(btn_size, egui::Button::image(img_page).selected(is_page_break)).on_hover_text("Toggle Page Break").clicked() {
-                    let (start_m, _) = self.get_selected_measure_range();
-                    self.action_toggle_page_break(start_m);
+                    let target_m = self.get_target_measure_for_layout_or_breaks();
+                    self.action_toggle_page_break(target_m);
                 }
             });
             ui.separator();
@@ -1610,10 +1594,69 @@ impl MnxEditorApp {
         if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) { arrow_nudge.y += 2.0; }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.selected_layout_element_id = None;
+            self.selected_layout_element_ids.clear();
+            self.selected_layout_measures.clear();
         }
 
-        let mut clicked_element_id: Option<Option<String>> = None;
-        let mut offset_to_apply: Option<(String, f32, f32)> = None;
+        let delete_pressed = ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+        if delete_pressed {
+            if let Some(sel_id) = &self.selected_layout_element_id {
+                if sel_id.starts_with("sys_lock_") {
+                    let parts: Vec<&str> = sel_id.split('_').collect();
+                    if parts.len() >= 4 {
+                        if let (Ok(s), Ok(e)) = (parts[2].parse::<usize>(), parts[3].parse::<usize>()) {
+                            self.action_unlock_system(s, e);
+                        }
+                    }
+                } else {
+                    let ids: Vec<String> = self.selected_layout_element_ids.iter().cloned().collect();
+                    for id in ids {
+                        self.action_set_element_offset(&id, 0.0, 0.0);
+                    }
+                }
+            }
+        }
+
+        // Layout Mode Toolbar
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Layout Mode").strong());
+            ui.separator();
+
+            if self.selected_layout_measures.len() >= 2 {
+                let start_m = *self.selected_layout_measures.iter().next().unwrap();
+                let end_m = *self.selected_layout_measures.iter().last().unwrap();
+                let btn_text = format!("Make into System (Bars {}..{})", start_m + 1, end_m + 1);
+                if ui.button(btn_text).clicked() {
+                    self.action_make_into_system(start_m, end_m);
+                }
+            } else if !self.selected_layout_measures.is_empty() {
+                let m = *self.selected_layout_measures.iter().next().unwrap();
+                ui.label(format!("Bar {} selected (Shift+click another bar to make a system)", m + 1));
+            }
+
+            if let Some(sel_id) = &self.selected_layout_element_id {
+                if sel_id.starts_with("sys_lock_") {
+                    let parts: Vec<&str> = sel_id.split('_').collect();
+                    if parts.len() >= 4 {
+                        if let (Ok(s), Ok(e)) = (parts[2].parse::<usize>(), parts[3].parse::<usize>()) {
+                            if ui.button(format!("Unlock System (Bars {}..{})", s + 1, e + 1)).clicked() {
+                                self.action_unlock_system(s, e);
+                            }
+                        }
+                    }
+                } else if !self.selected_layout_element_ids.is_empty() {
+                    if ui.button("Reset Selected Offset(s)").clicked() {
+                        let ids: Vec<String> = self.selected_layout_element_ids.iter().cloned().collect();
+                        for id in ids {
+                            self.action_set_element_offset(&id, 0.0, 0.0);
+                        }
+                    }
+                }
+            }
+        });
+        ui.separator();
+
+        let mut offsets_to_apply: Vec<(String, f32, f32)> = Vec::new();
 
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             ui.vertical_centered(|ui| {
@@ -1662,13 +1705,48 @@ impl MnxEditorApp {
 
                     // Handle hit testing
                     if mouse_clicked {
+                        let shift_down = ui.input(|i| i.modifiers.shift);
                         if let Some(mpos) = mouse_pos {
                             if page_rect.contains(mpos) {
                                 let local_pos = egui::pos2(mpos.x - page_rect.min.x, mpos.y - page_rect.min.y);
                                 if let Some(hit_id) = dl.hit_test(local_pos) {
-                                    clicked_element_id = Some(Some(hit_id));
-                                } else {
-                                    clicked_element_id = Some(None);
+                                    if hit_id.starts_with("measure_") {
+                                        if let Ok(m) = hit_id["measure_".len()..].parse::<usize>() {
+                                            if shift_down {
+                                                if self.selected_layout_measures.contains(&m) {
+                                                    self.selected_layout_measures.remove(&m);
+                                                } else {
+                                                    self.selected_layout_measures.insert(m);
+                                                }
+                                            } else {
+                                                self.selected_layout_measures.clear();
+                                                self.selected_layout_measures.insert(m);
+                                                self.selected_layout_element_ids.clear();
+                                                self.selected_layout_element_id = None;
+                                            }
+                                        }
+                                    } else {
+                                        if shift_down {
+                                            if self.selected_layout_element_ids.contains(&hit_id) {
+                                                self.selected_layout_element_ids.remove(&hit_id);
+                                                if self.selected_layout_element_id.as_ref() == Some(&hit_id) {
+                                                    self.selected_layout_element_id = self.selected_layout_element_ids.iter().next().cloned();
+                                                }
+                                            } else {
+                                                self.selected_layout_element_ids.insert(hit_id.clone());
+                                                self.selected_layout_element_id = Some(hit_id);
+                                            }
+                                        } else {
+                                            self.selected_layout_measures.clear();
+                                            self.selected_layout_element_ids.clear();
+                                            self.selected_layout_element_ids.insert(hit_id.clone());
+                                            self.selected_layout_element_id = Some(hit_id);
+                                        }
+                                    }
+                                } else if !shift_down {
+                                    self.selected_layout_measures.clear();
+                                    self.selected_layout_element_ids.clear();
+                                    self.selected_layout_element_id = None;
                                 }
                             }
                         }
@@ -1787,8 +1865,20 @@ impl MnxEditorApp {
                         }
                     }
 
-                    // Render unified selection highlight box for the selected element
-                    if let Some(sel_id) = &self.selected_layout_element_id {
+                    // Highlight selected measures
+                    for &m_idx in &self.selected_layout_measures {
+                        let m_id = format!("measure_{}", m_idx);
+                        for item in &dl.items {
+                            if item.id.as_deref() == Some(&m_id) {
+                                let mrect = item.bounding_box().translate(page_origin);
+                                painter.rect_filled(mrect, 2.0, Color32::from_rgba_unmultiplied(0, 120, 215, 30));
+                                painter.rect_stroke(mrect, 2.0, egui::Stroke::new(1.5, Color32::from_rgba_unmultiplied(0, 120, 215, 120)), egui::StrokeKind::Inside);
+                            }
+                        }
+                    }
+
+                    // Render unified selection highlight box for selected elements
+                    for sel_id in &self.selected_layout_element_ids {
                         let mut union_box: Option<egui::Rect> = None;
                         for item in &dl.items {
                             if item.id.as_ref() == Some(sel_id) {
@@ -1811,13 +1901,16 @@ impl MnxEditorApp {
                         }
                     }
 
-                    // Drag handling for selected element
-                    if let Some(sel_id) = &self.selected_layout_element_id {
+                    // Drag handling for selected elements
+                    if !self.selected_layout_element_ids.is_empty() {
                         if page_resp.dragged() {
                             self.is_dragging_layout_element = true;
                             if drag_delta.length_sq() > 0.0 {
-                                let cur_off = offsets.get(sel_id).copied().unwrap_or(crate::mnx::Offset2D { dx: 0.0, dy: 0.0 });
-                                offset_to_apply = Some((sel_id.clone(), cur_off.dx + drag_delta.x, cur_off.dy + drag_delta.y));
+                                let ids: Vec<String> = self.selected_layout_element_ids.iter().cloned().collect();
+                                for id in ids {
+                                    let cur_off = offsets.get(&id).copied().unwrap_or(crate::mnx::Offset2D { dx: 0.0, dy: 0.0 });
+                                    offsets_to_apply.push((id, cur_off.dx + drag_delta.x, cur_off.dy + drag_delta.y));
+                                }
                             }
                         } else {
                             self.is_dragging_layout_element = false;
@@ -1831,19 +1924,15 @@ impl MnxEditorApp {
             });
         });
 
-        if let Some(hit) = clicked_element_id {
-            self.selected_layout_element_id = hit;
-        }
-
-        if let Some((id, ox, oy)) = offset_to_apply {
+        for (id, ox, oy) in offsets_to_apply {
             self.action_set_element_offset(&id, ox, oy);
         }
 
         if arrow_nudge != egui::vec2(0.0, 0.0) {
-            if let Some(sel_id) = &self.selected_layout_element_id {
-                let cur_off = offsets.get(sel_id).copied().unwrap_or(crate::mnx::Offset2D { dx: 0.0, dy: 0.0 });
-                let id_to_nudge = sel_id.clone();
-                self.action_set_element_offset(&id_to_nudge, cur_off.dx + arrow_nudge.x, cur_off.dy + arrow_nudge.y);
+            let ids: Vec<String> = self.selected_layout_element_ids.iter().cloned().collect();
+            for id in ids {
+                let cur_off = offsets.get(&id).copied().unwrap_or(crate::mnx::Offset2D { dx: 0.0, dy: 0.0 });
+                self.action_set_element_offset(&id, cur_off.dx + arrow_nudge.x, cur_off.dy + arrow_nudge.y);
             }
         }
     }

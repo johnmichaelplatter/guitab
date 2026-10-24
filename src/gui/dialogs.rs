@@ -54,9 +54,20 @@ impl MnxEditorApp {
                 step_multiplier: u8,
                 tunings: Vec<crate::mnx::StringTuning>,
             },
-            DiscardChangesSave,
-            DiscardChangesSaveAs,
-            DiscardChangesProceed,
+            DiscardChangesSave {
+                target: DiscardTarget,
+            },
+            DiscardChangesSaveAs {
+                target: DiscardTarget,
+            },
+            DiscardChangesProceed {
+                target: DiscardTarget,
+            },
+            ApplyScoreInfo {
+                title: String,
+                subtitle: String,
+                composer: String,
+            },
             ApplyNaturalHarmonic {
                 event_idx: usize,
                 string: u8,
@@ -318,7 +329,8 @@ impl MnxEditorApp {
                 }
             }
 
-            ActiveDialog::ConfirmDiscardChanges => {
+            ActiveDialog::ConfirmDiscardChanges { target } => {
+                let target = *target;
                 egui::Window::new("Discard changes?")
                     .collapsible(false)
                     .resizable(false)
@@ -329,18 +341,55 @@ impl MnxEditorApp {
                         ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button("Save").clicked() {
-                                apply_action = Some(DialogAction::DiscardChangesSave);
+                                apply_action = Some(DialogAction::DiscardChangesSave { target });
                                 close_dialog = true;
                             }
                             if ui.button("Save As").clicked() {
-                                apply_action = Some(DialogAction::DiscardChangesSaveAs);
+                                apply_action = Some(DialogAction::DiscardChangesSaveAs { target });
                                 close_dialog = true;
                             }
                             if ui.button("Discard Changes").clicked() {
-                                apply_action = Some(DialogAction::DiscardChangesProceed);
+                                apply_action = Some(DialogAction::DiscardChangesProceed { target });
                                 close_dialog = true;
                             }
                             if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
+
+            ActiveDialog::ScoreInfo { title, subtitle, composer } => {
+                egui::Window::new("Score Information")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        egui::Grid::new("score_info_grid").num_columns(2).show(ui, |ui| {
+                            ui.label("Title:");
+                            ui.text_edit_singleline(title);
+                            ui.end_row();
+
+                            ui.label("Subtitle:");
+                            ui.text_edit_singleline(subtitle);
+                            ui.end_row();
+
+                            ui.label("Composer:");
+                            ui.text_edit_singleline(composer);
+                            ui.end_row();
+                        });
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Ok").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                apply_action = Some(DialogAction::ApplyScoreInfo {
+                                    title: title.clone(),
+                                    subtitle: subtitle.clone(),
+                                    composer: composer.clone(),
+                                });
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                                 close_dialog = true;
                             }
                         });
@@ -1199,18 +1248,35 @@ impl MnxEditorApp {
                 } => {
                     self.start_new_tab(num_strings, edo, step_multiplier, tunings);
                 }
-                DialogAction::DiscardChangesSave => {
+                DialogAction::DiscardChangesSave { target } => {
                     if self.save_file() {
-                        self.prompt_new_tab_instrument_setup();
+                        match target {
+                            DiscardTarget::NewProject => self.prompt_new_tab_instrument_setup(),
+                            DiscardTarget::OpenFile => self.perform_open_file(),
+                        }
                     }
                 }
-                DialogAction::DiscardChangesSaveAs => {
+                DialogAction::DiscardChangesSaveAs { target } => {
                     if self.save_as_file() {
-                        self.prompt_new_tab_instrument_setup();
+                        match target {
+                            DiscardTarget::NewProject => self.prompt_new_tab_instrument_setup(),
+                            DiscardTarget::OpenFile => self.perform_open_file(),
+                        }
                     }
                 }
-                DialogAction::DiscardChangesProceed => {
-                    self.prompt_new_tab_instrument_setup();
+                DialogAction::DiscardChangesProceed { target } => {
+                    match target {
+                        DiscardTarget::NewProject => self.prompt_new_tab_instrument_setup(),
+                        DiscardTarget::OpenFile => self.perform_open_file(),
+                    }
+                }
+                DialogAction::ApplyScoreInfo { title, subtitle, composer } => {
+                    self.mutate_doc(|doc| {
+                        doc.global.title = if title.trim().is_empty() { None } else { Some(title.trim().to_string()) };
+                        doc.global.subtitle = if subtitle.trim().is_empty() { None } else { Some(subtitle.trim().to_string()) };
+                        doc.global.composer = if composer.trim().is_empty() { None } else { Some(composer.trim().to_string()) };
+                        Some(())
+                    });
                 }
                 DialogAction::ApplyNaturalHarmonic {
                     event_idx,

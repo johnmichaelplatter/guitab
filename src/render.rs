@@ -1637,6 +1637,22 @@ pub fn draw_tablature(
                             Stroke::new(1.0, Color32::from_gray(150)),
                         );
                         drawn_end_barline = true;
+                    } else if b.barline_type == "final" || b.barline_type == "ending" {
+                        painter.line_segment(
+                            [
+                                Pos2::new(current_x - 3.5, string_y_coords[0]),
+                                Pos2::new(current_x - 3.5, last_string_y),
+                            ],
+                            Stroke::new(1.0, Color32::from_gray(150)),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(current_x, string_y_coords[0]),
+                                Pos2::new(current_x, last_string_y),
+                            ],
+                            Stroke::new(3.5, Color32::from_gray(150)),
+                        );
+                        drawn_end_barline = true;
                     }
                 }
                 

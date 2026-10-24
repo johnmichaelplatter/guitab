@@ -103,6 +103,8 @@ pub struct MnxEditorApp {
     pub view_mode: ViewMode,
     pub show_yaml_panel: bool,
     pub selected_layout_element_id: Option<String>,
+    pub selected_layout_element_ids: std::collections::HashSet<String>,
+    pub selected_layout_measures: std::collections::BTreeSet<usize>,
     pub is_dragging_layout_element: bool,
     pub(crate) cached_event_ranges: Vec<crate::yaml_editor::EventRange>,
     pub(crate) current_grid: String,
@@ -112,6 +114,12 @@ pub struct MnxEditorApp {
 pub enum ViewMode {
     Continuous,
     Layout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscardTarget {
+    NewProject,
+    OpenFile,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,7 +152,14 @@ pub enum ActiveDialog {
         title: String,
         text: String,
     },
-    ConfirmDiscardChanges,
+    ConfirmDiscardChanges {
+        target: DiscardTarget,
+    },
+    ScoreInfo {
+        title: String,
+        subtitle: String,
+        composer: String,
+    },
     InsertTempoChange {
         event_idx: usize,
         ending_tempo: String,
@@ -252,6 +267,8 @@ impl Default for MnxEditorApp {
             view_mode: ViewMode::Continuous,
             show_yaml_panel: true,
             selected_layout_element_id: None,
+            selected_layout_element_ids: std::collections::HashSet::new(),
+            selected_layout_measures: std::collections::BTreeSet::new(),
             is_dragging_layout_element: false,
             cached_event_ranges: Vec::new(),
             current_grid: String::from("quarter"),
@@ -303,7 +320,120 @@ impl MnxEditorApp {
         }
     }
 
+    pub fn parse_measure_from_element_id_prefix(id: &str) -> Option<usize> {
+        if let Some(rest) = id.strip_prefix("measure_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("barline_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("sys_barline_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("time_sig_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("ts_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("mn_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("ending_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("tempo_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("tc_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("stem_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("tuplet_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("lyric_hyphen_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("lyric_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("note_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("rest_") {
+            return rest.split('_').next()?.parse::<usize>().ok();
+        }
+        if let Some(rest) = id.strip_prefix("sys_lock_") {
+            let mut parts = rest.split('_');
+            let _start_m = parts.next()?;
+            let end_m = parts.next()?;
+            return end_m.parse::<usize>().ok();
+        }
+        None
+    }
+
+    pub fn resolve_layout_element_to_measure(&self, element_id: &str) -> Option<usize> {
+        if let Some(m) = Self::parse_measure_from_element_id_prefix(element_id) {
+            return Some(m);
+        }
+        if let Some(doc) = &self.parsed_mnx {
+            for part in &doc.parts {
+                for (m_idx, m) in part.measures.iter().enumerate() {
+                    for seq in &m.sequences {
+                        for ev in seq.flattened_events() {
+                            if ev.id.as_deref() == Some(element_id) {
+                                return Some(m_idx);
+                            }
+                            for note in &ev.notes {
+                                if note.id.as_deref() == Some(element_id) {
+                                    return Some(m_idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(rest) = element_id.strip_prefix("slur_") {
+                let parts: Vec<&str> = rest.split('_').collect();
+                if let Some(target) = parts.get(1) {
+                    if let Some(m) = self.resolve_layout_element_to_measure(target) {
+                        return Some(m);
+                    }
+                }
+            }
+            if let Some(rest) = element_id.strip_prefix("tie_") {
+                let parts: Vec<&str> = rest.split('_').collect();
+                if let Some(target) = parts.get(1) {
+                    if let Some(m) = self.resolve_layout_element_to_measure(target) {
+                        return Some(m);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn get_selected_measure_range(&self) -> (usize, usize) {
+        if self.view_mode == ViewMode::Layout {
+            if !self.selected_layout_measures.is_empty() {
+                let start_m = *self.selected_layout_measures.iter().min().unwrap();
+                let end_m = *self.selected_layout_measures.iter().max().unwrap();
+                return (start_m, end_m);
+            }
+            if let Some(id) = &self.selected_layout_element_id {
+                if let Some(m) = self.resolve_layout_element_to_measure(id) {
+                    return (m, m);
+                }
+            }
+            for id in &self.selected_layout_element_ids {
+                if let Some(m) = self.resolve_layout_element_to_measure(id) {
+                    return (m, m);
+                }
+            }
+        }
         if let Some(doc) = &self.parsed_mnx {
             let flattened = doc.get_flattened_event_paths();
             if !flattened.is_empty() {
@@ -321,6 +451,14 @@ impl MnxEditorApp {
             }
         }
         (0, 0)
+    }
+
+    pub fn get_target_measure_for_layout_or_breaks(&self) -> usize {
+        if self.view_mode == ViewMode::Layout {
+            let (_, end_m) = self.get_selected_measure_range();
+            return end_m;
+        }
+        self.get_selected_measure_range().0
     }
 
     pub fn start_midi_playback(&mut self, start_from_selected: bool) {
@@ -695,11 +833,11 @@ impl MnxEditorApp {
             comment: None,
             ext: crate::mnx::DocumentExt::default(),
             global: crate::mnx::Global {
-                comment: None,
                 measures: vec![crate::mnx::GlobalMeasure {
                     time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
                     ..Default::default()
                 }],
+                ..Default::default()
             },
             parts: vec![crate::mnx::Part {
                 id: None,
@@ -759,13 +897,25 @@ impl MnxEditorApp {
 
     pub fn new_file(&mut self) {
         if self.is_modified() {
-            self.active_dialog = ActiveDialog::ConfirmDiscardChanges;
+            self.active_dialog = ActiveDialog::ConfirmDiscardChanges {
+                target: DiscardTarget::NewProject,
+            };
         } else {
             self.prompt_new_tab_instrument_setup();
         }
     }
 
     pub(crate) fn open_file(&mut self) {
+        if self.is_modified() {
+            self.active_dialog = ActiveDialog::ConfirmDiscardChanges {
+                target: DiscardTarget::OpenFile,
+            };
+        } else {
+            self.perform_open_file();
+        }
+    }
+
+    pub(crate) fn perform_open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("YAML Documents", &["yaml", "yml"])
             .pick_file()

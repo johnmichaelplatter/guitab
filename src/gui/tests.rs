@@ -1080,7 +1080,9 @@ mod tuplet_button_tests {
         app.new_file();
         assert_eq!(
             app.active_dialog,
-            ActiveDialog::ConfirmDiscardChanges,
+            ActiveDialog::ConfirmDiscardChanges {
+                target: DiscardTarget::NewProject,
+            },
             "Modified new_file should prompt ConfirmDiscardChanges"
         );
     }
@@ -2066,6 +2068,112 @@ parts:
     }
 
     #[test]
+    fn test_layout_mode_breaks_target_clicked_item_measure() {
+        let mut app = MnxEditorApp::default();
+        // Add 3 measures so we have measures 0, 1, 2, 3
+        app.add_measure_to_end();
+        app.add_measure_to_end();
+        app.add_measure_to_end();
+        assert!(app.parsed_mnx.as_ref().unwrap().global.measures.len() >= 4);
+
+        // Continuous mode cursor is at measure 0
+        app.selected_event_idx = Some(0);
+        assert_eq!(app.view_mode, crate::gui::ViewMode::Continuous);
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 0);
+
+        // Switch to Layout mode
+        app.view_mode = crate::gui::ViewMode::Layout;
+
+        // 1. Click a note in bar 2 (formatted as note_2_...)
+        app.selected_layout_element_id = Some("note_2_0_1".to_string());
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 2);
+        assert_eq!(app.get_selected_measure_range(), (2, 2));
+
+        // Toggle system break while note in bar 2 is selected
+        let target_m = app.get_target_measure_for_layout_or_breaks();
+        app.action_toggle_system_break(target_m);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures[0].system_break, None);
+        assert_eq!(doc.global.measures[2].system_break, Some(true));
+
+        // 2. Click a lyric in bar 3
+        app.selected_layout_element_id = Some("lyric_3_0_1".to_string());
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 3);
+        let target_m = app.get_target_measure_for_layout_or_breaks();
+        app.action_toggle_page_break(target_m);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures[0].page_break, None);
+        assert_eq!(doc.global.measures[3].page_break, Some(true));
+
+        // 3. Click other element types in bar 1
+        app.selected_layout_element_id = Some("barline_1".to_string());
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 1);
+
+        app.selected_layout_element_id = Some("time_sig_1".to_string());
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 1);
+
+        app.selected_layout_element_id = Some("ending_1".to_string());
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 1);
+
+        app.selected_layout_element_id = Some("stem_1_0".to_string());
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 1);
+
+        app.selected_layout_element_id = Some("measure_1".to_string());
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 1);
+
+        // 4. Click measure hitbox (populates selected_layout_measures)
+        app.selected_layout_element_id = None;
+        app.selected_layout_measures.insert(2);
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 2);
+
+        // 5. Shift+click multiple measures: e.g. measures 1, 2
+        app.selected_layout_measures.insert(1);
+        assert_eq!(app.get_selected_measure_range(), (1, 2));
+        assert_eq!(app.get_target_measure_for_layout_or_breaks(), 2);
+    }
+
+    #[test]
+    fn test_make_into_system_replaces_spanned_system_breaks() {
+        let mut app = MnxEditorApp::default();
+        app.add_measure_to_end();
+        app.add_measure_to_end();
+        app.add_measure_to_end();
+
+        // Initially toggle a system break on measure 1
+        app.action_toggle_system_break(1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures[1].system_break, Some(true));
+
+        // Now select measures 0..=2 and execute "Make into System"
+        app.action_make_into_system(0, 2);
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        // The previously set system break at measure 1 must have been cleared / replaced
+        assert_eq!(doc.global.measures[1].system_break, None);
+        // The new break is now at measure 2 (end of system)
+        assert_eq!(doc.global.measures[2].system_break, Some(true));
+        // The locked system [0, 2] is recorded
+        let layout = doc.layout.as_ref().unwrap();
+        assert_eq!(layout.locked_systems, vec![[0, 2]]);
+
+        // Layout breaking produces a single system for measures 0..3
+        let metrics = crate::layout::sizing::compute_measure_metrics(doc, crate::layout::DEFAULT_LAYOUT_BASE_SPACING);
+        let breaks = crate::layout::breaking::break_measures_into_systems(
+            &metrics,
+            1000.0,
+            &layout.locked_systems,
+        );
+        assert_eq!(breaks[0].measure_range, 0..3);
+
+        // Setting a new manual break on measure 1 inside the locked system dissolves the lock
+        app.action_toggle_system_break(1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures[1].system_break, Some(true));
+        let layout = doc.layout.as_ref().unwrap();
+        assert!(layout.locked_systems.is_empty());
+    }
+
+    #[test]
     fn test_start_new_tab_microtonal_tuning_preserves_alter() {
         let mut app = MnxEditorApp::default();
         let edo = 24;
@@ -2522,6 +2630,235 @@ parts:
         assert_eq!(app.active_dialog, ActiveDialog::Manual);
         app.active_dialog = ActiveDialog::About;
         assert_eq!(app.active_dialog, ActiveDialog::About);
+    }
+
+    #[test]
+    fn test_ending_barline_roundtrip_and_metrics() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+      barline: { type: final }
+parts:
+  - instrument:
+      name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    fret: 0
+                    string: 1
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(
+            doc.global.measures[0].barline.as_ref().map(|b| b.barline_type.as_str()),
+            Some("final")
+        );
+
+        let metrics = crate::layout::sizing::compute_measure_metrics(&doc, 24.0);
+        assert_eq!(metrics.len(), 1);
+
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
+        let mut dl = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list(&doc, &pages[0], &mut dl);
+
+        // Verify final barline items are drawn: a thin line (width 1.0) and a thick line (width 3.5)
+        let barlines: Vec<_> = dl
+            .items
+            .iter()
+            .filter(|item| item.id.as_deref() == Some("barline_0"))
+            .collect();
+        assert_eq!(barlines.len(), 2, "Final barline must have two line segments");
+        let strokes: Vec<f32> = barlines
+            .iter()
+            .map(|item| match &item.kind {
+                crate::layout::display_list::DrawKind::Line { stroke, .. } => stroke.width,
+                _ => 0.0,
+            })
+            .collect();
+        assert!(strokes.contains(&1.0));
+        assert!(strokes.contains(&3.5));
+    }
+
+    #[test]
+    fn test_save_discard_dialog_targets() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text.push_str("\n# unsaved changes");
+        assert!(app.is_modified());
+
+        // New file prompts DiscardTarget::NewProject
+        app.new_file();
+        assert_eq!(
+            app.active_dialog,
+            ActiveDialog::ConfirmDiscardChanges {
+                target: DiscardTarget::NewProject,
+            }
+        );
+
+        // Open file prompts DiscardTarget::OpenFile
+        app.open_file();
+        assert_eq!(
+            app.active_dialog,
+            ActiveDialog::ConfirmDiscardChanges {
+                target: DiscardTarget::OpenFile,
+            }
+        );
+    }
+
+    #[test]
+    fn test_layout_mode_keyboard_isolation() {
+        let mut app = MnxEditorApp::default();
+        app.view_mode = ViewMode::Layout;
+        app.selected_event_idx = Some(0);
+
+        let initial_yaml = app.yaml_text.clone();
+
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.handle_keyboard_input(ui, false, &[], 1);
+        });
+        out.textures_delta.clear();
+
+        assert_eq!(app.yaml_text, initial_yaml, "Score YAML must remain completely unchanged in Layout Mode");
+    }
+
+    #[test]
+    fn test_make_into_system_compression() {
+        let measures = vec![
+            crate::layout::sizing::MeasureMetrics {
+                measure_idx: 0,
+                measure_number: 1,
+                min_width: 160.0,
+                spring_stiffness: 4.0,
+                has_system_break: false,
+                has_page_break: false,
+                time_signature_width: 34.0,
+                has_repeat_start: false,
+                has_repeat_end: false,
+                ending_numbers: None,
+            },
+            crate::layout::sizing::MeasureMetrics {
+                measure_idx: 1,
+                measure_number: 2,
+                min_width: 160.0,
+                spring_stiffness: 4.0,
+                has_system_break: false,
+                has_page_break: false,
+                time_signature_width: 0.0,
+                has_repeat_start: false,
+                has_repeat_end: false,
+                ending_numbers: None,
+            },
+            crate::layout::sizing::MeasureMetrics {
+                measure_idx: 2,
+                measure_number: 3,
+                min_width: 160.0,
+                spring_stiffness: 4.0,
+                has_system_break: false,
+                has_page_break: false,
+                time_signature_width: 0.0,
+                has_repeat_start: false,
+                has_repeat_end: false,
+                ending_numbers: None,
+            },
+            crate::layout::sizing::MeasureMetrics {
+                measure_idx: 3,
+                measure_number: 4,
+                min_width: 160.0,
+                spring_stiffness: 4.0,
+                has_system_break: false,
+                has_page_break: false,
+                time_signature_width: 0.0,
+                has_repeat_start: false,
+                has_repeat_end: false,
+                ending_numbers: None,
+            },
+        ];
+
+        let content_w = 500.0;
+        let breaks_auto = crate::layout::breaking::break_measures_into_systems(&measures, content_w, &[]);
+        assert!(breaks_auto.len() >= 2, "Without locks, 640px must break across multiple systems");
+
+        // Lock bars 0..=3 into a single system
+        let locked = [[0, 3]];
+        let breaks_locked = crate::layout::breaking::break_measures_into_systems(&measures, content_w, &locked);
+        assert_eq!(breaks_locked.len(), 1, "Locked system must keep bars 0..=3 together");
+        assert_eq!(breaks_locked[0].measure_range, 0..4);
+
+        let margins = crate::mnx::PageMargins { top: 40.0, bottom: 40.0, left: 50.0, right: 50.0 };
+        let mut pages = crate::layout::breaking::pack_systems_into_pages(breaks_locked, 600.0, 800.0, &margins, 100.0, 20.0, 0.0);
+        crate::layout::justification::justify_systems(&mut pages, &measures, true);
+
+        // Check that measures compressed down to fit exactly into content_w (500.0)
+        let total_w: f32 = pages[0].systems[0].measure_widths.iter().sum();
+        assert!((total_w - content_w).abs() < 1e-2, "Compressed system width must equal content width flush to margins");
+    }
+
+    #[test]
+    fn test_score_info_metadata_roundtrip() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  _x:
+    title: "Original Title"
+    subtitle: "Original Subtitle"
+    composer: "Original Composer"
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Acoustic Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes: []
+                rest: {}
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.to_string());
+        app.process_and_render();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.score_title(), Some("Original Title"));
+        assert_eq!(doc.score_subtitle(), Some("Original Subtitle"));
+        assert_eq!(doc.score_composer(), Some("Original Composer"));
+
+        // Mutate score info
+        app.mutate_doc(|doc| {
+            doc.global.title = Some("New Title".to_string());
+            doc.global.subtitle = Some("New Subtitle".to_string());
+            doc.global.composer = Some("New Composer".to_string());
+            Some(())
+        });
+
+        assert!(app.yaml_text.contains("New Title"));
+        assert!(app.yaml_text.contains("New Subtitle"));
+        assert!(app.yaml_text.contains("New Composer"));
+
+        let doc_after = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc_after.score_title(), Some("New Title"));
+        assert_eq!(doc_after.score_subtitle(), Some("New Subtitle"));
+        assert_eq!(doc_after.score_composer(), Some("New Composer"));
+
+        // Verify layout Page 1 header contains title, subtitle, composer, and instrument
+        let pages = crate::layout::compute_score_layout(doc_after, 0.0);
+        let mut dl = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list(doc_after, &pages[0], &mut dl);
+
+        let has_title = dl.items.iter().any(|item| item.id.as_deref() == Some("header_title"));
+        let has_sub = dl.items.iter().any(|item| item.id.as_deref() == Some("header_subtitle"));
+        let has_comp = dl.items.iter().any(|item| item.id.as_deref() == Some("header_composer"));
+        let has_inst = dl.items.iter().any(|item| item.id.as_deref() == Some("header_instrument"));
+
+        assert!(has_title, "header_title must be in display list");
+        assert!(has_sub, "header_subtitle must be in display list");
+        assert!(has_comp, "header_composer must be in display list");
+        assert!(has_inst, "header_instrument must be in display list");
     }
 }
 

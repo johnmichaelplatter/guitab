@@ -502,6 +502,10 @@ impl MnxEditorApp {
             }
         }
 
+        if self.view_mode != ViewMode::Continuous {
+            return;
+        }
+
         // In-place Lyric Editing Key Handling
         if self.is_editing_lyric {
             let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));

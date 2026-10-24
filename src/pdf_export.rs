@@ -81,6 +81,11 @@ pub fn generate_score_pdf_bytes(
 
         // Draw items
         for item in &display_list.items {
+            if let Some(id) = &item.id {
+                if id.starts_with("measure_") || id.starts_with("sys_lock_") {
+                    continue;
+                }
+            }
             match &item.kind {
                 DrawKind::Line { from, to, stroke } => {
                     let pt1 = Point::new(
@@ -277,10 +282,8 @@ pub fn populate_page_display_list(
     // Header on Page 1
     if page.page_number == 1 {
         let title_text = doc
-            .title
-            .as_deref()
+            .score_title()
             .or_else(|| doc.layout.as_ref().and_then(|l| l.title.as_deref()))
-            .or_else(|| part.name.as_deref())
             .unwrap_or("Title");
 
         if !title_text.is_empty() {
@@ -301,8 +304,7 @@ pub fn populate_page_display_list(
             .micro_fret_divisions
             .map(|divs| format!("{} EDO", divs));
         let subtitle_text = doc
-            .subtitle
-            .as_deref()
+            .score_subtitle()
             .or_else(|| doc.layout.as_ref().and_then(|l| l.subtitle.as_deref()))
             .or_else(|| edo_sub.as_deref());
 
@@ -323,8 +325,7 @@ pub fn populate_page_display_list(
         }
 
         let composer_text = doc
-            .composer
-            .as_deref()
+            .score_composer()
             .or_else(|| doc.layout.as_ref().and_then(|l| l.composer.as_deref()))
             .unwrap_or("Composer");
 
@@ -340,6 +341,22 @@ pub fn populate_page_display_list(
                 },
                 z_index: 10,
             });
+        }
+
+        if let Some(part_name) = part.name.as_deref() {
+            if !part_name.is_empty() {
+                dl.push(DrawItem {
+                    id: Some("header_instrument".to_string()),
+                    kind: DrawKind::Text {
+                        pos: Pos2::new(page.margins.left, page.margins.top + 42.0),
+                        align: Align2::LEFT_CENTER,
+                        text: part_name.to_string(),
+                        font_id: FontId::proportional(12.0),
+                        color: text_color,
+                    },
+                    z_index: 10,
+                });
+            }
         }
     }
 
@@ -517,6 +534,21 @@ pub fn populate_page_display_list(
             let m_w = system.measure_widths[rel_i];
             let barline_x = m_x + m_w;
 
+            // Measure hitbox for Layout Mode selection
+            dl.push(DrawItem {
+                id: Some(format!("measure_{}", m_idx)),
+                kind: DrawKind::Rect {
+                    rect: Rect::from_min_size(
+                        Pos2::new(m_x, staff_top_y),
+                        egui::vec2(m_w, staff_height),
+                    ),
+                    fill: Color32::TRANSPARENT,
+                    stroke: Stroke::NONE,
+                    rounding: 0.0,
+                },
+                z_index: -1,
+            });
+
             // Measure number if "all"
             if measure_numbers_setting == "all" && rel_i > 0 {
                 let mn_str = format!("{}", m_idx + 1);
@@ -593,6 +625,7 @@ pub fn populate_page_display_list(
 
             // Draw measure closing barline
             let is_double = gm.and_then(|g| g.barline.as_ref()).map(|b| b.barline_type == "double").unwrap_or(false);
+            let is_final = gm.and_then(|g| g.barline.as_ref()).map(|b| b.barline_type == "final" || b.barline_type == "ending").unwrap_or(false);
             let is_repeat_end = gm.and_then(|g| g.repeat_end.as_ref()).is_some();
             let next_m_idx = m_idx + 1;
             let next_is_in_system = rel_i + 1 < system.measure_widths.len();
@@ -621,6 +654,10 @@ pub fn populate_page_display_list(
                 dl.push(DrawItem { id: barline_id.clone(), kind: DrawKind::Line { from: Pos2::new(barline_x + 4.0, staff_top_y), to: Pos2::new(barline_x + 4.0, last_string_y), stroke: Stroke::new(1.0, barline_color) }, z_index: 2 });
                 dl.push(DrawItem { id: barline_id.clone(), kind: DrawKind::Circle { center: Pos2::new(barline_x + 8.0, mid_y1), radius: 2.0, fill: barline_color }, z_index: 2 });
                 dl.push(DrawItem { id: barline_id.clone(), kind: DrawKind::Circle { center: Pos2::new(barline_x + 8.0, mid_y2), radius: 2.0, fill: barline_color }, z_index: 2 });
+            } else if is_final {
+                // Final ending barline: thin line at barline_x - 3.5, thick line at barline_x
+                dl.push(DrawItem { id: barline_id.clone(), kind: DrawKind::Line { from: Pos2::new(barline_x - 3.5, staff_top_y), to: Pos2::new(barline_x - 3.5, last_string_y), stroke: Stroke::new(1.0, barline_color) }, z_index: 2 });
+                dl.push(DrawItem { id: barline_id.clone(), kind: DrawKind::Line { from: Pos2::new(barline_x, staff_top_y), to: Pos2::new(barline_x, last_string_y), stroke: Stroke::new(3.5, barline_color) }, z_index: 2 });
             } else if is_double {
                 // Double barline: ||
                 dl.push(DrawItem { id: barline_id.clone(), kind: DrawKind::Line { from: Pos2::new(barline_x - 4.0, staff_top_y), to: Pos2::new(barline_x - 4.0, last_string_y), stroke: Stroke::new(1.0, barline_color) }, z_index: 2 });
@@ -1543,6 +1580,24 @@ pub fn populate_page_display_list(
                             stroke: Stroke::new(1.0, text_color),
                         },
                         z_index: 4,
+                    });
+                }
+            }
+        }
+
+        if let Some(layout_cfg) = &doc.layout {
+            for &[start_m, end_m] in &layout_cfg.locked_systems {
+                if start_m <= end_m && start_m == system.measure_range.start && end_m + 1 == system.measure_range.end {
+                    dl.push(DrawItem {
+                        id: Some(format!("sys_lock_{}_{}", start_m, end_m)),
+                        kind: DrawKind::Text {
+                            pos: Pos2::new(system_end_x - 2.0, staff_top_y - 12.0),
+                            align: Align2::RIGHT_BOTTOM,
+                            text: "[system]".to_string(),
+                            font_id: FontId::proportional(10.0),
+                            color: Color32::from_rgba_unmultiplied(100, 110, 150, 140),
+                        },
+                        z_index: 8,
                     });
                 }
             }

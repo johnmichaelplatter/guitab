@@ -2113,7 +2113,13 @@ impl crate::gui::MnxEditorApp {
                 }
             }
             let cur = doc.global.measures[m_idx].system_break.unwrap_or(false);
-            doc.global.measures[m_idx].system_break = if cur { None } else { Some(true) };
+            let new_val = if cur { None } else { Some(true) };
+            doc.global.measures[m_idx].system_break = new_val;
+            if new_val == Some(true) {
+                if let Some(layout) = &mut doc.layout {
+                    layout.locked_systems.retain(|&[s, e]| !(s <= m_idx && m_idx < e));
+                }
+            }
             Some(())
         });
     }
@@ -2131,7 +2137,13 @@ impl crate::gui::MnxEditorApp {
                 }
             }
             let cur = doc.global.measures[m_idx].page_break.unwrap_or(false);
-            doc.global.measures[m_idx].page_break = if cur { None } else { Some(true) };
+            let new_val = if cur { None } else { Some(true) };
+            doc.global.measures[m_idx].page_break = new_val;
+            if new_val == Some(true) {
+                if let Some(layout) = &mut doc.layout {
+                    layout.locked_systems.retain(|&[s, e]| !(s <= m_idx && m_idx < e));
+                }
+            }
             Some(())
         });
     }
@@ -2162,6 +2174,48 @@ impl crate::gui::MnxEditorApp {
             layout.measure_numbers = setting.to_string();
             Some(())
         });
+    }
+
+    pub(crate) fn action_make_into_system(&mut self, start_m: usize, end_m: usize) {
+        if start_m >= end_m {
+            return;
+        }
+        self.mutate_doc(|doc| {
+            let layout = doc.layout.get_or_insert_with(Default::default);
+            layout.locked_systems.retain(|&[s, e]| e < start_m || s > end_m);
+            layout.locked_systems.push([start_m, end_m]);
+            layout.locked_systems.sort_by_key(|&[s, _]| s);
+
+            while doc.global.measures.len() <= end_m {
+                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+            }
+
+            // If "make into system" spans previously set breaks, replace them inside the span
+            for m in start_m..end_m {
+                if let Some(gm) = doc.global.measures.get_mut(m) {
+                    gm.system_break = None;
+                    gm.page_break = None;
+                }
+            }
+
+            doc.global.measures[end_m].system_break = Some(true);
+            Some(())
+        });
+        self.selected_layout_measures.clear();
+    }
+
+    pub(crate) fn action_unlock_system(&mut self, start_m: usize, end_m: usize) {
+        self.mutate_doc(|doc| {
+            if let Some(layout) = &mut doc.layout {
+                layout.locked_systems.retain(|&[s, e]| !(s == start_m && e == end_m));
+            }
+            if let Some(gm) = doc.global.measures.get_mut(end_m) {
+                gm.system_break = None;
+            }
+            Some(())
+        });
+        self.selected_layout_element_id = None;
+        self.selected_layout_element_ids.clear();
     }
 
     pub fn action_shift_selected_frets(&mut self, delta_fret: i32) {
