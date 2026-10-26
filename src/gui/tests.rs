@@ -6,7 +6,7 @@ mod tests {
 
     #[test]
     fn test_find_all_event_ranges_example_yaml() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let ranges = find_all_event_ranges(yaml);
         assert_eq!(ranges.len(), 20);
         for er in &ranges {
@@ -46,7 +46,7 @@ parts:
 
     #[test]
     fn test_update_note_in_yaml() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let part = &doc.parts[0];
         let tuning_calc = crate::edo::EdoTuning::new(part.edo());
@@ -73,7 +73,7 @@ parts:
 
     #[test]
     fn test_edit_string4_fret12() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let part = &doc.parts[0];
 
@@ -95,7 +95,7 @@ parts:
 
     #[test]
     fn test_set_or_add_note_on_string_creates_chord() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let part = &doc.parts[0];
 
@@ -164,7 +164,7 @@ parts:
 
     #[test]
     fn test_add_measure_to_yaml() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let initial_measures = doc.parts[0].measures.len();
         assert_eq!(initial_measures, 3);
@@ -362,12 +362,12 @@ parts:
         };
 
         for filename in &[
-            "example.yaml",
+            "examples/example.yaml",
             "example_endings.yaml",
             "example_harmonics.yaml",
             "example_layout_lyrics.yaml",
             "c scale.yaml",
-            "chord example.yaml",
+            "chord examples/example.yaml",
         ] {
             let path = std::path::Path::new(filename);
             if !path.exists() {
@@ -383,7 +383,7 @@ parts:
 
             if matches!(
                 *filename,
-                "example.yaml" | "example_endings.yaml" | "example_harmonics.yaml" | "example_layout_lyrics.yaml"
+                "examples/example.yaml" | "example_endings.yaml" | "example_harmonics.yaml" | "example_layout_lyrics.yaml"
             ) {
                 let initial_m_count = raw_doc.parts[0].measures.len();
                 let updated_raw = add_measure_to_yaml(&raw_yaml, &dur).expect("Add measure to raw");
@@ -466,7 +466,7 @@ parts:
 
     #[test]
     fn test_add_measure_and_remove_blank_measure() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let dur = crate::mnx::Duration {
             multiple: None,
             base: "quarter".to_string(),
@@ -536,7 +536,7 @@ parts:
 
     #[test]
     fn test_update_event_duration_in_yaml() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let dur_quarter = crate::mnx::Duration {
             multiple: None,
             base: "quarter".to_string(),
@@ -608,7 +608,7 @@ parts:
     }
     #[test]
     fn test_set_bpm_in_yaml_insert() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let result = set_bpm_in_yaml(yaml, 140.0);
         println!("RESULT YAML:\n{}", &result[..result.len().min(400)]);
         let doc =
@@ -625,7 +625,7 @@ parts:
 
     #[test]
     fn test_set_bpm_in_yaml_update() {
-        let yaml = include_str!("../../example.yaml");
+        let yaml = include_str!("../../examples/example.yaml");
         let with_bpm = set_bpm_in_yaml(yaml, 140.0);
         let updated = set_bpm_in_yaml(&with_bpm, 200.0);
         let doc =
@@ -826,7 +826,7 @@ parts:
     #[test]
     fn test_edit_mode_navigate_right_on_blank_string_when_next_event_has_notes() {
         let mut app = MnxEditorApp::default();
-        // In example.yaml, event 0 has a note on string 7, but string 1 is blank at event 0.
+        // In examples/example.yaml, event 0 has a note on string 7, but string 1 is blank at event 0.
         // Event 1 has a note on string 7.
         app.selected_event_idx = Some(0);
         app.is_editing_fret = true;

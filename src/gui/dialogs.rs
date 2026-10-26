@@ -94,7 +94,7 @@ impl MnxEditorApp {
                     .resizable(true)
                     .default_width(480.0)
                     .show(ctx, |ui| {
-                        ui.heading("MNX Tablature Editor — Manual");
+                        ui.heading("guitab — Manual");
                         ui.separator();
                         ui.label("Documentation placeholder — full user manual coming soon.");
                         ui.add_space(8.0);
@@ -119,7 +119,7 @@ impl MnxEditorApp {
                     .resizable(false)
                     .default_width(360.0)
                     .show(ctx, |ui| {
-                        ui.heading("MNX Tablature Editor");
+                        ui.heading("guitab");
                         ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                         ui.separator();
                         ui.label(

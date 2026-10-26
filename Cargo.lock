@@ -1661,6 +1661,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "guitab"
+version = "0.7.0"
+dependencies = [
+ "eframe",
+ "egui_extras",
+ "epaint_default_fonts",
+ "image",
+ "midir",
+ "midly",
+ "printpdf",
+ "rfd",
+ "serde",
+ "serde-saphyr",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2187,22 +2203,6 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
-]
-
-[[package]]
-name = "mnx_tab_cli"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui_extras",
- "epaint_default_fonts",
- "image",
- "midir",
- "midly",
- "printpdf",
- "rfd",
- "serde",
- "serde-saphyr",
 ]
 
 [[package]]

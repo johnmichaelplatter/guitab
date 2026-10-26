@@ -38,13 +38,18 @@ pub(crate) fn setup_custom_fonts(ctx: &egui::Context) {
 }
 
 fn main() -> eframe::Result<()> {
+    let icon = eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon.png")[..])
+        .expect("Failed to load application icon");
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 600.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1000.0, 600.0])
+            .with_icon(icon),
         ..Default::default()
     };
 
     eframe::run_native(
-        "MNX Tablature Editor",
+        "guitab",
         options,
         Box::new(|cc| {
             setup_custom_fonts(&cc.egui_ctx);

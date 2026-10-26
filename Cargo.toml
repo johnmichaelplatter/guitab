@@ -1,7 +1,12 @@
 [package]
-name = "mnx_tab_cli"
-version = "0.1.0"
+name = "guitab"
+version = "0.7.0"
 edition = "2024"
+repository = "https://github.com/johnmichaelplatter/guitab"
+homepage = "https://github.com/johnmichaelplatter/guitab"
+licence = "MIT"
+description = "guitab — MNX based guitar tablature editor with broad microtonal support"
+keywords = ["microtonal", "guitar", "tablature", "tab", "MPE"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -25,5 +30,6 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-
-
+[profile.dist]
+inherits = "release"
+lto = "thin"

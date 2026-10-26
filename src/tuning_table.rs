@@ -253,7 +253,7 @@ parts:
 
     #[test]
     fn test_kite_guitar_41edo_frequency_table() {
-        let yaml = include_str!("../example.yaml");
+        let yaml = include_str!("../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let part = &doc.parts[0];
         let table = FretboardFrequencyTable::from_part(part, ReferencePitch::default(), 24);

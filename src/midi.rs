@@ -1243,7 +1243,7 @@ pub struct MidiPortInfo {
 }
 
 pub fn get_midi_output_ports() -> Vec<MidiPortInfo> {
-    match midir::MidiOutput::new("mnx_tab_cli_probe") {
+    match midir::MidiOutput::new("guitab_probe") {
         Ok(out) => {
             let mut ports = Vec::new();
             for (idx, p) in out.ports().iter().enumerate() {
@@ -1302,7 +1302,7 @@ impl MidiPlayer {
                 return Ok(());
             }
         }
-        let midi_out = midir::MidiOutput::new("mnx_tab_cli_player")
+        let midi_out = midir::MidiOutput::new("guitab_player")
             .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
         let ports = midi_out.ports();
         let port = ports
@@ -1536,7 +1536,7 @@ mod tests {
 
     #[test]
     fn test_generate_midi_output() {
-        let yaml = include_str!("../example.yaml");
+        let yaml = include_str!("../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let smf = generate_midi(&doc, MidiOptions::default());
         assert_eq!(smf.tracks.len(), 1);
@@ -1575,7 +1575,7 @@ mod tests {
 
     #[test]
     fn test_generate_midi_mpe_output() {
-        let yaml = include_str!("../example.yaml");
+        let yaml = include_str!("../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let mpe_opts = MidiOptions::mpe_default();
         assert_eq!(mpe_opts.pitch_bend_range, 48);
@@ -1663,7 +1663,7 @@ mod tests {
 
     #[test]
     fn test_generate_midi_start_event_idx() {
-        let yaml = include_str!("../example.yaml");
+        let yaml = include_str!("../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let full_smf = generate_midi(&doc, MidiOptions::default());
         let full_note_ons = full_smf.tracks[0]
@@ -1709,7 +1709,7 @@ mod tests {
 
     #[test]
     fn test_generate_playback_track_event_markers() {
-        let yaml = include_str!("../example.yaml");
+        let yaml = include_str!("../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
         assert_eq!(ppq, 480.0);
@@ -1739,7 +1739,7 @@ mod tests {
 
     #[test]
     fn test_generate_playback_track_partial_start() {
-        let yaml = include_str!("../example.yaml");
+        let yaml = include_str!("../examples/example.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         // Start playback from event 3
         let options = MidiOptions {

@@ -224,7 +224,7 @@ pub enum ActiveDialog {
 
 impl Default for MnxEditorApp {
     fn default() -> Self {
-        let initial_yaml = fs::read_to_string("example.yaml")
+        let initial_yaml = fs::read_to_string("examples/example.yaml")
             .unwrap_or_else(|_| String::from("# Could not load example.yaml"));
 
         let ports = if cfg!(test) {
