@@ -1310,6 +1310,18 @@ impl MnxEditorApp {
                     };
                 }
 
+                if ui
+                    .button("Custom Fretboard...")
+                    .on_hover_text("Open visual custom fretboard / fretlet & JI editor")
+                    .clicked()
+                {
+                    if let Some(doc) = &self.parsed_mnx {
+                        self.active_dialog = ActiveDialog::CustomFretboardEditor(
+                            crate::fretboard_editor::FretboardEditorState::from_doc(doc),
+                        );
+                    }
+                }
+
                 ui.separator();
 
                 // 5. String-to-Channel Mappings button with Popup
@@ -1345,6 +1357,141 @@ impl MnxEditorApp {
                         }
                     }
                 });
+
+                ui.separator();
+
+                // 6. Grid Controllers Select UI/UX & Quick On-The-Fly Fret Offset Controls
+                ui.menu_button("Grid Controllers ◢", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Grid Controller MIDI Inputs (up to 4)").strong(),
+                        );
+                        if ui.small_button("🔄 Refresh Ports").clicked() {
+                            self.midi_input_ports = crate::grid_input::get_midi_input_ports();
+                        }
+                    });
+                    ui.separator();
+
+                    let ports_snapshot = self.midi_input_ports.clone();
+                    let mut slot_port_change: Option<(usize, Option<usize>)> = None;
+                    for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                        let sel_port_id = self.grid_input.selected_port_ids[slot_idx];
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("Grid {}:", slot_idx + 1)).strong(),
+                            );
+                            let current_label = sel_port_id
+                                .and_then(|id| ports_snapshot.iter().find(|p| p.id == id))
+                                .map(|p| p.name.clone())
+                                .unwrap_or_else(|| "Disconnected".to_string());
+
+                            egui::ComboBox::from_id_salt(format!("toolbar_grid_port_{}", slot_idx))
+                                .selected_text(current_label)
+                                .width(170.0)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(sel_port_id.is_none(), "Disconnected")
+                                        .clicked()
+                                    {
+                                        slot_port_change = Some((slot_idx, None));
+                                    }
+                                    for port in &ports_snapshot {
+                                        if ui
+                                            .selectable_label(
+                                                sel_port_id == Some(port.id),
+                                                &port.name,
+                                            )
+                                            .clicked()
+                                        {
+                                            slot_port_change = Some((slot_idx, Some(port.id)));
+                                        }
+                                    }
+                                });
+
+                            ui.label("Fret Offset:");
+                            let slot_cfg = &mut self.grid_input.slots[slot_idx];
+                            if ui.small_button("-").clicked() {
+                                slot_cfg.fret_offset = (slot_cfg.fret_offset - 1).max(0);
+                            }
+                            ui.add(
+                                egui::DragValue::new(&mut slot_cfg.fret_offset)
+                                    .range(0..=48)
+                                    .speed(0.2),
+                            );
+                            if ui.small_button("+").clicked() {
+                                slot_cfg.fret_offset = (slot_cfg.fret_offset + 1).min(48);
+                            }
+                        });
+                    }
+                    if let Some((s_idx, pid)) = slot_port_change {
+                        if let Err(err) = self.grid_input.connect_slot(s_idx, pid) {
+                            self.midi_status_msg = Some(err);
+                        }
+                    }
+
+                    ui.separator();
+                    if ui.button("Configure & Calibrate 4 Corners...").clicked() {
+                        self.midi_input_ports = crate::grid_input::get_midi_input_ports();
+                        self.active_dialog = ActiveDialog::GridControllerSetup;
+                        ui.close();
+                    }
+                });
+
+                // Inline quick on-the-fly Fret Offset controls for connected grid controllers
+                for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                    if self.grid_input.selected_port_ids[slot_idx].is_some()
+                        || self.grid_input.slots[slot_idx].enabled
+                    {
+                        let slot_cfg = &mut self.grid_input.slots[slot_idx];
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("G{} Offset:", slot_idx + 1))
+                                    .size(11.5)
+                                    .color(Color32::from_rgb(255, 160, 160)),
+                            );
+                            if ui
+                                .small_button("-")
+                                .on_hover_text("Decrease leftmost column fret offset")
+                                .clicked()
+                            {
+                                slot_cfg.fret_offset = (slot_cfg.fret_offset - 1).max(0);
+                            }
+                            ui.add(
+                                egui::DragValue::new(&mut slot_cfg.fret_offset)
+                                    .range(0..=48)
+                                    .speed(0.2),
+                            )
+                            .on_hover_text(format!(
+                                "Grid {} leftmost column fret number (quick on-the-fly adjustment)",
+                                slot_idx + 1
+                            ));
+                            if ui
+                                .small_button("+")
+                                .on_hover_text("Increase leftmost column fret offset")
+                                .clicked()
+                            {
+                                slot_cfg.fret_offset = (slot_cfg.fret_offset + 1).min(48);
+                            }
+                        });
+                    }
+                }
+
+                if self.grid_input.is_grid_input_mode {
+                    ui.separator();
+                    if ui
+                        .button(
+                            egui::RichText::new("● GRID INPUT MODE (Esc to exit)")
+                                .strong()
+                                .color(Color32::from_rgb(255, 110, 110)),
+                        )
+                        .on_hover_text(
+                            "Hold pads to preview chord, release all pads for 500ms to finalize & advance. Press Esc or click to exit.",
+                        )
+                        .clicked()
+                    {
+                        self.grid_input.exit_grid_input_mode();
+                    }
+                }
 
                 // Status message tooltip / indicator
                 if let Some(msg) = &self.midi_status_msg {
@@ -1399,6 +1546,7 @@ impl MnxEditorApp {
                     });
 
                     let is_editing_now = self.is_editing_fret;
+                    let is_grid_mode_now = self.grid_input.is_grid_input_mode;
 
                     let mut layouter =
                         |ui: &egui::Ui, text_buf: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -1427,6 +1575,8 @@ impl MnxEditorApp {
                                 if sel_end > sel_start {
                                     let bg_hl = if is_editing_now {
                                         Color32::from_rgba_unmultiplied(220, 140, 40, 140) // Orange highlight
+                                    } else if is_grid_mode_now {
+                                        Color32::from_rgba_unmultiplied(245, 95, 95, 140) // Light-red Grid Input Mode highlight
                                     } else {
                                         Color32::from_rgba_unmultiplied(60, 130, 210, 120) // Blue highlight
                                     };
@@ -1502,6 +1652,7 @@ impl MnxEditorApp {
                                         selection_anchor: self.selection_anchor,
                                         selected_note_in_event: self.selected_note_idx_in_event,
                                         is_editing_fret: self.is_editing_fret,
+                                        is_grid_input_mode: self.grid_input.is_grid_input_mode,
                                         editing_fret_text: &self.editing_fret_buf,
                                         editing_string: self.editing_string,
                                         is_editing_lyric: self.is_editing_lyric,

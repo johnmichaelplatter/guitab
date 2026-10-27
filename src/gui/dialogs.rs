@@ -124,6 +124,8 @@ impl MnxEditorApp {
                 event_idx: usize,
                 marking: Option<crate::mnx::TextMarking>,
             },
+            OpenCustomFretboardEditor,
+            ApplyCustomFretboard(crate::fretboard_editor::FretboardEditorState),
         }
 
         let mut close_dialog = false;
@@ -132,6 +134,7 @@ impl MnxEditorApp {
         let mut lyric_advance: Option<(usize, usize, bool)> = None;
         let presets_snapshot = self.instrument_presets.clone();
         let preset_status_snapshot = self.preset_status_msg.clone();
+        let mut refresh_grid_ports = false;
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
@@ -803,6 +806,15 @@ impl MnxEditorApp {
                                 });
                                 close_dialog = true;
                             }
+                            if ui
+                                .button("Custom Fretboard Editor...")
+                                .on_hover_text(
+                                    "Open visual editor for custom fretlets, Just Intonation ratios, cents, or EDO steps",
+                                )
+                                .clicked()
+                            {
+                                apply_action = Some(DialogAction::OpenCustomFretboardEditor);
+                            }
                             if ui.button("Cancel").clicked() {
                                 close_dialog = true;
                             }
@@ -1396,6 +1408,208 @@ impl MnxEditorApp {
                         });
                     });
             }
+            ActiveDialog::GridControllerSetup => {
+                let ports_snapshot = self.midi_input_ports.clone();
+                let num_strings = self
+                    .parsed_mnx
+                    .as_ref()
+                    .and_then(|d| d.parts.first())
+                    .map(|p| p.num_strings() as u8)
+                    .unwrap_or(6);
+                egui::Window::new("Grid Controller MIDI Input Setup (Up to 4 Controllers)")
+                    .collapsible(false)
+                    .resizable(true)
+                    .default_width(640.0)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                "Connect up to 4 grid controllers simultaneously and calibrate their 4 corners.",
+                            );
+                            if ui.button("🔄 Refresh MIDI Input Devices").clicked() {
+                                refresh_grid_ports = true;
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "Tip: Press any calibrated pad to enter Grid Controller Input Mode (light-red highlight). Hold pads to preview/adjust chords, and release all pads for 500ms to finalize and advance.",
+                            )
+                            .size(11.5)
+                            .color(egui::Color32::from_rgb(255, 160, 160)),
+                        );
+                        ui.separator();
+
+                        let mut slot_port_change: Option<(usize, Option<usize>)> = None;
+                        let mut start_cal_slot: Option<usize> = None;
+                        let mut cancel_cal = false;
+
+                        for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                            let sel_port_id = self.grid_input.selected_port_ids[slot_idx];
+                            let active_cal_for_slot = self
+                                .grid_input
+                                .active_calibration
+                                .filter(|(s, _, _)| *s == slot_idx);
+                            let slot_cfg = &mut self.grid_input.slots[slot_idx];
+
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "Controller Slot {}",
+                                            slot_idx + 1
+                                        ))
+                                        .strong(),
+                                    );
+                                    let current_label = sel_port_id
+                                        .and_then(|id| ports_snapshot.iter().find(|p| p.id == id))
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_else(|| "Disconnected".to_string());
+
+                                    egui::ComboBox::from_id_salt(format!(
+                                        "dialog_grid_port_{}",
+                                        slot_idx
+                                    ))
+                                    .selected_text(current_label)
+                                    .width(210.0)
+                                    .show_ui(ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                sel_port_id.is_none(),
+                                                "Disconnected",
+                                            )
+                                            .clicked()
+                                        {
+                                            slot_port_change = Some((slot_idx, None));
+                                        }
+                                        for port in &ports_snapshot {
+                                            if ui
+                                                .selectable_label(
+                                                    sel_port_id == Some(port.id),
+                                                    &port.name,
+                                                )
+                                                .clicked()
+                                            {
+                                                slot_port_change =
+                                                    Some((slot_idx, Some(port.id)));
+                                            }
+                                        }
+                                    });
+
+                                    ui.separator();
+                                    ui.label("Leftmost Column Fret Offset:");
+                                    if ui.small_button("-").clicked() {
+                                        slot_cfg.fret_offset =
+                                            (slot_cfg.fret_offset - 1).max(0);
+                                    }
+                                    ui.add(
+                                        egui::DragValue::new(&mut slot_cfg.fret_offset)
+                                            .range(0..=48)
+                                            .speed(0.2),
+                                    );
+                                    if ui.small_button("+").clicked() {
+                                        slot_cfg.fret_offset =
+                                            (slot_cfg.fret_offset + 1).min(48);
+                                    }
+                                });
+
+                                ui.horizontal(|ui| {
+                                    if let Some((_, step, _)) = active_cal_for_slot {
+                                        ui.label(
+                                            egui::RichText::new(step.prompt_text())
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(255, 210, 90)),
+                                        );
+                                        if ui.button("Cancel Calibration").clicked() {
+                                            cancel_cal = true;
+                                        }
+                                    } else {
+                                        if ui
+                                            .button("Calibrate 4 Corners")
+                                            .on_hover_text(
+                                                "Press Upper-Left, Lower-Left, Upper-Right, and Lower-Right pads on this grid controller",
+                                            )
+                                            .clicked()
+                                        {
+                                            start_cal_slot = Some(slot_idx);
+                                        }
+                                        let cols = slot_cfg
+                                            .calibration
+                                            .solve_axes(num_strings)
+                                            .map(|(_, _, _, c)| c)
+                                            .unwrap_or(0);
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "Corners (MIDI notes): UL={} LL={} UR={} LR={} ({} cols)",
+                                                slot_cfg.calibration.upper_left,
+                                                slot_cfg.calibration.lower_left,
+                                                slot_cfg.calibration.upper_right,
+                                                slot_cfg.calibration.lower_right,
+                                                cols
+                                            ))
+                                            .size(11.0)
+                                            .color(ui.visuals().weak_text_color()),
+                                        );
+                                    }
+                                });
+                            });
+                        }
+
+                        if let Some((s_idx, pid)) = slot_port_change {
+                            if let Err(err) = self.grid_input.connect_slot(s_idx, pid) {
+                                self.midi_status_msg = Some(err);
+                            }
+                        }
+                        if let Some(s_idx) = start_cal_slot {
+                            self.grid_input.start_calibration(s_idx);
+                        }
+                        if cancel_cal {
+                            self.grid_input.cancel_calibration();
+                        }
+
+                        ui.separator();
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if ui.button("Done").clicked() || esc_pressed {
+                            close_dialog = true;
+                        }
+                    });
+            }
+            ActiveDialog::CustomFretboardEditor(editor_state) => {
+                egui::Window::new("Custom Fretboard / Fretlet & Just Intonation Editor")
+                    .collapsible(false)
+                    .resizable(true)
+                    .default_width(860.0)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        editor_state.ui(ui);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Apply Custom Fretboard").clicked() {
+                                apply_action = Some(DialogAction::ApplyCustomFretboard(
+                                    editor_state.clone(),
+                                ));
+                                close_dialog = true;
+                            }
+                            if ui
+                                .button("Revert to Standard EDO Frets")
+                                .on_hover_text("Clear custom frets and return to standard EDO fret spacing")
+                                .clicked()
+                            {
+                                let mut cleared = editor_state.clone();
+                                cleared.frets.clear();
+                                apply_action = Some(DialogAction::ApplyCustomFretboard(cleared));
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
+        }
+
+        if refresh_grid_ports {
+            self.midi_input_ports = crate::grid_input::get_midi_input_ports();
         }
 
         if let Some((ev, line, text, l_type, ext)) = lyric_action {
@@ -1935,8 +2149,102 @@ impl MnxEditorApp {
                         }
                     });
                 }
+                DialogAction::OpenCustomFretboardEditor => {
+                    if let Some(doc) = &self.parsed_mnx {
+                        self.active_dialog = ActiveDialog::CustomFretboardEditor(
+                            crate::fretboard_editor::FretboardEditorState::from_doc(doc),
+                        );
+                    }
+                }
+                DialogAction::ApplyCustomFretboard(state) => {
+                    self.apply_custom_fretboard_state(state);
+                }
             }
         }
+    }
+
+    pub(crate) fn apply_custom_fretboard_state(
+        &mut self,
+        state: crate::fretboard_editor::FretboardEditorState,
+    ) {
+        let mut doc = match self.parsed_mnx.clone() {
+            Some(d) => d,
+            None => return,
+        };
+        if doc.parts.is_empty() {
+            return;
+        }
+
+        if state.frets.is_empty() {
+            doc.parts[0].ext.custom_frets = None;
+            doc.global.ext.tuning = None;
+        } else {
+            let alter_mode = crate::fretboard_editor::classify_fretboard_alter_mode(
+                &state.frets,
+                state.reference_frequency_hz,
+            );
+            if matches!(
+                alter_mode,
+                crate::fretboard_editor::CustomFretboardAlterMode::PureRatio { .. }
+            ) {
+                doc.global.ext.tuning = Some(crate::mnx::GlobalTuningExt {
+                    reference_note: Some(crate::mnx::ReferenceNoteSpec {
+                        pitch: crate::mnx::Pitch {
+                            step: state.reference_note_step,
+                            alter: None,
+                            octave: state.reference_note_octave,
+                            ext: crate::mnx::PitchExt::default(),
+                        },
+                        frequency_hz: state.reference_frequency_hz,
+                    }),
+                });
+            } else {
+                doc.global.ext.tuning = None;
+            }
+            doc.parts[0].ext.custom_frets = Some(state.frets);
+        }
+
+        let part_clone = doc.parts[0].clone();
+
+        fn resynthesize_items(
+            items: &mut [crate::mnx::SequenceItem],
+            part_clone: &crate::mnx::Part,
+        ) {
+            for item in items {
+                match item {
+                    crate::mnx::SequenceItem::Event(ev) => {
+                        for note in &mut ev.notes {
+                            if let Some(string) = note.string {
+                                let eff_fret = note.effective_fret();
+                                if let Some(f) = eff_fret {
+                                    if let Some(new_pitch) =
+                                        crate::yaml_editor::calculate_pitch_for_string_decimal_fret(
+                                            part_clone, string, f,
+                                        )
+                                    {
+                                        note.pitch = new_pitch;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    crate::mnx::SequenceItem::Tuplet(tup) => {
+                        resynthesize_items(&mut tup.content, part_clone);
+                    }
+                    crate::mnx::SequenceItem::Grace(g) => {
+                        resynthesize_items(&mut g.content, part_clone);
+                    }
+                }
+            }
+        }
+
+        for m in &mut doc.parts[0].measures {
+            for seq in &mut m.sequences {
+                resynthesize_items(&mut seq.content, &part_clone);
+            }
+        }
+
+        self.apply_mutated_doc(doc);
     }
 
     pub(crate) fn translate_instrument_setup(

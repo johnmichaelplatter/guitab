@@ -1102,6 +1102,7 @@ mod tuplet_button_tests {
                     step: "E".to_string(),
                     alter: None,
                     octave: 4,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1110,6 +1111,7 @@ mod tuplet_button_tests {
                     step: "B".to_string(),
                     alter: None,
                     octave: 3,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1118,6 +1120,7 @@ mod tuplet_button_tests {
                     step: "G".to_string(),
                     alter: None,
                     octave: 3,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1126,6 +1129,7 @@ mod tuplet_button_tests {
                     step: "D".to_string(),
                     alter: None,
                     octave: 3,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1134,6 +1138,7 @@ mod tuplet_button_tests {
                     step: "A".to_string(),
                     alter: None,
                     octave: 2,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1142,6 +1147,7 @@ mod tuplet_button_tests {
                     step: "E".to_string(),
                     alter: None,
                     octave: 2,
+                    ..Default::default()
                 },
             },
         ];
@@ -1354,6 +1360,7 @@ parts:
             step: "D".to_string(),
             alter: None,
             octave: 4,
+            ..Default::default()
         };
         let edited_yaml = crate::yaml_editor::set_or_add_note_on_string(&grace_yaml, 0, 3, 12, Some(&pitch))
             .expect("set note on grace event failed");
@@ -2185,6 +2192,7 @@ parts:
                     step: "E".to_string(),
                     octave: 4,
                     alter: Some(crate::mnx::Alteration::Value(0.5)),
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2193,6 +2201,7 @@ parts:
                     step: "B".to_string(),
                     octave: 3,
                     alter: Some(crate::mnx::Alteration::Value(-0.5)),
+                    ..Default::default()
                 },
             },
         ];
@@ -2225,6 +2234,7 @@ parts:
                     step: "G".to_string(),
                     octave: 3,
                     alter: Some(crate::mnx::Alteration::Value(0.5)),
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2233,6 +2243,7 @@ parts:
                     step: "D".to_string(),
                     octave: 3,
                     alter: None,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2241,6 +2252,7 @@ parts:
                     step: "A".to_string(),
                     octave: 2,
                     alter: None,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2249,6 +2261,7 @@ parts:
                     step: "E".to_string(),
                     octave: 2,
                     alter: None,
+                    ..Default::default()
                 },
             },
         ];
@@ -2859,6 +2872,153 @@ parts:
         assert!(has_sub, "header_subtitle must be in display list");
         assert!(has_comp, "header_composer must be in display list");
         assert!(has_inst, "header_instrument must be in display list");
+    }
+
+    #[test]
+    fn test_phase_2a_grid_controller_chord_entry_and_advance() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+        app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].fret_offset = 3; // Leftmost column = fret 3
+
+        let t0 = std::time::Instant::now();
+        // Press String 1 Col 0 (note 76 -> fret 3) and String 2 Col 2 (note 70 -> fret 5)
+        let (chord1, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 76,
+                is_note_on: true,
+                velocity: 100,
+            },
+            6,
+            t0,
+        );
+        assert!(app.grid_input.is_grid_input_mode);
+        let chord1 = chord1.unwrap();
+        app.mutate_doc(|doc| {
+            if crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &chord1) {
+                Some(())
+            } else {
+                None
+            }
+        });
+
+        let (chord2, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 70,
+                is_note_on: true,
+                velocity: 100,
+            },
+            6,
+            t0 + std::time::Duration::from_millis(20),
+        );
+        let chord2 = chord2.unwrap();
+        app.mutate_doc(|doc| {
+            if crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &chord2) {
+                Some(())
+            } else {
+                None
+            }
+        });
+
+        // Verify event 0 now has 2 notes: String 1 Fret 3 and String 2 Fret 5
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev0.notes.len(), 2);
+        assert_eq!(ev0.notes[0].string, Some(1));
+        assert_eq!(ev0.notes[0].fret, Some(3));
+        assert_eq!(ev0.notes[1].string, Some(2));
+        assert_eq!(ev0.notes[1].fret, Some(5));
+
+        // Release both pads and advance after 500ms
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 76,
+                is_note_on: false,
+                velocity: 0,
+            },
+            6,
+            t0 + std::time::Duration::from_millis(50),
+        );
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 70,
+                is_note_on: false,
+                velocity: 0,
+            },
+            6,
+            t0 + std::time::Duration::from_millis(60),
+        );
+        let (_, should_finalize, _) = app
+            .grid_input
+            .poll(6, t0 + std::time::Duration::from_millis(600));
+        assert!(should_finalize);
+
+        let total_events = app.cached_event_ranges.len();
+        app.advance_to_next_note_in_grid_mode(total_events);
+        assert_eq!(app.selected_event_idx, Some(1));
+        assert!(app.grid_input.is_grid_input_mode);
+        assert!(!app.is_editing_fret);
+    }
+
+    #[test]
+    fn test_phase_2b_custom_fretboard_ratio_and_decimal_fretlet_end_to_end() {
+        let mut app = MnxEditorApp::default();
+        let doc = app.parsed_mnx.as_ref().unwrap().clone();
+        let mut state = crate::fretboard_editor::FretboardEditorState::from_doc(&doc);
+
+        // 1. Place pure ratio frets: 5/4 (full neck -> Fret 1), 11/8 (fretlet on String 1 -> Fret 1.5), 3/2 (full neck -> Fret 2)
+        state.frets = vec![
+            crate::fretboard_editor::CustomFret {
+                fret_number: 1.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 5, den: 4 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "vE".to_string(),
+            },
+            crate::fretboard_editor::CustomFret {
+                fret_number: 1.5,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 11, den: 8 },
+                strings: vec![1],
+                note_name: "^F".to_string(),
+            },
+            crate::fretboard_editor::CustomFret {
+                fret_number: 2.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 3, den: 2 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "G".to_string(),
+            },
+        ];
+        crate::fretboard_editor::recompute_fret_numbers(&mut state.frets, 6);
+        assert!((state.frets[1].fret_number - 1.5).abs() < 1e-4);
+
+        app.apply_custom_fretboard_state(state);
+
+        // Verify global._x.tuning.referenceNote was written to YAML for PureRatio mode
+        assert!(app.yaml_text.contains("referenceNote:"));
+        assert!(app.yaml_text.contains("customFrets:"));
+
+        // Enter decimal fret 1.5 on String 1 at Event 0
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "1.5".to_string();
+        assert!(app.commit_fret_edit());
+
+        let doc_after = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc_after.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let n0 = ev0.notes.iter().find(|n| n.string == Some(1)).unwrap();
+        assert_eq!(n0.decimal_fret, Some(1.5));
+        assert_eq!(n0.formatted_fret().as_deref(), Some("1.5"));
+        assert_eq!(
+            n0.pitch.alter,
+            Some(crate::mnx::Alteration::Fraction("11/8".to_string()))
+        );
+        assert_eq!(n0.pitch.ext.name.as_deref(), Some("^F"));
     }
 }
 

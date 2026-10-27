@@ -5,6 +5,11 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 // ── Pitch helpers ────────────────────────────────────────────────────────────
 
 pub fn format_pitch(pitch: &Pitch, edo: u32) -> String {
+    if let Some(custom_name) = &pitch.ext.name {
+        if !custom_name.trim().is_empty() {
+            return custom_name.clone();
+        }
+    }
     let mut prefix = String::new();
     let mut suffix = String::new();
 
@@ -249,7 +254,7 @@ pub fn event_text_width(
         } else if note.muted.unwrap_or(false) {
             1
         } else {
-            note.fret.map(|f| f.to_string().len()).unwrap_or(1)
+            note.formatted_fret().map(|s| s.len()).unwrap_or(1)
         };
         max_chars = max_chars.max(len);
     }
@@ -399,6 +404,7 @@ pub struct TablatureOptions<'a> {
     pub editing_lyric_text: &'a str,
     pub scroll_to_selected: bool,
     pub pitch_bend_range: u8,
+    pub is_grid_input_mode: bool,
 }
 
 pub fn draw_tablature(
@@ -602,7 +608,13 @@ pub fn draw_tablature(
 
     // ── Instrument name + EDO header ──────────────────────────────────────────
 
-    if part.name.is_some() || part.micro_fret_divisions.is_some() {
+    let has_custom_frets = part
+        .ext
+        .custom_frets
+        .as_ref()
+        .map(|cf| !cf.is_empty())
+        .unwrap_or(false);
+    if part.name.is_some() || part.micro_fret_divisions.is_some() || has_custom_frets {
         let header_x = rect.min.x + margin_left;
         let name_y = rect.min.y + 14.0;
         let edo_y = rect.min.y + 32.0;
@@ -618,12 +630,17 @@ pub fn draw_tablature(
             );
         }
 
-        // Plain "N EDO" subtitle
-        if let Some(divisions) = part.micro_fret_divisions {
+        // Plain "N EDO" or "Custom Fretboard" subtitle
+        let subtitle_opt = if has_custom_frets {
+            Some("Custom Fretboard".to_string())
+        } else {
+            part.micro_fret_divisions.map(|d| format!("{} EDO", d))
+        };
+        if let Some(subtitle) = subtitle_opt {
             painter.text(
                 Pos2::new(header_x, edo_y),
                 egui::Align2::LEFT_CENTER,
-                format!("{} EDO", divisions),
+                subtitle,
                 FontId::new(15.0, egui::FontFamily::Proportional),
                 Color32::from_gray(160),
             );
@@ -673,7 +690,11 @@ pub fn draw_tablature(
 
     let bg_color = ui.visuals().panel_fill;
     let note_color = ui.visuals().text_color();
-    let highlight_color = Color32::from_rgb(100, 180, 255); // Light blue
+    let highlight_color = if opts.is_grid_input_mode {
+        Color32::from_rgb(255, 110, 110) // Light red for Grid Controller Input Mode
+    } else {
+        Color32::from_rgb(100, 180, 255) // Light blue
+    };
     let edit_color = Color32::from_rgb(255, 175, 75); // Light orange
 
     let mut current_x = first_barline_x;
@@ -1099,10 +1120,20 @@ pub fn draw_tablature(
                 if is_selected {
                     let col_color = if is_editing_fret {
                         Color32::from_rgba_unmultiplied(255, 175, 75, 35)
+                    } else if opts.is_grid_input_mode {
+                        Color32::from_rgba_unmultiplied(255, 110, 110, 48)
                     } else {
                         Color32::from_rgba_unmultiplied(100, 180, 255, 35)
                     };
                     painter.rect_filled(col_rect, 4.0, col_color);
+                    if opts.is_grid_input_mode {
+                        painter.rect_stroke(
+                            col_rect,
+                            4.0,
+                            Stroke::new(1.5, Color32::from_rgb(255, 110, 110)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                     if opts.scroll_to_selected {
                         ui.scroll_to_rect(col_rect, None);
                     }
@@ -1380,7 +1411,9 @@ pub fn draw_tablature(
                         let display_fret = if let Some(harmonic) = &event.notes[n_idx].harmonic {
                             format_harmonic_touch(harmonic.touch)
                         } else {
-                            fret.to_string()
+                            event.notes[n_idx]
+                                .formatted_fret()
+                                .unwrap_or_else(|| fret.to_string())
                         };
 
                         let display_text = if is_this_string_editing {
@@ -1412,11 +1445,12 @@ pub fn draw_tablature(
                             painter.rect_filled(text_rect.expand(3.5), 3.0, highlight_color);
                         } else if is_selected {
                             // Subtly frame other notes in the selected chord
-                            painter.rect_filled(
-                                text_rect.expand(2.5),
-                                2.0,
-                                Color32::from_rgba_unmultiplied(100, 180, 255, 60),
-                            );
+                            let chord_frame_color = if opts.is_grid_input_mode {
+                                Color32::from_rgba_unmultiplied(255, 110, 110, 90)
+                            } else {
+                                Color32::from_rgba_unmultiplied(100, 180, 255, 60)
+                            };
+                            painter.rect_filled(text_rect.expand(2.5), 2.0, chord_frame_color);
                         } else {
                             painter.rect_filled(text_rect.expand(2.0), 0.0, bg_color);
                         }
@@ -2500,6 +2534,7 @@ mod tests {
                 editing_lyric_text: "",
                 scroll_to_selected: false,
                 pitch_bend_range: 2,
+                is_grid_input_mode: false,
             };
             let (_resp, _clicked, _add_bar, _lyric_dc) = draw_tablature(ui, opts);
         });
@@ -3369,14 +3404,14 @@ mod tests {
         use crate::mnx::{Duration, Event, Harmonic, Note, NoteExt, Pitch};
 
         let dummy = |fret: i32, harmonic: Option<f64>| Note {
-            pitch: Pitch { step: "C".into(), alter: None, octave: 4 },
+            pitch: Pitch { step: "C".into(), alter: None, octave: 4, ..Default::default() },
             ext: NoteExt {
                 fret: Some(fret),
                 string: Some(1),
                 harmonic: harmonic.map(|t| Harmonic {
                     touch: t,
                     sounding_note: Box::new(Note {
-                        pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
+                        pitch: Pitch { step: "C".into(), alter: None, octave: 5, ..Default::default() },
                         ..Default::default()
                     }),
                 }),
@@ -3438,14 +3473,14 @@ mod tests {
         let make_note_ev = |dur: Duration, fret: i32, harmonic: Option<f64>| Event {
             duration: dur,
             notes: vec![Note {
-                pitch: Pitch { step: "C".into(), alter: None, octave: 4 },
+                pitch: Pitch { step: "C".into(), alter: None, octave: 4, ..Default::default() },
                 ext: NoteExt {
                     string: Some(1),
                     fret: Some(fret),
                     harmonic: harmonic.map(|t| Harmonic {
                         touch: t,
                         sounding_note: Box::new(Note {
-                            pitch: Pitch { step: "C".into(), alter: None, octave: 5 },
+                            pitch: Pitch { step: "C".into(), alter: None, octave: 5, ..Default::default() },
                             ..Default::default()
                         }),
                     }),

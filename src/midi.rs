@@ -370,7 +370,8 @@ impl<'a> PlaybackTrackGenerator<'a> {
         measure_start_ticks: &[u32],
         schedule_map: &HashMap<(usize, usize, usize), (u32, u32)>,
     ) {
-        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
+        let freq_table =
+            crate::tuning_table::FretboardFrequencyTable::from_doc_part(self.doc, part);
         let mut string_notes_timeline: std::collections::HashMap<u8, Vec<(u32, f64)>> =
             std::collections::HashMap::new();
         for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
@@ -397,13 +398,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                             .string
                             .or_else(|| note.harmonic.as_ref().and_then(|h| h.sounding_note.string));
                         if let Some(string) = string_opt {
-                            let midi_frac_opt = if let Some(harmonic) = &note.harmonic {
-                                Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
-                            } else if let Some(fret) = note.fret {
-                                freq_table.get(string, fret).map(|s| s.midi_note_number)
-                            } else {
-                                Some(freq_table.pitch_to_midi_note_number(&note.pitch))
-                            };
+                            let midi_frac_opt = freq_table.note_to_midi_note_number(part, note);
                             if let Some(midi_frac) = midi_frac_opt {
                                 string_notes_timeline
                                     .entry(string)
@@ -656,13 +651,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 .copied()
                                 .unwrap_or(default_ch);
 
-                            let midi_note_frac_opt = if let Some(harmonic) = &note.harmonic {
-                                Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
-                            } else if let Some(fret) = note.fret {
-                                freq_table.get(string, fret).map(|s| s.midi_note_number)
-                            } else {
-                                Some(freq_table.pitch_to_midi_note_number(&note.pitch))
-                            };
+                            let midi_note_frac_opt = freq_table.note_to_midi_note_number(part, note);
 
                             if let Some(midi_note_frac) = midi_note_frac_opt {
                                 let base_note = midi_note_frac.round() as u8;

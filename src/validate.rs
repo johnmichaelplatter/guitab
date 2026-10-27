@@ -169,6 +169,40 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                         });
                                     }
                                 }
+                            } else if let Some(custom_frets) = &part.ext.custom_frets {
+                                if !custom_frets.is_empty() {
+                                    let dec_fret = note.decimal_fret.unwrap_or(fret as f64);
+                                    if dec_fret < 0.0 {
+                                        errors.push(ValidationError {
+                                            measure_idx: m_idx + 1,
+                                            event_idx: e_idx,
+                                            string,
+                                            fret,
+                                            message: format!(
+                                                "Negative fret {} on String {} is physically impossible.",
+                                                dec_fret, string
+                                            ),
+                                        });
+                                    } else if dec_fret > 0.05 {
+                                        let exists = custom_frets.iter().any(|cf| {
+                                            (cf.fret_number - dec_fret).abs() < 0.05
+                                                && cf.strings.contains(&string)
+                                        });
+                                        if !exists {
+                                            errors.push(ValidationError {
+                                                measure_idx: m_idx + 1,
+                                                event_idx: e_idx,
+                                                string,
+                                                fret,
+                                                message: format!(
+                                                    "Fret {} does not exist on String {} in this custom fretboard.",
+                                                    crate::fretboard_editor::format_fret_number(dec_fret),
+                                                    string
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
                             } else if let Some(string_pitch) = part.get_string_tuning(string) {
                                 let string_base = tuning_calc.pitch_to_steps(&string_pitch);
 

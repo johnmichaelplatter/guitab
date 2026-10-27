@@ -1095,7 +1095,7 @@ pub fn populate_page_display_list(
                                                 } else if note.muted.unwrap_or(false) {
                                                     "X".to_string()
                                                 } else {
-                                                    note.fret.map(|f| f.to_string()).unwrap_or_else(|| "-".to_string())
+                                                    note.formatted_fret().unwrap_or_else(|| "-".to_string())
                                                 };
 
                                                 let note_pos = Pos2::new(ev_x, str_y);

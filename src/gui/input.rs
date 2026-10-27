@@ -34,19 +34,21 @@ impl MnxEditorApp {
             if let Some(cur_str) = self.editing_string {
                 let is_x = self.editing_fret_buf.to_lowercase() == "x";
                 let parsed = if is_x {
-                    Ok(0)
+                    Ok(0.0)
                 } else {
-                    self.editing_fret_buf.parse::<i32>()
+                    self.editing_fret_buf.parse::<f64>()
                 };
                 if let Ok(new_fret) = parsed {
                     let new_pitch = self
                         .parsed_mnx
                         .as_ref()
                         .and_then(|d| d.parts.first())
-                        .and_then(|part| calculate_pitch_for_string_fret(part, cur_str, new_fret));
+                        .and_then(|part| {
+                            calculate_pitch_for_string_decimal_fret(part, cur_str, new_fret)
+                        });
 
                     let res = self.mutate_doc(|doc| {
-                        if set_or_add_note_on_string_in_doc(
+                        if set_or_add_decimal_note_on_string_in_doc(
                             doc,
                             e_idx,
                             cur_str,
@@ -272,6 +274,15 @@ impl MnxEditorApp {
                 self.select_note_on_string(next_idx, s);
             }
         }
+    }
+
+    pub(crate) fn advance_to_next_note_in_grid_mode(&mut self, total_events: usize) {
+        self.advance_to_next_note_in_edit_mode(None, total_events);
+        self.is_editing_fret = false;
+        self.editing_fret_buf.clear();
+        self.editing_string = None;
+        self.selected_note_idx_in_event = None;
+        self.needs_scroll = true;
     }
 
     pub(crate) fn retreat_to_prev_note_in_edit_mode(&mut self, cur_str: Option<u8>) {
@@ -745,8 +756,11 @@ impl MnxEditorApp {
                 for ev in events {
                     if let egui::Event::Text(t) = ev {
                         for c in t.chars() {
-                            if (c.is_ascii_digit() || c == 'x' || c == 'X')
-                                && self.editing_fret_buf.len() < 3
+                            if (c.is_ascii_digit()
+                                || c == 'x'
+                                || c == 'X'
+                                || (c == '.' && !self.editing_fret_buf.contains('.')))
+                                && self.editing_fret_buf.len() < 4
                             {
                                 self.editing_fret_buf.push(c);
                             }
@@ -806,6 +820,8 @@ impl MnxEditorApp {
             if self.midi_player.is_playing() && (space_pressed || esc_pressed) {
                 self.midi_player.stop();
                 self.midi_status_msg = Some("Playback stopped.".to_string());
+            } else if esc_pressed && self.grid_input.is_grid_input_mode {
+                self.grid_input.exit_grid_input_mode();
             } else if p_pressed {
                 if shift_down {
                     self.start_midi_playback(false);

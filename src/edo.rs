@@ -113,6 +113,7 @@ impl EdoTuning {
             step: best_nom.to_string(),
             alter,
             octave,
+            ext: crate::mnx::PitchExt::default(),
         }
     }
     pub fn parse_pitch_string(&self, s: &str, octave: i32) -> Option<crate::mnx::Pitch> {
@@ -163,6 +164,7 @@ impl EdoTuning {
             step: nom.to_string(),
             alter,
             octave,
+            ext: crate::mnx::PitchExt::default(),
         })
     }
 }

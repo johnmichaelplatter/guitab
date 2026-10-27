@@ -110,6 +110,8 @@ pub struct MnxEditorApp {
     pub(crate) current_grid: String,
     pub(crate) instrument_presets: Vec<crate::presets::InstrumentPreset>,
     pub(crate) preset_status_msg: Option<String>,
+    pub(crate) midi_input_ports: Vec<crate::midi::MidiPortInfo>,
+    pub(crate) grid_input: crate::grid_input::GridInputManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +244,8 @@ pub enum ActiveDialog {
         font_size: f32,
         has_existing: bool,
     },
+    GridControllerSetup,
+    CustomFretboardEditor(crate::fretboard_editor::FretboardEditorState),
 }
 
 impl Default for MnxEditorApp {
@@ -253,6 +257,11 @@ impl Default for MnxEditorApp {
             Vec::new()
         } else {
             crate::midi::get_midi_output_ports()
+        };
+        let input_ports = if cfg!(test) {
+            Vec::new()
+        } else {
+            crate::grid_input::get_midi_input_ports()
         };
         let selected_port = ports.first().map(|p| p.id);
 
@@ -296,6 +305,8 @@ impl Default for MnxEditorApp {
             current_grid: String::from("quarter"),
             instrument_presets: crate::presets::load_presets_with_user_config(),
             preset_status_msg: None,
+            midi_input_ports: input_ports,
+            grid_input: crate::grid_input::GridInputManager::default(),
         };
 
         app.process_and_render();
@@ -599,7 +610,7 @@ impl MnxEditorApp {
             return;
         }
 
-        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
+        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_doc_part(doc, part);
         let mut notes_to_play = Vec::new();
 
         let target_notes: Vec<&crate::mnx::Note> =
@@ -636,13 +647,7 @@ impl MnxEditorApp {
                 let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
                 let channel = midly::num::u4::from(ch_0_based);
 
-                let midi_note_frac_opt = if let Some(harmonic) = &note.harmonic {
-                    Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
-                } else if let Some(fret) = note.fret {
-                    freq_table.get(string, fret).map(|s| s.midi_note_number)
-                } else {
-                    Some(freq_table.pitch_to_midi_note_number(&note.pitch))
-                };
+                let midi_note_frac_opt = freq_table.note_to_midi_note_number(part, note);
 
                 if let Some(midi_note_frac) = midi_note_frac_opt {
                     let base_note = midi_note_frac.round() as u8;
@@ -878,6 +883,7 @@ impl MnxEditorApp {
                     },
                     capo: None,
                     tuning: Some(tunings),
+                    custom_frets: None,
                 },
                 measures: vec![crate::mnx::Measure {
                     comment: None,
@@ -1149,6 +1155,58 @@ impl eframe::App for MnxEditorApp {
         }
 
         let editor_focused = self.show_yaml_panel && ui.memory(|m| m.has_focus(text_edit_id));
+
+        // Poll Grid Controller MIDI Input
+        let num_strings = self
+            .parsed_mnx
+            .as_ref()
+            .and_then(|d| d.parts.first())
+            .map(|p| p.num_strings() as u8)
+            .unwrap_or(6);
+        let any_grid_connected = self.grid_input.active_controller_count() > 0;
+        if any_grid_connected
+            || self.grid_input.release_latch_start.is_some()
+            || matches!(self.active_dialog, ActiveDialog::GridControllerSetup)
+        {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(20));
+        }
+
+        let was_grid_mode = self.grid_input.is_grid_input_mode;
+        let (latest_chord, should_finalize, _cal_done) =
+            self.grid_input.poll(num_strings, std::time::Instant::now());
+        if !was_grid_mode && self.grid_input.is_grid_input_mode {
+            self.is_editing_fret = false;
+            self.editing_fret_buf.clear();
+            self.editing_string = None;
+            if self.selected_event_idx.is_none() && total_events > 0 {
+                self.selected_event_idx = Some(0);
+            }
+        }
+        if let Some(chord) = latest_chord {
+            let e_idx = self.selected_event_idx.unwrap_or(0);
+            self.selected_event_idx = Some(e_idx);
+            self.selected_note_idx_in_event = None;
+            if self
+                .mutate_doc(|doc| {
+                    if crate::yaml_editor::set_chord_on_event_in_doc(doc, e_idx, &chord) {
+                        Some(())
+                    } else {
+                        None
+                    }
+                })
+                .is_some()
+            {
+                self.preview_selected_sound();
+            }
+        }
+        if should_finalize {
+            let cur_total = self.cached_event_ranges.len();
+            self.advance_to_next_note_in_grid_mode(cur_total);
+        }
+
+        let event_ranges = self.cached_event_ranges.clone();
+        let total_events = event_ranges.len();
 
         self.handle_keyboard_input(ui, editor_focused, &event_ranges, total_events);
 

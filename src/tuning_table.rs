@@ -17,6 +17,7 @@ impl Default for ReferencePitch {
                 step: "A".to_string(),
                 alter: None,
                 octave: 4,
+                ext: crate::mnx::PitchExt::default(),
             },
             frequency_hz: 440.0,
         }
@@ -34,6 +35,7 @@ impl ReferencePitch {
                 step: "D".to_string(),
                 alter: None,
                 octave: 4,
+                ext: crate::mnx::PitchExt::default(),
             },
             frequency_hz: 293.664767968, // (440.0 * 2^(-7/12))
         }
@@ -137,6 +139,24 @@ impl FretboardFrequencyTable {
         Self::from_part(part, ReferencePitch::default(), max_fret)
     }
 
+    /// Builds a frequency table using `doc.global._x.tuning.referenceNote` when present,
+    /// falling back to standard A4 = 440 Hz.
+    pub fn from_doc_part(doc: &crate::mnx::MnxDocument, part: &Part) -> Self {
+        let max_fret = (part.edo() * 2).min(255) as u8;
+        let ref_pitch = doc
+            .global
+            .ext
+            .tuning
+            .as_ref()
+            .and_then(|t| t.reference_note.as_ref())
+            .map(|rn| ReferencePitch {
+                pitch: rn.pitch.clone(),
+                frequency_hz: rn.frequency_hz,
+            })
+            .unwrap_or_default();
+        Self::from_part(part, ref_pitch, max_fret)
+    }
+
     /// Query the state for a given string and fret.
     pub fn get(&self, string: u8, fret: i32) -> Option<&FretboardPositionState> {
         self.table.get(&(string, fret))
@@ -148,15 +168,23 @@ impl FretboardFrequencyTable {
     }
 
     /// Compute frequency in Hz directly for any pitch in this EDO space using the reference pitch,
-    /// accurately handling microtonal and decimal alterations.
+    /// accurately handling microtonal, decimal, and ratio alterations.
     pub fn pitch_to_hz(&self, pitch: &Pitch) -> f64 {
         let tuning_calc = EdoTuning::new(self.edo);
-        let step_char = pitch
-            .step
-            .chars()
-            .next()
-            .unwrap_or('C')
-            .to_ascii_uppercase();
+        let is_ratio_alter = matches!(
+            &pitch.alter,
+            Some(crate::mnx::Alteration::Fraction(s)) if s.contains('/')
+        );
+        let step_char = if is_ratio_alter {
+            'C'
+        } else {
+            pitch
+                .step
+                .chars()
+                .next()
+                .unwrap_or('C')
+                .to_ascii_uppercase()
+        };
         let base_steps = tuning_calc.nominal_step(step_char) + (pitch.octave * (self.edo as i32));
         let step_delta = (base_steps - self.ref_steps) as f64;
         let f_base =
@@ -173,6 +201,56 @@ impl FretboardFrequencyTable {
     pub fn pitch_to_midi_note_number(&self, pitch: &Pitch) -> f64 {
         let hz = self.pitch_to_hz(pitch);
         69.0 + 12.0 * (hz / 440.0).log2()
+    }
+
+    /// Resolves the exact continuous MIDI note number for a note on `part`,
+    /// taking into account harmonics, custom fretboards (`customFrets`), decimal fretlets, and EDO fret steps.
+    pub fn note_to_midi_note_number(&self, part: &Part, note: &crate::mnx::Note) -> Option<f64> {
+        if let Some(harmonic) = &note.harmonic {
+            return Some(self.pitch_to_midi_note_number(&harmonic.sounding_note.pitch));
+        }
+
+        let string_opt = note.string;
+        if let (Some(string), Some(custom_frets)) = (string_opt, &part.ext.custom_frets) {
+            if !custom_frets.is_empty() {
+                if let Some(target_fret) = note.decimal_fret.or_else(|| note.fret.map(|f| f as f64))
+                {
+                    let open_hz = self
+                        .get_hz(string, 0)
+                        .or_else(|| part.get_string_tuning(string).map(|p| self.pitch_to_hz(&p)))?;
+                    if target_fret.abs() < 1e-6 {
+                        return Some(69.0 + 12.0 * (open_hz / 440.0).log2());
+                    }
+                    if let Some(cf) = custom_frets
+                        .iter()
+                        .find(|cf| {
+                            cf.has_string(string) && (cf.fret_number - target_fret).abs() < 0.05
+                        })
+                        .or_else(|| {
+                            custom_frets
+                                .iter()
+                                .find(|cf| (cf.fret_number - target_fret).abs() < 0.05)
+                        })
+                    {
+                        let hz = open_hz * 2.0_f64.powf(cf.cents() / 1200.0);
+                        return Some(69.0 + 12.0 * (hz / 440.0).log2());
+                    }
+                }
+                return Some(self.pitch_to_midi_note_number(&note.pitch));
+            }
+        }
+
+        if note.decimal_fret.is_some() {
+            return Some(self.pitch_to_midi_note_number(&note.pitch));
+        }
+
+        if let (Some(string), Some(fret)) = (string_opt, note.fret) {
+            if let Some(state) = self.get(string, fret) {
+                return Some(state.midi_note_number);
+            }
+        }
+
+        Some(self.pitch_to_midi_note_number(&note.pitch))
     }
 
     /// Compute frequency in Hz directly for any played step integer in this EDO space.
@@ -304,6 +382,7 @@ parts:
                 step: "A".to_string(),
                 alter: None,
                 octave: 4,
+                ..Default::default()
             },
             frequency_hz: 432.0,
         };
@@ -341,6 +420,7 @@ parts:
             step: "A".to_string(),
             alter: None,
             octave: 4,
+            ..Default::default()
         };
         assert!((table.pitch_to_midi_note_number(&a4) - 69.0).abs() < 1e-4);
 
@@ -348,6 +428,7 @@ parts:
             step: "E".to_string(),
             alter: None,
             octave: 4,
+            ..Default::default()
         };
         assert!((table.pitch_to_midi_note_number(&e4) - 64.0).abs() < 1e-4);
 
@@ -355,6 +436,7 @@ parts:
             step: "B".to_string(),
             alter: Some(crate::mnx::Alteration::Value(0.020)),
             octave: 5,
+            ..Default::default()
         };
         assert!((table.pitch_to_midi_note_number(&b5_altered) - 83.020).abs() < 1e-4);
     }

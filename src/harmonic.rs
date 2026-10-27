@@ -168,6 +168,7 @@ pub fn calculate_sounding_pitch(
         step: target_step_char.to_string(),
         alter,
         octave,
+        ext: crate::mnx::PitchExt::default(),
     }
 }
 
@@ -541,6 +542,7 @@ mod tests {
             step: "E".to_string(),
             alter: None,
             octave: 4,
+            ..Default::default()
         };
         let ref_pitch = ReferencePitch::default();
         let edo = 12;
@@ -609,6 +611,7 @@ mod tests {
                     step: "E".to_string(),
                     alter: None,
                     octave: 4,
+                    ..Default::default()
                 },
             ),
             (
@@ -617,6 +620,7 @@ mod tests {
                     step: "B".to_string(),
                     alter: None,
                     octave: 3,
+                    ..Default::default()
                 },
             ),
         ];
@@ -631,6 +635,7 @@ mod tests {
                     step: "E".to_string(),
                     alter: None,
                     octave: 5,
+                    ..Default::default()
                 },
                 accidental_display: None,
                 ties: None,
@@ -653,6 +658,7 @@ mod tests {
                     step: "E".to_string(),
                     alter: None,
                     octave: 5,
+                    ..Default::default()
                 },
                 accidental_display: None,
                 ties: None,
@@ -675,6 +681,7 @@ mod tests {
                     step: "C".to_string(),
                     alter: None,
                     octave: 5,
+                    ..Default::default()
                 },
                 accidental_display: None,
                 ties: None,

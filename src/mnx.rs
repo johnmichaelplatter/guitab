@@ -434,6 +434,30 @@ pub struct MnxMeta {
     pub version: u32,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct ReferenceNoteSpec {
+    #[serde(with = "flow_req")]
+    pub pitch: Pitch,
+    #[serde(rename = "frequencyHz")]
+    pub frequency_hz: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct GlobalTuningExt {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "referenceNote"
+    )]
+    pub reference_note: Option<ReferenceNoteSpec>,
+}
+
+impl GlobalTuningExt {
+    pub fn is_empty(&self) -> bool {
+        self.reference_note.is_none()
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct GlobalExt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -442,11 +466,16 @@ pub struct GlobalExt {
     pub subtitle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tuning: Option<GlobalTuningExt>,
 }
 
 impl GlobalExt {
     pub fn is_empty(&self) -> bool {
-        self.title.is_none() && self.subtitle.is_none() && self.composer.is_none()
+        self.title.is_none()
+            && self.subtitle.is_none()
+            && self.composer.is_none()
+            && self.tuning.as_ref().map(|t| t.is_empty()).unwrap_or(true)
     }
 }
 
@@ -636,6 +665,12 @@ pub struct PartExt {
     pub capo: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tuning: Option<Vec<StringTuning>>,
+    #[serde(
+        rename = "customFrets",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub custom_frets: Option<Vec<crate::fretboard_editor::CustomFret>>,
 }
 
 impl PartExt {
@@ -645,6 +680,7 @@ impl PartExt {
             && self.pitch_bend_range.is_none()
             && self.capo.is_none()
             && self.tuning.is_none()
+            && self.custom_frets.is_none()
     }
 }
 
@@ -998,6 +1034,12 @@ pub struct NoteExt {
     pub string: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fret: Option<i32>,
+    #[serde(
+        rename = "decimalFret",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub decimal_fret: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
     pub tap: Option<Tap>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
@@ -1013,10 +1055,23 @@ impl NoteExt {
         self.muted.is_none()
             && self.string.is_none()
             && self.fret.is_none()
+            && self.decimal_fret.is_none()
             && self.tap.is_none()
             && self.slide.is_none()
             && self.bend.is_none()
             && self.harmonic.is_none()
+    }
+
+    pub fn effective_fret(&self) -> Option<f64> {
+        self.decimal_fret.or_else(|| self.fret.map(|f| f as f64))
+    }
+
+    pub fn formatted_fret(&self) -> Option<String> {
+        if let Some(df) = self.decimal_fret {
+            Some(crate::fretboard_editor::format_fret_number(df))
+        } else {
+            self.fret.map(|f| f.to_string())
+        }
     }
 }
 
@@ -1067,7 +1122,7 @@ pub struct Harmonic {
 }
 
 /// Allows `alter` to be parsed from YAML as either a raw float (0.632)
-/// or an EDO fraction string ('1\19').
+/// or an EDO fraction string ('1\19') or ratio string ('5/4').
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum Alteration {
@@ -1081,11 +1136,18 @@ impl Alteration {
         match self {
             Alteration::Value(v) => *v,
             Alteration::Fraction(s) => {
-                if let Some((num, den)) = s.split_once(|c| c == '\\' || c == '/') {
+                if let Some((num, den)) = s.split_once('\\') {
                     let steps = num.trim().parse::<f64>().unwrap_or(0.0);
                     let edo = den.trim().parse::<f64>().unwrap_or(12.0);
                     if edo != 0.0 {
                         return steps * (12.0 / edo);
+                    }
+                } else if let Some((num, den)) = s.split_once('/') {
+                    let p = num.trim().parse::<f64>().unwrap_or(0.0);
+                    let q = den.trim().parse::<f64>().unwrap_or(1.0);
+                    if p > 0.0 && q > 0.0 {
+                        // Ratio offset from 1/1 in semitones: 12 * log2(p/q)
+                        return 12.0 * (p / q).log2();
                     }
                 }
                 0.0
@@ -1093,25 +1155,10 @@ impl Alteration {
         }
     }
 
-    /// Converts an EDO fraction (`m\n` or `m/n`) or float alteration into a 3-digit decimal
+    /// Converts an EDO fraction (`m\n`) or ratio (`p/q`) or float alteration into a 3-digit decimal
     /// `Alteration::Value` using `12 * ln(2^(m/n)) / ln(2)`.
     pub fn to_three_digit_decimal(&self) -> Alteration {
-        let raw = match self {
-            Alteration::Value(v) => *v,
-            Alteration::Fraction(s) => {
-                if let Some((num, den)) = s.split_once(|c| c == '\\' || c == '/') {
-                    let m = num.trim().parse::<f64>().unwrap_or(0.0);
-                    let n = den.trim().parse::<f64>().unwrap_or(12.0);
-                    if n != 0.0 {
-                        12.0 * (2.0_f64.powf(m / n)).ln() / 2.0_f64.ln()
-                    } else {
-                        0.0
-                    }
-                } else {
-                    s.trim().parse::<f64>().unwrap_or(0.0)
-                }
-            }
-        };
+        let raw = self.as_semitones();
         let rounded = (raw * 1000.0).round() / 1000.0;
         let clean = if rounded == 0.0 { 0.0 } else { rounded };
         Alteration::Value(clean)
@@ -1128,25 +1175,62 @@ impl fmt::Display for Alteration {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct PitchExt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl PitchExt {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Pitch {
     pub step: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alter: Option<Alteration>,
     pub octave: i32,
+    #[serde(
+        rename = "_x",
+        default,
+        with = "flow_opt_pitch_ext",
+        skip_serializing_if = "PitchExt::is_empty"
+    )]
+    pub ext: PitchExt,
+}
+
+pub mod flow_opt_pitch_ext {
+    use super::*;
+    pub fn serialize<S: Serializer>(val: &PitchExt, s: S) -> Result<S::Ok, S::Error> {
+        FlowMap(val).serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PitchExt, D::Error> {
+        super::deserialize_ext(d)
+    }
 }
 
 impl Pitch {
     #[allow(dead_code)]
     pub fn to_midi_note(&self) -> f64 {
-        let step_val = match self.step.as_str() {
-            "C" => 0.0,
-            "D" => 2.0,
-            "E" => 4.0,
-            "F" => 5.0,
-            "G" => 7.0,
-            "A" => 9.0,
-            "B" => 11.0,
-            _ => 0.0,
+        let is_ratio_alter = matches!(
+            &self.alter,
+            Some(Alteration::Fraction(s)) if s.contains('/')
+        );
+        let step_val = if is_ratio_alter {
+            0.0
+        } else {
+            match self.step.as_str() {
+                "C" => 0.0,
+                "D" => 2.0,
+                "E" => 4.0,
+                "F" => 5.0,
+                "G" => 7.0,
+                "A" => 9.0,
+                "B" => 11.0,
+                _ => 0.0,
+            }
         };
         let alter_val = self.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
 
@@ -1178,6 +1262,7 @@ impl Part {
             step: step.to_string(),
             alter: None,
             octave,
+            ext: PitchExt::default(),
         })
     }
 

@@ -1,5 +1,7 @@
 pub mod curve_editor;
 mod edo;
+pub mod fretboard_editor;
+pub mod grid_input;
 pub mod harmonic;
 mod gui;
 pub mod layout;
