@@ -182,6 +182,7 @@ pub fn builtin_presets() -> Vec<InstrumentPreset> {
         step: step.to_string(),
         alter,
         octave,
+        ..Default::default()
     };
     let make_tunings = |specs: &[(&str, Option<Alteration>, i32)]| -> Vec<StringTuning> {
         specs
