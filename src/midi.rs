@@ -2218,7 +2218,7 @@ parts:
 
     #[test]
     fn test_example_harmonics_yaml_midi_rendering() {
-        let yaml = include_str!("../example_harmonics.yaml");
+        let yaml = include_str!("../examples/example_harmonics.yaml");
         let doc = serde_saphyr::from_str::<MnxDocument>(yaml).expect("Should parse");
         let (track, ppq) = generate_playback_track(&doc, MidiOptions::default());
         assert_eq!(ppq, 480.0);
@@ -2259,7 +2259,7 @@ parts:
 
     #[test]
     fn test_compute_flattened_measures_endings() {
-        let yaml = include_str!("../example_endings.yaml");
+        let yaml = include_str!("../examples/example_endings.yaml");
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
         let flattened = compute_flattened_measures(&doc.global, 6);
         assert_eq!(flattened, vec![0, 1, 2, 0, 1, 2, 0, 3, 4, 5]);
@@ -2317,7 +2317,7 @@ parts:
 
     #[test]
     fn test_playback_track_endings_example() {
-        let yaml = include_str!("../example_endings.yaml");
+        let yaml = include_str!("../examples/example_endings.yaml");
         let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
         let (track, _) = generate_playback_track(&doc, MidiOptions::default());
 

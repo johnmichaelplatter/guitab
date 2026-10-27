@@ -2751,6 +2751,7 @@ impl crate::gui::MnxEditorApp {
                                 ev.notes.is_empty()
                                     && ev.lyrics.is_none()
                                     && ev.markings.is_none()
+                                    && ev.text_markings.is_empty()
                             }
                             _ => false,
                         };

@@ -1058,3 +1058,35 @@ pub fn append_blank_note_to_grace_block_in_yaml(yaml: &str, e_idx: usize) -> Opt
     }
     serde_saphyr::to_string(&doc).ok()
 }
+
+pub fn set_event_text_markings_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    markings: Vec<crate::mnx::TextMarking>,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    ev.text_markings = markings
+        .into_iter()
+        .filter(|m| !m.text.trim().is_empty())
+        .collect();
+    true
+}
+
+pub fn set_event_text_markings_in_yaml(
+    yaml: &str,
+    event_idx: usize,
+    markings: Vec<crate::mnx::TextMarking>,
+) -> Option<String> {
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !set_event_text_markings_in_doc(&mut doc, event_idx, markings) {
+        return None;
+    }
+    serde_saphyr::to_string(&doc).ok()
+}
+

@@ -871,6 +871,33 @@ impl EventLyrics {
     }
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct TextMarking {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub underline: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "fontFamily"
+    )]
+    pub font_family: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "fontSize"
+    )]
+    pub font_size: Option<f32>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct EventExt {
     #[serde(
@@ -879,11 +906,17 @@ pub struct EventExt {
         rename = "bowDirection"
     )]
     pub bow_direction: Option<BowDirection>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "textMarkings"
+    )]
+    pub text_markings: Vec<TextMarking>,
 }
 
 impl EventExt {
     pub fn is_empty(&self) -> bool {
-        self.bow_direction.is_none()
+        self.bow_direction.is_none() && self.text_markings.is_empty()
     }
 }
 

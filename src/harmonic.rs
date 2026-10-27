@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_validate_example_harmonics_yaml_file() {
-        let yaml_str = include_str!("../example_harmonics.yaml");
+        let yaml_str = include_str!("../examples/example_harmonics.yaml");
         let doc: MnxDocument = serde_saphyr::from_str(yaml_str).expect("Valid YAML syntax");
         assert_eq!(doc.parts.len(), 1);
         let part = &doc.parts[0];

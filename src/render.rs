@@ -1269,7 +1269,12 @@ pub fn draw_tablature(
                     let font_size = 28.0;
                     let markings_font_id =
                         FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
-                    let mut marking_y = min_string_y - 20.0; // Place above the chord
+                    let base_y = if min_string_y < f32::MAX {
+                        min_string_y
+                    } else {
+                        string_y_coords[0]
+                    };
+                    let mut marking_y = base_y - 20.0; // Place above the chord
 
                     if event.markings.as_ref().and_then(|m| m.accent.as_ref()).is_some() {
                         let galley = painter.layout_no_wrap(
@@ -1297,6 +1302,54 @@ pub fn draw_tablature(
                         let rect =
                             Rect::from_center_size(Pos2::new(current_x, marking_y), galley.size());
                         painter.galley(rect.min, galley, note_color);
+                    }
+                }
+
+                if !event.text_markings.is_empty() {
+                    let mut tm_y = string_y_coords[0] - 24.0;
+                    if event.markings.as_ref().and_then(|m| m.accent.as_ref()).is_some()
+                        || event.bow_direction.is_some()
+                    {
+                        tm_y -= 16.0;
+                    }
+                    for tm in &event.text_markings {
+                        if tm.text.trim().is_empty() {
+                            continue;
+                        }
+                        let sz = tm.font_size.unwrap_or(14.0).clamp(6.0, 48.0);
+                        let family = match tm.font_family.as_deref() {
+                            Some("Monospace") | Some("monospace") | Some("Courier") => {
+                                egui::FontFamily::Monospace
+                            }
+                            Some("Serif") | Some("serif") | Some("Times") => {
+                                egui::FontFamily::Name("Serif".into())
+                            }
+                            _ => egui::FontFamily::Proportional,
+                        };
+                        let mut job = egui::text::LayoutJob::default();
+                        job.append(
+                            &tm.text,
+                            0.0,
+                            egui::TextFormat {
+                                font_id: FontId::new(sz, family),
+                                color: note_color,
+                                italics: tm.italic,
+                                underline: if tm.underline {
+                                    Stroke::new(1.0, note_color)
+                                } else {
+                                    Stroke::NONE
+                                },
+                                ..Default::default()
+                            },
+                        );
+                        let galley = painter.layout_job(job);
+                        let size = galley.size();
+                        let draw_pos = Pos2::new(current_x - size.x * 0.5, tm_y - size.y);
+                        painter.galley(draw_pos, galley.clone(), note_color);
+                        if tm.bold {
+                            painter.galley(draw_pos + egui::vec2(0.7, 0.0), galley, note_color);
+                        }
+                        tm_y -= size.y + 4.0;
                     }
                 }
 
@@ -2426,7 +2479,7 @@ mod tests {
 
     #[test]
     fn test_render_example_endings_tablature() {
-        let yaml_str = include_str!("../example_endings.yaml");
+        let yaml_str = include_str!("../examples/example_endings.yaml");
         let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
         let ctx = egui::Context::default();
         crate::setup_custom_fonts(&ctx);

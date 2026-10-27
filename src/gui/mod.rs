@@ -108,6 +108,8 @@ pub struct MnxEditorApp {
     pub is_dragging_layout_element: bool,
     pub(crate) cached_event_ranges: Vec<crate::yaml_editor::EventRange>,
     pub(crate) current_grid: String,
+    pub(crate) instrument_presets: Vec<crate::presets::InstrumentPreset>,
+    pub(crate) preset_status_msg: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +188,16 @@ pub enum ActiveDialog {
         tunings_octave: Vec<i32>,  // octave
         is_new_tab: bool,
     },
+    SaveInstrumentPreset {
+        preset_name: String,
+        error_msg: Option<String>,
+        num_strings: u8,
+        edo: u8,
+        step_multiplier: u8,
+        tunings_text: Vec<String>,
+        tunings_octave: Vec<i32>,
+        is_new_tab: bool,
+    },
     ConfirmEdoChange {
         new_num_strings: u8,
         new_edo: u8,
@@ -219,6 +231,16 @@ pub enum ActiveDialog {
         line_idx: usize,
         syllable_buf: String,
         in_word: bool,
+    },
+    InsertTextMarking {
+        event_idx: usize,
+        text_buf: String,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        font_family: String,
+        font_size: f32,
+        has_existing: bool,
     },
 }
 
@@ -272,6 +294,8 @@ impl Default for MnxEditorApp {
             is_dragging_layout_element: false,
             cached_event_ranges: Vec::new(),
             current_grid: String::from("quarter"),
+            instrument_presets: crate::presets::load_presets_with_user_config(),
+            preset_status_msg: None,
         };
 
         app.process_and_render();
@@ -1041,6 +1065,47 @@ impl MnxEditorApp {
         } else {
             false
         }
+    }
+
+    pub(crate) fn open_text_marking_dialog(&mut self, event_idx: usize) {
+        let mut text_buf = String::new();
+        let mut bold = false;
+        let mut italic = false;
+        let mut underline = false;
+        let mut font_family = "Sans-Serif".to_string();
+        let mut font_size = 12.0;
+        let mut has_existing = false;
+
+        if let Some(doc) = &self.parsed_mnx {
+            let paths = doc.get_flattened_event_paths();
+            if let Some(&path) = paths.get(event_idx) {
+                if let Some(ev) = doc.get_event_at_path(path) {
+                    if let Some(first_tm) = ev.text_markings.first() {
+                        text_buf = first_tm.text.clone();
+                        bold = first_tm.bold;
+                        italic = first_tm.italic;
+                        underline = first_tm.underline;
+                        font_family = first_tm
+                            .font_family
+                            .clone()
+                            .unwrap_or_else(|| "Sans-Serif".to_string());
+                        font_size = first_tm.font_size.unwrap_or(12.0);
+                        has_existing = true;
+                    }
+                }
+            }
+        }
+
+        self.active_dialog = ActiveDialog::InsertTextMarking {
+            event_idx,
+            text_buf,
+            bold,
+            italic,
+            underline,
+            font_family,
+            font_size,
+            has_existing,
+        };
     }
 }
 

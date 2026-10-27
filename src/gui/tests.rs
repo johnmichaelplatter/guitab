@@ -363,10 +363,10 @@ parts:
 
         for filename in &[
             "examples/example.yaml",
-            "example_endings.yaml",
-            "example_harmonics.yaml",
-            "example_layout_lyrics.yaml",
-            "c scale.yaml",
+            "examples/example_endings.yaml",
+            "examples/example_harmonics.yaml",
+            "examples/example_layout_lyrics.yaml",
+            "examples/c scale.yaml",
             "chord examples/example.yaml",
         ] {
             let path = std::path::Path::new(filename);
@@ -383,7 +383,7 @@ parts:
 
             if matches!(
                 *filename,
-                "examples/example.yaml" | "example_endings.yaml" | "example_harmonics.yaml" | "example_layout_lyrics.yaml"
+                "examples/example.yaml" | "examples/example_endings.yaml" | "examples/example_harmonics.yaml" | "examples/example_layout_lyrics.yaml"
             ) {
                 let initial_m_count = raw_doc.parts[0].measures.len();
                 let updated_raw = add_measure_to_yaml(&raw_yaml, &dur).expect("Add measure to raw");

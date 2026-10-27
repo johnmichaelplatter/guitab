@@ -55,6 +55,21 @@ pub fn generate_score_pdf_bytes(
         .or_else(|_| pdf_doc.add_builtin_font(BuiltinFont::Helvetica))
         .map_err(|e| format!("Failed to load text font: {:?}", e))?;
 
+    let helvetica = pdf_doc.add_builtin_font(BuiltinFont::Helvetica).ok();
+    let helvetica_bold = pdf_doc.add_builtin_font(BuiltinFont::HelveticaBold).ok();
+    let helvetica_oblique = pdf_doc.add_builtin_font(BuiltinFont::HelveticaOblique).ok();
+    let helvetica_bold_oblique = pdf_doc.add_builtin_font(BuiltinFont::HelveticaBoldOblique).ok();
+
+    let times_roman = pdf_doc.add_builtin_font(BuiltinFont::TimesRoman).ok();
+    let times_bold = pdf_doc.add_builtin_font(BuiltinFont::TimesBold).ok();
+    let times_italic = pdf_doc.add_builtin_font(BuiltinFont::TimesItalic).ok();
+    let times_bold_italic = pdf_doc.add_builtin_font(BuiltinFont::TimesBoldItalic).ok();
+
+    let courier = pdf_doc.add_builtin_font(BuiltinFont::Courier).ok();
+    let courier_bold = pdf_doc.add_builtin_font(BuiltinFont::CourierBold).ok();
+    let courier_oblique = pdf_doc.add_builtin_font(BuiltinFont::CourierOblique).ok();
+    let courier_bold_oblique = pdf_doc.add_builtin_font(BuiltinFont::CourierBoldOblique).ok();
+
     // Scale factors: from layout points (screen pixels ~96DPI) to PDF Mm and Pt
     // 1 px = 72.0 / 96.0 pt = 0.75 pt
     let pt_per_px = 72.0_f32 / 96.0_f32;
@@ -158,11 +173,22 @@ pub fn generate_score_pdf_bytes(
                     };
                     current_layer.add_polygon(circle_poly);
                 }
-                DrawKind::Text { pos, align, text, font_id, color } => {
+                DrawKind::Text {
+                    pos,
+                    align,
+                    text,
+                    font_id,
+                    color,
+                    bold,
+                    italic,
+                } => {
                     let is_bravura = match &font_id.family {
                         eframe::egui::FontFamily::Name(name) => name.as_ref() == "Bravura" || name.as_ref() == "BravuraText",
                         _ => text.chars().any(|c| (c as u32) >= 0xE000 && (c as u32) <= 0xF8FF),
                     };
+                    let is_serif = matches!(&font_id.family, eframe::egui::FontFamily::Name(name) if name.as_ref().eq_ignore_ascii_case("serif"));
+                    let is_mono = matches!(&font_id.family, eframe::egui::FontFamily::Monospace);
+
                     let approx_w = (text.chars().count() as f32) * font_id.size * (if is_bravura { 0.48 } else { 0.52 });
                     let approx_h = font_id.size * 0.75;
                     let adj_x = match align.x() {
@@ -180,6 +206,27 @@ pub fn generate_score_pdf_bytes(
                     let y = Mm(page_h_val - adj_y * mm_per_px);
                     let font_ref = if is_bravura {
                         &bravura_font
+                    } else if is_serif {
+                        match (*bold, *italic) {
+                            (true, true) => times_bold_italic.as_ref().unwrap_or(&text_font),
+                            (true, false) => times_bold.as_ref().unwrap_or(&text_font),
+                            (false, true) => times_italic.as_ref().unwrap_or(&text_font),
+                            (false, false) => times_roman.as_ref().unwrap_or(&text_font),
+                        }
+                    } else if is_mono {
+                        match (*bold, *italic) {
+                            (true, true) => courier_bold_oblique.as_ref().unwrap_or(&text_font),
+                            (true, false) => courier_bold.as_ref().unwrap_or(&text_font),
+                            (false, true) => courier_oblique.as_ref().unwrap_or(&text_font),
+                            (false, false) => courier.as_ref().unwrap_or(&text_font),
+                        }
+                    } else if *bold || *italic {
+                        match (*bold, *italic) {
+                            (true, true) => helvetica_bold_oblique.as_ref().unwrap_or(&text_font),
+                            (true, false) => helvetica_bold.as_ref().unwrap_or(&text_font),
+                            (false, true) => helvetica_oblique.as_ref().unwrap_or(&text_font),
+                            (false, false) => helvetica.as_ref().unwrap_or(&text_font),
+                        }
                     } else {
                         &text_font
                     };
@@ -295,6 +342,8 @@ pub fn populate_page_display_list(
                     text: title_text.to_string(),
                     font_id: FontId::proportional(22.0),
                     color: text_color,
+                    bold: false,
+                    italic: false,
                 },
                 z_index: 10,
             });
@@ -318,6 +367,8 @@ pub fn populate_page_display_list(
                         text: sub.to_string(),
                         font_id: FontId::proportional(12.0),
                         color: Color32::from_rgb(100, 100, 100),
+                        bold: false,
+                        italic: false,
                     },
                     z_index: 10,
                 });
@@ -338,6 +389,8 @@ pub fn populate_page_display_list(
                     text: composer_text.to_string(),
                     font_id: FontId::proportional(12.0),
                     color: text_color,
+                    bold: false,
+                    italic: false,
                 },
                 z_index: 10,
             });
@@ -353,6 +406,8 @@ pub fn populate_page_display_list(
                         text: part_name.to_string(),
                         font_id: FontId::proportional(12.0),
                         color: text_color,
+                        bold: false,
+                        italic: false,
                     },
                     z_index: 10,
                 });
@@ -426,6 +481,8 @@ pub fn populate_page_display_list(
                             text: tuning_str,
                             font_id: FontId::proportional(10.5),
                             color: Color32::from_rgb(70, 70, 70),
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 3,
                     });
@@ -509,6 +566,8 @@ pub fn populate_page_display_list(
                     text: mn_str,
                     font_id: FontId::proportional(10.0),
                     color: Color32::from_rgb(90, 90, 90),
+                    bold: false,
+                    italic: false,
                 },
                 z_index: 5,
             });
@@ -560,6 +619,8 @@ pub fn populate_page_display_list(
                         text: mn_str,
                         font_id: FontId::proportional(10.0),
                         color: Color32::from_rgb(90, 90, 90),
+                        bold: false,
+                        italic: false,
                     },
                     z_index: 5,
                 });
@@ -603,6 +664,8 @@ pub fn populate_page_display_list(
                             text: num_text,
                             font_id: FontId::new(38.0, egui::FontFamily::Name("Bravura".into())),
                             color: text_color,
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 5,
                     });
@@ -615,6 +678,8 @@ pub fn populate_page_display_list(
                             text: den_text,
                             font_id: FontId::new(38.0, egui::FontFamily::Name("Bravura".into())),
                             color: text_color,
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 5,
                     });
@@ -735,6 +800,8 @@ pub fn populate_page_display_list(
                             text: format!("{}.", nums_str),
                             font_id: FontId::proportional(12.0),
                             color: text_color,
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 5,
                     });
@@ -772,6 +839,8 @@ pub fn populate_page_display_list(
                             text: glyph.to_string(),
                             font_id: FontId::new(17.0, egui::FontFamily::Name("BravuraText".into())),
                             color: text_color,
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 6,
                     });
@@ -784,6 +853,8 @@ pub fn populate_page_display_list(
                             text,
                             font_id: FontId::proportional(13.0),
                             color: text_color,
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 6,
                     });
@@ -800,6 +871,8 @@ pub fn populate_page_display_list(
                             text: label.to_string(),
                             font_id: FontId::proportional(13.0),
                             color: text_color,
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 6,
                     });
@@ -910,6 +983,7 @@ pub fn populate_page_display_list(
                                 current_measure_beat = end_beat;
                                 let ev_w = event_spacings.get(ev_idx_in_m).copied().unwrap_or(crate::layout::DEFAULT_LAYOUT_BASE_SPACING);
                                 let ev_x = m_x + start_pad + (accum_x + ev_w * 0.5) * ev_scale;
+                                let curr_ev_idx = ev_idx_in_m;
                                 accum_x += ev_w;
                                 ev_idx_in_m += 1;
 
@@ -918,6 +992,53 @@ pub fn populate_page_display_list(
                                 if let Some(ev_id) = &ev.id {
                                     event_id_map.insert(ev_id.clone(), (ev_x, is_rest));
                                     event_id_to_idx.insert(ev_id.clone(), system_rhythm_notes.len());
+                                }
+
+                                // Draw text markings attached to this event
+                                if !ev.text_markings.is_empty() {
+                                    let mut tm_y = staff_top_y - 18.0;
+                                    for (tm_i, tm) in ev.text_markings.iter().enumerate() {
+                                        if tm.text.trim().is_empty() {
+                                            continue;
+                                        }
+                                        let sz = tm.font_size.unwrap_or(12.0).clamp(6.0, 48.0);
+                                        let family = match tm.font_family.as_deref() {
+                                            Some("Monospace") | Some("monospace") | Some("Courier") => {
+                                                egui::FontFamily::Monospace
+                                            }
+                                            Some("Serif") | Some("serif") | Some("Times") => {
+                                                egui::FontFamily::Name("Serif".into())
+                                            }
+                                            _ => egui::FontFamily::Proportional,
+                                        };
+                                        let tm_id = Some(format!("text_{}_{}_{}", m_idx, curr_ev_idx, tm_i));
+                                        dl.push(DrawItem {
+                                            id: tm_id.clone(),
+                                            kind: DrawKind::Text {
+                                                pos: Pos2::new(ev_x, tm_y),
+                                                align: Align2::CENTER_BOTTOM,
+                                                text: tm.text.clone(),
+                                                font_id: FontId::new(sz, family),
+                                                color: text_color,
+                                                bold: tm.bold,
+                                                italic: tm.italic,
+                                            },
+                                            z_index: 6,
+                                        });
+                                        if tm.underline {
+                                            let approx_w = (tm.text.chars().count() as f32) * sz * 0.52;
+                                            dl.push(DrawItem {
+                                                id: tm_id,
+                                                kind: DrawKind::Line {
+                                                    from: Pos2::new(ev_x - approx_w * 0.5, tm_y + 1.5),
+                                                    to: Pos2::new(ev_x + approx_w * 0.5, tm_y + 1.5),
+                                                    stroke: Stroke::new(1.0, text_color),
+                                                },
+                                                z_index: 6,
+                                            });
+                                        }
+                                        tm_y -= sz + 4.0;
+                                    }
                                 }
 
                                 if is_rest {
@@ -941,6 +1062,8 @@ pub fn populate_page_display_list(
                                             text: rest_char.to_string(),
                                             font_id: FontId::new(26.0, egui::FontFamily::Name("Bravura".into())),
                                             color: text_color,
+                                            bold: false,
+                                            italic: false,
                                         },
                                         z_index: 4,
                                     });
@@ -954,6 +1077,8 @@ pub fn populate_page_display_list(
                                                 text: "\u{E1E7}".to_string(),
                                                 font_id: FontId::new(26.0, egui::FontFamily::Name("Bravura".into())),
                                                 color: text_color,
+                                                bold: false,
+                                                italic: false,
                                             },
                                             z_index: 4,
                                         });
@@ -1018,6 +1143,8 @@ pub fn populate_page_display_list(
                                                         text: fret_text,
                                                         font_id: FontId::proportional(font_sz),
                                                         color: text_color,
+                                                        bold: false,
+                                                        italic: false,
                                                     },
                                                     z_index: 4,
                                                 });
@@ -1061,7 +1188,6 @@ pub fn populate_page_display_list(
                                     for (l_i, (line_key, lyr)) in lyrics.lines.iter().enumerate() {
                                         let line_num = line_key.parse::<usize>().ok().map(|n| n.saturating_sub(1)).unwrap_or(l_i);
                                         let lyr_y = stem_bot + 10.0 + (line_num as f32) * 14.0;
-                                        let curr_ev_idx = ev_idx_in_m.saturating_sub(1);
                                         let lyric_id = if line_num == 0 {
                                             Some(format!("lyric_{}_{}", m_idx, curr_ev_idx))
                                         } else {
@@ -1367,6 +1493,8 @@ pub fn populate_page_display_list(
                             text: label.to_string(),
                             font_id: FontId::proportional(11.0),
                             color: text_color,
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 5,
                     });
@@ -1433,6 +1561,8 @@ pub fn populate_page_display_list(
                                 text: "l.r.".to_string(),
                                 font_id: FontId::proportional(10.0),
                                 color: Color32::from_gray(140),
+                                bold: false,
+                                italic: false,
                             },
                             z_index: 5,
                         });
@@ -1507,6 +1637,8 @@ pub fn populate_page_display_list(
                     text: mult.to_string(),
                     font_id: FontId::monospace(11.0),
                     color: Color32::from_gray(100),
+                    bold: false,
+                    italic: false,
                 },
                 z_index: 5,
             });
@@ -1523,6 +1655,8 @@ pub fn populate_page_display_list(
                         text: lyr.clean_text.clone(),
                         font_id: FontId::proportional(11.0),
                         color: text_color,
+                        bold: false,
+                        italic: false,
                     },
                     z_index: 4,
                 });
@@ -1548,6 +1682,8 @@ pub fn populate_page_display_list(
                                     text: "-".to_string(),
                                     font_id: FontId::proportional(11.0),
                                     color: text_color,
+                                    bold: false,
+                                    italic: false,
                                 },
                                 z_index: 4,
                             });
@@ -1596,6 +1732,8 @@ pub fn populate_page_display_list(
                             text: "[system]".to_string(),
                             font_id: FontId::proportional(10.0),
                             color: Color32::from_rgba_unmultiplied(100, 110, 150, 140),
+                            bold: false,
+                            italic: false,
                         },
                         z_index: 8,
                     });
@@ -2325,6 +2463,99 @@ parts:
         // Verify that the PDF is valid PDF syntax
         let pdf_str = String::from_utf8_lossy(&pdf_bytes);
         assert!(pdf_str.starts_with("%PDF-"));
+    }
+
+    #[test]
+    fn test_text_markings_yaml_layout_offset_and_pdf_export() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Guitar"
+    _x:
+      microFretDivisions: 12
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    _x:
+                      string: 1
+                      fret: 0
+              - duration: { base: quarter }
+                rest: {}
+"#;
+        let marking = crate::mnx::TextMarking {
+            text: "Let ring".to_string(),
+            bold: true,
+            italic: true,
+            underline: true,
+            font_family: Some("Serif".to_string()),
+            font_size: Some(15.0),
+        };
+        let updated_yaml =
+            crate::yaml_editor::set_event_text_markings_in_yaml(yaml, 0, vec![marking.clone()])
+                .expect("Should update YAML with text marking");
+        assert!(updated_yaml.contains("textMarkings"));
+        assert!(updated_yaml.contains("Let ring"));
+        assert!(updated_yaml.contains("fontFamily: Serif"));
+
+        let doc: MnxDocument = serde_saphyr::from_str(&updated_yaml).expect("Should parse updated YAML");
+        let ev0 = &doc.parts[0].measures[0].sequences[0].content[0];
+        if let crate::mnx::SequenceItem::Event(ev) = ev0 {
+            assert_eq!(ev.text_markings.len(), 1);
+            assert_eq!(ev.text_markings[0], marking);
+        } else {
+            panic!("Expected Event");
+        }
+
+        // Verify DisplayList contains text_0_0_0 (both text and underline line) and supports hit testing & layout offsets
+        let pages = crate::layout::compute_score_layout(&doc, 0.0);
+        let mut dl = DisplayList::new();
+        populate_page_display_list(&doc, &pages[0], &mut dl);
+
+        let tm_items: Vec<_> = dl
+            .items
+            .iter()
+            .filter(|i| i.id.as_deref() == Some("text_0_0_0"))
+            .collect();
+        assert_eq!(
+            tm_items.len(),
+            2,
+            "Underlined text marking should emit both DrawKind::Text and DrawKind::Line with ID text_0_0_0"
+        );
+        let orig_bbox = tm_items[0].bounding_box();
+        assert_eq!(
+            dl.hit_test(orig_bbox.center()),
+            Some("text_0_0_0".to_string()),
+            "Text marking should be hit-testable for dragging in Layout Mode"
+        );
+
+        let mut offsets = std::collections::HashMap::new();
+        offsets.insert(
+            "text_0_0_0".to_string(),
+            crate::mnx::Offset2D {
+                dx: 12.0,
+                dy: -8.0,
+            },
+        );
+        dl.apply_offsets(&offsets);
+        let moved_bbox = dl
+            .items
+            .iter()
+            .find(|i| i.id.as_deref() == Some("text_0_0_0"))
+            .unwrap()
+            .bounding_box();
+        assert!((moved_bbox.min.x - (orig_bbox.min.x + 12.0)).abs() < 0.01);
+        assert!((moved_bbox.min.y - (orig_bbox.min.y - 8.0)).abs() < 0.01);
+
+        // Verify PDF export succeeds with styled text marking
+        let pdf_bytes = generate_score_pdf_bytes(&doc, &pages).expect("PDF export with text marking should succeed");
+        assert!(pdf_bytes.starts_with(b"%PDF-"));
     }
 }
 

@@ -54,6 +54,47 @@ impl MnxEditorApp {
                 step_multiplier: u8,
                 tunings: Vec<crate::mnx::StringTuning>,
             },
+            OpenSavePresetDialog {
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tunings_text: Vec<String>,
+                tunings_octave: Vec<i32>,
+                is_new_tab: bool,
+            },
+            SaveInstrumentPreset {
+                preset_name: String,
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tunings_text: Vec<String>,
+                tunings_octave: Vec<i32>,
+                is_new_tab: bool,
+            },
+            ReturnToInstrumentSetup {
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tunings_text: Vec<String>,
+                tunings_octave: Vec<i32>,
+                is_new_tab: bool,
+            },
+            ImportPresetsYaml {
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tunings_text: Vec<String>,
+                tunings_octave: Vec<i32>,
+                is_new_tab: bool,
+            },
+            ExportSinglePresetYaml {
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tunings_text: Vec<String>,
+                tunings_octave: Vec<i32>,
+            },
+            ExportAllPresetsYaml,
             DiscardChangesSave {
                 target: DiscardTarget,
             },
@@ -79,12 +120,18 @@ impl MnxEditorApp {
                 end_m: usize,
                 times: u32,
             },
+            ApplyTextMarking {
+                event_idx: usize,
+                marking: Option<crate::mnx::TextMarking>,
+            },
         }
 
         let mut close_dialog = false;
         let mut apply_action = None;
         let mut lyric_action: Option<(usize, usize, String, Option<String>, Option<bool>)> = None;
         let mut lyric_advance: Option<(usize, usize, bool)> = None;
+        let presets_snapshot = self.instrument_presets.clone();
+        let preset_status_snapshot = self.preset_status_msg.clone();
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
@@ -572,6 +619,117 @@ impl MnxEditorApp {
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ctx, |ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+                        // ── Preset Selector & Save as Preset Row ─────────────────────
+                        let current_probe = crate::presets::InstrumentPreset::from_dialog_state(
+                            "probe",
+                            *num_strings,
+                            *edo,
+                            *step_multiplier,
+                            tunings_text,
+                            tunings_octave,
+                        )
+                        .ok();
+
+                        let matched_preset_label = current_probe
+                            .as_ref()
+                            .and_then(|probe| {
+                                presets_snapshot.iter().find(|p| {
+                                    p.edo == probe.edo
+                                        && p.step_multiplier == probe.step_multiplier
+                                        && p.tuning == probe.tuning
+                                })
+                            })
+                            .map(|p| p.display_label())
+                            .unwrap_or_else(|| "Custom / Select Preset...".to_string());
+
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Preset:").strong());
+                            egui::ComboBox::from_id_salt("instrument_preset_combo")
+                                .selected_text(matched_preset_label)
+                                .width(240.0)
+                                .show_ui(ui, |ui| {
+                                    let mut last_edo: Option<u8> = None;
+                                    for preset in &presets_snapshot {
+                                        if last_edo.is_some() && last_edo != Some(preset.edo) {
+                                            ui.separator();
+                                        }
+                                        last_edo = Some(preset.edo);
+                                        if ui
+                                            .selectable_label(false, preset.display_label())
+                                            .clicked()
+                                        {
+                                            preset.apply_to_dialog_state(
+                                                num_strings,
+                                                edo,
+                                                step_multiplier,
+                                                tunings_text,
+                                                tunings_octave,
+                                            );
+                                        }
+                                    }
+                                });
+
+                            if ui.button("Save as instrument preset...").clicked() {
+                                apply_action = Some(DialogAction::OpenSavePresetDialog {
+                                    num_strings: *num_strings,
+                                    edo: *edo,
+                                    step_multiplier: *step_multiplier,
+                                    tunings_text: tunings_text.clone(),
+                                    tunings_octave: tunings_octave.clone(),
+                                    is_new_tab: *is_new_tab,
+                                });
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("YAML Presets:");
+                            if ui
+                                .button("Import Preset(s)...")
+                                .on_hover_text("Import a single preset or a list of presets from a YAML file")
+                                .clicked()
+                            {
+                                apply_action = Some(DialogAction::ImportPresetsYaml {
+                                    num_strings: *num_strings,
+                                    edo: *edo,
+                                    step_multiplier: *step_multiplier,
+                                    tunings_text: tunings_text.clone(),
+                                    tunings_octave: tunings_octave.clone(),
+                                    is_new_tab: *is_new_tab,
+                                });
+                            }
+                            if ui
+                                .button("Export Current...")
+                                .on_hover_text("Export the current instrument setup as a YAML preset file")
+                                .clicked()
+                            {
+                                apply_action = Some(DialogAction::ExportSinglePresetYaml {
+                                    num_strings: *num_strings,
+                                    edo: *edo,
+                                    step_multiplier: *step_multiplier,
+                                    tunings_text: tunings_text.clone(),
+                                    tunings_octave: tunings_octave.clone(),
+                                });
+                            }
+                            if ui
+                                .button("Export Preset List...")
+                                .on_hover_text("Export all saved presets (ordered by EDO) to a YAML file")
+                                .clicked()
+                            {
+                                apply_action = Some(DialogAction::ExportAllPresetsYaml);
+                            }
+                        });
+
+                        if let Some(status) = &preset_status_snapshot {
+                            ui.label(
+                                egui::RichText::new(status)
+                                    .size(11.5)
+                                    .color(egui::Color32::from_rgb(120, 210, 140)),
+                            );
+                        }
+
+                        ui.separator();
+
                         ui.horizontal(|ui| {
                             ui.label("Number of strings:");
                             ui.add(egui::DragValue::new(num_strings).range(1..=15));
@@ -647,6 +805,71 @@ impl MnxEditorApp {
                             }
                             if ui.button("Cancel").clicked() {
                                 close_dialog = true;
+                            }
+                        });
+                    });
+            }
+            ActiveDialog::SaveInstrumentPreset {
+                preset_name,
+                error_msg,
+                num_strings,
+                edo,
+                step_multiplier,
+                tunings_text,
+                tunings_octave,
+                is_new_tab,
+            } => {
+                egui::Window::new("Save as Instrument Preset")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.label(format!(
+                            "Save current {}-EDO ({}-string) tuning to preset list:",
+                            edo, num_strings
+                        ));
+                        ui.horizontal(|ui| {
+                            ui.label("Preset name:");
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(preset_name)
+                                    .desired_width(220.0)
+                                    .hint_text("e.g. Custom 41-EDO Guitar"),
+                            );
+                            if !resp.has_focus() && error_msg.is_none() {
+                                resp.request_focus();
+                            }
+                        });
+
+                        if let Some(err) = error_msg {
+                            ui.label(egui::RichText::new(err.as_str()).color(egui::Color32::RED));
+                        }
+
+                        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Save Preset").clicked() || enter_pressed {
+                                apply_action = Some(DialogAction::SaveInstrumentPreset {
+                                    preset_name: preset_name.clone(),
+                                    num_strings: *num_strings,
+                                    edo: *edo,
+                                    step_multiplier: *step_multiplier,
+                                    tunings_text: tunings_text.clone(),
+                                    tunings_octave: tunings_octave.clone(),
+                                    is_new_tab: *is_new_tab,
+                                });
+                            }
+                            if ui.button("Cancel").clicked() || esc_pressed {
+                                apply_action = Some(DialogAction::ReturnToInstrumentSetup {
+                                    num_strings: *num_strings,
+                                    edo: *edo,
+                                    step_multiplier: *step_multiplier,
+                                    tunings_text: tunings_text.clone(),
+                                    tunings_octave: tunings_octave.clone(),
+                                    is_new_tab: *is_new_tab,
+                                });
                             }
                         });
                     });
@@ -1061,6 +1284,118 @@ impl MnxEditorApp {
                         });
                     });
             }
+            ActiveDialog::InsertTextMarking {
+                event_idx,
+                text_buf,
+                bold,
+                italic,
+                underline,
+                font_family,
+                font_size,
+                has_existing,
+            } => {
+                let target_ev = *event_idx;
+                egui::Window::new(format!("Insert Text Marking (Duration {})", target_ev + 1))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Text:");
+                            let text_edit_id = ui.make_persistent_id("insert_text_marking_input");
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(text_buf)
+                                    .id(text_edit_id)
+                                    .desired_width(220.0)
+                                    .hint_text("e.g. Let ring, Chorus, palm mute..."),
+                            );
+                            if !resp.has_focus() && text_buf.is_empty() {
+                                resp.request_focus();
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Style:");
+                            ui.toggle_value(bold, egui::RichText::new("B").strong())
+                                .on_hover_text("Bold");
+                            ui.toggle_value(italic, egui::RichText::new("I").italics())
+                                .on_hover_text("Italic");
+                            ui.toggle_value(underline, egui::RichText::new("U").underline())
+                                .on_hover_text("Underline");
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Font:");
+                            egui::ComboBox::from_id_salt("text_marking_font_family")
+                                .selected_text(font_family.as_str())
+                                .width(120.0)
+                                .show_ui(ui, |ui| {
+                                    for fam in &["Sans-Serif", "Serif", "Monospace"] {
+                                        ui.selectable_value(
+                                            font_family,
+                                            (*fam).to_string(),
+                                            *fam,
+                                        );
+                                    }
+                                });
+
+                            ui.add_space(8.0);
+                            ui.label("Size:");
+                            ui.add(
+                                egui::DragValue::new(font_size)
+                                    .range(6.0..=48.0)
+                                    .speed(0.5)
+                                    .suffix(" pt"),
+                            );
+                        });
+
+                        ui.separator();
+                        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Apply").clicked() || enter_pressed {
+                                let trimmed = text_buf.trim();
+                                let marking = if trimmed.is_empty() {
+                                    None
+                                } else {
+                                    Some(crate::mnx::TextMarking {
+                                        text: trimmed.to_string(),
+                                        bold: *bold,
+                                        italic: *italic,
+                                        underline: *underline,
+                                        font_family: if font_family == "Sans-Serif" {
+                                            None
+                                        } else {
+                                            Some(font_family.clone())
+                                        },
+                                        font_size: if (*font_size - 12.0).abs() < 0.05 {
+                                            None
+                                        } else {
+                                            Some(*font_size)
+                                        },
+                                    })
+                                };
+                                apply_action = Some(DialogAction::ApplyTextMarking {
+                                    event_idx: target_ev,
+                                    marking,
+                                });
+                                close_dialog = true;
+                            }
+                            if *has_existing && ui.button("Remove").clicked() {
+                                apply_action = Some(DialogAction::ApplyTextMarking {
+                                    event_idx: target_ev,
+                                    marking: None,
+                                });
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc_pressed {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
         }
 
         if let Some((ev, line, text, l_type, ext)) = lyric_action {
@@ -1248,6 +1583,236 @@ impl MnxEditorApp {
                 } => {
                     self.start_new_tab(num_strings, edo, step_multiplier, tunings);
                 }
+                DialogAction::OpenSavePresetDialog {
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tunings_text,
+                    tunings_octave,
+                    is_new_tab,
+                } => {
+                    self.preset_status_msg = None;
+                    self.active_dialog = ActiveDialog::SaveInstrumentPreset {
+                        preset_name: String::new(),
+                        error_msg: None,
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        tunings_text,
+                        tunings_octave,
+                        is_new_tab,
+                    };
+                }
+                DialogAction::SaveInstrumentPreset {
+                    preset_name,
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tunings_text,
+                    tunings_octave,
+                    is_new_tab,
+                } => {
+                    match crate::presets::InstrumentPreset::from_dialog_state(
+                        &preset_name,
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        &tunings_text,
+                        &tunings_octave,
+                    ) {
+                        Ok(preset) => {
+                            let saved_label = preset.display_label();
+                            crate::presets::add_or_update_preset(
+                                &mut self.instrument_presets,
+                                preset,
+                            );
+                            let _ = crate::presets::save_presets_to_user_config(
+                                &self.instrument_presets,
+                            );
+                            self.preset_status_msg =
+                                Some(format!("Saved preset: {}", saved_label));
+                            self.active_dialog = ActiveDialog::InstrumentSetup {
+                                num_strings,
+                                edo,
+                                step_multiplier,
+                                tunings_text,
+                                tunings_octave,
+                                is_new_tab,
+                            };
+                        }
+                        Err(err) => {
+                            self.active_dialog = ActiveDialog::SaveInstrumentPreset {
+                                preset_name,
+                                error_msg: Some(err),
+                                num_strings,
+                                edo,
+                                step_multiplier,
+                                tunings_text,
+                                tunings_octave,
+                                is_new_tab,
+                            };
+                        }
+                    }
+                }
+                DialogAction::ReturnToInstrumentSetup {
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tunings_text,
+                    tunings_octave,
+                    is_new_tab,
+                } => {
+                    self.active_dialog = ActiveDialog::InstrumentSetup {
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        tunings_text,
+                        tunings_octave,
+                        is_new_tab,
+                    };
+                }
+                DialogAction::ImportPresetsYaml {
+                    mut num_strings,
+                    mut edo,
+                    mut step_multiplier,
+                    mut tunings_text,
+                    mut tunings_octave,
+                    is_new_tab,
+                } => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("YAML Preset(s)", &["yaml", "yml"])
+                        .pick_file()
+                    {
+                        match std::fs::read_to_string(&path) {
+                            Ok(content) => match crate::presets::parse_presets_from_yaml(&content) {
+                                Ok(imported) => {
+                                    let count = imported.len();
+                                    if let Some(first) = imported.first() {
+                                        first.apply_to_dialog_state(
+                                            &mut num_strings,
+                                            &mut edo,
+                                            &mut step_multiplier,
+                                            &mut tunings_text,
+                                            &mut tunings_octave,
+                                        );
+                                    }
+                                    for p in imported {
+                                        crate::presets::add_or_update_preset(
+                                            &mut self.instrument_presets,
+                                            p,
+                                        );
+                                    }
+                                    let _ = crate::presets::save_presets_to_user_config(
+                                        &self.instrument_presets,
+                                    );
+                                    self.preset_status_msg = Some(format!(
+                                        "Imported {} preset(s) from {}",
+                                        count,
+                                        path.file_name()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("file")
+                                    ));
+                                }
+                                Err(e) => {
+                                    self.preset_status_msg = Some(e);
+                                }
+                            },
+                            Err(e) => {
+                                self.preset_status_msg =
+                                    Some(format!("Failed to read file: {}", e));
+                            }
+                        }
+                    }
+                    self.active_dialog = ActiveDialog::InstrumentSetup {
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        tunings_text,
+                        tunings_octave,
+                        is_new_tab,
+                    };
+                }
+                DialogAction::ExportSinglePresetYaml {
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tunings_text,
+                    tunings_octave,
+                } => {
+                    let matched_name = crate::presets::InstrumentPreset::from_dialog_state(
+                        "probe",
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        &tunings_text,
+                        &tunings_octave,
+                    )
+                    .ok()
+                    .and_then(|probe| {
+                        self.instrument_presets
+                            .iter()
+                            .find(|p| {
+                                p.edo == probe.edo
+                                    && p.step_multiplier == probe.step_multiplier
+                                    && p.tuning == probe.tuning
+                            })
+                            .map(|p| p.name.clone())
+                    })
+                    .unwrap_or_else(|| format!("Custom {}-EDO ({}-str)", edo, num_strings));
+
+                    match crate::presets::InstrumentPreset::from_dialog_state(
+                        &matched_name,
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        &tunings_text,
+                        &tunings_octave,
+                    ) {
+                        Ok(preset) => {
+                            if let Ok(yaml) = crate::presets::serialize_preset_to_yaml(&preset) {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_file_name("instrument_preset.yaml")
+                                    .add_filter("YAML Preset", &["yaml", "yml"])
+                                    .save_file()
+                                {
+                                    if let Err(e) = std::fs::write(&path, yaml) {
+                                        self.preset_status_msg =
+                                            Some(format!("Failed to export preset: {}", e));
+                                    } else {
+                                        self.preset_status_msg = Some(format!(
+                                            "Exported preset '{}'",
+                                            preset.name
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.preset_status_msg = Some(e);
+                        }
+                    }
+                }
+                DialogAction::ExportAllPresetsYaml => {
+                    if let Ok(yaml) =
+                        crate::presets::serialize_presets_list_to_yaml(&self.instrument_presets)
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("instrument_presets.yaml")
+                            .add_filter("YAML Presets List", &["yaml", "yml"])
+                            .save_file()
+                        {
+                            if let Err(e) = std::fs::write(&path, yaml) {
+                                self.preset_status_msg =
+                                    Some(format!("Failed to export preset list: {}", e));
+                            } else {
+                                self.preset_status_msg = Some(format!(
+                                    "Exported {} presets to YAML",
+                                    self.instrument_presets.len()
+                                ));
+                            }
+                        }
+                    }
+                }
                 DialogAction::DiscardChangesSave { target } => {
                     if self.save_file() {
                         match target {
@@ -1356,6 +1921,18 @@ impl MnxEditorApp {
                             "{}",
                         );
                         Some(())
+                    });
+                }
+                DialogAction::ApplyTextMarking { event_idx, marking } => {
+                    let markings = marking.into_iter().collect();
+                    self.mutate_doc(|doc| {
+                        if crate::yaml_editor::set_event_text_markings_in_doc(
+                            doc, event_idx, markings,
+                        ) {
+                            Some(())
+                        } else {
+                            None
+                        }
                     });
                 }
             }

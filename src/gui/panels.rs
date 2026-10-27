@@ -822,6 +822,11 @@ impl MnxEditorApp {
                     self.open_lyric_dialog(start_event_idx, 1);
                 }
 
+                if ui.button("Insert Text").on_hover_text("Insert Text Marking on Duration").clicked() {
+                    let target_event_idx = self.selected_event_idx.unwrap_or(0);
+                    self.open_text_marking_dialog(target_event_idx);
+                }
+
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
@@ -1313,7 +1318,7 @@ impl MnxEditorApp {
                     .map(|p| p.num_strings())
                     .unwrap_or(6) as u8;
 
-                ui.menu_button("String Channels ▾", |ui| {
+                ui.menu_button("String Channels ◢", |ui| {
                     ui.label(egui::RichText::new(if self.is_mpe_mode {
                         "String to MPE Member Channel Mapping (Ch 2-16, Ch 1 is Master)"
                     } else {
@@ -1825,14 +1830,54 @@ impl MnxEditorApp {
                                     painter.rect_stroke(srect, *rounding, *stroke, egui::StrokeKind::Middle);
                                 }
                             }
-                            crate::layout::display_list::DrawKind::Text { pos, align, text, font_id, color } => {
-                                painter.text(
-                                    *pos + page_origin,
-                                    *align,
-                                    text,
-                                    font_id.clone(),
-                                    *color,
-                                );
+                            crate::layout::display_list::DrawKind::Text {
+                                pos,
+                                align,
+                                text,
+                                font_id,
+                                color,
+                                bold,
+                                italic,
+                            } => {
+                                let screen_pos = *pos + page_origin;
+                                if *italic || *bold {
+                                    let mut job = egui::text::LayoutJob::default();
+                                    job.append(
+                                        text,
+                                        0.0,
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: *color,
+                                            italics: *italic,
+                                            ..Default::default()
+                                        },
+                                    );
+                                    let galley = painter.layout_job(job);
+                                    let size = galley.size();
+                                    let min_x = match align.x() {
+                                        eframe::emath::Align::Min => screen_pos.x,
+                                        eframe::emath::Align::Center => screen_pos.x - size.x * 0.5,
+                                        eframe::emath::Align::Max => screen_pos.x - size.x,
+                                    };
+                                    let min_y = match align.y() {
+                                        eframe::emath::Align::Min => screen_pos.y,
+                                        eframe::emath::Align::Center => screen_pos.y - size.y * 0.5,
+                                        eframe::emath::Align::Max => screen_pos.y - size.y,
+                                    };
+                                    let draw_pos = egui::pos2(min_x, min_y);
+                                    painter.galley(draw_pos, galley.clone(), *color);
+                                    if *bold {
+                                        painter.galley(draw_pos + egui::vec2(0.65, 0.0), galley, *color);
+                                    }
+                                } else {
+                                    painter.text(
+                                        screen_pos,
+                                        *align,
+                                        text,
+                                        font_id.clone(),
+                                        *color,
+                                    );
+                                }
                             }
                             crate::layout::display_list::DrawKind::Glyph { pos, align, codepoint, font_family, size, color } => {
                                 let font_id = egui::FontId::new(*size, egui::FontFamily::Name(font_family.clone().into()));

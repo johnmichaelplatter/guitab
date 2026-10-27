@@ -406,7 +406,7 @@ parts:
 
     #[test]
     fn test_validate_harmonics_in_validate_mnx() {
-        let yaml_str = include_str!("../example_harmonics.yaml");
+        let yaml_str = include_str!("../examples/example_harmonics.yaml");
         let doc: MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
         let errors = validate_mnx(&doc);
         assert_eq!(errors.len(), 4);
@@ -417,7 +417,7 @@ parts:
 
     #[test]
     fn test_validate_example_endings_yaml() {
-        let yaml_str = include_str!("../example_endings.yaml");
+        let yaml_str = include_str!("../examples/example_endings.yaml");
         let doc: MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
         let errors = validate_mnx(&doc);
         assert_eq!(errors.len(), 0, "example_endings.yaml should have 0 validation errors: {:?}", errors);
@@ -427,7 +427,7 @@ parts:
 
     #[test]
     fn test_validate_example_layout_lyrics_yaml() {
-        let yaml_str = include_str!("../example_layout_lyrics.yaml");
+        let yaml_str = include_str!("../examples/example_layout_lyrics.yaml");
         let doc: MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
         let errors = validate_mnx(&doc);
         assert_eq!(errors.len(), 0, "example_layout_lyrics.yaml should validate without errors: {:?}", errors);
