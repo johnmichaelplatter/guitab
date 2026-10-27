@@ -2426,7 +2426,7 @@ mod tests {
 
     #[test]
     fn test_render_example_endings_tablature() {
-        let yaml_str = include_str!("../example_endings.yaml");
+        let yaml_str = include_str!("../examples/example_endings.yaml");
         let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(yaml_str).unwrap();
         let ctx = egui::Context::default();
         crate::setup_custom_fonts(&ctx);

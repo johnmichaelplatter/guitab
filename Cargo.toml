@@ -1,10 +1,10 @@
 [package]
 name = "guitab"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 repository = "https://github.com/johnmichaelplatter/guitab"
 homepage = "https://github.com/johnmichaelplatter/guitab"
-licence = "MIT"
+license = "MIT"
 description = "guitab — MNX based guitar tablature editor with broad microtonal support"
 keywords = ["microtonal", "guitar", "tablature", "tab", "MPE"]
 

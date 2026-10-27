@@ -134,6 +134,7 @@ pub struct ClipboardData {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActiveDialog {
     None,
+    StartupPrompt,
     Manual,
     About,
     InsertTimeSignature {
@@ -224,8 +225,120 @@ pub enum ActiveDialog {
 
 impl Default for MnxEditorApp {
     fn default() -> Self {
-        let initial_yaml = fs::read_to_string("examples/example.yaml")
-            .unwrap_or_else(|_| String::from("# Could not load example.yaml"));
+        Self::new_with_optional_example(fs::read_to_string("examples/example.yaml").ok())
+    }
+}
+
+impl MnxEditorApp {
+    pub fn default_empty_yaml() -> String {
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    octave: 4,
+                    alter: None,
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch {
+                    step: "B".to_string(),
+                    octave: 3,
+                    alter: None,
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch {
+                    step: "G".to_string(),
+                    octave: 3,
+                    alter: None,
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch {
+                    step: "D".to_string(),
+                    octave: 3,
+                    alter: None,
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch {
+                    step: "A".to_string(),
+                    octave: 2,
+                    alter: None,
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    octave: 2,
+                    alter: None,
+                },
+            },
+        ];
+
+        let doc = MnxDocument {
+            mnx: crate::mnx::MnxMeta { version: 1 },
+            comment: None,
+            ext: crate::mnx::DocumentExt::default(),
+            global: crate::mnx::Global {
+                measures: vec![crate::mnx::GlobalMeasure {
+                    time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            parts: vec![crate::mnx::Part {
+                id: None,
+                name: Some("Guitar".to_string()),
+                short_name: None,
+                comment: None,
+                ext: crate::mnx::PartExt {
+                    micro_fret_divisions: Some(12),
+                    fret_step_multiplier: Some(1),
+                    pitch_bend_range: None,
+                    capo: None,
+                    tuning: Some(tunings),
+                },
+                measures: vec![crate::mnx::Measure {
+                    comment: None,
+                    beams: None,
+                    arpeggios: None,
+                    sequences: vec![crate::mnx::Sequence {
+                        comment: None,
+                        content: vec![crate::mnx::SequenceItem::Event(crate::mnx::Event {
+                            markings: None,
+                            id: None,
+                            duration: crate::mnx::Duration {
+                                base: "quarter".to_string(),
+                                dots: None,
+                                multiple: None,
+                            },
+                            notes: Vec::new(),
+                            rest: Some(crate::mnx::Rest {}),
+                            slurs: None,
+                            lyrics: None,
+                            comment: None,
+                            ext: crate::mnx::EventExt::default(),
+                        })],
+                    }],
+                }],
+            }],
+        };
+
+        serde_saphyr::to_string(&doc).unwrap_or_default()
+    }
+
+    pub fn new_with_optional_example(loaded_example: Option<String>) -> Self {
+        let (initial_yaml, is_example_found) = match loaded_example {
+            Some(content) => (content, true),
+            None => (Self::default_empty_yaml(), false),
+        };
 
         let ports = if cfg!(test) {
             Vec::new()
@@ -258,7 +371,11 @@ impl Default for MnxEditorApp {
             is_mpe_mode: false,
             midi_player: crate::midi::MidiPlayer::new(),
             midi_status_msg: None,
-            active_dialog: ActiveDialog::None,
+            active_dialog: if is_example_found {
+                ActiveDialog::None
+            } else {
+                ActiveDialog::StartupPrompt
+            },
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             clipboard: None,
@@ -915,7 +1032,7 @@ impl MnxEditorApp {
         }
     }
 
-    pub(crate) fn perform_open_file(&mut self) {
+    pub(crate) fn perform_open_file(&mut self) -> bool {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("YAML Documents", &["yaml", "yml"])
             .pick_file()
@@ -931,11 +1048,15 @@ impl MnxEditorApp {
                     self.editing_fret_buf.clear();
                     self.editing_string = None;
                     self.process_and_render();
+                    true
                 }
                 Err(e) => {
                     self.validation_errors = vec![format!("Failed to read file: {}", e)];
+                    false
                 }
             }
+        } else {
+            false
         }
     }
 

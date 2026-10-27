@@ -2860,5 +2860,52 @@ parts:
         assert!(has_comp, "header_composer must be in display list");
         assert!(has_inst, "header_instrument must be in display list");
     }
+
+    #[test]
+    fn test_startup_when_example_yaml_missing_shows_prompt_and_no_errors() {
+        let app = MnxEditorApp::new_with_optional_example(None);
+        assert_eq!(app.active_dialog, ActiveDialog::StartupPrompt);
+        assert!(
+            app.validation_errors.is_empty(),
+            "Expected 0 validation errors on startup: {:?}",
+            app.validation_errors
+        );
+        assert!(
+            app.parsed_errors.is_empty(),
+            "Expected 0 parse errors on startup: {:?}",
+            app.parsed_errors
+        );
+        assert!(app.parsed_mnx.is_some(), "Default document must parse successfully");
+        assert!(!app.is_modified(), "Fresh startup tab should not be marked modified");
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.parts.len(), 1);
+        assert_eq!(doc.parts[0].num_strings(), 6);
+        assert_eq!(doc.global.measures.len(), 1);
+    }
+
+    #[test]
+    fn test_startup_prompt_new_tab_action_prompts_instrument_setup() {
+        let mut app = MnxEditorApp::new_with_optional_example(None);
+        assert_eq!(app.active_dialog, ActiveDialog::StartupPrompt);
+
+        // Simulate choosing "Create a New Tab"
+        app.prompt_new_tab_instrument_setup();
+        match app.active_dialog {
+            ActiveDialog::InstrumentSetup { is_new_tab, .. } => {
+                assert!(is_new_tab, "Expected is_new_tab to be true");
+            }
+            ref other => panic!("Expected ActiveDialog::InstrumentSetup, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_startup_when_example_yaml_present_does_not_show_startup_prompt() {
+        let example_content = MnxEditorApp::default_empty_yaml();
+        let app = MnxEditorApp::new_with_optional_example(Some(example_content));
+        assert_eq!(app.active_dialog, ActiveDialog::None);
+        assert!(app.validation_errors.is_empty());
+        assert!(app.parsed_mnx.is_some());
+    }
 }
 

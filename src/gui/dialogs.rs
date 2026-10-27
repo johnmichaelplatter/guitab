@@ -79,6 +79,8 @@ impl MnxEditorApp {
                 end_m: usize,
                 times: u32,
             },
+            StartupNewTab,
+            StartupOpenFile,
         }
 
         let mut close_dialog = false;
@@ -88,6 +90,59 @@ impl MnxEditorApp {
 
         match &mut self.active_dialog {
             ActiveDialog::None => {}
+            ActiveDialog::StartupPrompt => {
+                egui::Window::new("Welcome to guitab")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .default_width(380.0)
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+                        ui.vertical_centered(|ui| {
+                            ui.heading(egui::RichText::new("guitab").size(22.0).strong());
+                            ui.label(
+                                egui::RichText::new("Microtonal Tablature & Notation Editor")
+                                    .color(egui::Color32::from_rgb(160, 160, 160)),
+                            );
+                            ui.add_space(8.0);
+                            ui.label("No tab file is currently loaded. What would you like to do?");
+                            ui.add_space(12.0);
+
+                            let btn_size = egui::vec2(240.0, 36.0);
+                            if ui
+                                .add_sized(
+                                    btn_size,
+                                    egui::Button::new(
+                                        egui::RichText::new("➕  Create a New Tab").size(14.0).strong(),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                apply_action = Some(DialogAction::StartupNewTab);
+                                close_dialog = true;
+                            }
+
+                            if ui
+                                .add_sized(
+                                    btn_size,
+                                    egui::Button::new(
+                                        egui::RichText::new("📂  Open a Tab File...").size(14.0).strong(),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                apply_action = Some(DialogAction::StartupOpenFile);
+                                close_dialog = true;
+                            }
+
+                            ui.add_space(8.0);
+                            let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                            if ui.button(egui::RichText::new("Dismiss").size(11.0)).clicked() || esc_pressed {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
             ActiveDialog::Manual => {
                 egui::Window::new("User Manual")
                     .collapsible(false)
@@ -1248,11 +1303,21 @@ impl MnxEditorApp {
                 } => {
                     self.start_new_tab(num_strings, edo, step_multiplier, tunings);
                 }
+                DialogAction::StartupNewTab => {
+                    self.prompt_new_tab_instrument_setup();
+                }
+                DialogAction::StartupOpenFile => {
+                    if !self.perform_open_file() {
+                        self.active_dialog = ActiveDialog::StartupPrompt;
+                    }
+                }
                 DialogAction::DiscardChangesSave { target } => {
                     if self.save_file() {
                         match target {
                             DiscardTarget::NewProject => self.prompt_new_tab_instrument_setup(),
-                            DiscardTarget::OpenFile => self.perform_open_file(),
+                            DiscardTarget::OpenFile => {
+                                self.perform_open_file();
+                            }
                         }
                     }
                 }
@@ -1260,14 +1325,18 @@ impl MnxEditorApp {
                     if self.save_as_file() {
                         match target {
                             DiscardTarget::NewProject => self.prompt_new_tab_instrument_setup(),
-                            DiscardTarget::OpenFile => self.perform_open_file(),
+                            DiscardTarget::OpenFile => {
+                                self.perform_open_file();
+                            }
                         }
                     }
                 }
                 DialogAction::DiscardChangesProceed { target } => {
                     match target {
                         DiscardTarget::NewProject => self.prompt_new_tab_instrument_setup(),
-                        DiscardTarget::OpenFile => self.perform_open_file(),
+                        DiscardTarget::OpenFile => {
+                            self.perform_open_file();
+                        }
                     }
                 }
                 DialogAction::ApplyScoreInfo { title, subtitle, composer } => {
