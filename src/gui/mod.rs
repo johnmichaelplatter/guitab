@@ -135,6 +135,13 @@ pub struct ClipboardData {
     pub tempo_changes: Vec<crate::mnx::TempoChange>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InstrumentTuningMode {
+    #[default]
+    Edo,
+    RatioCents,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActiveDialog {
     None,
@@ -186,8 +193,12 @@ pub enum ActiveDialog {
         num_strings: u8,
         edo: u8,
         step_multiplier: u8,
-        tunings_text: Vec<String>, // text input for step
+        tuning_mode: InstrumentTuningMode,
+        tunings_text: Vec<String>, // In EDO mode: step name; in RatioCents mode: ratio or cents (e.g. "4/3" or "498.0")
+        tunings_name: Vec<String>, // 53-EDO recommended or user-specified ups/downs name (e.g. "G")
         tunings_octave: Vec<i32>,  // octave
+        show_custom_fretboard: bool,
+        fretboard_editor: crate::fretboard_editor::FretboardEditorState,
         is_new_tab: bool,
     },
     SaveInstrumentPreset {
@@ -196,8 +207,12 @@ pub enum ActiveDialog {
         num_strings: u8,
         edo: u8,
         step_multiplier: u8,
+        tuning_mode: InstrumentTuningMode,
         tunings_text: Vec<String>,
+        tunings_name: Vec<String>,
         tunings_octave: Vec<i32>,
+        show_custom_fretboard: bool,
+        fretboard_editor: crate::fretboard_editor::FretboardEditorState,
         is_new_tab: bool,
     },
     ConfirmEdoChange {
@@ -245,7 +260,6 @@ pub enum ActiveDialog {
         has_existing: bool,
     },
     GridControllerSetup,
-    CustomFretboardEditor(crate::fretboard_editor::FretboardEditorState),
 }
 
 impl Default for MnxEditorApp {
@@ -816,8 +830,113 @@ impl MnxEditorApp {
         self.yaml_text != self.saved_yaml
     }
 
+    pub fn open_instrument_setup_dialog(&mut self, show_custom_fretboard: bool) {
+        let doc = self.parsed_mnx.as_ref();
+        let part = doc.and_then(|d| d.parts.first());
+        let num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
+        let edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
+        let step_multiplier = part.map(|p| p.step_multiplier()).unwrap_or(1) as u8;
+        let fretboard_editor = doc
+            .map(crate::fretboard_editor::FretboardEditorState::from_doc)
+            .unwrap_or_else(|| {
+                crate::fretboard_editor::FretboardEditorState::new(
+                    num_strings,
+                    Vec::new(),
+                    "D".to_string(),
+                    4,
+                    293.67,
+                )
+            });
+
+        let any_ratio_or_cents = part
+            .and_then(|p| p.ext.tuning.as_ref())
+            .map(|tunings| tunings.iter().any(|t| t.pitch.is_ratio_or_cents_step()))
+            .unwrap_or(false);
+        let tuning_mode = if any_ratio_or_cents {
+            InstrumentTuningMode::RatioCents
+        } else {
+            InstrumentTuningMode::Edo
+        };
+
+        let mut tunings_text = Vec::new();
+        let mut tunings_name = Vec::new();
+        let mut tunings_octave = Vec::new();
+        let edo_scale = crate::edo::generate_edo_scale(edo as u32);
+        let tuning_calc = crate::edo::EdoTuning::new(edo as u32);
+
+        for s in 1..=15 {
+            if let Some(pitch) = part.and_then(|p| p.get_string_tuning(s)) {
+                let resolved_name = crate::fretboard_editor::resolve_open_string_53edo_name(
+                    &pitch,
+                    edo as u32,
+                    Some(&fretboard_editor.reference_note_step),
+                );
+                if tuning_mode == InstrumentTuningMode::RatioCents {
+                    let step_str = if pitch.is_ratio_or_cents_step() {
+                        pitch.step.clone()
+                    } else {
+                        "1/1".to_string()
+                    };
+                    tunings_text.push(step_str);
+                    tunings_name.push(resolved_name);
+                } else {
+                    let steps = tuning_calc.pitch_to_steps(&pitch);
+                    let step_in_oct = steps.rem_euclid(edo as i32);
+                    let text = edo_scale
+                        .iter()
+                        .find(|(st, _, _, _)| *st == step_in_oct)
+                        .map(|(_, n, _, _)| n.clone())
+                        .unwrap_or_else(|| pitch.step.clone());
+                    tunings_text.push(text.clone());
+                    tunings_name.push(text);
+                }
+                tunings_octave.push(pitch.octave);
+            } else {
+                let (step, octave) = match s {
+                    1 => ("E", 4),
+                    2 => ("B", 3),
+                    3 => ("G", 3),
+                    4 => ("D", 3),
+                    5 => ("A", 2),
+                    6 => ("E", 2),
+                    7 => ("B", 1),
+                    8 => ("F#", 1),
+                    9 => ("C#", 1),
+                    10 => ("G#", 0),
+                    11 => ("D#", 0),
+                    12 => ("A#", 0),
+                    13 => ("F", 0),
+                    14 => ("C", 0),
+                    _ => ("G", 0),
+                };
+                if tuning_mode == InstrumentTuningMode::RatioCents {
+                    tunings_text.push("1/1".to_string());
+                    tunings_name.push(fretboard_editor.reference_note_step.clone());
+                } else {
+                    tunings_text.push(step.to_string());
+                    tunings_name.push(step.to_string());
+                }
+                tunings_octave.push(octave);
+            }
+        }
+
+        self.active_dialog = ActiveDialog::InstrumentSetup {
+            num_strings,
+            edo,
+            step_multiplier,
+            tuning_mode,
+            tunings_text,
+            tunings_name,
+            tunings_octave,
+            show_custom_fretboard,
+            fretboard_editor,
+            is_new_tab: false,
+        };
+    }
+
     pub fn prompt_new_tab_instrument_setup(&mut self) {
         let mut tunings_text = Vec::new();
+        let mut tunings_name = Vec::new();
         let mut tunings_octave = Vec::new();
         for s in 1..=15 {
             let (step, octave) = match s {
@@ -838,14 +957,25 @@ impl MnxEditorApp {
                 _ => ("G", 0),
             };
             tunings_text.push(step.to_string());
+            tunings_name.push(step.to_string());
             tunings_octave.push(octave);
         }
         self.active_dialog = ActiveDialog::InstrumentSetup {
             num_strings: 6,
             edo: 12,
             step_multiplier: 1,
+            tuning_mode: InstrumentTuningMode::Edo,
             tunings_text,
+            tunings_name,
             tunings_octave,
+            show_custom_fretboard: false,
+            fretboard_editor: crate::fretboard_editor::FretboardEditorState::new(
+                6,
+                Vec::new(),
+                "D".to_string(),
+                4,
+                293.67,
+            ),
             is_new_tab: true,
         };
     }

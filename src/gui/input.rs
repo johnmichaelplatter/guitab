@@ -39,13 +39,18 @@ impl MnxEditorApp {
                     self.editing_fret_buf.parse::<f64>()
                 };
                 if let Ok(new_fret) = parsed {
-                    let new_pitch = self
-                        .parsed_mnx
-                        .as_ref()
-                        .and_then(|d| d.parts.first())
-                        .and_then(|part| {
-                            calculate_pitch_for_string_decimal_fret(part, cur_str, new_fret)
-                        });
+                    let new_pitch = self.parsed_mnx.as_ref().and_then(|d| {
+                        let part = d.parts.first()?;
+                        let ref_note = d
+                            .global
+                            .ext
+                            .tuning
+                            .as_ref()
+                            .and_then(|t| t.reference_note.as_ref());
+                        calculate_pitch_for_string_decimal_fret_with_ref(
+                            part, cur_str, new_fret, ref_note,
+                        )
+                    });
 
                     let res = self.mutate_doc(|doc| {
                         if set_or_add_decimal_note_on_string_in_doc(

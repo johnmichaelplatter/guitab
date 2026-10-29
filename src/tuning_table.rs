@@ -95,17 +95,29 @@ impl FretboardFrequencyTable {
                     let played_steps =
                         string_base_steps + physical_capo_steps + physical_fret_steps;
 
-                    // Standard EDO frequency math:
-                    // f = f_ref * 2 ^ ((played_steps - ref_steps) / edo)
-                    let step_delta = (played_steps - ref_steps) as f64;
-                    let frequency_hz =
-                        reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (edo as f64));
+                    let frequency_hz = if open_pitch.is_ratio_or_cents_step() {
+                        let open_cents = open_pitch.step_cents_above_reference().unwrap_or(0.0);
+                        let oct_delta = open_pitch.octave - reference_pitch.pitch.octave;
+                        let open_hz = reference_pitch.frequency_hz
+                            * (2.0_f64).powf((open_cents / 1200.0) + (oct_delta as f64));
+                        let fret_steps = (physical_capo_steps + physical_fret_steps) as f64;
+                        open_hz * (2.0_f64).powf(fret_steps / (edo as f64))
+                    } else {
+                        // Standard EDO frequency math:
+                        // f = f_ref * 2 ^ ((played_steps - ref_steps) / edo)
+                        let step_delta = (played_steps - ref_steps) as f64;
+                        reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (edo as f64))
+                    };
 
                     // MIDI continuous note number based on 12-TET A440 (where A4 = 440 Hz = MIDI 69)
                     let midi_note_number = 69.0 + 12.0 * (frequency_hz / 440.0).log2();
 
                     // Resolve the standard MNX Pitch representation
-                    let pitch = tuning_calc.steps_to_pitch(played_steps);
+                    let pitch = if open_pitch.is_ratio_or_cents_step() && fret == 0 && capo == 0 {
+                        open_pitch.clone()
+                    } else {
+                        tuning_calc.steps_to_pitch(played_steps)
+                    };
 
                     let state = FretboardPositionState {
                         string: string_idx,
@@ -168,27 +180,20 @@ impl FretboardFrequencyTable {
     }
 
     /// Compute frequency in Hz directly for any pitch in this EDO space using the reference pitch,
-    /// accurately handling microtonal, decimal, and ratio alterations.
+    /// accurately handling microtonal, decimal, and ratio alterations as well as ratio/cents open string `step` values.
     pub fn pitch_to_hz(&self, pitch: &Pitch) -> f64 {
-        let tuning_calc = EdoTuning::new(self.edo);
-        let is_ratio_alter = matches!(
-            &pitch.alter,
-            Some(crate::mnx::Alteration::Fraction(s)) if s.contains('/')
-        );
-        let step_char = if is_ratio_alter {
-            'C'
+        let f_base = if let Some(open_cents) = pitch.step_cents_above_reference() {
+            let oct_delta = pitch.octave - self.reference_pitch.pitch.octave;
+            self.reference_pitch.frequency_hz
+                * (2.0_f64).powf((open_cents / 1200.0) + (oct_delta as f64))
         } else {
-            pitch
-                .step
-                .chars()
-                .next()
-                .unwrap_or('C')
-                .to_ascii_uppercase()
+            let tuning_calc = EdoTuning::new(self.edo);
+            let step_char = crate::fretboard_editor::extract_nominal_from_note_name(&pitch.step);
+            let base_steps =
+                tuning_calc.nominal_step(step_char) + (pitch.octave * (self.edo as i32));
+            let step_delta = (base_steps - self.ref_steps) as f64;
+            self.reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (self.edo as f64))
         };
-        let base_steps = tuning_calc.nominal_step(step_char) + (pitch.octave * (self.edo as i32));
-        let step_delta = (base_steps - self.ref_steps) as f64;
-        let f_base =
-            self.reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (self.edo as f64));
         let alter_semitones = pitch
             .alter
             .as_ref()

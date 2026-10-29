@@ -3014,11 +3014,203 @@ parts:
         let n0 = ev0.notes.iter().find(|n| n.string == Some(1)).unwrap();
         assert_eq!(n0.decimal_fret, Some(1.5));
         assert_eq!(n0.formatted_fret().as_deref(), Some("1.5"));
+        assert_eq!(n0.pitch.step, "E");
         assert_eq!(
             n0.pitch.alter,
             Some(crate::mnx::Alteration::Fraction("11/8".to_string()))
         );
-        assert_eq!(n0.pitch.ext.name.as_deref(), Some("^F"));
+        // Open String 1 is vE (step 17 in 53-EDO) + 11/8 (^F = step 23 in 53-EDO) -> step 40 in 53-EDO = A
+        assert_eq!(n0.pitch.ext.name.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn test_ji_custom_fretboard_three_string_tuning_examples_and_mnx_export() {
+        let mut app = MnxEditorApp::default();
+
+        // Set up custom fret 6 as a full 5/4 fret (with manual_number = Some(6.0)), reference note D4 = 293.67 Hz
+        let custom_fret_6 = crate::fretboard_editor::CustomFret {
+            fret_number: 6.0,
+            manual_number: Some(6.0),
+            spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 5, den: 4 },
+            strings: vec![1, 2, 3, 4, 5, 6],
+            note_name: crate::fretboard_editor::recommend_53edo_note_name_from_cents(
+                1200.0 * (5.0_f64 / 4.0).log2(),
+            ), // "vE"
+        };
+        assert_eq!(custom_fret_6.note_name, "vE");
+
+        // ---------------------------------------------------------------------
+        // Example 1: Open string 1 tuned to G4 in 41-EDO, custom fret 6 = 5/4
+        // ---------------------------------------------------------------------
+        app.start_new_tab(
+            6,
+            41,
+            1,
+            vec![crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "G".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt::default(),
+                },
+            }],
+        );
+        let state1 = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            vec![custom_fret_6.clone()],
+            "D".to_string(),
+            4,
+            293.67,
+        );
+        app.apply_custom_fretboard_state(state1);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "6".to_string();
+        assert!(app.commit_fret_edit());
+
+        assert!(
+            app.yaml_text
+                .contains("pitch: {step: G, alter: 5/4, octave: 4, _x: {name: vB}}"),
+            "Example 1 YAML mismatch:\n{}",
+            app.yaml_text
+        );
+        assert!(
+            app.yaml_text.contains("_x: {string: 1, fret: 6}"),
+            "Example 1 NoteExt mismatch:\n{}",
+            app.yaml_text
+        );
+
+        let mnx_json_1 = crate::mnx::export_yaml_to_mnx_json(&app.yaml_text).unwrap();
+        assert!(mnx_json_1.contains("\"step\": \"B\""));
+        assert!(mnx_json_1.contains("\"alter\": -0.137"));
+
+        // ---------------------------------------------------------------------
+        // Example 2: Open string 1 tuned to 4/3, reference note 1/1 is D4 = 293.67 Hz
+        // ---------------------------------------------------------------------
+        let (_, cents_4_3) =
+            crate::fretboard_editor::parse_ratio_or_cents_to_cents("4/3").unwrap();
+        let rec_name_2 =
+            crate::fretboard_editor::recommend_53edo_name_from_reference("D", cents_4_3);
+        assert_eq!(rec_name_2, "G");
+
+        app.start_new_tab(
+            6,
+            41,
+            1,
+            vec![crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt {
+                        name: Some(rec_name_2),
+                    },
+                },
+            }],
+        );
+        let state2 = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            vec![custom_fret_6.clone()],
+            "D".to_string(),
+            4,
+            293.67,
+        );
+        app.apply_custom_fretboard_state(state2);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "6".to_string();
+        assert!(app.commit_fret_edit());
+
+        assert!(
+            app.yaml_text
+                .contains("pitch: {step: 4/3, alter: 5/4, octave: 4, _x: {name: vB}}"),
+            "Example 2 YAML mismatch:\n{}",
+            app.yaml_text
+        );
+        assert!(
+            app.yaml_text.contains("_x: {string: 1, fret: 6}"),
+            "Example 2 NoteExt mismatch:\n{}",
+            app.yaml_text
+        );
+
+        let mnx_json_2 = crate::mnx::export_yaml_to_mnx_json(&app.yaml_text).unwrap();
+        assert!(mnx_json_2.contains("\"step\": \"B\""));
+        assert!(mnx_json_2.contains("\"alter\": -0.156"));
+
+        // ---------------------------------------------------------------------
+        // Example 3: Open string 1 tuned to 498.0 (cents), reference note 1/1 is D4 = 293.67 Hz
+        // ---------------------------------------------------------------------
+        let (step_498, cents_498) =
+            crate::fretboard_editor::parse_ratio_or_cents_to_cents("498.0").unwrap();
+        assert_eq!(step_498, "498.0");
+        let rec_name_3 =
+            crate::fretboard_editor::recommend_53edo_name_from_reference("D", cents_498);
+        assert_eq!(rec_name_3, "G");
+
+        app.start_new_tab(
+            6,
+            41,
+            1,
+            vec![crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: step_498,
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt {
+                        name: Some(rec_name_3),
+                    },
+                },
+            }],
+        );
+        let state3 = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            vec![custom_fret_6],
+            "D".to_string(),
+            4,
+            293.67,
+        );
+        app.apply_custom_fretboard_state(state3);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "6".to_string();
+        assert!(app.commit_fret_edit());
+
+        assert!(
+            app.yaml_text
+                .contains("pitch: {step: 498.0, alter: 5/4, octave: 4, _x: {name: vB}}"),
+            "Example 3 YAML mismatch:\n{}",
+            app.yaml_text
+        );
+        assert!(
+            app.yaml_text.contains("_x: {string: 1, fret: 6}"),
+            "Example 3 NoteExt mismatch:\n{}",
+            app.yaml_text
+        );
+
+        let mnx_json_3 = crate::mnx::export_yaml_to_mnx_json(&app.yaml_text).unwrap();
+        assert!(mnx_json_3.contains("\"step\": \"B\""));
+        assert!(mnx_json_3.contains("\"alter\": -0.157"));
+
+        // Verify opening Instrument Setup from this Ratio/Cents document detects RatioCents mode
+        app.open_instrument_setup_dialog(true);
+        match &app.active_dialog {
+            ActiveDialog::InstrumentSetup {
+                tuning_mode,
+                tunings_text,
+                tunings_name,
+                show_custom_fretboard,
+                ..
+            } => {
+                assert_eq!(*tuning_mode, InstrumentTuningMode::RatioCents);
+                assert_eq!(tunings_text[0], "498.0");
+                assert_eq!(tunings_name[0], "G");
+                assert!(*show_custom_fretboard);
+            }
+            other => panic!("Expected InstrumentSetup dialog, got {:?}", other),
+        }
     }
 }
 

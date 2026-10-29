@@ -225,8 +225,11 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                 }
 
                                 let expected_steps = tuning_calc.pitch_to_steps(&note.pitch);
+                                let is_ji_or_cents = string_pitch.is_ratio_or_cents_step()
+                                    || note.pitch.is_ratio_or_cents_step()
+                                    || note.pitch.has_ratio_alter();
 
-                                if played_steps != expected_steps {
+                                if !is_ji_or_cents && played_steps != expected_steps {
                                     let alter_str = note
                                         .pitch
                                         .alter

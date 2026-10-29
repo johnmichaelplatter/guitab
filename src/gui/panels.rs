@@ -1260,66 +1260,15 @@ impl MnxEditorApp {
                 }
 
                 if ui.button("Instrument Setup").clicked() {
-                    let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
-                    let num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
-                    let edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
-                    let step_multiplier = part.map(|p| p.step_multiplier()).unwrap_or(1) as u8;
-                    let mut tunings_text = Vec::new();
-                    let mut tunings_octave = Vec::new();
-                    
-                    let edo_scale = crate::edo::generate_edo_scale(edo as u32);
-                    let tuning_calc = crate::edo::EdoTuning::new(edo as u32);
-                    
-                    for s in 1..=15 {
-                        if let Some(pitch) = part.and_then(|p| p.get_string_tuning(s)) {
-                            let steps = tuning_calc.pitch_to_steps(&pitch);
-                            let step_in_oct = steps.rem_euclid(edo as i32);
-                            let text = edo_scale.iter().find(|(st, _, _, _)| *st == step_in_oct).map(|(_, n, _, _)| n.clone()).unwrap_or_else(|| pitch.step.clone());
-                            tunings_text.push(text);
-                            tunings_octave.push(pitch.octave);
-                        } else {
-                            let (step, octave) = match s {
-                                1 => ("E", 4),
-                                2 => ("B", 3),
-                                3 => ("G", 3),
-                                4 => ("D", 3),
-                                5 => ("A", 2),
-                                6 => ("E", 2),
-                                7 => ("B", 1),
-                                8 => ("F#", 1),
-                                9 => ("C#", 1),
-                                10 => ("G#", 0),
-                                11 => ("D#", 0),
-                                12 => ("A#", 0),
-                                13 => ("F", 0),
-                                14 => ("C", 0),
-                                15 => ("G", 0),
-                                _ => ("E", 2),
-                            };
-                            tunings_text.push(step.to_string());
-                            tunings_octave.push(octave);
-                        }
-                    }
-                    self.active_dialog = ActiveDialog::InstrumentSetup {
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tunings_text,
-                        tunings_octave,
-                        is_new_tab: false,
-                    };
+                    self.open_instrument_setup_dialog(false);
                 }
 
                 if ui
                     .button("Custom Fretboard...")
-                    .on_hover_text("Open visual custom fretboard / fretlet & JI editor")
+                    .on_hover_text("Open Instrument Setup expanded with the Custom Fretboard / Fretlet & JI Editor")
                     .clicked()
                 {
-                    if let Some(doc) = &self.parsed_mnx {
-                        self.active_dialog = ActiveDialog::CustomFretboardEditor(
-                            crate::fretboard_editor::FretboardEditorState::from_doc(doc),
-                        );
-                    }
+                    self.open_instrument_setup_dialog(true);
                 }
 
                 ui.separator();

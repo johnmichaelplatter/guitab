@@ -454,6 +454,122 @@ pub fn classify_fretboard_alter_mode(
     CustomFretboardAlterMode::ThreeDecimal12Edo
 }
 
+/// Validates whether `s` is a valid ups/downs pitch name in 53-EDO (e.g. `"G"`, `"vB"`, `"^F#"`).
+pub fn is_valid_ups_downs_name(s: &str) -> bool {
+    let trimmed = s.trim();
+    !trimmed.is_empty() && EdoTuning::new(53).parse_pitch_string(trimmed, 4).is_some()
+}
+
+/// Parses a ratio string (`"4/3"`) or cents string (`"498.0"`) for open-string tuning,
+/// returning `(normalized_step_string, cents_above_reference)`.
+pub fn parse_ratio_or_cents_to_cents(input: &str) -> Option<(String, f64)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some((num_s, den_s)) = trimmed.split_once('/') {
+        let num = num_s.trim().parse::<u32>().ok()?;
+        let den = den_s.trim().parse::<u32>().ok()?;
+        if num == 0 || den == 0 {
+            return None;
+        }
+        let cents = 1200.0 * ((num as f64) / (den as f64)).log2();
+        if !cents.is_finite() {
+            return None;
+        }
+        Some((format!("{}/{}", num, den), cents))
+    } else {
+        let clean = trimmed.trim_end_matches('c').trim();
+        let val = clean.parse::<f64>().ok()?;
+        if !val.is_finite() {
+            return None;
+        }
+        let formatted = if val.fract() == 0.0 {
+            format!("{:.1}", val)
+        } else {
+            format!("{}", val)
+        };
+        Some((formatted, val))
+    }
+}
+
+/// Recommends a 53-EDO ups/downs pitch name for a given `offset_cents` above `ref_pitch_name` (e.g. `"D"` + 498.0c -> `"G"`).
+pub fn recommend_53edo_name_from_reference(ref_pitch_name: &str, offset_cents: f64) -> String {
+    let tuning_53 = EdoTuning::new(53);
+    let ref_step = tuning_53
+        .parse_pitch_string(ref_pitch_name.trim(), 0)
+        .map(|p| tuning_53.pitch_to_steps(&p).rem_euclid(53))
+        .unwrap_or(0);
+    let delta_steps = ((offset_cents / 1200.0) * 53.0).round() as i32;
+    let target_step = (ref_step + delta_steps).rem_euclid(53);
+    crate::edo::generate_edo_scale(53)
+        .into_iter()
+        .find(|(st, _, _, _)| *st == target_step)
+        .map(|(_, name, _, _)| name)
+        .unwrap_or_else(|| "C".to_string())
+}
+
+/// Resolves the 53-EDO ups/downs pitch name for an open string [`Pitch`].
+pub fn resolve_open_string_53edo_name(
+    open_string_pitch: &Pitch,
+    edo: u32,
+    ref_pitch_name: Option<&str>,
+) -> String {
+    if let Some(name) = &open_string_pitch.ext.name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(cents) = open_string_pitch.step_cents_above_reference() {
+        let ref_name = ref_pitch_name.unwrap_or("D");
+        return recommend_53edo_name_from_reference(ref_name, cents);
+    }
+    if open_string_pitch.alter.is_none() {
+        return open_string_pitch.step.clone();
+    }
+    let effective_edo = match &open_string_pitch.alter {
+        Some(Alteration::Fraction(s)) => s
+            .split_once('\\')
+            .and_then(|(_, d)| d.trim().parse::<u32>().ok())
+            .unwrap_or(edo.max(12)),
+        _ => edo.max(12),
+    };
+    let tuning = EdoTuning::new(effective_edo);
+    let step_in_oct = tuning
+        .pitch_to_steps(open_string_pitch)
+        .rem_euclid(effective_edo as i32);
+    crate::edo::generate_edo_scale(effective_edo)
+        .into_iter()
+        .find(|(st, _, _, _)| *st == step_in_oct)
+        .map(|(_, name, _, _)| name)
+        .unwrap_or_else(|| open_string_pitch.step.clone())
+}
+
+/// Combines an open string's 53-EDO ups/downs name (e.g. `"G"`, step 31) with a fret's C-relative
+/// ups/downs name (e.g. `"vE"`, step 17) to produce the sounding note's 53-EDO name (e.g. `"vB"`, step 48).
+pub fn combine_53edo_names(
+    open_string_name: &str,
+    fret_c_relative_name: &str,
+    fallback_fret_cents: f64,
+) -> String {
+    let tuning_53 = EdoTuning::new(53);
+    let open_step = tuning_53
+        .parse_pitch_string(open_string_name.trim(), 0)
+        .map(|p| tuning_53.pitch_to_steps(&p).rem_euclid(53))
+        .unwrap_or(0);
+    let fret_step = tuning_53
+        .parse_pitch_string(fret_c_relative_name.trim(), 0)
+        .map(|p| tuning_53.pitch_to_steps(&p).rem_euclid(53))
+        .unwrap_or_else(|| ((fallback_fret_cents / 1200.0) * 53.0).round().rem_euclid(53.0) as i32);
+    let total_step = (open_step + fret_step).rem_euclid(53);
+    crate::edo::generate_edo_scale(53)
+        .into_iter()
+        .find(|(st, _, _, _)| *st == total_step)
+        .map(|(_, name, _, _)| name)
+        .unwrap_or_else(|| fret_c_relative_name.to_string())
+}
+
 /// Parses the nominal step letter (`C`..`B`) out of an ups/downs note name (e.g. `"vE"` -> `'E'`, `"^F#"` -> `'F'`).
 pub fn extract_nominal_from_note_name(name: &str) -> char {
     for c in name.chars() {
@@ -480,18 +596,45 @@ pub fn nominal_12edo_semitones(nom: char) -> f64 {
 
 /// Synthesizes the MNX [`Pitch`] for a note played on `string` at a given [`CustomFret`] (or open string if `fret_opt` is `None`),
 /// applying the 4 YAML rules:
-/// - Stores the custom ups/downs name in `pitch._x.name`
+/// - Stores the custom 53-EDO sounding ups/downs name in `pitch._x.name`
 /// - Computes `alter` according to [`CustomFretboardAlterMode`] (`3-decimal 12-EDO`, `PureRatio` from `1/1`, or `UnifiedEdo` with $\text{LCM} \le 53$).
 pub fn calculate_custom_fret_pitch(
     open_string_pitch: &Pitch,
     fret_opt: Option<&CustomFret>,
     mode: &CustomFretboardAlterMode,
 ) -> Pitch {
+    calculate_custom_fret_pitch_with_ref(open_string_pitch, fret_opt, mode, 12, None)
+}
+
+/// Synthesizes the MNX [`Pitch`] for a note played on `string` at a given [`CustomFret`] (or open string if `fret_opt` is `None`),
+/// taking into account `edo` and an optional `ref_note` (`1/1` reference note) for Ratio/Cents open strings.
+pub fn calculate_custom_fret_pitch_with_ref(
+    open_string_pitch: &Pitch,
+    fret_opt: Option<&CustomFret>,
+    mode: &CustomFretboardAlterMode,
+    edo: u32,
+    ref_note: Option<&crate::mnx::ReferenceNoteSpec>,
+) -> Pitch {
+    let ref_pitch_name = ref_note.map(|rn| {
+        rn.pitch
+            .ext
+            .name
+            .as_deref()
+            .unwrap_or(rn.pitch.step.as_str())
+    });
+    let open_53_name = resolve_open_string_53edo_name(open_string_pitch, edo, ref_pitch_name);
+
     let Some(custom_fret) = fret_opt else {
-        return open_string_pitch.clone();
+        let mut p = open_string_pitch.clone();
+        if p.is_ratio_or_cents_step() && p.ext.name.is_none() {
+            p.ext.name = Some(open_53_name);
+        }
+        return p;
     };
 
-    let open_semitones_from_c0 = open_string_pitch.to_midi_note() - 12.0;
+    let sound_53_name =
+        combine_53edo_names(&open_53_name, &custom_fret.note_name, custom_fret.cents());
+    let open_semitones_from_c0 = open_string_pitch.to_midi_note_with_ref(ref_note) - 12.0;
     let fret_semitones = custom_fret.cents() / 100.0;
     let total_semitones_from_c0 = open_semitones_from_c0 + fret_semitones;
 
@@ -506,13 +649,10 @@ pub fn calculate_custom_fret_pitch(
                 _ => ((custom_fret.cents() / 1200.0) * (*lcm_edo as f64)).round() as i32,
             };
             let mut p = tuning.steps_to_pitch(open_steps + fret_steps);
-            p.ext.name = Some(custom_fret.note_name.clone());
+            p.ext.name = Some(sound_53_name);
             p
         }
         CustomFretboardAlterMode::PureRatio { .. } => {
-            let nom = extract_nominal_from_note_name(&custom_fret.note_name);
-            let nom_semi = nominal_12edo_semitones(nom);
-            let octave = ((total_semitones_from_c0 - nom_semi) / 12.0).round() as i32;
             let alter = match custom_fret.spec {
                 FretLocationSpec::Ratio { num, den } => {
                     Some(Alteration::Fraction(format!("{}/{}", num, den)))
@@ -520,16 +660,16 @@ pub fn calculate_custom_fret_pitch(
                 _ => None,
             };
             Pitch {
-                step: nom.to_string(),
+                step: open_string_pitch.step.clone(),
                 alter,
-                octave,
+                octave: open_string_pitch.octave,
                 ext: PitchExt {
-                    name: Some(custom_fret.note_name.clone()),
+                    name: Some(sound_53_name),
                 },
             }
         }
         CustomFretboardAlterMode::ThreeDecimal12Edo => {
-            let nom = extract_nominal_from_note_name(&custom_fret.note_name);
+            let nom = extract_nominal_from_note_name(&sound_53_name);
             let nom_semi = nominal_12edo_semitones(nom);
             let octave = ((total_semitones_from_c0 - nom_semi) / 12.0).round() as i32;
             let base_semi = (octave as f64) * 12.0 + nom_semi;
@@ -545,7 +685,7 @@ pub fn calculate_custom_fret_pitch(
                 alter,
                 octave,
                 ext: PitchExt {
-                    name: Some(custom_fret.note_name.clone()),
+                    name: Some(sound_53_name),
                 },
             }
         }
@@ -631,6 +771,26 @@ impl FretboardEditorState {
             Err(e) => {
                 self.guide_error = Some(e);
             }
+        }
+    }
+
+    /// Synchronizes the fretboard editor's string count with the Instrument Setup's `num_strings`.
+    pub fn sync_num_strings(&mut self, new_num_strings: u8) {
+        let clamped = new_num_strings.clamp(1, 15);
+        if self.num_strings != clamped {
+            let old_n = self.num_strings;
+            for f in &mut self.frets {
+                if f.is_full_neck(old_n) {
+                    f.strings = (1..=clamped).collect();
+                } else {
+                    f.strings.retain(|&s| s >= 1 && s <= clamped);
+                    if f.strings.is_empty() {
+                        f.strings.push(clamped);
+                    }
+                }
+            }
+            self.num_strings = clamped;
+            recompute_fret_numbers(&mut self.frets, self.num_strings);
         }
     }
 

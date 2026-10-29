@@ -38,8 +38,11 @@ impl MnxEditorApp {
                 num_strings: u8,
                 edo: u8,
                 step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
                 tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
                 tunings_octave: Vec<i32>,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
                 is_new_tab: bool,
             },
             TranslateInstrumentSetup {
@@ -58,8 +61,12 @@ impl MnxEditorApp {
                 num_strings: u8,
                 edo: u8,
                 step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
                 tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
                 tunings_octave: Vec<i32>,
+                show_custom_fretboard: bool,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
                 is_new_tab: bool,
             },
             SaveInstrumentPreset {
@@ -67,24 +74,36 @@ impl MnxEditorApp {
                 num_strings: u8,
                 edo: u8,
                 step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
                 tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
                 tunings_octave: Vec<i32>,
+                show_custom_fretboard: bool,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
                 is_new_tab: bool,
             },
             ReturnToInstrumentSetup {
                 num_strings: u8,
                 edo: u8,
                 step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
                 tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
                 tunings_octave: Vec<i32>,
+                show_custom_fretboard: bool,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
                 is_new_tab: bool,
             },
             ImportPresetsYaml {
                 num_strings: u8,
                 edo: u8,
                 step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
                 tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
                 tunings_octave: Vec<i32>,
+                show_custom_fretboard: bool,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
                 is_new_tab: bool,
             },
             ExportSinglePresetYaml {
@@ -124,8 +143,6 @@ impl MnxEditorApp {
                 event_idx: usize,
                 marking: Option<crate::mnx::TextMarking>,
             },
-            OpenCustomFretboardEditor,
-            ApplyCustomFretboard(crate::fretboard_editor::FretboardEditorState),
         }
 
         let mut close_dialog = false;
@@ -612,13 +629,23 @@ impl MnxEditorApp {
                 num_strings,
                 edo,
                 step_multiplier,
+                tuning_mode,
                 tunings_text,
+                tunings_name,
                 tunings_octave,
+                show_custom_fretboard,
+                fretboard_editor,
                 is_new_tab,
             } => {
-                egui::Window::new("Instrument Setup")
+                let win_title = if *show_custom_fretboard {
+                    "Instrument Setup & Custom Fretboard Editor"
+                } else {
+                    "Instrument Setup"
+                };
+                egui::Window::new(win_title)
                     .collapsible(false)
-                    .resizable(false)
+                    .resizable(*show_custom_fretboard)
+                    .default_width(if *show_custom_fretboard { 900.0 } else { 520.0 })
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ctx, |ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
@@ -662,6 +689,7 @@ impl MnxEditorApp {
                                             .selectable_label(false, preset.display_label())
                                             .clicked()
                                         {
+                                            *tuning_mode = InstrumentTuningMode::Edo;
                                             preset.apply_to_dialog_state(
                                                 num_strings,
                                                 edo,
@@ -669,6 +697,10 @@ impl MnxEditorApp {
                                                 tunings_text,
                                                 tunings_octave,
                                             );
+                                            for s in 0..tunings_text.len().min(tunings_name.len()) {
+                                                tunings_name[s] = tunings_text[s].clone();
+                                            }
+                                            fretboard_editor.sync_num_strings(*num_strings);
                                         }
                                     }
                                 });
@@ -678,8 +710,12 @@ impl MnxEditorApp {
                                     num_strings: *num_strings,
                                     edo: *edo,
                                     step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
                                     tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
                                     tunings_octave: tunings_octave.clone(),
+                                    show_custom_fretboard: *show_custom_fretboard,
+                                    fretboard_editor: fretboard_editor.clone(),
                                     is_new_tab: *is_new_tab,
                                 });
                             }
@@ -696,8 +732,12 @@ impl MnxEditorApp {
                                     num_strings: *num_strings,
                                     edo: *edo,
                                     step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
                                     tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
                                     tunings_octave: tunings_octave.clone(),
+                                    show_custom_fretboard: *show_custom_fretboard,
+                                    fretboard_editor: fretboard_editor.clone(),
                                     is_new_tab: *is_new_tab,
                                 });
                             }
@@ -735,62 +775,233 @@ impl MnxEditorApp {
 
                         ui.horizontal(|ui| {
                             ui.label("Number of strings:");
-                            ui.add(egui::DragValue::new(num_strings).range(1..=15));
+                            if ui.add(egui::DragValue::new(num_strings).range(1..=15)).changed() {
+                                fretboard_editor.sync_num_strings(*num_strings);
+                            }
+                            ui.separator();
+                            ui.label(egui::RichText::new("String Tuning Mode:").strong());
+                            if ui
+                                .selectable_label(
+                                    *tuning_mode == InstrumentTuningMode::Edo,
+                                    "EDO Tuning",
+                                )
+                                .clicked()
+                                && *tuning_mode != InstrumentTuningMode::Edo
+                            {
+                                *tuning_mode = InstrumentTuningMode::Edo;
+                                for s in 0..15 {
+                                    if crate::fretboard_editor::parse_ratio_or_cents_to_cents(
+                                        &tunings_text[s],
+                                    )
+                                    .is_some()
+                                    {
+                                        tunings_text[s] = tunings_name[s].clone();
+                                    }
+                                }
+                            }
+                            if ui
+                                .selectable_label(
+                                    *tuning_mode == InstrumentTuningMode::RatioCents,
+                                    "Ratio / Cents (JI)",
+                                )
+                                .clicked()
+                                && *tuning_mode != InstrumentTuningMode::RatioCents
+                            {
+                                *tuning_mode = InstrumentTuningMode::RatioCents;
+                                for s in 0..15 {
+                                    if crate::fretboard_editor::parse_ratio_or_cents_to_cents(
+                                        &tunings_text[s],
+                                    )
+                                    .is_none()
+                                    {
+                                        tunings_name[s] = tunings_text[s].clone();
+                                        tunings_text[s] = "1/1".to_string();
+                                        tunings_name[s] =
+                                            fretboard_editor.reference_note_step.clone();
+                                    }
+                                }
+                            }
                         });
-                        ui.horizontal(|ui| {
-                            ui.label("Equal Divisions of the Octave:");
-                            ui.add(egui::DragValue::new(edo).range(1..=100));
-                            ui.label("EDO steps per fret:");
-                            ui.add(egui::DragValue::new(step_multiplier).range(1..=10));
-                        });
+
+                        if *tuning_mode == InstrumentTuningMode::Edo {
+                            ui.horizontal(|ui| {
+                                ui.label("Equal Divisions of the Octave:");
+                                ui.add(egui::DragValue::new(edo).range(1..=100));
+                                ui.label("EDO steps per fret:");
+                                ui.add(egui::DragValue::new(step_multiplier).range(1..=10));
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Reference Pitch (1/1):").strong());
+                                ui.label("Pitch Class:");
+                                let ref_valid = crate::fretboard_editor::is_valid_ups_downs_name(
+                                    &fretboard_editor.reference_note_step,
+                                );
+                                let ref_color = if ref_valid {
+                                    ui.visuals().text_color()
+                                } else {
+                                    egui::Color32::RED
+                                };
+                                let ref_resp = ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut fretboard_editor.reference_note_step,
+                                    )
+                                    .text_color(ref_color)
+                                    .desired_width(45.0)
+                                    .hint_text("e.g. D"),
+                                );
+                                if ref_resp.changed() && ref_valid {
+                                    for s in 0..15 {
+                                        if let Some((_, cents)) =
+                                            crate::fretboard_editor::parse_ratio_or_cents_to_cents(
+                                                &tunings_text[s],
+                                            )
+                                        {
+                                            tunings_name[s] = crate::fretboard_editor::recommend_53edo_name_from_reference(
+                                                &fretboard_editor.reference_note_step,
+                                                cents,
+                                            );
+                                        }
+                                    }
+                                }
+                                ui.label("Octave:");
+                                ui.add(
+                                    egui::DragValue::new(
+                                        &mut fretboard_editor.reference_note_octave,
+                                    )
+                                    .range(-2..=8),
+                                );
+                                ui.label("Frequency:");
+                                ui.add(
+                                    egui::DragValue::new(
+                                        &mut fretboard_editor.reference_frequency_hz,
+                                    )
+                                    .range(20.0..=2000.0)
+                                    .speed(0.5)
+                                    .suffix(" Hz"),
+                                );
+                            });
+                        }
 
                         let edo_val = *edo as u32;
                         let edo_scale = crate::edo::generate_edo_scale(edo_val);
 
                         ui.separator();
                         for s in 0..*num_strings as usize {
-                            ui.horizontal(|ui| {
-                                ui.label(format!("String {} tuning:", s + 1));
+                            if *tuning_mode == InstrumentTuningMode::Edo {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("String {} tuning:", s + 1));
 
-                                // Slider for EDO steps
-                                let tuning_calc = crate::edo::EdoTuning::new(edo_val);
-                                let mut current_step = 0;
-                                let parsed_pitch = tuning_calc
-                                    .parse_pitch_string(&tunings_text[s], tunings_octave[s]);
-                                let is_valid = parsed_pitch.is_some();
+                                    // Slider for EDO steps
+                                    let tuning_calc = crate::edo::EdoTuning::new(edo_val);
+                                    let mut current_step = 0;
+                                    let parsed_pitch = tuning_calc
+                                        .parse_pitch_string(&tunings_text[s], tunings_octave[s]);
+                                    let is_valid = parsed_pitch.is_some();
 
-                                if let Some(pitch) = &parsed_pitch {
-                                    current_step = tuning_calc
-                                        .pitch_to_steps(pitch)
-                                        .rem_euclid(edo_val as i32);
-                                }
+                                    if let Some(pitch) = &parsed_pitch {
+                                        current_step = tuning_calc
+                                            .pitch_to_steps(pitch)
+                                            .rem_euclid(edo_val as i32);
+                                    }
 
-                                let prev_step = current_step;
-                                ui.add(
-                                    egui::Slider::new(&mut current_step, 0..=(edo_val as i32 - 1))
-                                        .text("step"),
-                                );
-                                if current_step != prev_step {
-                                    tunings_text[s] = edo_scale
-                                        .iter()
-                                        .find(|(st, _, _, _)| *st == current_step)
-                                        .map(|(_, n, _, _)| n.clone())
-                                        .unwrap_or_else(|| "C".to_string());
-                                }
+                                    let prev_step = current_step;
+                                    ui.add(
+                                        egui::Slider::new(&mut current_step, 0..=(edo_val as i32 - 1))
+                                            .text("step"),
+                                    );
+                                    if current_step != prev_step {
+                                        tunings_text[s] = edo_scale
+                                            .iter()
+                                            .find(|(st, _, _, _)| *st == current_step)
+                                            .map(|(_, n, _, _)| n.clone())
+                                            .unwrap_or_else(|| "C".to_string());
+                                        tunings_name[s] = tunings_text[s].clone();
+                                    }
 
-                                let text_color = if is_valid {
-                                    ui.visuals().text_color()
-                                } else {
-                                    egui::Color32::RED
-                                };
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut tunings_text[s])
-                                        .text_color(text_color)
-                                        .desired_width(40.0),
-                                );
-                                ui.label("Octave:");
-                                ui.add(egui::DragValue::new(&mut tunings_octave[s]).range(-2..=9));
-                            });
+                                    let text_color = if is_valid {
+                                        ui.visuals().text_color()
+                                    } else {
+                                        egui::Color32::RED
+                                    };
+                                    if ui
+                                        .add(
+                                            egui::TextEdit::singleline(&mut tunings_text[s])
+                                                .text_color(text_color)
+                                                .desired_width(40.0),
+                                        )
+                                        .changed()
+                                    {
+                                        tunings_name[s] = tunings_text[s].clone();
+                                    }
+                                    ui.label("Octave:");
+                                    ui.add(
+                                        egui::DragValue::new(&mut tunings_octave[s]).range(-2..=9),
+                                    );
+                                });
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("String {} tuning:", s + 1));
+                                    ui.label("Ratio / Cents:");
+                                    let parsed_rc =
+                                        crate::fretboard_editor::parse_ratio_or_cents_to_cents(
+                                            &tunings_text[s],
+                                        );
+                                    let rc_valid = parsed_rc.is_some();
+                                    let rc_color = if rc_valid {
+                                        ui.visuals().text_color()
+                                    } else {
+                                        egui::Color32::RED
+                                    };
+                                    let rc_resp = ui.add(
+                                        egui::TextEdit::singleline(&mut tunings_text[s])
+                                            .text_color(rc_color)
+                                            .desired_width(70.0)
+                                            .hint_text("e.g. 4/3 or 498.0"),
+                                    );
+                                    if rc_resp.changed() {
+                                        if let Some((_, cents)) =
+                                            crate::fretboard_editor::parse_ratio_or_cents_to_cents(
+                                                &tunings_text[s],
+                                            )
+                                        {
+                                            tunings_name[s] = crate::fretboard_editor::recommend_53edo_name_from_reference(
+                                                &fretboard_editor.reference_note_step,
+                                                cents,
+                                            );
+                                        }
+                                    }
+
+                                    ui.label("Pitch Name (53-EDO):");
+                                    let name_valid =
+                                        crate::fretboard_editor::is_valid_ups_downs_name(
+                                            &tunings_name[s],
+                                        );
+                                    let name_color = if name_valid {
+                                        ui.visuals().text_color()
+                                    } else {
+                                        egui::Color32::RED
+                                    };
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut tunings_name[s])
+                                            .text_color(name_color)
+                                            .desired_width(50.0)
+                                            .hint_text("e.g. G"),
+                                    );
+
+                                    ui.label("Octave:");
+                                    ui.add(
+                                        egui::DragValue::new(&mut tunings_octave[s]).range(-2..=9),
+                                    );
+                                });
+                            }
+                        }
+
+                        if *show_custom_fretboard {
+                            ui.separator();
+                            ui.heading("Custom Fretboard / Fretlet & Just Intonation Editor");
+                            fretboard_editor.sync_num_strings(*num_strings);
+                            fretboard_editor.ui(ui);
                         }
 
                         ui.separator();
@@ -800,20 +1011,42 @@ impl MnxEditorApp {
                                     num_strings: *num_strings,
                                     edo: *edo,
                                     step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
                                     tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
                                     tunings_octave: tunings_octave.clone(),
+                                    fretboard_editor: fretboard_editor.clone(),
                                     is_new_tab: *is_new_tab,
                                 });
                                 close_dialog = true;
                             }
+                            let toggle_label = if *show_custom_fretboard {
+                                "Hide Custom Fretboard Editor ▴"
+                            } else {
+                                "Custom Fretboard Editor ▸"
+                            };
                             if ui
-                                .button("Custom Fretboard Editor...")
+                                .button(toggle_label)
                                 .on_hover_text(
-                                    "Open visual editor for custom fretlets, Just Intonation ratios, cents, or EDO steps",
+                                    "Pop out / collapse the visual editor for custom fretlets, Just Intonation ratios, cents, or EDO steps",
                                 )
                                 .clicked()
                             {
-                                apply_action = Some(DialogAction::OpenCustomFretboardEditor);
+                                *show_custom_fretboard = !*show_custom_fretboard;
+                                fretboard_editor.sync_num_strings(*num_strings);
+                            }
+                            if *show_custom_fretboard
+                                && !fretboard_editor.frets.is_empty()
+                                && ui
+                                    .button("Revert to Standard EDO Frets")
+                                    .on_hover_text(
+                                        "Clear custom frets and return to standard EDO fret spacing",
+                                    )
+                                    .clicked()
+                            {
+                                fretboard_editor.frets.clear();
+                                fretboard_editor.selected_fret_idx = None;
+                                fretboard_editor.editing_badge = None;
                             }
                             if ui.button("Cancel").clicked() {
                                 close_dialog = true;
@@ -827,8 +1060,12 @@ impl MnxEditorApp {
                 num_strings,
                 edo,
                 step_multiplier,
+                tuning_mode,
                 tunings_text,
+                tunings_name,
                 tunings_octave,
+                show_custom_fretboard,
+                fretboard_editor,
                 is_new_tab,
             } => {
                 egui::Window::new("Save as Instrument Preset")
@@ -868,8 +1105,12 @@ impl MnxEditorApp {
                                     num_strings: *num_strings,
                                     edo: *edo,
                                     step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
                                     tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
                                     tunings_octave: tunings_octave.clone(),
+                                    show_custom_fretboard: *show_custom_fretboard,
+                                    fretboard_editor: fretboard_editor.clone(),
                                     is_new_tab: *is_new_tab,
                                 });
                             }
@@ -878,8 +1119,12 @@ impl MnxEditorApp {
                                     num_strings: *num_strings,
                                     edo: *edo,
                                     step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
                                     tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
                                     tunings_octave: tunings_octave.clone(),
+                                    show_custom_fretboard: *show_custom_fretboard,
+                                    fretboard_editor: fretboard_editor.clone(),
                                     is_new_tab: *is_new_tab,
                                 });
                             }
@@ -1574,38 +1819,6 @@ impl MnxEditorApp {
                         }
                     });
             }
-            ActiveDialog::CustomFretboardEditor(editor_state) => {
-                egui::Window::new("Custom Fretboard / Fretlet & Just Intonation Editor")
-                    .collapsible(false)
-                    .resizable(true)
-                    .default_width(860.0)
-                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                    .show(ctx, |ui| {
-                        editor_state.ui(ui);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            if ui.button("Apply Custom Fretboard").clicked() {
-                                apply_action = Some(DialogAction::ApplyCustomFretboard(
-                                    editor_state.clone(),
-                                ));
-                                close_dialog = true;
-                            }
-                            if ui
-                                .button("Revert to Standard EDO Frets")
-                                .on_hover_text("Clear custom frets and return to standard EDO fret spacing")
-                                .clicked()
-                            {
-                                let mut cleared = editor_state.clone();
-                                cleared.frets.clear();
-                                apply_action = Some(DialogAction::ApplyCustomFretboard(cleared));
-                                close_dialog = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                close_dialog = true;
-                            }
-                        });
-                    });
-            }
         }
 
         if refresh_grid_ports {
@@ -1722,40 +1935,118 @@ impl MnxEditorApp {
                     num_strings,
                     edo,
                     step_multiplier,
+                    tuning_mode,
                     tunings_text,
+                    tunings_name,
                     tunings_octave,
+                    fretboard_editor,
                     is_new_tab,
                 } => {
                     let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
                     let old_num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
                     let old_edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
                     let old_step = part.map(|p| p.step_multiplier()).unwrap_or(1) as u8;
+                    let had_custom_frets = part
+                        .and_then(|p| p.ext.custom_frets.as_ref())
+                        .map(|cf| !cf.is_empty())
+                        .unwrap_or(false);
 
                     let mut tunings = Vec::new();
                     let edo_val = edo as u32;
                     let tuning_calc = crate::edo::EdoTuning::new(edo_val);
-                    for s in 0..num_strings as usize {
-                        let text = &tunings_text[s];
-                        let pitch = if let Some(p) =
-                            tuning_calc.parse_pitch_string(text, tunings_octave[s])
-                        {
-                            p
-                        } else {
-                            // Invalid string name
+
+                    if tuning_mode == InstrumentTuningMode::RatioCents {
+                        if !crate::fretboard_editor::is_valid_ups_downs_name(
+                            &fretboard_editor.reference_note_step,
+                        ) {
                             self.active_dialog = ActiveDialog::Message {
-                                title: "Invalid String".to_string(),
-                                text: format!("String {} has an invalid name.", s + 1),
+                                title: "Invalid Reference Pitch".to_string(),
+                                text: "Reference pitch (1/1) must have a valid ups/downs pitch class (e.g. D, C, vE).".to_string(),
                             };
                             return;
-                        };
-                        tunings.push(crate::mnx::StringTuning {
-                            string: (s + 1) as u8,
-                            pitch,
-                        });
+                        }
+                        for s in 0..num_strings as usize {
+                            let Some((norm_step, _)) =
+                                crate::fretboard_editor::parse_ratio_or_cents_to_cents(
+                                    &tunings_text[s],
+                                )
+                            else {
+                                self.active_dialog = ActiveDialog::Message {
+                                    title: "Invalid String Tuning".to_string(),
+                                    text: format!(
+                                        "String {} must specify a valid ratio (e.g. 4/3) or cents (e.g. 498.0).",
+                                        s + 1
+                                    ),
+                                };
+                                return;
+                            };
+                            if !crate::fretboard_editor::is_valid_ups_downs_name(&tunings_name[s]) {
+                                self.active_dialog = ActiveDialog::Message {
+                                    title: "Invalid Pitch Name".to_string(),
+                                    text: format!(
+                                        "String {} must have a valid ups/downs pitch name (e.g. G, vB).",
+                                        s + 1
+                                    ),
+                                };
+                                return;
+                            }
+                            tunings.push(crate::mnx::StringTuning {
+                                string: (s + 1) as u8,
+                                pitch: crate::mnx::Pitch {
+                                    step: norm_step,
+                                    alter: None,
+                                    octave: tunings_octave[s],
+                                    ext: crate::mnx::PitchExt {
+                                        name: Some(tunings_name[s].trim().to_string()),
+                                    },
+                                },
+                            });
+                        }
+                    } else {
+                        for s in 0..num_strings as usize {
+                            let text = &tunings_text[s];
+                            let pitch = if let Some(p) =
+                                tuning_calc.parse_pitch_string(text, tunings_octave[s])
+                            {
+                                p
+                            } else {
+                                self.active_dialog = ActiveDialog::Message {
+                                    title: "Invalid String".to_string(),
+                                    text: format!("String {} has an invalid name.", s + 1),
+                                };
+                                return;
+                            };
+                            tunings.push(crate::mnx::StringTuning {
+                                string: (s + 1) as u8,
+                                pitch,
+                            });
+                        }
                     }
+
+                    let mut fb_state = fretboard_editor;
+                    fb_state.sync_num_strings(num_strings);
 
                     if is_new_tab {
                         self.start_new_tab(num_strings, edo, step_multiplier, tunings);
+                        if !fb_state.frets.is_empty()
+                            || tuning_mode == InstrumentTuningMode::RatioCents
+                        {
+                            self.apply_custom_fretboard_state(fb_state);
+                        }
+                    } else if !fb_state.frets.is_empty()
+                        || had_custom_frets
+                        || tuning_mode == InstrumentTuningMode::RatioCents
+                    {
+                        self.mutate_doc(|doc| {
+                            if let Some(p) = doc.parts.first_mut() {
+                                p.micro_fret_divisions = Some(edo);
+                                p.fret_step_multiplier = Some(step_multiplier);
+                                p.tuning = Some(tunings.clone());
+                            }
+                            Some(())
+                        });
+                        self.apply_custom_fretboard_state(fb_state);
+                        self.active_dialog = ActiveDialog::None;
                     } else if edo != old_edo || step_multiplier != old_step {
                         self.active_dialog = ActiveDialog::ConfirmEdoChange {
                             new_num_strings: num_strings,
@@ -1801,8 +2092,12 @@ impl MnxEditorApp {
                     num_strings,
                     edo,
                     step_multiplier,
+                    tuning_mode,
                     tunings_text,
+                    tunings_name,
                     tunings_octave,
+                    show_custom_fretboard,
+                    fretboard_editor,
                     is_new_tab,
                 } => {
                     self.preset_status_msg = None;
@@ -1812,8 +2107,12 @@ impl MnxEditorApp {
                         num_strings,
                         edo,
                         step_multiplier,
+                        tuning_mode,
                         tunings_text,
+                        tunings_name,
                         tunings_octave,
+                        show_custom_fretboard,
+                        fretboard_editor,
                         is_new_tab,
                     };
                 }
@@ -1822,8 +2121,12 @@ impl MnxEditorApp {
                     num_strings,
                     edo,
                     step_multiplier,
+                    tuning_mode,
                     tunings_text,
+                    tunings_name,
                     tunings_octave,
+                    show_custom_fretboard,
+                    fretboard_editor,
                     is_new_tab,
                 } => {
                     match crate::presets::InstrumentPreset::from_dialog_state(
@@ -1849,8 +2152,12 @@ impl MnxEditorApp {
                                 num_strings,
                                 edo,
                                 step_multiplier,
+                                tuning_mode,
                                 tunings_text,
+                                tunings_name,
                                 tunings_octave,
+                                show_custom_fretboard,
+                                fretboard_editor,
                                 is_new_tab,
                             };
                         }
@@ -1861,8 +2168,12 @@ impl MnxEditorApp {
                                 num_strings,
                                 edo,
                                 step_multiplier,
+                                tuning_mode,
                                 tunings_text,
+                                tunings_name,
                                 tunings_octave,
+                                show_custom_fretboard,
+                                fretboard_editor,
                                 is_new_tab,
                             };
                         }
@@ -1872,16 +2183,24 @@ impl MnxEditorApp {
                     num_strings,
                     edo,
                     step_multiplier,
+                    tuning_mode,
                     tunings_text,
+                    tunings_name,
                     tunings_octave,
+                    show_custom_fretboard,
+                    fretboard_editor,
                     is_new_tab,
                 } => {
                     self.active_dialog = ActiveDialog::InstrumentSetup {
                         num_strings,
                         edo,
                         step_multiplier,
+                        tuning_mode,
                         tunings_text,
+                        tunings_name,
                         tunings_octave,
+                        show_custom_fretboard,
+                        fretboard_editor,
                         is_new_tab,
                     };
                 }
@@ -1889,8 +2208,12 @@ impl MnxEditorApp {
                     mut num_strings,
                     mut edo,
                     mut step_multiplier,
+                    mut tuning_mode,
                     mut tunings_text,
+                    mut tunings_name,
                     mut tunings_octave,
+                    show_custom_fretboard,
+                    mut fretboard_editor,
                     is_new_tab,
                 } => {
                     if let Some(path) = rfd::FileDialog::new()
@@ -1902,6 +2225,7 @@ impl MnxEditorApp {
                                 Ok(imported) => {
                                     let count = imported.len();
                                     if let Some(first) = imported.first() {
+                                        tuning_mode = InstrumentTuningMode::Edo;
                                         first.apply_to_dialog_state(
                                             &mut num_strings,
                                             &mut edo,
@@ -1909,6 +2233,10 @@ impl MnxEditorApp {
                                             &mut tunings_text,
                                             &mut tunings_octave,
                                         );
+                                        for s in 0..tunings_text.len().min(tunings_name.len()) {
+                                            tunings_name[s] = tunings_text[s].clone();
+                                        }
+                                        fretboard_editor.sync_num_strings(num_strings);
                                     }
                                     for p in imported {
                                         crate::presets::add_or_update_preset(
@@ -1941,8 +2269,12 @@ impl MnxEditorApp {
                         num_strings,
                         edo,
                         step_multiplier,
+                        tuning_mode,
                         tunings_text,
+                        tunings_name,
                         tunings_octave,
+                        show_custom_fretboard,
+                        fretboard_editor,
                         is_new_tab,
                     };
                 }
@@ -2149,16 +2481,6 @@ impl MnxEditorApp {
                         }
                     });
                 }
-                DialogAction::OpenCustomFretboardEditor => {
-                    if let Some(doc) = &self.parsed_mnx {
-                        self.active_dialog = ActiveDialog::CustomFretboardEditor(
-                            crate::fretboard_editor::FretboardEditorState::from_doc(doc),
-                        );
-                    }
-                }
-                DialogAction::ApplyCustomFretboard(state) => {
-                    self.apply_custom_fretboard_state(state);
-                }
             }
         }
     }
@@ -2175,40 +2497,58 @@ impl MnxEditorApp {
             return;
         }
 
-        if state.frets.is_empty() {
+        let any_ratio_or_cents_tuning = doc.parts[0]
+            .ext
+            .tuning
+            .as_ref()
+            .map(|tunings| tunings.iter().any(|t| t.pitch.is_ratio_or_cents_step()))
+            .unwrap_or(false);
+
+        let need_ref_note = if state.frets.is_empty() {
             doc.parts[0].ext.custom_frets = None;
-            doc.global.ext.tuning = None;
+            any_ratio_or_cents_tuning
         } else {
             let alter_mode = crate::fretboard_editor::classify_fretboard_alter_mode(
                 &state.frets,
                 state.reference_frequency_hz,
             );
-            if matches!(
-                alter_mode,
-                crate::fretboard_editor::CustomFretboardAlterMode::PureRatio { .. }
-            ) {
-                doc.global.ext.tuning = Some(crate::mnx::GlobalTuningExt {
-                    reference_note: Some(crate::mnx::ReferenceNoteSpec {
-                        pitch: crate::mnx::Pitch {
-                            step: state.reference_note_step,
-                            alter: None,
-                            octave: state.reference_note_octave,
-                            ext: crate::mnx::PitchExt::default(),
-                        },
-                        frequency_hz: state.reference_frequency_hz,
-                    }),
-                });
-            } else {
-                doc.global.ext.tuning = None;
-            }
             doc.parts[0].ext.custom_frets = Some(state.frets);
+            any_ratio_or_cents_tuning
+                || matches!(
+                    alter_mode,
+                    crate::fretboard_editor::CustomFretboardAlterMode::PureRatio { .. }
+                )
+        };
+
+        if need_ref_note {
+            doc.global.ext.tuning = Some(crate::mnx::GlobalTuningExt {
+                reference_note: Some(crate::mnx::ReferenceNoteSpec {
+                    pitch: crate::mnx::Pitch {
+                        step: state.reference_note_step,
+                        alter: None,
+                        octave: state.reference_note_octave,
+                        ext: crate::mnx::PitchExt::default(),
+                    },
+                    frequency_hz: state.reference_frequency_hz,
+                }),
+            });
+        } else {
+            doc.global.ext.tuning = None;
         }
 
         let part_clone = doc.parts[0].clone();
+        let ref_note = doc
+            .global
+            .ext
+            .tuning
+            .as_ref()
+            .and_then(|t| t.reference_note.as_ref())
+            .cloned();
 
         fn resynthesize_items(
             items: &mut [crate::mnx::SequenceItem],
             part_clone: &crate::mnx::Part,
+            ref_note: Option<&crate::mnx::ReferenceNoteSpec>,
         ) {
             for item in items {
                 match item {
@@ -2218,8 +2558,8 @@ impl MnxEditorApp {
                                 let eff_fret = note.effective_fret();
                                 if let Some(f) = eff_fret {
                                     if let Some(new_pitch) =
-                                        crate::yaml_editor::calculate_pitch_for_string_decimal_fret(
-                                            part_clone, string, f,
+                                        crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                                            part_clone, string, f, ref_note,
                                         )
                                     {
                                         note.pitch = new_pitch;
@@ -2229,10 +2569,10 @@ impl MnxEditorApp {
                         }
                     }
                     crate::mnx::SequenceItem::Tuplet(tup) => {
-                        resynthesize_items(&mut tup.content, part_clone);
+                        resynthesize_items(&mut tup.content, part_clone, ref_note);
                     }
                     crate::mnx::SequenceItem::Grace(g) => {
-                        resynthesize_items(&mut g.content, part_clone);
+                        resynthesize_items(&mut g.content, part_clone, ref_note);
                     }
                 }
             }
@@ -2240,7 +2580,7 @@ impl MnxEditorApp {
 
         for m in &mut doc.parts[0].measures {
             for seq in &mut m.sequences {
-                resynthesize_items(&mut seq.content, &part_clone);
+                resynthesize_items(&mut seq.content, &part_clone, ref_note.as_ref());
             }
         }
 

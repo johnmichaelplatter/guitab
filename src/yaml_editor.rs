@@ -169,7 +169,7 @@ pub fn calculate_pitch_for_string_fret(
     string: u8,
     fret: i32,
 ) -> Option<crate::mnx::Pitch> {
-    calculate_pitch_for_string_decimal_fret(part, string, fret as f64)
+    calculate_pitch_for_string_decimal_fret_with_ref(part, string, fret as f64, None)
 }
 
 /// Calculates the exact microtonal or custom-fretboard Pitch for a given string and decimal fret (e.g. `1.5`).
@@ -178,30 +178,67 @@ pub fn calculate_pitch_for_string_decimal_fret(
     string: u8,
     decimal_fret: f64,
 ) -> Option<crate::mnx::Pitch> {
+    calculate_pitch_for_string_decimal_fret_with_ref(part, string, decimal_fret, None)
+}
+
+/// Calculates the exact microtonal or custom-fretboard Pitch for a given string and decimal fret,
+/// with an optional `1/1` reference note for Ratio/Cents open strings.
+pub fn calculate_pitch_for_string_decimal_fret_with_ref(
+    part: &crate::mnx::Part,
+    string: u8,
+    decimal_fret: f64,
+    ref_note: Option<&crate::mnx::ReferenceNoteSpec>,
+) -> Option<crate::mnx::Pitch> {
     let string_pitch = part.get_string_tuning(string)?;
+    let edo = part.edo();
 
     if let Some(custom_frets) = &part.ext.custom_frets {
         if !custom_frets.is_empty() {
-            if decimal_fret.abs() < 1e-4 {
-                return Some(string_pitch);
-            }
+            let ref_hz = ref_note.map(|rn| rn.frequency_hz).unwrap_or(261.626);
             let mode =
-                crate::fretboard_editor::classify_fretboard_alter_mode(custom_frets, 261.626);
+                crate::fretboard_editor::classify_fretboard_alter_mode(custom_frets, ref_hz);
+            if decimal_fret.abs() < 1e-4 {
+                return Some(crate::fretboard_editor::calculate_custom_fret_pitch_with_ref(
+                    &string_pitch,
+                    None,
+                    &mode,
+                    edo,
+                    ref_note,
+                ));
+            }
             if let Some(cf) = custom_frets
                 .iter()
                 .find(|f| (f.fret_number - decimal_fret).abs() < 0.05 && f.strings.contains(&string))
             {
-                return Some(crate::fretboard_editor::calculate_custom_fret_pitch(
+                return Some(crate::fretboard_editor::calculate_custom_fret_pitch_with_ref(
                     &string_pitch,
                     Some(cf),
                     &mode,
+                    edo,
+                    ref_note,
                 ));
             }
         }
     }
 
+    if decimal_fret.abs() < 1e-4 && string_pitch.is_ratio_or_cents_step() {
+        let mut p = string_pitch.clone();
+        if p.ext.name.is_none() {
+            let ref_name = ref_note.map(|rn| {
+                rn.pitch
+                    .ext
+                    .name
+                    .as_deref()
+                    .unwrap_or(rn.pitch.step.as_str())
+            });
+            p.ext.name = Some(crate::fretboard_editor::resolve_open_string_53edo_name(
+                &p, edo, ref_name,
+            ));
+        }
+        return Some(p);
+    }
+
     let capo_fret = part.capo_fret();
-    let edo = part.edo();
     let step_multiplier = part.step_multiplier();
     let tuning_calc = crate::edo::EdoTuning::new(edo);
     let string_base = tuning_calc.pitch_to_steps(&string_pitch);
@@ -354,6 +391,13 @@ pub fn set_chord_on_event_in_doc(
         Some(p) => p,
         None => return false,
     };
+    let ref_note = doc
+        .global
+        .ext
+        .tuning
+        .as_ref()
+        .and_then(|t| t.reference_note.as_ref())
+        .cloned();
     let paths = doc.get_flattened_event_paths();
     let Some(&path) = paths.get(event_idx) else {
         return false;
@@ -365,14 +409,18 @@ pub fn set_chord_on_event_in_doc(
     ev.notes.clear();
 
     for (&string_num, &fret_val) in chord {
-        let pitch = calculate_pitch_for_string_fret(&part_clone, string_num, fret_val).unwrap_or(
-            crate::mnx::Pitch {
-                step: "C".to_string(),
-                alter: None,
-                octave: 4,
-                ext: crate::mnx::PitchExt::default(),
-            },
-        );
+        let pitch = calculate_pitch_for_string_decimal_fret_with_ref(
+            &part_clone,
+            string_num,
+            fret_val as f64,
+            ref_note.as_ref(),
+        )
+        .unwrap_or(crate::mnx::Pitch {
+            step: "C".to_string(),
+            alter: None,
+            octave: 4,
+            ext: crate::mnx::PitchExt::default(),
+        });
         ev.notes.push(crate::mnx::Note {
             pitch,
             ext: crate::mnx::NoteExt {

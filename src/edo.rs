@@ -50,6 +50,23 @@ impl EdoTuning {
     }
 
     pub fn pitch_to_steps(&self, pitch: &crate::mnx::Pitch) -> i32 {
+        if pitch.is_ratio_or_cents_step() {
+            if let Some(name) = &pitch.ext.name {
+                if let Some(parsed) = self.parse_pitch_string(name, pitch.octave) {
+                    return self.pitch_to_steps(&parsed);
+                }
+            }
+            if let Some(cents) = pitch.step_cents_above_reference() {
+                let alter_semitones = pitch
+                    .alter
+                    .as_ref()
+                    .map(|a| a.as_semitones())
+                    .unwrap_or(0.0);
+                let total_semitones = (cents / 100.0) + alter_semitones;
+                let alter_steps = (total_semitones / self.step_semitones).round() as i32;
+                return (pitch.octave * (self.edo as i32)) + alter_steps;
+            }
+        }
         let step = pitch.step.chars().next().unwrap_or('C');
         let octave = pitch.octave;
         let alter_semitones = pitch
