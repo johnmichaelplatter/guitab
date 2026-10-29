@@ -1648,6 +1648,10 @@ impl MnxEditorApp {
                                     } else {
                                         self.selection_anchor = None;
                                     }
+                                    if self.grid_input.is_grid_input_mode {
+                                        self.grid_input.release_latch_start = None;
+                                        self.grid_input.buffered_chord.clear();
+                                    }
                                     self.selected_event_idx = Some(clicked_event);
                                     self.selected_note_idx_in_event = clicked_note;
                                     self.is_editing_fret = false;

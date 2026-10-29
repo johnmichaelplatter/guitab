@@ -1069,6 +1069,10 @@ impl MnxEditorApp {
                     }
                 } else {
                     if left_pressed || right_pressed {
+                        if self.grid_input.is_grid_input_mode {
+                            self.grid_input.release_latch_start = None;
+                            self.grid_input.buffered_chord.clear();
+                        }
                         if shift_down {
                             if self.selection_anchor.is_none() {
                                 self.selection_anchor = self.selected_event_idx;

@@ -3133,6 +3133,148 @@ parts:
     }
 
     #[test]
+    fn test_grid_controller_input_buffer_hold_replace_and_overwrite() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].fret_offset = 0;
+
+        let t0 = std::time::Instant::now();
+
+        // 1. Press String 1 Fret 3 (note 76 + 3 = 79) and String 2 Fret 5 (note 68 + 5 = 73)
+        let (c1, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: true, velocity: 100 },
+            6,
+            t0,
+        );
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &c1.unwrap());
+            Some(())
+        });
+
+        let (c2, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 73, is_note_on: true, velocity: 100 },
+            6,
+            t0 + std::time::Duration::from_millis(20),
+        );
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &c2.unwrap());
+            Some(())
+        });
+
+        // Verify event 0 has both notes
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 2);
+            assert_eq!(ev.notes[0].string, Some(1));
+            assert_eq!(ev.notes[0].fret, Some(3));
+            assert_eq!(ev.notes[1].string, Some(2));
+            assert_eq!(ev.notes[1].fret, Some(5));
+        }
+
+        // 2. Press String 1 Fret 7 (note 76 + 7 = 83) while String 2 Fret 5 is held -> replaces String 1 note!
+        let (c3, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: true, velocity: 100 },
+            6,
+            t0 + std::time::Duration::from_millis(50),
+        );
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &c3.unwrap());
+            Some(())
+        });
+
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 2);
+            assert_eq!(ev.notes[0].string, Some(1));
+            assert_eq!(ev.notes[0].fret, Some(7), "String 1 note should be replaced with fret 7");
+            assert_eq!(ev.notes[1].string, Some(2));
+            assert_eq!(ev.notes[1].fret, Some(5));
+        }
+
+        // 3. Release pads: note 79, note 83 and note 73
+        let (c_rel0, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(60),
+        );
+        assert!(c_rel0.is_none(), "NoteOff should not remove notes from tab input buffer");
+
+        let (c_rel1, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(80),
+        );
+        assert!(c_rel1.is_none(), "NoteOff should not remove notes from tab input buffer");
+
+        let (c_rel2, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 73, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(90),
+        );
+        assert!(c_rel2.is_none(), "NoteOff should not remove notes from tab input buffer");
+
+        // Event 0 still holds the full chord in score
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 2);
+            assert_eq!(ev.notes[0].fret, Some(7));
+            assert_eq!(ev.notes[1].fret, Some(5));
+        }
+
+        // 4. Before 500ms latch expires (at +150ms), press String 3 Fret 2 (note 60 + 2 = 62)
+        // Following note-offs of all pressed keys, this MUST overwrite the full current set of red notes!
+        let (c4, _) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 62, is_note_on: true, velocity: 100 },
+            6,
+            t0 + std::time::Duration::from_millis(150),
+        );
+        let chord4 = c4.expect("Should emit new chord");
+        assert_eq!(chord4.len(), 1, "Input buffer must be overwritten");
+        assert_eq!(chord4.get(&3), Some(&2));
+        assert_eq!(chord4.get(&1), None);
+        assert_eq!(chord4.get(&2), None);
+
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &chord4);
+            Some(())
+        });
+
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 1, "Event 0 notes should be fully overwritten");
+            assert_eq!(ev.notes[0].string, Some(3));
+            assert_eq!(ev.notes[0].fret, Some(2));
+        }
+
+        // 5. Release String 3 pad and wait for 500ms latch
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 62, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(200),
+        );
+        let (_, should_finalize, _) = app.grid_input.poll(6, t0 + std::time::Duration::from_millis(710));
+        assert!(should_finalize);
+
+        let total_events = app.cached_event_ranges.len();
+        app.advance_to_next_note_in_grid_mode(total_events);
+        assert_eq!(app.selected_event_idx, Some(1));
+    }
+
+    #[test]
     fn test_phase_2b_custom_fretboard_ratio_and_decimal_fretlet_end_to_end() {
         let mut app = MnxEditorApp::default();
         let doc = app.parsed_mnx.as_ref().unwrap().clone();

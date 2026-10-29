@@ -248,6 +248,8 @@ pub struct GridInputManager {
     rx: Receiver<GridMidiEvent>,
     /// Currently held raw pads: `(slot_idx, midi_note) -> (string, fret)`
     pub held_pads: BTreeMap<(usize, u8), (u8, i32)>,
+    /// Accumulated chord notes currently buffered on the active event: `string (1..=N) -> fret`.
+    pub buffered_chord: BTreeMap<u8, i32>,
     /// Whether the editor is currently in Grid Controller Input Mode (light-red cursor).
     pub is_grid_input_mode: bool,
     /// Timestamp when the last held pad was released (`held_pads` transitioned from non-empty to empty).
@@ -278,6 +280,7 @@ impl GridInputManager {
             tx,
             rx,
             held_pads: BTreeMap::new(),
+            buffered_chord: BTreeMap::new(),
             is_grid_input_mode: false,
             release_latch_start: None,
             active_calibration: None,
@@ -379,6 +382,7 @@ impl GridInputManager {
     pub fn exit_grid_input_mode(&mut self) {
         self.is_grid_input_mode = false;
         self.held_pads.clear();
+        self.buffered_chord.clear();
         self.release_latch_start = None;
     }
 
@@ -442,37 +446,37 @@ impl GridInputManager {
                 let fret = (col + slot.fret_offset).max(0);
                 self.is_grid_input_mode = true;
                 self.release_latch_start = None; // Cancel pending 500ms finalize timer while any pad is held
+
+                // New keypresses following a state where there are note-offs of all pressed keys
+                // results in overwriting the full current set of red notes in the input buffer.
+                if self.held_pads.is_empty() {
+                    self.buffered_chord.clear();
+                }
+
+                // Pressing new fret/columns keys on that same string/row replaces current note on that string/row
+                self.buffered_chord.insert(string_num, fret);
                 self.held_pads
                     .insert((ev.slot_idx, ev.note), (string_num, fret));
-                return (Some(self.current_chord()), None);
+
+                return (Some(self.buffered_chord.clone()), None);
             }
         } else if self.held_pads.remove(&(ev.slot_idx, ev.note)).is_some() {
+            // Note-off: do NOT remove released notes from buffered_chord; hold all prior pressed keys in the tab input buffer
             if self.held_pads.is_empty() {
                 // All pads released! Start the 500ms release latch without wiping the chord on the score
-                if self.is_grid_input_mode {
+                if self.is_grid_input_mode && !self.buffered_chord.is_empty() {
                     self.release_latch_start = Some(now);
                 }
-                return (None, None);
-            } else {
-                // Still holding at least one pad: dynamically update the rendered chord!
-                return (Some(self.current_chord()), None);
             }
+            return (None, None);
         }
 
         (None, None)
     }
 
-    /// Returns the currently held chord mapped by `string (1..=N) -> fret`.
-    /// If multiple pads are held on the same string, the highest fret wins (like a real fretboard).
+    /// Returns the currently buffered chord mapped by `string (1..=N) -> fret`.
     pub fn current_chord(&self) -> BTreeMap<u8, i32> {
-        let mut chord = BTreeMap::new();
-        for &(string_num, fret) in self.held_pads.values() {
-            let entry = chord.entry(string_num).or_insert(fret);
-            if fret > *entry {
-                *entry = fret;
-            }
-        }
-        chord
+        self.buffered_chord.clone()
     }
 
     /// Polls all queued MIDI events and checks whether the 500ms release latch has expired.
@@ -502,6 +506,7 @@ impl GridInputManager {
                     >= Duration::from_millis(GRID_RELEASE_LATCH_MS)
                 {
                     self.release_latch_start = None;
+                    self.buffered_chord.clear();
                     should_finalize = true;
                 }
             }
@@ -661,7 +666,7 @@ mod tests {
         assert_eq!(chord2.get(&1), Some(&5));
         assert_eq!(chord2.get(&2), Some(&7));
 
-        // 3. Release first finger while still holding second finger -> re-renders to single note on String 2
+        // 3. Release first finger while still holding second finger -> retains both notes in tab input buffer!
         let (chord3, _) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
@@ -672,12 +677,13 @@ mod tests {
             6,
             t0 + Duration::from_millis(120),
         );
-        let chord3 = chord3.expect("Should update chord while second pad is still held");
-        assert_eq!(chord3.len(), 1);
-        assert_eq!(chord3.get(&2), Some(&7));
-        assert!(mgr.release_latch_start.is_none());
+        assert!(chord3.is_none(), "NoteOff should not delete prior held notes from tab input buffer");
+        assert_eq!(mgr.buffered_chord.len(), 2);
+        assert_eq!(mgr.buffered_chord.get(&1), Some(&5));
+        assert_eq!(mgr.buffered_chord.get(&2), Some(&7));
+        assert!(mgr.release_latch_start.is_none(), "Release latch should not start while second finger is held");
 
-        // 4. Release last finger -> starts 500ms timer, does NOT wipe chord
+        // 4. Release last finger -> starts 500ms timer, does NOT wipe chord from input buffer
         let (chord4, _) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
@@ -689,16 +695,169 @@ mod tests {
             t0 + Duration::from_millis(200),
         );
         assert!(chord4.is_none());
+        assert_eq!(mgr.buffered_chord.len(), 2);
         assert!(mgr.release_latch_start.is_some());
 
         // 5. Poll at +400ms (only 200ms after release) -> should NOT finalize yet
         let (_, should_finalize_early, _) = mgr.poll(6, t0 + Duration::from_millis(400));
         assert!(!should_finalize_early);
+        assert_eq!(mgr.buffered_chord.len(), 2);
 
         // 6. Poll at +705ms (505ms after release) -> SHOULD finalize and advance!
         let (_, should_finalize_now, _) = mgr.poll(6, t0 + Duration::from_millis(705));
         assert!(should_finalize_now);
         assert!(mgr.release_latch_start.is_none());
+        assert!(mgr.buffered_chord.is_empty());
         assert!(mgr.is_grid_input_mode); // Remains in Grid Input Mode until Esc
+    }
+
+    #[test]
+    fn test_grid_input_replace_note_on_same_string() {
+        let mut mgr = GridInputManager::new();
+        mgr.slots[0].enabled = true;
+        mgr.slots[0].fret_offset = 0;
+
+        let t0 = Instant::now();
+
+        // 1. Press String 1 Col 3 -> Fret 3
+        let (c1, _) = mgr.process_event(
+            GridMidiEvent {
+                slot_idx: 0,
+                note: 76 + 3, // String 1 Col 3
+                is_note_on: true,
+                velocity: 100,
+            },
+            6,
+            t0,
+        );
+        assert_eq!(c1.unwrap().get(&1), Some(&3));
+
+        // 2. Press String 1 Col 7 (Fret 7) while still holding Col 3 -> replaces String 1 note with 7
+        let (c2, _) = mgr.process_event(
+            GridMidiEvent {
+                slot_idx: 0,
+                note: 76 + 7,
+                is_note_on: true,
+                velocity: 100,
+            },
+            6,
+            t0 + Duration::from_millis(50),
+        );
+        let chord2 = c2.unwrap();
+        assert_eq!(chord2.len(), 1);
+        assert_eq!(chord2.get(&1), Some(&7));
+
+        // 3. Press String 1 Col 5 (Fret 5) -> replaces String 1 note with 5
+        let (c3, _) = mgr.process_event(
+            GridMidiEvent {
+                slot_idx: 0,
+                note: 76 + 5,
+                is_note_on: true,
+                velocity: 100,
+            },
+            6,
+            t0 + Duration::from_millis(100),
+        );
+        let chord3 = c3.unwrap();
+        assert_eq!(chord3.len(), 1);
+        assert_eq!(chord3.get(&1), Some(&5));
+
+        // 4. Release all pads -> buffer retains Fret 5
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 76 + 3, is_note_on: false, velocity: 0 },
+            6,
+            t0 + Duration::from_millis(150),
+        );
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 76 + 7, is_note_on: false, velocity: 0 },
+            6,
+            t0 + Duration::from_millis(160),
+        );
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 76 + 5, is_note_on: false, velocity: 0 },
+            6,
+            t0 + Duration::from_millis(170),
+        );
+        assert_eq!(mgr.buffered_chord.get(&1), Some(&5));
+        assert!(mgr.release_latch_start.is_some());
+    }
+
+    #[test]
+    fn test_grid_input_overwrite_after_all_notes_released() {
+        let mut mgr = GridInputManager::new();
+        mgr.slots[0].enabled = true;
+        mgr.slots[0].fret_offset = 0;
+
+        let t0 = Instant::now();
+
+        // 1. Play chord: String 1 Fret 3 and String 2 Fret 5
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 76 + 3, is_note_on: true, velocity: 100 },
+            6,
+            t0,
+        );
+        let (c1, _) = mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 68 + 5, is_note_on: true, velocity: 100 },
+            6,
+            t0 + Duration::from_millis(20),
+        );
+        let chord1 = c1.unwrap();
+        assert_eq!(chord1.get(&1), Some(&3));
+        assert_eq!(chord1.get(&2), Some(&5));
+
+        // 2. Release both keys -> note-offs of all pressed keys
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 76 + 3, is_note_on: false, velocity: 0 },
+            6,
+            t0 + Duration::from_millis(50),
+        );
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 68 + 5, is_note_on: false, velocity: 0 },
+            6,
+            t0 + Duration::from_millis(60),
+        );
+        assert!(mgr.held_pads.is_empty());
+        assert!(mgr.release_latch_start.is_some());
+        assert_eq!(mgr.buffered_chord.len(), 2);
+
+        // 3. Before 500ms passes (e.g. +150ms), press a new key: String 3 Fret 4
+        // Following note-offs of all pressed keys, this MUST overwrite the full set of red notes!
+        let (c2, _) = mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 60 + 4, is_note_on: true, velocity: 100 },
+            6,
+            t0 + Duration::from_millis(150),
+        );
+        let chord2 = c2.expect("Should emit new chord");
+        assert_eq!(chord2.len(), 1, "Prior chord notes must be fully overwritten!");
+        assert_eq!(chord2.get(&3), Some(&4));
+        assert_eq!(chord2.get(&1), None);
+        assert_eq!(chord2.get(&2), None);
+        assert!(mgr.release_latch_start.is_none(), "Timer must reset on new keypress");
+
+        // 4. Add String 4 Fret 2 while holding String 3 Fret 4
+        let (c3, _) = mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 52 + 2, is_note_on: true, velocity: 100 },
+            6,
+            t0 + Duration::from_millis(180),
+        );
+        let chord3 = c3.unwrap();
+        assert_eq!(chord3.len(), 2);
+        assert_eq!(chord3.get(&3), Some(&4));
+        assert_eq!(chord3.get(&4), Some(&2));
+
+        // 5. Release both and finalize after 500ms
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 60 + 4, is_note_on: false, velocity: 0 },
+            6,
+            t0 + Duration::from_millis(220),
+        );
+        mgr.process_event(
+            GridMidiEvent { slot_idx: 0, note: 52 + 2, is_note_on: false, velocity: 0 },
+            6,
+            t0 + Duration::from_millis(230),
+        );
+        let (_, should_finalize, _) = mgr.poll(6, t0 + Duration::from_millis(740));
+        assert!(should_finalize);
+        assert!(mgr.buffered_chord.is_empty());
     }
 }
