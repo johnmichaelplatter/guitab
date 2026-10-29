@@ -972,7 +972,7 @@ impl MnxEditorApp {
                                         }
                                     }
 
-                                    ui.label("Pitch Name (53-EDO):");
+                                    ui.label("Pitch Name:");
                                     let name_valid =
                                         crate::fretboard_editor::is_valid_ups_downs_name(
                                             &tunings_name[s],

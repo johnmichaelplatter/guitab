@@ -907,8 +907,8 @@ impl FretboardEditorState {
 
         // 2. Guitar Neck Canvas inside horizontal ScrollArea
         let string_spacing = 28.0_f32;
-        let top_badge_margin = 36.0_f32;
-        let bottom_label_margin = 34.0_f32;
+        let top_badge_margin = 44.0_f32;
+        let bottom_label_margin = 54.0_f32;
         let neck_height = (self.num_strings.saturating_sub(1) as f32) * string_spacing + 24.0;
         let canvas_height = top_badge_margin + neck_height + bottom_label_margin;
         let canvas_width = 1150.0_f32;
@@ -994,6 +994,38 @@ impl FretboardEditorState {
                     );
                 }
 
+                // Determine which placed fret's angled label is hovered (if any)
+                let hover_pos = ui.input(|i| i.pointer.hover_pos());
+                let cos_45 = std::f32::consts::FRAC_1_SQRT_2;
+                let sin_45 = std::f32::consts::FRAC_1_SQRT_2;
+
+                let mut hovered_fret_idx: Option<usize> = None;
+                let mut min_hover_dist = 9.0_f32;
+                if let Some(p) = hover_pos {
+                    for (f_idx, fret) in self.frets.iter().enumerate() {
+                        let fx = cents_to_x(rect.min.x, fret.cents());
+                        let label_text = fret.spec.display_label();
+                        let galley = painter.layout_no_wrap(label_text, FontId::monospace(10.0), Color32::WHITE);
+                        let tw = galley.size().x;
+                        let pos_end = Pos2::new(fx - 2.0, neck_bot_y + 8.0);
+                        let pos_start = Pos2::new(pos_end.x - tw * cos_45, pos_end.y + tw * sin_45);
+                        let ab = pos_end - pos_start;
+                        let ap = p - pos_start;
+                        let ab_len_sq = ab.length_sq();
+                        let t = if ab_len_sq > 0.0 {
+                            (ap.dot(ab) / ab_len_sq).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let closest = pos_start + ab * t;
+                        let dist = (p - closest).length();
+                        if dist < min_hover_dist {
+                            min_hover_dist = dist;
+                            hovered_fret_idx = Some(f_idx);
+                        }
+                    }
+                }
+
                 // Dotted guide lines from cumulative grid
                 for guide in &self.guides {
                     let gx = cents_to_x(rect.min.x, guide.to_cents());
@@ -1007,14 +1039,26 @@ impl FretboardEditorState {
                         );
                         y += 8.0;
                     }
-                    // Label below the neck
-                    painter.text(
-                        Pos2::new(gx, neck_bot_y + 12.0),
-                        egui::Align2::CENTER_CENTER,
-                        guide.display_label(),
-                        FontId::monospace(10.0),
-                        Color32::from_rgb(130, 195, 255),
-                    );
+                    // Only draw guide label if no placed fret already occupies this location
+                    let has_placed_fret = self.frets.iter().any(|f| (f.cents() - guide.to_cents()).abs() < 0.5);
+                    if !has_placed_fret {
+                        let g_text = guide.display_label();
+                        let g_galley = painter.layout_no_wrap(
+                            g_text,
+                            FontId::monospace(9.5),
+                            Color32::from_rgba_unmultiplied(130, 195, 255, 160),
+                        );
+                        let g_tw = g_galley.size().x;
+                        let g_term = Pos2::new(gx - 2.0, neck_bot_y + 8.0);
+                        let g_start = Pos2::new(g_term.x - g_tw * cos_45, g_term.y + g_tw * sin_45);
+                        let mut g_shape = egui::epaint::TextShape::new(
+                            g_start,
+                            g_galley,
+                            Color32::from_rgba_unmultiplied(130, 195, 255, 160),
+                        );
+                        g_shape.angle = -std::f32::consts::FRAC_PI_4;
+                        painter.add(g_shape);
+                    }
                 }
 
                 // Placed solid frets / fretlets + clickable fret number badges
@@ -1039,11 +1083,17 @@ impl FretboardEditorState {
                         );
                     }
 
-                    // Top fret-number badge `[ 1 ]`, `[ 1.5 ]`
+                    // Top fret-number badge rotated 90 degrees counterclockwise
                     let badge_text = fret.formatted_fret_number();
-                    let badge_rect = Rect::from_center_size(
-                        Pos2::new(fx, rect.min.y + 15.0),
-                        egui::vec2((badge_text.len() as f32 * 7.5).max(22.0) + 8.0, 18.0),
+                    let galley = painter.layout_no_wrap(badge_text.clone(), FontId::monospace(10.5), Color32::WHITE);
+                    let tw = galley.size().x;
+                    let th = galley.size().y;
+                    let badge_w = 16.0_f32;
+                    let badge_h = (tw + 8.0).max(24.0);
+                    let badge_bottom_y = neck_top_y - 4.0;
+                    let badge_rect = Rect::from_min_max(
+                        Pos2::new(fx - badge_w / 2.0, badge_bottom_y - badge_h),
+                        Pos2::new(fx + badge_w / 2.0, badge_bottom_y),
                     );
                     let badge_bg = if self.editing_badge.as_ref().map(|(i, _)| *i) == Some(f_idx) {
                         Color32::from_rgb(220, 120, 50)
@@ -1052,32 +1102,79 @@ impl FretboardEditorState {
                     } else {
                         Color32::from_rgb(55, 60, 70)
                     };
-                    painter.rect_filled(badge_rect, 4.0, badge_bg);
-                    painter.text(
-                        badge_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        &badge_text,
-                        FontId::monospace(11.0),
-                        Color32::WHITE,
+                    painter.rect_filled(badge_rect, 3.5, badge_bg);
+                    if is_sel {
+                        painter.rect_stroke(
+                            badge_rect,
+                            3.5,
+                            Stroke::new(1.5, Color32::from_rgb(255, 200, 90)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    let text_pos = Pos2::new(
+                        badge_rect.center().x - th / 2.0,
+                        badge_rect.center().y + tw / 2.0,
+                    );
+                    let mut text_shape = egui::epaint::TextShape::new(text_pos, galley, Color32::WHITE);
+                    text_shape.angle = -std::f32::consts::FRAC_PI_2;
+                    painter.add(text_shape);
+
+                    // Bottom label at 45 degree angle terminating at the fret (NO note name in text)
+                    let label_text = fret.spec.display_label();
+                    let is_hovered = hovered_fret_idx == Some(f_idx);
+                    let label_color = if is_hovered {
+                        Color32::from_rgb(255, 230, 130)
+                    } else if is_sel {
+                        Color32::from_rgb(255, 200, 90)
+                    } else {
+                        fret_color
+                    };
+                    let l_galley = painter.layout_no_wrap(label_text, FontId::monospace(10.0), label_color);
+                    let l_tw = l_galley.size().x;
+                    let pos_end = Pos2::new(fx - 2.0, neck_bot_y + 8.0);
+                    let pos_start = Pos2::new(pos_end.x - l_tw * cos_45, pos_end.y + l_tw * sin_45);
+                    let mut l_shape = egui::epaint::TextShape::new(pos_start, l_galley, label_color);
+                    l_shape.angle = -std::f32::consts::FRAC_PI_4;
+                    painter.add(l_shape);
+
+                    // Subtle tick connecting bottom rail to the label end
+                    painter.line_segment(
+                        [Pos2::new(fx, neck_bot_y), Pos2::new(fx, neck_bot_y + 5.0)],
+                        Stroke::new(1.2, fret_color),
                     );
 
-                    // Bottom label (spec + ups/downs note name)
-                    painter.text(
-                        Pos2::new(fx, neck_bot_y + 24.0),
-                        egui::Align2::CENTER_CENTER,
-                        format!("{} ({})", fret.spec.display_label(), fret.note_name),
-                        FontId::monospace(10.0),
-                        fret_color,
-                    );
+                    // Note name popup tooltip on hover over the cent/ratio/edo step text
+                    if is_hovered {
+                        if let Some(p) = hover_pos {
+                            egui::Area::new(egui::Id::new("fret_note_tooltip").with(f_idx))
+                                .fixed_pos(p + egui::vec2(12.0, 12.0))
+                                .order(egui::Order::Tooltip)
+                                .interactable(false)
+                                .show(ui.ctx(), |ui| {
+                                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Note:");
+                                            ui.label(
+                                                egui::RichText::new(&fret.note_name)
+                                                    .strong()
+                                                    .color(Color32::from_rgb(255, 215, 100)),
+                                            );
+                                        });
+                                    });
+                                });
+                        }
+                    }
 
                     if response.clicked() {
                         if let Some(pos) = response.interact_pointer_pos() {
-                            if badge_rect.expand(3.0).contains(pos) {
+                            if badge_rect.expand(2.5).contains(pos) {
                                 badge_clicked = Some(f_idx);
                             } else if (pos.x - fx).abs() <= 7.0
                                 && pos.y >= neck_top_y
                                 && pos.y <= neck_bot_y
                             {
+                                fret_clicked = Some(f_idx);
+                            } else if is_hovered {
                                 fret_clicked = Some(f_idx);
                             }
                         }
@@ -1214,12 +1311,9 @@ impl FretboardEditorState {
             }
         }
 
-        // Table of placed frets with editable ups/downs note names (recommended from 53-EDO)
+        // Table of placed frets with editable note names
         ui.label(
-            egui::RichText::new(
-                "Placed Frets & Ups/Downs Note Names (53-EDO relative to open C recommendation):",
-            )
-            .strong(),
+            egui::RichText::new("Placed Frets & Note Names:").strong(),
         );
         let mut delete_idx = None;
         let mut recompute_needed = false;
@@ -1249,11 +1343,11 @@ impl FretboardEditorState {
                             fret.cents(),
                             fret.strings
                         ));
-                        ui.label("Note Name (on C):");
+                        ui.label("Note Name:");
                         ui.add(
                             egui::TextEdit::singleline(&mut fret.note_name).desired_width(60.0),
                         );
-                        if ui.small_button("53-EDO Default").clicked() {
+                        if ui.small_button("Default").clicked() {
                             fret.note_name = recommend_53edo_note_name_from_cents(fret.cents());
                         }
                         if ui.small_button("🗑").on_hover_text("Remove fret").clicked() {
@@ -1436,5 +1530,49 @@ mod tests {
                 .unwrap_or(true)
         );
         assert_eq!(p1.ext.name, Some(frets[0].note_name.clone()));
+    }
+
+    #[test]
+    fn test_custom_fretboard_collision_free_labels_and_hover_note_names() {
+        let fret_ratio = CustomFret {
+            fret_number: 1.0,
+            manual_number: None,
+            spec: FretLocationSpec::Ratio { num: 5, den: 4 },
+            strings: vec![1, 2, 3, 4, 5, 6],
+            note_name: recommend_53edo_note_name_from_cents(386.31),
+        };
+        let fret_cents = CustomFret {
+            fret_number: 2.0,
+            manual_number: None,
+            spec: FretLocationSpec::Cents { cents: 128.0 },
+            strings: vec![1, 2],
+            note_name: recommend_53edo_note_name_from_cents(128.0),
+        };
+        let fret_edo = CustomFret {
+            fret_number: 3.5,
+            manual_number: None,
+            spec: FretLocationSpec::EdoStep { steps: 2, edo: 41 },
+            strings: vec![1],
+            note_name: recommend_53edo_note_name_from_cents(2.0 / 41.0 * 1200.0),
+        };
+
+        // 1. Bottom labels should only display the spec without note name guess
+        assert_eq!(fret_ratio.spec.display_label(), "5/4");
+        assert!(!fret_ratio.spec.display_label().contains(&fret_ratio.note_name));
+
+        assert_eq!(fret_cents.spec.display_label(), "128.0c");
+        assert!(!fret_cents.spec.display_label().contains(&fret_cents.note_name));
+
+        assert_eq!(fret_edo.spec.display_label(), "2\\41");
+        assert!(!fret_edo.spec.display_label().contains(&fret_edo.note_name));
+
+        // 2. Note names available for hover popup
+        assert_eq!(fret_ratio.note_name, "vE");
+        assert_eq!(fret_cents.note_name, "^C#");
+
+        // 3. Top badge strings for 90-degree rotated badges
+        assert_eq!(fret_ratio.formatted_fret_number(), "1");
+        assert_eq!(fret_cents.formatted_fret_number(), "2");
+        assert_eq!(fret_edo.formatted_fret_number(), "3.5");
     }
 }
