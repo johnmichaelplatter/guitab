@@ -3380,5 +3380,246 @@ parts:
             other => panic!("Expected InstrumentSetup dialog, got {:?}", other),
         }
     }
+
+    #[test]
+    fn test_natural_harmonic_shift_selected_strings_recalculates_sounding_pitch() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "12".to_string();
+        assert!(app.commit_fret_edit());
+        app.selected_note_idx_in_event = Some(0);
+
+        // Toggle natural harmonic at fret 12 on String 1 (E4 -> sounding E5)
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 12.0);
+            assert_eq!(h.sounding_note.pitch.step, "E");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors: {:?}", app.validation_errors);
+
+        // Shift down a string (Option+Down): String 1 -> String 2 (B3 open -> sounding B4)
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(2));
+            assert_eq!(ev.notes[0].fret, Some(12));
+            let h = ev.notes[0].harmonic.as_ref().expect("Harmonic must persist when shifted to string 2");
+            assert_eq!(h.touch, 12.0);
+            assert_eq!(h.sounding_note.pitch.step, "B");
+            assert_eq!(h.sounding_note.pitch.octave, 4);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 2: {:?}", app.validation_errors);
+
+        // Shift down to String 3 (G3 open -> sounding G4)
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(3));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.sounding_note.pitch.step, "G");
+            assert_eq!(h.sounding_note.pitch.octave, 4);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 3: {:?}", app.validation_errors);
+
+        // Shift all the way down to String 6 (E2 open -> sounding E3)
+        app.action_shift_selected_strings(1); // 4 (D3 -> D4)
+        app.action_shift_selected_strings(1); // 5 (A2 -> A3)
+        app.action_shift_selected_strings(1); // 6 (E2 -> E3)
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(6));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.sounding_note.pitch.step, "E");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 6: {:?}", app.validation_errors);
+
+        // Shift back up to String 1 (Option+Up): String 6 -> 1
+        for _ in 0..5 {
+            app.action_shift_selected_strings(-1);
+        }
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(1));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.sounding_note.pitch.step, "E");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 1: {:?}", app.validation_errors);
+    }
+
+    #[test]
+    fn test_natural_harmonic_7th_fret_shift_selected_strings() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "7".to_string();
+        assert!(app.commit_fret_edit());
+        app.selected_note_idx_in_event = Some(0);
+
+        // Fret 7 on String 1 (n = 3, 1/3 node on E4 -> sounding B5)
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 7.0);
+            assert_eq!(h.sounding_note.pitch.step, "B");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+        }
+        assert!(app.validation_errors.is_empty());
+
+        // Shift to String 2 (n = 3 on B3 -> sounding F#5)
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(2));
+            assert_eq!(ev.notes[0].fret, Some(7));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 7.0);
+            assert_eq!(h.sounding_note.pitch.step, "F");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+            let alter = h.sounding_note.pitch.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
+            assert!((alter - 1.0).abs() < 0.05);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 2: {:?}", app.validation_errors);
+    }
+
+    #[test]
+    fn test_natural_harmonic_shift_selected_strings_custom_fretboard() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch { step: "5/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("vB".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+
+        let bug_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(
+            include_str!("../../context/harmonics entry bug.yaml")
+        ).expect("Bug file must parse");
+        let custom_frets = bug_doc.parts[0].ext.custom_frets.clone().unwrap();
+
+        let fb_state = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            custom_frets,
+            "D".to_string(),
+            4,
+            293.66,
+        );
+        app.apply_custom_fretboard_state(fb_state);
+
+        // Enter fret 18 on String 6 (D2 open -> harmonic 2 sounds D3)
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(6);
+        app.editing_fret_buf = "18".to_string();
+        assert!(app.commit_fret_edit());
+
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "D");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors: {:?}", app.validation_errors);
+
+        // Shift up to String 5 (G2 open -> harmonic 2 sounds G3)
+        app.action_shift_selected_strings(-1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(5));
+            assert_eq!(ev.notes[0].fret, Some(18));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "G");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 5: {:?}", app.validation_errors);
+
+        // Shift up to String 4 (D3 open -> harmonic 2 sounds D4)
+        app.action_shift_selected_strings(-1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(4));
+            assert_eq!(ev.notes[0].fret, Some(18));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "D");
+            assert_eq!(h.sounding_note.pitch.octave, 4);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 4: {:?}", app.validation_errors);
+
+        // Shift back to String 6 (D2 open -> harmonic 2 sounds D3)
+        app.action_shift_selected_strings(1);
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(6));
+            assert_eq!(ev.notes[0].fret, Some(18));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "D");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 6: {:?}", app.validation_errors);
+    }
 }
 

@@ -667,25 +667,44 @@ impl MnxEditorApp {
                     self.retreat_to_prev_note_in_edit_mode(cur_str);
                 }
             } else if up_pressed || down_pressed {
-                // If the user typed digits before moving string, commit them to the current string first
-                self.commit_fret_edit();
-                self.editing_fret_buf.clear();
-
-                // Move string Up (s - 1) or Down (s + 1)
-                if let Some(cur_str) = self.editing_string {
-                    if up_pressed && cur_str > 1 {
-                        self.editing_string = Some(cur_str - 1);
-                    } else if down_pressed && cur_str < num_strings {
-                        self.editing_string = Some(cur_str + 1);
+                let (shift_down, alt_down) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+                if alt_down {
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
+                    if up_pressed {
+                        self.action_shift_selected_strings(-1);
+                    } else if down_pressed {
+                        self.action_shift_selected_strings(1);
+                    }
+                } else if shift_down {
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
+                    if up_pressed {
+                        self.action_shift_selected_frets(1);
+                    } else if down_pressed {
+                        self.action_shift_selected_frets(-1);
                     }
                 } else {
-                    self.editing_string = Some(1);
-                }
+                    // If the user typed digits before moving string, commit them to the current string first
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
 
-                // Update selected_note_idx_in_event to the note on the new string if one exists
-                if let Some(e_idx) = self.selected_event_idx {
+                    // Move string Up (s - 1) or Down (s + 1)
                     if let Some(cur_str) = self.editing_string {
-                        self.select_note_on_string(e_idx, cur_str);
+                        if up_pressed && cur_str > 1 {
+                            self.editing_string = Some(cur_str - 1);
+                        } else if down_pressed && cur_str < num_strings {
+                            self.editing_string = Some(cur_str + 1);
+                        }
+                    } else {
+                        self.editing_string = Some(1);
+                    }
+
+                    // Update selected_note_idx_in_event to the note on the new string if one exists
+                    if let Some(e_idx) = self.selected_event_idx {
+                        if let Some(cur_str) = self.editing_string {
+                            self.select_note_on_string(e_idx, cur_str);
+                        }
                     }
                 }
             } else if backspace_pressed {
