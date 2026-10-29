@@ -1655,12 +1655,6 @@ impl MnxEditorApp {
             }
             ActiveDialog::GridControllerSetup => {
                 let ports_snapshot = self.midi_input_ports.clone();
-                let num_strings = self
-                    .parsed_mnx
-                    .as_ref()
-                    .and_then(|d| d.parts.first())
-                    .map(|p| p.num_strings() as u8)
-                    .unwrap_or(6);
                 egui::Window::new("Grid Controller MIDI Input Setup (Up to 4 Controllers)")
                     .collapsible(false)
                     .resizable(true)
@@ -1778,18 +1772,19 @@ impl MnxEditorApp {
                                         {
                                             start_cal_slot = Some(slot_idx);
                                         }
-                                        let cols = slot_cfg
+                                        let (rows, cols) = slot_cfg
                                             .calibration
-                                            .solve_axes(num_strings)
-                                            .map(|(_, _, _, c)| c)
-                                            .unwrap_or(0);
+                                            .solve_axes()
+                                            .map(|(_, _, r, c)| (r, c))
+                                            .unwrap_or((0, 0));
                                         ui.label(
                                             egui::RichText::new(format!(
-                                                "Corners (MIDI notes): UL={} LL={} UR={} LR={} ({} cols)",
+                                                "Corners (MIDI notes): UL={} LL={} UR={} LR={} ({}x{} grid)",
                                                 slot_cfg.calibration.upper_left,
                                                 slot_cfg.calibration.lower_left,
                                                 slot_cfg.calibration.upper_right,
                                                 slot_cfg.calibration.lower_right,
+                                                rows,
                                                 cols
                                             ))
                                             .size(11.0)

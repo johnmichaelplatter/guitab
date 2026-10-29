@@ -35,37 +35,72 @@ pub fn get_midi_input_ports() -> Vec<MidiPortInfo> {
 ///
 /// The user presses:
 /// 1. `upper_left`  -> Top string (String 1), leftmost column (column 0)
-/// 2. `lower_left`  -> Bottom string, leftmost column (column 0)
+/// 2. `lower_left`  -> Bottom physical row, leftmost column (column 0)
 /// 3. `upper_right` -> Top string (String 1), rightmost column
-/// 4. `lower_right` -> Bottom string, rightmost column
+/// 4. `lower_right` -> Bottom physical row, rightmost column
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridCalibration {
     pub upper_left: u8,
     pub lower_left: u8,
     pub upper_right: u8,
     pub lower_right: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_rows: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_cols: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_stride: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col_stride: Option<i32>,
 }
 
 impl Default for GridCalibration {
     fn default() -> Self {
-        // Default 8x8 grid starting at note 36 (Launchpad / standard drum/grid layout:
-        // upper_left = 84 (row 0), lower_left = 36 (row 5 for 6 strings), col stride = +1, row stride = -8)
-        Self {
-            upper_left: 76,
-            lower_left: 36,
-            upper_right: 83,
-            lower_right: 43,
-        }
+        // Default 6-row x 8-col grid starting at note 36 (Launchpad / standard drum/grid layout:
+        // upper_left = 76 (row 0), lower_left = 36 (row 5 for 6 strings), col stride = +1, row stride = -8)
+        Self::new_corners(76, 36, 83, 43)
     }
 }
 
 impl GridCalibration {
+    /// Creates a new calibration from the 4 corner MIDI notes, automatically
+    /// inferring the physical `(row_stride, col_stride, num_rows, num_cols)`.
+    pub fn new_corners(upper_left: u8, lower_left: u8, upper_right: u8, lower_right: u8) -> Self {
+        let mut cal = Self {
+            upper_left,
+            lower_left,
+            upper_right,
+            lower_right,
+            num_rows: None,
+            num_cols: None,
+            row_stride: None,
+            col_stride: None,
+        };
+        if let Some((r_stride, c_stride, n_rows, n_cols)) = cal.infer_physical_axes() {
+            cal.row_stride = Some(r_stride);
+            cal.col_stride = Some(c_stride);
+            cal.num_rows = Some(n_rows);
+            cal.num_cols = Some(n_cols);
+        }
+        cal
+    }
+
     /// Solves the 2D affine grid parameters `(row_stride, col_stride, num_rows, num_cols)`
-    /// from the 4 corner MIDI notes.
+    /// for the physical grid controller hardware.
     ///
-    /// Let `d_down = lower_left - upper_left` (total MIDI note delta from top string to bottom string on left edge)
-    /// and `d_right = upper_right - upper_left` (total MIDI note delta from left col to right col on top edge).
-    pub fn solve_axes(&self, target_num_strings: u8) -> Option<(i32, i32, u8, u8)> {
+    /// This is an intrinsic property of the physical controller and is invariant to the
+    /// number of strings on any specific instrument or score.
+    pub fn solve_axes(&self) -> Option<(i32, i32, u8, u8)> {
+        if let (Some(rs), Some(cs), Some(nr), Some(nc)) =
+            (self.row_stride, self.col_stride, self.num_rows, self.num_cols)
+        {
+            return Some((rs, cs, nr, nc));
+        }
+        self.infer_physical_axes()
+    }
+
+    /// Infers the physical `(row_stride, col_stride, num_rows, num_cols)` from the 4 corners.
+    pub fn infer_physical_axes(&self) -> Option<(i32, i32, u8, u8)> {
         let ul = self.upper_left as i32;
         let ll = self.lower_left as i32;
         let ur = self.upper_right as i32;
@@ -78,33 +113,40 @@ impl GridCalibration {
             return None;
         }
 
-        // Determine column stride and number of columns
-        // On almost all grid controllers, adjacent columns differ by +/-1 (horizontal chromatic)
-        // or by a fixed interval. If |d_right| > 0, check if target_num_strings helps disambiguate,
-        // or find gcd / standard stride.
-        let (row_stride, num_rows, col_stride, num_cols) =
-            Self::infer_strides(d_down, d_right, target_num_strings)?;
+        // 1. Column stride & count inference:
+        // On grid controllers, adjacent columns are almost universally chromatic (+/-1)
+        // or small uniform strides (e.g. whole tones +/-2).
+        let (col_stride, num_cols) = if d_right == 0 {
+            (1, 1)
+        } else if d_right.abs() <= 32 {
+            (d_right.signum(), (d_right.abs() + 1) as u8)
+        } else {
+            let candidates = [1, 2, 3, 4, 5, 8, 10, 12, 16];
+            let mut found = (d_right.signum(), (d_right.abs() + 1).min(32) as u8);
+            for &step in &candidates {
+                if d_right.abs() >= step && d_right % step == 0 {
+                    let gaps = d_right.abs() / step;
+                    if (1..=32).contains(&gaps) {
+                        found = (d_right.signum() * step, (gaps + 1) as u8);
+                        break;
+                    }
+                }
+            }
+            found
+        };
 
-        Some((row_stride, col_stride, num_rows, num_cols))
-    }
-
-    fn infer_strides(
-        d_down: i32,
-        d_right: i32,
-        target_num_strings: u8,
-    ) -> Option<(i32, u8, i32, u8)> {
-        // Row stride inference:
-        // If d_down == 0, single row.
+        // 2. Row stride & count inference:
         let (row_stride, num_rows) = if d_down == 0 {
             (1, 1)
         } else {
-            // Try matching `(target_num_strings - 1)` first if it divides `d_down` evenly:
-            let pref_play_gaps = (target_num_strings.saturating_sub(1)).max(1) as i32;
-            if pref_play_gaps > 0 && d_down % pref_play_gaps == 0 {
-                (d_down / pref_play_gaps, (pref_play_gaps + 1) as u8)
+            // First: check 7 gaps (8 rows) — overwhelmingly the dominant physical hardware
+            // height for grid controllers (Launchpad, Push, LinnStrument, APC, and 8-row x 9-col grids).
+            let step_7 = (d_down / 7).abs();
+            if d_down % 7 == 0 && [10, 8, 9, 5, 4, 12, 16, 1, 2, 3, 6, 7].contains(&step_7) {
+                (d_down / 7, 8u8)
             } else {
-                // Common row strides on grid controllers (Launchpad: 10 or 8 or 16, LinnStrument: 5, Push: 8)
-                let candidates = [8, 10, 16, 12, 5, 6, 7, 4, 3, 2, 1];
+                // Check candidate row strides:
+                let candidates = [8, 10, 9, 5, 12, 16, 4, 3, 2, 1, 7, 6];
                 let mut found = (d_down, 2u8);
                 for &step in &candidates {
                     if d_down.abs() >= step && d_down % step == 0 {
@@ -119,34 +161,14 @@ impl GridCalibration {
             }
         };
 
-        // Column stride inference:
-        // Usually +/-1 per fret column! If +/-1 gives <= 32 columns and doesn't alias row_stride, use +/-1.
-        let (col_stride, num_cols) = if d_right == 0 {
-            (1, 1)
-        } else if d_right.abs() <= 32 && row_stride.abs() != 1 {
-            (d_right.signum(), (d_right.abs() + 1) as u8)
-        } else {
-            let candidates = [1, 2, 5, 8, 10, 12, 16];
-            let mut found = (d_right.signum(), (d_right.abs() + 1).min(32) as u8);
-            for &step in &candidates {
-                if step != row_stride.abs() && d_right.abs() >= step && d_right % step == 0 {
-                    let gaps = d_right.abs() / step;
-                    if (1..=32).contains(&gaps) {
-                        found = (d_right.signum() * step, (gaps + 1) as u8);
-                        break;
-                    }
-                }
-            }
-            found
-        };
-
-        Some((row_stride, num_rows, col_stride, num_cols))
+        Some((row_stride, col_stride, num_rows, num_cols))
     }
 
     /// Maps a raw MIDI note number to `(string_1_indexed, fret_column_0_indexed)`
-    /// using this calibration. Returns `None` if the note does not land on the calibrated grid.
+    /// using this calibration. Returns `None` if the note does not land on the calibrated grid
+    /// or falls on a bottom row truncated beyond `target_num_strings`.
     pub fn map_note(&self, note: u8, target_num_strings: u8) -> Option<(u8, i32)> {
-        let (row_stride, col_stride, num_rows, num_cols) = self.solve_axes(target_num_strings)?;
+        let (row_stride, col_stride, num_rows, num_cols) = self.solve_axes()?;
         let delta = (note as i32) - (self.upper_left as i32);
 
         // Search all valid `(row, col)` in `0..num_rows` x `0..num_cols`
@@ -156,6 +178,9 @@ impl GridCalibration {
                     let string_num = (r + 1) as u8;
                     if string_num >= 1 && string_num <= target_num_strings {
                         return Some((string_num, c));
+                    } else {
+                        // Any row beyond target_num_strings is truncated and unmapped
+                        return None;
                     }
                 }
             }
@@ -176,10 +201,10 @@ pub enum CalibrationStep {
 impl CalibrationStep {
     pub fn prompt_text(self) -> &'static str {
         match self {
-            CalibrationStep::UpperLeft => "Step 1/4: Press the UPPER-LEFT pad (String 1, leftmost column)",
-            CalibrationStep::LowerLeft => "Step 2/4: Press the LOWER-LEFT pad (Lowest string, leftmost column)",
-            CalibrationStep::UpperRight => "Step 3/4: Press the UPPER-RIGHT pad (String 1, rightmost column)",
-            CalibrationStep::LowerRight => "Step 4/4: Press the LOWER-RIGHT pad (Lowest string, rightmost column)",
+            CalibrationStep::UpperLeft => "Step 1/4: Press the UPPER-LEFT pad (Top row, leftmost column)",
+            CalibrationStep::LowerLeft => "Step 2/4: Press the LOWER-LEFT pad (Bottom row, leftmost column)",
+            CalibrationStep::UpperRight => "Step 3/4: Press the UPPER-RIGHT pad (Top row, rightmost column)",
+            CalibrationStep::LowerRight => "Step 4/4: Press the LOWER-RIGHT pad (Bottom row, rightmost column)",
         }
     }
 }
@@ -390,6 +415,14 @@ impl GridInputManager {
                     }
                     CalibrationStep::LowerRight => {
                         cal.lower_right = ev.note;
+                        if let Some((r_stride, c_stride, n_rows, n_cols)) =
+                            cal.infer_physical_axes()
+                        {
+                            cal.row_stride = Some(r_stride);
+                            cal.col_stride = Some(c_stride);
+                            cal.num_rows = Some(n_rows);
+                            cal.num_cols = Some(n_cols);
+                        }
                         self.slots[cal_slot].calibration = cal;
                         self.active_calibration = None;
                         return (None, Some(cal_slot));
@@ -489,12 +522,7 @@ mod tests {
         // Lower-left = 36 (String 6, Fret 0 -> row_stride = -8)
         // Upper-right = 83 (String 1, Fret 7 -> col_stride = +1)
         // Lower-right = 43 (String 6, Fret 7)
-        let cal = GridCalibration {
-            upper_left: 76,
-            lower_left: 36,
-            upper_right: 83,
-            lower_right: 43,
-        };
+        let cal = GridCalibration::new_corners(76, 36, 83, 43);
         assert_eq!(cal.map_note(76, 6), Some((1, 0)));
         assert_eq!(cal.map_note(83, 6), Some((1, 7)));
         assert_eq!(cal.map_note(36, 6), Some((6, 0)));
@@ -503,6 +531,96 @@ mod tests {
         assert_eq!(cal.map_note(64, 6), Some((3, 4)));
         // Out of bounds note
         assert_eq!(cal.map_note(12, 6), None);
+    }
+
+    #[test]
+    fn test_8_row_9_col_grid_controller_truncation_for_fewer_strings() {
+        // An 8-row x 9-column grid controller:
+        // Row stride = +9, Col stride = +1 (9 columns 0..8)
+        // Row 0: 0..8   (String 1)
+        // Row 1: 9..17  (String 2)
+        // Row 2: 18..26 (String 3)
+        // Row 3: 27..35 (String 4)
+        // Row 4: 36..44 (String 5)
+        // Row 5: 45..53 (String 6)
+        // Row 6: 54..62 (String 7)
+        // Row 7: 63..71 (String 8)
+        // Upper-left = 0, Lower-left = 63, Upper-right = 8, Lower-right = 71
+        let cal = GridCalibration::new_corners(0, 63, 8, 71);
+        assert_eq!(cal.solve_axes(), Some((9, 1, 8, 9)));
+
+        // 1. For an 8-string instrument:
+        // Top-left maps to String 1 Fret 0
+        assert_eq!(cal.map_note(0, 8), Some((1, 0)));
+        // Top-right maps to String 1 Fret 8
+        assert_eq!(cal.map_note(8, 8), Some((1, 8)));
+        // Row 1 maps to String 2
+        assert_eq!(cal.map_note(9, 8), Some((2, 0)));
+        // Row 5 maps to String 6
+        assert_eq!(cal.map_note(45, 8), Some((6, 0)));
+        // Row 6 maps to String 7
+        assert_eq!(cal.map_note(54, 8), Some((7, 0)));
+        // Row 7 (bottom row) maps to String 8
+        assert_eq!(cal.map_note(63, 8), Some((8, 0)));
+        assert_eq!(cal.map_note(71, 8), Some((8, 8)));
+
+        // 2. For a 7-string instrument:
+        // Strings 1-6 mapping is completely UNTOUCHED
+        assert_eq!(cal.map_note(0, 7), Some((1, 0)));
+        assert_eq!(cal.map_note(9, 7), Some((2, 0)));
+        assert_eq!(cal.map_note(45, 7), Some((6, 0)));
+        // String 7 is mapped
+        assert_eq!(cal.map_note(54, 7), Some((7, 0)));
+        // Bottom row (Row 7 / String 8 pads) is truncated and unmapped!
+        assert_eq!(cal.map_note(63, 7), None);
+        assert_eq!(cal.map_note(71, 7), None);
+
+        // 3. For a 6-string instrument:
+        // Strings 1-6 mapping is STILL 100% UNTOUCHED
+        assert_eq!(cal.map_note(0, 6), Some((1, 0)));
+        assert_eq!(cal.map_note(8, 6), Some((1, 8)));
+        assert_eq!(cal.map_note(9, 6), Some((2, 0)));
+        assert_eq!(cal.map_note(45, 6), Some((6, 0)));
+        assert_eq!(cal.map_note(53, 6), Some((6, 8)));
+        // Bottom rows (Row 6 and Row 7) are truncated and unmapped!
+        assert_eq!(cal.map_note(54, 6), None);
+        assert_eq!(cal.map_note(62, 6), None);
+        assert_eq!(cal.map_note(63, 6), None);
+        assert_eq!(cal.map_note(71, 6), None);
+
+        // 4. For a 4-string bass:
+        // Strings 1-4 are mapped
+        assert_eq!(cal.map_note(0, 4), Some((1, 0)));
+        assert_eq!(cal.map_note(27, 4), Some((4, 0)));
+        // Rows 4-7 are truncated and unmapped
+        assert_eq!(cal.map_note(36, 4), None);
+        assert_eq!(cal.map_note(45, 4), None);
+        assert_eq!(cal.map_note(54, 4), None);
+        assert_eq!(cal.map_note(63, 4), None);
+    }
+
+    #[test]
+    fn test_launchpad_pro_8_row_9_col_programmer_layout_truncation() {
+        // Launchpad Pro programmer layout: row stride = -10, col stride = +1 (9 columns 81..89)
+        // Row 0: 81..89 (String 1)
+        // Row 1: 71..79 (String 2)
+        // Row 5: 31..39 (String 6)
+        // Row 6: 21..29 (String 7)
+        // Row 7: 11..19 (String 8)
+        let cal = GridCalibration::new_corners(81, 11, 89, 19);
+        assert_eq!(cal.solve_axes(), Some((-10, 1, 8, 9)));
+
+        // 8 strings:
+        assert_eq!(cal.map_note(81, 8), Some((1, 0)));
+        assert_eq!(cal.map_note(31, 8), Some((6, 0)));
+        assert_eq!(cal.map_note(21, 8), Some((7, 0)));
+        assert_eq!(cal.map_note(11, 8), Some((8, 0)));
+
+        // 6 strings: Strings 1-6 unchanged, rows 6 & 7 truncated
+        assert_eq!(cal.map_note(81, 6), Some((1, 0)));
+        assert_eq!(cal.map_note(31, 6), Some((6, 0)));
+        assert_eq!(cal.map_note(21, 6), None);
+        assert_eq!(cal.map_note(11, 6), None);
     }
 
     #[test]
