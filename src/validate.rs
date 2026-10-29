@@ -156,7 +156,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
 
                             if let Some(harmonic) = &note.harmonic {
                                 let table = harmonic_table
-                                    .get_or_insert_with(|| crate::harmonic::HarmonicLookupTable::from_part(part));
+                                    .get_or_insert_with(|| crate::harmonic::HarmonicLookupTable::from_doc_part(doc, part));
                                 match table.validate_harmonic(string, harmonic) {
                                     Ok(_) => {}
                                     Err(h_err) => {

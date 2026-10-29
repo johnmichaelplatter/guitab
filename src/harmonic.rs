@@ -172,6 +172,179 @@ pub fn calculate_sounding_pitch(
     }
 }
 
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+/// Computes the exact open string frequency in Hz accurately for standard EDO pitches,
+/// microtonal alterations, ratio steps (e.g. 4/3), and cents steps (e.g. 498.0).
+pub fn calculate_open_string_frequency_accurate(
+    open_pitch: &Pitch,
+    ref_pitch: &ReferencePitch,
+) -> f64 {
+    if let Some(open_cents) = open_pitch.step_cents_above_reference() {
+        let oct_delta = open_pitch.octave - ref_pitch.pitch.octave;
+        let alter_semitones = open_pitch
+            .alter
+            .as_ref()
+            .map(|a| a.as_semitones())
+            .unwrap_or(0.0);
+        ref_pitch.frequency_hz
+            * 2.0_f64.powf((open_cents / 1200.0) + (oct_delta as f64) + (alter_semitones / 12.0))
+    } else {
+        let tuning_calc = EdoTuning::new(12);
+        let step_char = crate::fretboard_editor::extract_nominal_from_note_name(&open_pitch.step);
+        let base_steps =
+            tuning_calc.nominal_step(step_char) + (open_pitch.octave * 12);
+        let ref_steps = tuning_calc.pitch_to_steps(&ref_pitch.pitch);
+        let step_delta = (base_steps - ref_steps) as f64;
+        let f_base = ref_pitch.frequency_hz * 2.0_f64.powf(step_delta / 12.0);
+        let alter_semitones = open_pitch
+            .alter
+            .as_ref()
+            .map(|a| a.as_semitones())
+            .unwrap_or(0.0);
+        f_base * 2.0_f64.powf(alter_semitones / 12.0)
+    }
+}
+
+/// Calculates the sounding pitch (step, alter, octave, custom name) for a given sounding frequency
+/// produced by harmonic `n` on `open_pitch`.
+pub fn calculate_sounding_pitch_for_frequency(
+    f_sounding: f64,
+    open_pitch: &Pitch,
+    n: u32,
+    ref_pitch: &ReferencePitch,
+) -> Pitch {
+    let open_step_char = crate::fretboard_editor::extract_nominal_from_note_name(&open_pitch.step);
+    let nominals = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+    let open_idx = nominals.iter().position(|&c| c == open_step_char).unwrap_or(0);
+    let diatonic_offset = diatonic_offset_for_harmonic(n);
+    let target_step_char = nominals[(open_idx + diatonic_offset) % 7];
+
+    let tuning_calc = EdoTuning::new(12);
+    let ref_steps = tuning_calc.pitch_to_steps(&ref_pitch.pitch);
+    let base_steps_oct0 = tuning_calc.nominal_step(target_step_char);
+    let f_base_oct0 = ref_pitch.frequency_hz
+        * 2.0_f64.powf((base_steps_oct0 - ref_steps) as f64 / 12.0);
+
+    let octave = (f_sounding / f_base_oct0).log2().round() as i32;
+    let base_steps = base_steps_oct0 + octave * 12;
+    let f_base =
+        ref_pitch.frequency_hz * 2.0_f64.powf((base_steps - ref_steps) as f64 / 12.0);
+    let raw_alter = 12.0 * (f_sounding / f_base).log2();
+    let rounded_alter = (raw_alter * 1000.0).round() / 1000.0;
+
+    let alter = if rounded_alter.abs() < 1e-4 {
+        None
+    } else {
+        Some(Alteration::Value(rounded_alter))
+    };
+
+    let mut ext = crate::mnx::PitchExt::default();
+    if ref_pitch.frequency_hz > 0.0 {
+        let cents_above_ref = 1200.0 * (f_sounding / ref_pitch.frequency_hz).log2();
+        let ref_nominal =
+            crate::fretboard_editor::extract_nominal_from_note_name(&ref_pitch.pitch.step);
+        let rec_name = crate::fretboard_editor::recommend_53edo_name_from_reference(
+            &ref_nominal.to_string(),
+            cents_above_ref,
+        );
+        ext.name = Some(rec_name);
+    }
+
+    Pitch {
+        step: target_step_char.to_string(),
+        alter,
+        octave,
+        ext,
+    }
+}
+
+/// Given a cents position `cents` above open string, returns the exact fret coordinate along the neck
+/// defined by `points` where each point is `(cents, fret_number)` sorted by ascending cents.
+pub fn cents_to_fret_exact(cents: f64, points: &[(f64, f64)]) -> f64 {
+    if points.is_empty() || cents <= 0.0 {
+        return 0.0;
+    }
+
+    if let Some(pos) = points.iter().position(|&(c, _)| c >= cents) {
+        if pos == 0 {
+            return points[0].1;
+        }
+        let (c_left, f_left) = points[pos - 1];
+        let (c_right, f_right) = points[pos];
+        if c_right > c_left + 1e-6 {
+            let frac = (cents - c_left) / (c_right - c_left);
+            return f_left + frac * (f_right - f_left);
+        } else {
+            return f_left;
+        }
+    }
+
+    // Beyond highest point: extrapolate using last interval or average
+    let n = points.len();
+    if n >= 2 {
+        let (c_prev, f_prev) = points[n - 2];
+        let (c_last, f_last) = points[n - 1];
+        if c_last > c_prev + 1e-6 {
+            let delta_c = c_last - c_prev;
+            let delta_f = f_last - f_prev;
+            return f_last + ((cents - c_last) / delta_c) * delta_f;
+        }
+    }
+    let (c_last, f_last) = points[n - 1];
+    if c_last > 1e-6 {
+        cents * (f_last / c_last)
+    } else {
+        cents / 100.0
+    }
+}
+
+/// Given a fret coordinate `fret`, returns the cents position above open string
+/// defined by `points` where each point is `(cents, fret_number)` sorted by ascending fret_number.
+pub fn fret_to_cents(fret: f64, points: &[(f64, f64)]) -> f64 {
+    if points.is_empty() || fret <= 0.0 {
+        return 0.0;
+    }
+
+    if let Some(pos) = points.iter().position(|&(_, f)| f >= fret) {
+        if pos == 0 {
+            return points[0].0;
+        }
+        let (c_left, f_left) = points[pos - 1];
+        let (c_right, f_right) = points[pos];
+        if f_right > f_left + 1e-6 {
+            let frac = (fret - f_left) / (f_right - f_left);
+            return c_left + frac * (c_right - c_left);
+        } else {
+            return c_left;
+        }
+    }
+
+    let n = points.len();
+    if n >= 2 {
+        let (c_prev, f_prev) = points[n - 2];
+        let (c_last, f_last) = points[n - 1];
+        if f_last > f_prev + 1e-6 {
+            let delta_c = c_last - c_prev;
+            let delta_f = f_last - f_prev;
+            return c_last + ((fret - f_last) / delta_f) * delta_c;
+        }
+    }
+    let (c_last, f_last) = points[n - 1];
+    if f_last > 1e-6 {
+        fret * (c_last / f_last)
+    } else {
+        fret * 100.0
+    }
+}
+
 impl HarmonicLookupTable {
     /// Constructs a lookup table for the specified instrument parameters and tunings.
     /// Loops through integers n = 2..=11 and k = 1..n - 1.
@@ -233,11 +406,126 @@ impl HarmonicLookupTable {
         }
     }
 
+    fn new_custom_fretboard(
+        part: &Part,
+        custom_frets: &[crate::fretboard_editor::CustomFret],
+        tunings: &[(u8, Pitch)],
+        reference_pitch: ReferencePitch,
+    ) -> Self {
+        let mut nodes_by_string = HashMap::new();
+
+        for (string_idx, open_pitch) in tunings {
+            let mut nodes = Vec::new();
+            let f_open = calculate_open_string_frequency_accurate(open_pitch, &reference_pitch);
+
+            // Filter to custom frets installed and playable on this specific string
+            let mut playable_frets: Vec<&crate::fretboard_editor::CustomFret> = custom_frets
+                .iter()
+                .filter(|cf| cf.has_string(*string_idx))
+                .collect();
+            playable_frets.sort_by(|a, b| {
+                a.cents()
+                    .partial_cmp(&b.cents())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Control points along the string: Nut at (0.0 cents, 0.0 fret), followed by installed frets
+            let mut points: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+            for cf in &playable_frets {
+                points.push((cf.cents(), cf.fret_number));
+            }
+            points.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-4);
+
+            // Acoustic natural harmonic nodes n = 2..=11, k = 1..n
+            for n in 2..=11 {
+                for k in 1..n {
+                    if gcd(n, k) != 1 {
+                        continue;
+                    }
+                    let ratio = (n as f64) / ((n - k) as f64);
+                    let c_node = 1200.0 * ratio.log2();
+
+                    let sounding_freq = (n as f64) * f_open;
+                    let sounding_pitch = calculate_sounding_pitch_for_frequency(
+                        sounding_freq,
+                        open_pitch,
+                        n,
+                        &reference_pitch,
+                    );
+
+                    let f_exact = cents_to_fret_exact(c_node, &points);
+                    let f_primary = (f_exact * 10.0).round() / 10.0;
+
+                    let mut candidate_touches: Vec<f64> = Vec::new();
+
+                    // 1. Primary decimal fret location (rounded to nearest tenth)
+                    let c_primary = fret_to_cents(f_primary, &points);
+                    if (c_primary - c_node).abs() <= 18.0 {
+                        candidate_touches.push(f_primary);
+                    }
+
+                    // 2. Neighboring decimal tenths splitting the fret that are close enough to ring
+                    for delta in [-0.1, 0.1] {
+                        let t = ((f_primary + delta) * 10.0).round() / 10.0;
+                        if t > 0.0 && (t - t.round()).abs() > 1e-4 {
+                            let c_t = fret_to_cents(t, &points);
+                            if (c_t - c_node).abs() <= 18.0 {
+                                candidate_touches.push(t);
+                            }
+                        }
+                    }
+
+                    // 3. Installed custom frets on this string matching this node within 8.0 cents
+                    for cf in &playable_frets {
+                        if (cf.cents() - c_node).abs() <= 8.0 {
+                            candidate_touches.push(cf.fret_number);
+                        }
+                    }
+
+                    candidate_touches
+                        .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    candidate_touches.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+
+                    for touch in candidate_touches {
+                        nodes.push(HarmonicNode {
+                            harmonic_number: n,
+                            node_index: k,
+                            fraction: (k, n),
+                            fret_exact: f_exact,
+                            touch_fret: touch,
+                            sounding_frequency_hz: sounding_freq,
+                            sounding_pitch: sounding_pitch.clone(),
+                        });
+                    }
+                }
+            }
+
+            // Sort nodes by touch fret
+            nodes.sort_by(|a, b| {
+                a.touch_fret
+                    .partial_cmp(&b.touch_fret)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            nodes_by_string.insert(*string_idx, nodes);
+        }
+
+        Self {
+            edo: 12,
+            step_multiplier: 1,
+            capo: part.capo_fret(),
+            reference_pitch,
+            nodes_by_string,
+        }
+    }
+
     /// Constructs a harmonic lookup table directly from a `Part`.
     pub fn from_part(part: &Part) -> Self {
-        let edo = part.edo();
-        let step_multiplier = part.step_multiplier();
-        let capo = part.capo_fret();
+        Self::from_part_and_ref(part, None)
+    }
+
+    /// Constructs a harmonic lookup table directly from a `Part` and optional `ReferencePitch`.
+    pub fn from_part_and_ref(part: &Part, ref_pitch: Option<ReferencePitch>) -> Self {
+        let reference_pitch = ref_pitch.unwrap_or_default();
         let num_strings = part.num_strings();
 
         let mut tunings = Vec::new();
@@ -247,7 +535,31 @@ impl HarmonicLookupTable {
             }
         }
 
-        Self::new(edo, step_multiplier, capo, &tunings, None)
+        if let Some(custom_frets) = &part.ext.custom_frets {
+            if !custom_frets.is_empty() {
+                return Self::new_custom_fretboard(part, custom_frets, &tunings, reference_pitch);
+            }
+        }
+
+        let edo = part.edo();
+        let step_multiplier = part.step_multiplier();
+        let capo = part.capo_fret();
+        Self::new(edo, step_multiplier, capo, &tunings, Some(reference_pitch))
+    }
+
+    /// Constructs a harmonic lookup table using `doc.global._x.tuning.referenceNote` when present.
+    pub fn from_doc_part(doc: &crate::mnx::MnxDocument, part: &Part) -> Self {
+        let ref_pitch = doc
+            .global
+            .ext
+            .tuning
+            .as_ref()
+            .and_then(|t| t.reference_note.as_ref())
+            .map(|rn| ReferencePitch {
+                pitch: rn.pitch.clone(),
+                frequency_hz: rn.frequency_hz,
+            });
+        Self::from_part_and_ref(part, ref_pitch)
     }
 
     /// Returns all harmonic nodes for a given string.
@@ -255,16 +567,38 @@ impl HarmonicLookupTable {
         self.nodes_by_string.get(&string).map(|v| v.as_slice())
     }
 
-    /// Finds all harmonic nodes matching a given touch fret on a string (within 0.05 fret tolerance).
+    /// Finds all harmonic nodes matching a given touch fret on a string.
+    /// Matches direct touch within 0.05 fret tolerance, or within 0.12 for decimal fret locations.
     pub fn find_nodes_at_touch(&self, string: u8, touch: f64) -> Vec<&HarmonicNode> {
-        if let Some(nodes) = self.nodes_by_string.get(&string) {
-            nodes
-                .iter()
-                .filter(|node| (node.touch_fret - touch).abs() < 0.05)
-                .collect()
-        } else {
-            Vec::new()
+        let nodes = match self.nodes_by_string.get(&string) {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+
+        let direct: Vec<&HarmonicNode> = nodes
+            .iter()
+            .filter(|node| (node.touch_fret - touch).abs() < 0.05)
+            .collect();
+        if !direct.is_empty() {
+            return direct;
         }
+
+        // If touch is a decimal fret, check if it is within 0.12 of a node
+        // (allowing neighboring tenths that split the fret into 10ths)
+        if (touch - touch.round()).abs() > 1e-4 {
+            let close: Vec<&HarmonicNode> = nodes
+                .iter()
+                .filter(|node| {
+                    (node.fret_exact - touch).abs() <= 0.12
+                        || (node.touch_fret - touch).abs() <= 0.12
+                })
+                .collect();
+            if !close.is_empty() {
+                return close;
+            }
+        }
+
+        Vec::new()
     }
 
     /// Validates a `Harmonic` definition on a specific string.
@@ -325,7 +659,7 @@ impl HarmonicLookupTable {
                 .step
                 .eq_ignore_ascii_case(&actual_sounding_pitch.step);
             let octave_match = expected_pitch.octave == actual_sounding_pitch.octave;
-            let alter_match = (expected_alter - actual_alter).abs() < 0.0015;
+            let alter_match = (expected_alter - actual_alter).abs() < 0.005;
 
             if step_match && octave_match && alter_match {
                 return Ok(node);
@@ -797,5 +1131,279 @@ mod tests {
         // At n = 2, k = 1: F = 0 + (41/2) * log2(2) = 20.5 fret
         let fret_kite = calculate_touch_fret(2, 1, 41, 2, 0);
         assert_eq!(fret_kite, 20.5);
+    }
+
+    #[test]
+    fn test_custom_fretboard_natural_harmonics_and_yaml_cleanup() {
+        use crate::fretboard_editor::{CustomFret, FretLocationSpec};
+        use crate::mnx::{Harmonic, Note, NoteExt, Part, PartExt, Pitch, PitchExt, StringTuning};
+
+        // Construct a part with String 1 = G4 (open), String 2 = D4 (open)
+        let tunings = vec![
+            StringTuning {
+                string: 1,
+                pitch: Pitch {
+                    step: "G".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: PitchExt::default(),
+                },
+            },
+            StringTuning {
+                string: 2,
+                pitch: Pitch {
+                    step: "D".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: PitchExt::default(),
+                },
+            },
+        ];
+
+        // Frets:
+        // Fret 1.5: 9/8 ratio, installed on strings 1 and 2
+        // Fret 6: 5/4 ratio, installed ONLY on string 1
+        // Fret 7: 4/3 ratio, installed on strings 1 and 2
+        let frets = vec![
+            CustomFret {
+                fret_number: 1.5,
+                manual_number: None,
+                spec: FretLocationSpec::Ratio { num: 9, den: 8 },
+                strings: vec![1, 2],
+                note_name: "9/8".to_string(),
+            },
+            CustomFret {
+                fret_number: 6.0,
+                manual_number: None,
+                spec: FretLocationSpec::Ratio { num: 5, den: 4 },
+                strings: vec![1],
+                note_name: "5/4".to_string(),
+            },
+            CustomFret {
+                fret_number: 7.0,
+                manual_number: None,
+                spec: FretLocationSpec::Ratio { num: 4, den: 3 },
+                strings: vec![1, 2],
+                note_name: "4/3".to_string(),
+            },
+        ];
+
+        let mut part = Part {
+            id: None,
+            name: Some("Custom JI Guitar".to_string()),
+            short_name: None,
+            comment: None,
+            ext: PartExt {
+                micro_fret_divisions: Some(12),
+                fret_step_multiplier: Some(1),
+                pitch_bend_range: None,
+                capo: None,
+                tuning: Some(tunings),
+                custom_frets: Some(frets),
+            },
+            measures: Vec::new(),
+        };
+
+        // 1. Build lookup table for this part
+        let table = HarmonicLookupTable::from_part(&part);
+
+        // On String 1: fret 6 (5/4 node: n=5, k=1) is an installed fret
+        let nodes_s1_f6 = table.find_nodes_at_touch(1, 6.0);
+        assert!(!nodes_s1_f6.is_empty(), "String 1 should have a harmonic at installed fret 6.0");
+        let n6 = nodes_s1_f6[0];
+        assert_eq!(n6.harmonic_number, 5);
+        assert_eq!(n6.node_index, 1);
+        assert_eq!(n6.touch_fret, 6.0);
+        assert_eq!(n6.sounding_pitch.step, "B");
+        assert_eq!(n6.sounding_pitch.octave, 6);
+
+        // On String 2: fret 6 is NOT installed on string 2
+        // Node 5/4 falls between fret 1.5 (203.9 cents) and fret 7.0 (498.0 cents),
+        // which maps to decimal fret location 4.9 (tenths interpolation).
+        let nodes_s2_f6 = table.find_nodes_at_touch(2, 6.0);
+        assert!(
+            nodes_s2_f6.is_empty(),
+            "String 2 should not have harmonic at fret 6.0 because fret 6 is not on String 2"
+        );
+        let nodes_s2_f4_9 = table.find_nodes_at_touch(2, 4.9);
+        assert!(
+            !nodes_s2_f4_9.is_empty(),
+            "String 2 should have 5th harmonic at decimal fret location 4.9"
+        );
+        assert_eq!(nodes_s2_f4_9[0].harmonic_number, 5);
+
+        // Decimal fretlet 1.5 (9/8 node: n=9, k=1) is installed on both strings
+        let nodes_s1_f1_5 = table.find_nodes_at_touch(1, 1.5);
+        assert_eq!(nodes_s1_f1_5.len(), 1, "String 1 should have harmonic at fretlet 1.5");
+        assert_eq!(nodes_s1_f1_5[0].harmonic_number, 9);
+
+        // 2. Test harmonic validation
+        let valid_h = Harmonic {
+            touch: 6.0,
+            sounding_note: Box::new(Note {
+                id: None,
+                pitch: n6.sounding_pitch.clone(),
+                accidental_display: None,
+                ties: None,
+                comment: None,
+                ext: NoteExt::default(),
+            }),
+        };
+        assert!(table.validate_harmonic(1, &valid_h).is_ok());
+
+        // Validate on String 2 should fail since fret 6 is not playable on string 2
+        let invalid_on_s2 = table.validate_harmonic(2, &valid_h);
+        assert!(invalid_on_s2.is_err());
+        assert!(invalid_on_s2.unwrap_err().message.contains("does not correspond to any harmonic node"));
+
+        // Validate decimal fret location 4.9 on String 2 should succeed for sounding F#6
+        let valid_s2_pitch = nodes_s2_f4_9[0].sounding_pitch.clone();
+        let valid_s2_h = Harmonic {
+            touch: 4.9,
+            sounding_note: Box::new(Note {
+                id: None,
+                pitch: valid_s2_pitch,
+                accidental_display: None,
+                ties: None,
+                comment: None,
+                ext: NoteExt::default(),
+            }),
+        };
+        assert!(table.validate_harmonic(2, &valid_s2_h).is_ok());
+
+        // 3. Test standard 12-EDO custom fretboard decimal fret locations (e.g. 3.9, 2.7)
+        let edo_frets: Vec<CustomFret> = (1..=24)
+            .map(|f| CustomFret {
+                fret_number: f as f64,
+                manual_number: None,
+                spec: FretLocationSpec::Cents { cents: (f * 100) as f64 },
+                strings: vec![1, 2],
+                note_name: format!("Fret {}", f),
+            })
+            .collect();
+        let edo_part = Part {
+            id: None,
+            name: Some("12-EDO Custom Guitar".to_string()),
+            short_name: None,
+            comment: None,
+            ext: PartExt {
+                micro_fret_divisions: None,
+                fret_step_multiplier: None,
+                pitch_bend_range: None,
+                capo: None,
+                tuning: Some(vec![StringTuning {
+                    string: 1,
+                    pitch: Pitch {
+                        step: "E".to_string(),
+                        alter: None,
+                        octave: 4,
+                        ext: PitchExt::default(),
+                    },
+                }]),
+                custom_frets: Some(edo_frets),
+            },
+            measures: Vec::new(),
+        };
+        let edo_table = HarmonicLookupTable::from_part(&edo_part);
+        // Harmonic 5 (1/5 node) maps to decimal fret location 3.9
+        let s1_3_9 = edo_table.find_nodes_at_touch(1, 3.9);
+        assert!(!s1_3_9.is_empty(), "Decimal fret 3.9 should map to harmonic 5");
+        assert_eq!(s1_3_9[0].harmonic_number, 5);
+        assert_eq!(s1_3_9[0].sounding_pitch.step, "G");
+        assert_eq!(s1_3_9[0].sounding_pitch.octave, 6);
+
+        // Harmonic 7 (1/7 node) maps to decimal fret location 2.7
+        let s1_2_7 = edo_table.find_nodes_at_touch(1, 2.7);
+        assert!(!s1_2_7.is_empty(), "Decimal fret 2.7 should map to harmonic 7");
+        assert_eq!(s1_2_7[0].harmonic_number, 7);
+
+        // Whole fret 4 is not in the table as a harmonic touch point
+        assert!(edo_table.find_nodes_at_touch(1, 4.0).is_empty());
+
+        // 4. Test Kite Guitar (41-EDO step mult 2) custom fretboard decimal fret 20.5 for octave harmonic
+        let kite_frets: Vec<CustomFret> = (1..=24)
+            .map(|f| CustomFret {
+                fret_number: f as f64,
+                manual_number: None,
+                spec: FretLocationSpec::EdoStep { steps: (f * 2) as i32, edo: 41 },
+                strings: vec![1],
+                note_name: format!("Fret {}", f),
+            })
+            .collect();
+        let kite_part = Part {
+            id: None,
+            name: Some("Kite Guitar".to_string()),
+            short_name: None,
+            comment: None,
+            ext: PartExt {
+                micro_fret_divisions: None,
+                fret_step_multiplier: None,
+                pitch_bend_range: None,
+                capo: None,
+                tuning: Some(vec![StringTuning {
+                    string: 1,
+                    pitch: Pitch {
+                        step: "E".to_string(),
+                        alter: None,
+                        octave: 4,
+                        ext: PitchExt::default(),
+                    },
+                }]),
+                custom_frets: Some(kite_frets),
+            },
+            measures: Vec::new(),
+        };
+        let kite_table = HarmonicLookupTable::from_part(&kite_part);
+        let s1_20_5 = kite_table.find_nodes_at_touch(1, 20.5);
+        assert!(!s1_20_5.is_empty(), "Kite guitar decimal fret 20.5 should map to octave harmonic");
+        assert_eq!(s1_20_5[0].harmonic_number, 2);
+        assert_eq!(s1_20_5[0].sounding_pitch.step, "E");
+        assert_eq!(s1_20_5[0].sounding_pitch.octave, 5);
+
+        // 5. Test YAML cleanup
+        assert!(part.has_custom_frets());
+        assert!(part.ext.micro_fret_divisions.is_some());
+        assert!(part.ext.fret_step_multiplier.is_some());
+
+        part.clean_unneeded_fret_fields();
+        assert!(part.ext.micro_fret_divisions.is_none());
+        assert!(part.ext.fret_step_multiplier.is_none());
+
+        let yaml_in = r#"mnx:
+  version: 1
+global:
+  measures: []
+parts:
+  - name: "Custom JI Guitar"
+    _x:
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: G, octave: 4 }
+        - string: 2
+          pitch: { step: D, octave: 4 }
+      customFrets:
+        - fret: 6
+          spec: { kind: ratio, num: 5, den: 4 }
+          strings: [1]
+          noteName: "5/4"
+    measures: []
+"#;
+        let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml_in).expect("parsed doc");
+        doc.clean_unneeded_fret_fields();
+        let yaml_out = serde_saphyr::to_string(&doc).expect("YAML serialization");
+        assert!(
+            !yaml_out.contains("microFretDivisions"),
+            "YAML should not contain microFretDivisions with custom fretboard"
+        );
+        assert!(
+            !yaml_out.contains("fretStepMultiplier"),
+            "YAML should not contain fretStepMultiplier with custom fretboard"
+        );
+        assert!(
+            yaml_out.contains("customFrets"),
+            "YAML should contain customFrets"
+        );
     }
 }

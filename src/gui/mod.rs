@@ -745,7 +745,8 @@ impl MnxEditorApp {
         self.parsed_mnx = Some(doc);
     }
 
-    pub fn apply_mutated_doc(&mut self, doc: MnxDocument) {
+    pub fn apply_mutated_doc(&mut self, mut doc: MnxDocument) {
+        doc.clean_unneeded_fret_fields();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
             self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);

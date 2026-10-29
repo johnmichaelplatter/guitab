@@ -349,9 +349,12 @@ pub fn populate_page_display_list(
             });
         }
 
-        let edo_sub = part
-            .micro_fret_divisions
-            .map(|divs| format!("{} EDO", divs));
+        let edo_sub = if part.has_custom_frets() {
+            Some("Custom Fretboard".to_string())
+        } else {
+            part.micro_fret_divisions
+                .map(|divs| format!("{} EDO", divs))
+        };
         let subtitle_text = doc
             .score_subtitle()
             .or_else(|| doc.layout.as_ref().and_then(|l| l.subtitle.as_deref()))

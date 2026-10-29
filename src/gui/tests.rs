@@ -1610,6 +1610,81 @@ parts:
     }
 
     #[test]
+    fn test_natural_harmonic_custom_fretboard_toggle_and_yaml_cleanup() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Custom Guitar"
+    _x:
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: G, octave: 4 }
+        - string: 2
+          pitch: { step: D, octave: 4 }
+      customFrets:
+        - fret_number: 6.0
+          spec: { kind: ratio, num: 5, den: 4 }
+          strings: [1]
+          note_name: "vE"
+        - fret_number: 7.0
+          spec: { kind: ratio, num: 4, den: 3 }
+          strings: [1, 2]
+          note_name: "F"
+    measures:
+      - sequences:
+          - content:
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: G, octave: 4 }
+                    _x:
+                      string: 1
+                      fret: 6
+"#
+        .to_string();
+        app.process_and_render();
+
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.selected_note_idx_in_event = Some(0);
+        assert!(!app.is_selected_note_harmonic());
+
+        // Toggle Natural Harmonic ON
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        assert!(app.yaml_text.contains("harmonic:"));
+        assert!(app.yaml_text.contains("touch: 6"));
+        assert!(!app.yaml_text.contains("microFretDivisions"));
+        assert!(!app.yaml_text.contains("fretStepMultiplier"));
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let h = ev.notes[0].harmonic.as_ref().expect("Harmonic should be present");
+        assert_eq!(h.touch, 6.0);
+        assert_eq!(h.sounding_note.pitch.step, "B");
+        assert_eq!(h.sounding_note.pitch.octave, 6);
+
+        // Toggle Natural Harmonic OFF
+        app.action_toggle_harmonic();
+        assert!(!app.is_selected_note_harmonic());
+        assert!(!app.yaml_text.contains("harmonic:"));
+
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev2.notes[0].harmonic.is_none());
+        assert_eq!(ev2.notes[0].fret, Some(0));
+        assert_eq!(ev2.notes[0].pitch.step, "G");
+        assert_eq!(ev2.notes[0].pitch.octave, 4);
+    }
+
+    #[test]
     fn test_natural_harmonic_invalid_fret_dialog_prompt() {
         let mut app = MnxEditorApp::default();
         app.yaml_text = r#"mnx:

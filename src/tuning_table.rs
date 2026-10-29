@@ -145,16 +145,26 @@ impl FretboardFrequencyTable {
         }
     }
 
-    /// Convenience constructor with default A4 = 440 Hz and dynamic max fret (2 * EDO).
+    /// Convenience constructor with default A4 = 440 Hz and dynamic max fret (2 * EDO or custom frets).
     pub fn from_part_default(part: &Part) -> Self {
-        let max_fret = (part.edo() * 2).min(255) as u8;
+        let max_fret = if let Some(cf) = &part.ext.custom_frets {
+            let max_custom = cf.iter().map(|f| f.fret_number.ceil() as u32).max().unwrap_or(24);
+            (max_custom.max(part.edo() * 2)).min(255) as u8
+        } else {
+            (part.edo() * 2).min(255) as u8
+        };
         Self::from_part(part, ReferencePitch::default(), max_fret)
     }
 
     /// Builds a frequency table using `doc.global._x.tuning.referenceNote` when present,
     /// falling back to standard A4 = 440 Hz.
     pub fn from_doc_part(doc: &crate::mnx::MnxDocument, part: &Part) -> Self {
-        let max_fret = (part.edo() * 2).min(255) as u8;
+        let max_fret = if let Some(cf) = &part.ext.custom_frets {
+            let max_custom = cf.iter().map(|f| f.fret_number.ceil() as u32).max().unwrap_or(24);
+            (max_custom.max(part.edo() * 2)).min(255) as u8
+        } else {
+            (part.edo() * 2).min(255) as u8
+        };
         let ref_pitch = doc
             .global
             .ext

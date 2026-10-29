@@ -1605,15 +1605,22 @@ impl MnxEditorApp {
 
         // If harmonic already exists: remove it and restore note to fret 0
         if note.harmonic.is_some() {
+            let ref_note = doc
+                .global
+                .ext
+                .tuning
+                .as_ref()
+                .and_then(|t| t.reference_note.as_ref());
             let p0 = doc
                 .parts
                 .first()
-                .and_then(|part| crate::yaml_editor::calculate_pitch_for_string_fret(part, string_num, 0));
+                .and_then(|part| crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(part, string_num, 0.0, ref_note));
 
             if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
                 if let Some(n) = ev.notes.get_mut(note_idx) {
                     n.harmonic = None;
                     n.fret = Some(0);
+                    n.decimal_fret = None;
                     if let Some(p) = p0 {
                         n.pitch = p;
                     }
@@ -1626,18 +1633,25 @@ impl MnxEditorApp {
         }
 
         // Otherwise: check if the note's current fret is a valid harmonic location
-        let fret_num = note.fret.unwrap_or(0);
+        let fret_val = note.decimal_fret.or_else(|| note.fret.map(|f| f as f64)).unwrap_or(0.0);
         let part = match doc.parts.first() {
             Some(p) => p,
             None => return,
         };
-        let table = crate::harmonic::HarmonicLookupTable::from_part(part);
-        let matching_nodes = table.find_nodes_at_touch(string_num, fret_num as f64);
+        let table = crate::harmonic::HarmonicLookupTable::from_doc_part(&doc, part);
+        let matching_nodes = table.find_nodes_at_touch(string_num, fret_val);
 
         if !matching_nodes.is_empty() {
             let node = matching_nodes[0];
             if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
                 if let Some(n) = ev.notes.get_mut(note_idx) {
+                    if node.touch_fret.fract().abs() > 1e-4 {
+                        n.decimal_fret = Some(node.touch_fret);
+                        n.fret = Some(node.touch_fret.round() as i32);
+                    } else {
+                        n.fret = Some(node.touch_fret as i32);
+                        n.decimal_fret = None;
+                    }
                     n.harmonic = Some(crate::mnx::Harmonic {
                         touch: node.touch_fret,
                         sounding_note: Box::new(crate::mnx::Note {
@@ -1658,8 +1672,12 @@ impl MnxEditorApp {
             self.active_dialog = ActiveDialog::NaturalHarmonicPrompt {
                 event_idx,
                 string: string_num,
-                touch_buf: if fret_num > 0 {
-                    fret_num.to_string()
+                touch_buf: if fret_val > 0.0 {
+                    if fret_val.fract().abs() < 1e-4 {
+                        format!("{}", fret_val as i32)
+                    } else {
+                        format!("{:.1}", fret_val)
+                    }
                 } else {
                     String::new()
                 },

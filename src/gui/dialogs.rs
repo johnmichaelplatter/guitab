@@ -1274,7 +1274,12 @@ impl MnxEditorApp {
                 let string_val = *string;
 
                 let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
-                let table = part.map(|p| crate::harmonic::HarmonicLookupTable::from_part(p));
+                let table = match (&self.parsed_mnx, part) {
+                    (Some(doc), Some(p)) => {
+                        Some(crate::harmonic::HarmonicLookupTable::from_doc_part(doc, p))
+                    }
+                    _ => None,
+                };
 
                 egui::Window::new("Natural Harmonic")
                     .collapsible(false)
@@ -1335,8 +1340,13 @@ impl MnxEditorApp {
                                 .color(egui::Color32::RED),
                             );
                         } else {
+                            let helper_msg = if part.map(|p| p.has_custom_frets()).unwrap_or(false) {
+                                "Enter a custom fret number installed on this string (e.g. 2, 4, 6, 1.5)"
+                            } else {
+                                "Enter a decimal fret position (e.g. 3.9, 2.7, 7.0)"
+                            };
                             ui.label(
-                                egui::RichText::new("Enter a decimal fret position (e.g. 3.9, 2.7, 7.0)")
+                                egui::RichText::new(helper_msg)
                                     .weak(),
                             );
                         }
@@ -2034,8 +2044,15 @@ impl MnxEditorApp {
                     {
                         self.mutate_doc(|doc| {
                             if let Some(p) = doc.parts.first_mut() {
-                                p.micro_fret_divisions = Some(edo);
-                                p.fret_step_multiplier = Some(step_multiplier);
+                                if !fb_state.frets.is_empty() {
+                                    p.custom_frets = Some(fb_state.frets.clone());
+                                    p.micro_fret_divisions = None;
+                                    p.fret_step_multiplier = None;
+                                } else {
+                                    p.custom_frets = None;
+                                    p.micro_fret_divisions = Some(edo);
+                                    p.fret_step_multiplier = Some(step_multiplier);
+                                }
                                 p.tuning = Some(tunings.clone());
                             }
                             Some(())
@@ -2415,7 +2432,13 @@ impl MnxEditorApp {
                                 if note.string.is_none() {
                                     note.string = Some(string);
                                 }
-                                note.fret = Some(note.fret.unwrap_or(touch.round() as i32));
+                                if touch.fract().abs() > 1e-4 {
+                                    note.decimal_fret = Some(touch);
+                                    note.fret = Some(touch.round() as i32);
+                                } else {
+                                    note.fret = Some(touch as i32);
+                                    note.decimal_fret = None;
+                                }
                                 note.harmonic = Some(crate::mnx::Harmonic {
                                     touch,
                                     sounding_note: Box::new(crate::mnx::Note {
@@ -2508,6 +2531,8 @@ impl MnxEditorApp {
                 state.reference_frequency_hz,
             );
             doc.parts[0].ext.custom_frets = Some(state.frets);
+            doc.parts[0].ext.micro_fret_divisions = None;
+            doc.parts[0].ext.fret_step_multiplier = None;
             any_ratio_or_cents_tuning
                 || matches!(
                     alter_mode,
@@ -2605,8 +2630,13 @@ impl MnxEditorApp {
         if doc.parts[0].name.is_none() {
             doc.parts[0].name = Some("Electric Guitar".to_string());
         }
-        doc.parts[0].micro_fret_divisions = Some(new_edo);
-        doc.parts[0].fret_step_multiplier = Some(new_step_multiplier);
+        if doc.parts[0].has_custom_frets() {
+            doc.parts[0].micro_fret_divisions = None;
+            doc.parts[0].fret_step_multiplier = None;
+        } else {
+            doc.parts[0].micro_fret_divisions = Some(new_edo);
+            doc.parts[0].fret_step_multiplier = Some(new_step_multiplier);
+        }
         doc.parts[0].tuning = Some(new_tunings.clone());
 
         if let Some(s) = self.editing_string {

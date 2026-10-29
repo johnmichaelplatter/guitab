@@ -1465,6 +1465,29 @@ impl Part {
             .unwrap_or(6)
             .max(1) as usize
     }
+
+    pub fn has_custom_frets(&self) -> bool {
+        self.ext
+            .custom_frets
+            .as_ref()
+            .map(|f| !f.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn clean_unneeded_fret_fields(&mut self) {
+        if self.has_custom_frets() {
+            self.ext.micro_fret_divisions = None;
+            self.ext.fret_step_multiplier = None;
+        }
+    }
+}
+
+impl MnxDocument {
+    pub fn clean_unneeded_fret_fields(&mut self) {
+        for part in &mut self.parts {
+            part.clean_unneeded_fret_fields();
+        }
+    }
 }
 
 impl Sequence {

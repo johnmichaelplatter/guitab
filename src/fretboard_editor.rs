@@ -93,15 +93,17 @@ impl FretLocationSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomFret {
     /// Computed or user-overridden fret number (whole number for full-neck anchor frets, or `.1` decimal for fretlets).
+    #[serde(alias = "fret", alias = "fretNumber")]
     pub fret_number: f64,
     /// If `Some`, the user explicitly overrode this fret's badge number; subsequent unpinned frets re-index from `floor(override) + 1`.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "manualNumber")]
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "manualNumber", alias = "manual_number")]
     pub manual_number: Option<f64>,
     /// Pitch location specification (Ratio, Cents, or EdoStep).
     pub spec: FretLocationSpec,
     /// Strings covered by this fret/fretlet (1-indexed, e.g. `[1, 2, 3, 4, 5, 6]`).
     pub strings: Vec<u8>,
     /// Ups/downs note name relative to an imaginary open C string (recommended from 53-EDO, editable by user).
+    #[serde(alias = "noteName")]
     pub note_name: String,
 }
 
