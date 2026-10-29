@@ -803,7 +803,8 @@ impl MnxEditorApp {
     pub fn process_and_render(&mut self) {
         self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
-            Ok(doc) => {
+            Ok(mut doc) => {
+                doc.ensure_measure_parity();
                 self.sync_from_parsed_doc(doc);
             }
             Err(e) => {

@@ -221,7 +221,15 @@ pub fn calculate_sounding_pitch_for_frequency(
     n: u32,
     ref_pitch: &ReferencePitch,
 ) -> Pitch {
-    let open_step_char = crate::fretboard_editor::extract_nominal_from_note_name(&open_pitch.step);
+    let open_step_char = if open_pitch.is_ratio_or_cents_step() {
+        if let Some(name) = &open_pitch.ext.name {
+            crate::fretboard_editor::extract_nominal_from_note_name(name)
+        } else {
+            crate::fretboard_editor::extract_nominal_from_note_name(&ref_pitch.pitch.step)
+        }
+    } else {
+        crate::fretboard_editor::extract_nominal_from_note_name(&open_pitch.step)
+    };
     let nominals = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
     let open_idx = nominals.iter().position(|&c| c == open_step_char).unwrap_or(0);
     let diatonic_offset = diatonic_offset_for_harmonic(n);

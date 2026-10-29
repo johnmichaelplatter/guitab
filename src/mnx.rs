@@ -1075,6 +1075,14 @@ impl NoteExt {
     }
 }
 
+pub fn serialize_note_ext<S: Serializer>(ext: &NoteExt, s: S) -> Result<S::Ok, S::Error> {
+    if ext.harmonic.is_none() {
+        FlowMap(ext).serialize(s)
+    } else {
+        ext.serialize(s)
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1096,6 +1104,7 @@ pub struct Note {
         rename = "_x",
         default,
         deserialize_with = "deserialize_ext",
+        serialize_with = "serialize_note_ext",
         skip_serializing_if = "NoteExt::is_empty"
     )]
     pub ext: NoteExt,
@@ -1256,7 +1265,7 @@ pub mod step_serde {
 pub mod flow_opt_pitch_ext {
     use super::*;
     pub fn serialize<S: Serializer>(val: &PitchExt, s: S) -> Result<S::Ok, S::Error> {
-        FlowMap(val).serialize(s)
+        val.serialize(s)
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PitchExt, D::Error> {
         super::deserialize_ext(d)
@@ -1486,6 +1495,43 @@ impl MnxDocument {
     pub fn clean_unneeded_fret_fields(&mut self) {
         for part in &mut self.parts {
             part.clean_unneeded_fret_fields();
+        }
+    }
+
+    pub fn ensure_measure_parity(&mut self) {
+        if self.parts.is_empty() {
+            return;
+        }
+        let g_len = self.global.measures.len();
+        let p_len = self.parts[0].measures.len();
+        if g_len > p_len {
+            for m_i in p_len..g_len {
+                let time_sig = crate::validate::get_time_signature_for_measure(self, m_i);
+                let dur = crate::mnx::Duration {
+                    base: if time_sig.unit == 8 {
+                        "eighth".to_string()
+                    } else {
+                        "quarter".to_string()
+                    },
+                    dots: None,
+                    multiple: None,
+                };
+                self.parts[0].measures.push(crate::mnx::Measure {
+                    comment: None,
+                    beams: None,
+                    arpeggios: None,
+                    sequences: vec![crate::mnx::Sequence {
+                        comment: None,
+                        content: vec![crate::mnx::SequenceItem::Event(
+                            crate::yaml_editor::new_blank_event(dur),
+                        )],
+                    }],
+                });
+            }
+        } else if p_len > g_len {
+            while self.global.measures.len() < p_len {
+                self.global.measures.push(crate::mnx::GlobalMeasure::default());
+            }
         }
     }
 }

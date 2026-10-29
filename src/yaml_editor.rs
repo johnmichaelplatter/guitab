@@ -113,6 +113,16 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
             continue;
         }
 
+        if !in_content && trimmed.contains("content:") && trimmed.contains("duration:") {
+            if let Some(start_line) = current_event_start_line {
+                let end_line = i.saturating_sub(1);
+                finish_event(start_line, end_line, &mut results);
+                current_event_start_line = None;
+            }
+            finish_event(i, i, &mut results);
+            continue;
+        }
+
         if trimmed.starts_with("content:") || trimmed.ends_with("content:") {
             if let Some(start_line) = current_event_start_line {
                 let end_line = i.saturating_sub(1);
@@ -260,7 +270,7 @@ pub fn get_note_string_from_text(note_text: &str) -> Option<u8> {
     None
 }
 
-fn new_blank_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
+pub fn new_blank_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
     crate::mnx::Event {
         duration,
         ..Default::default()
@@ -551,6 +561,7 @@ pub fn add_measure_to_doc(
     doc: &mut crate::mnx::MnxDocument,
     duration: &crate::mnx::Duration,
 ) -> bool {
+    doc.ensure_measure_parity();
     if doc.global.measures.is_empty() {
         let last_time = crate::mnx::TimeSignature { count: 4, unit: 4 };
         doc.global.measures.push(crate::mnx::GlobalMeasure {

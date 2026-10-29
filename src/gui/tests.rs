@@ -1685,6 +1685,99 @@ parts:
     }
 
     #[test]
+    fn test_custom_fretboard_harmonic_entry_and_following_measures_workflow() {
+        let mut app = MnxEditorApp::default();
+        // 1. Create new tab with instrument setup matching the bug file
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch { step: "5/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("vB".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+
+        // Apply custom frets from the bug file
+        let bug_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(
+            include_str!("../../context/harmonics entry bug.yaml")
+        ).expect("Bug file must parse");
+        let custom_frets = bug_doc.parts[0].ext.custom_frets.clone().unwrap();
+
+        let fb_state = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            custom_frets,
+            "D".to_string(),
+            4,
+            293.66,
+        );
+        app.apply_custom_fretboard_state(fb_state);
+
+        // 2. Enter fret 18 in measure 1 on string 6
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(6);
+        app.editing_fret_buf = "18".to_string();
+        assert!(app.commit_fret_edit());
+
+        // 3. Hit Natural Harmonic button
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+
+        // Verify sounding note pitch: D3 (harmonic 2 on D2 open string is D3)
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let h = ev.notes[0].harmonic.as_ref().expect("Harmonic should be present");
+        assert_eq!(h.touch, 18.0);
+        assert_eq!(h.sounding_note.pitch.step, "D");
+        assert_eq!(h.sounding_note.pitch.octave, 3);
+        assert_eq!(h.sounding_note.pitch.alter, None);
+        assert_eq!(h.sounding_note.pitch.ext.name.as_deref(), Some("D"));
+
+        // Verify YAML format is clean and does not have multi-line single braces or leaked pending_flow
+        assert!(app.yaml_text.contains("harmonic:"));
+        assert!(app.yaml_text.contains("touch: 18"));
+        assert!(app.yaml_text.contains("soundingNote:"));
+        assert!(!app.yaml_text.contains("- {sequences:"));
+
+        // 4. Advance and add notes into following measures
+        app.add_measure_to_end();
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc2.parts[0].measures.len(), 2);
+        assert_eq!(doc2.global.measures.len(), 2);
+        assert_eq!(app.cached_event_ranges.len(), 2, "Both measures must have cached event ranges");
+
+        // Enter note on Measure 2, string 6, fret 18
+        app.selected_event_idx = Some(1);
+        app.editing_string = Some(6);
+        app.editing_fret_buf = "18".to_string();
+        assert!(app.commit_fret_edit());
+
+        let doc3 = app.parsed_mnx.as_ref().unwrap();
+        let m2_ev = doc3.parts[0].measures[1].sequences[0].flattened_events()[0];
+        assert_eq!(m2_ev.notes.len(), 1);
+        assert_eq!(m2_ev.notes[0].string, Some(6));
+        assert_eq!(m2_ev.notes[0].fret, Some(18));
+    }
+
+    #[test]
     fn test_natural_harmonic_invalid_fret_dialog_prompt() {
         let mut app = MnxEditorApp::default();
         app.yaml_text = r#"mnx:
