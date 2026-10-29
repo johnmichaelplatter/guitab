@@ -710,6 +710,8 @@ pub struct FretboardEditorState {
     pub status_msg: Option<String>,
     /// Active drag operation: `(guide_index, start_string_1_indexed, current_string_1_indexed)`
     pub active_drag: Option<(usize, u8, u8)>,
+    /// Active right-click erase operation: `(fret_cents, last_string_1_indexed)`
+    pub active_erase: Option<(f64, u8)>,
     /// Index of fret whose top number badge is currently being edited inline, plus text buffer
     pub editing_badge: Option<(usize, String)>,
     /// Selected fret index for editing its ups/downs note name or deleting
@@ -758,6 +760,7 @@ impl FretboardEditorState {
             reference_frequency_hz: ref_hz,
             status_msg: None,
             active_drag: None,
+            active_erase: None,
             editing_badge: None,
             selected_fret_idx: None,
         };
@@ -847,6 +850,109 @@ impl FretboardEditorState {
         }
     }
 
+    /// Places full frets across all strings for every current dotted guide line.
+    pub fn add_all_guide_frets(&mut self) {
+        if self.guides.is_empty() {
+            self.status_msg = Some("No guide lines available to place frets.".to_string());
+            return;
+        }
+        let all_strings: Vec<u8> = (1..=self.num_strings).collect();
+        let guides = self.guides.clone();
+        let mut added = 0;
+        for spec in &guides {
+            let cents = spec.to_cents();
+            if let Some(existing_idx) = self
+                .frets
+                .iter()
+                .position(|f| (f.cents() - cents).abs() < 0.05)
+            {
+                self.frets[existing_idx].strings = all_strings.clone();
+                added += 1;
+            } else {
+                match check_fret_proximity(&self.frets, cents, &all_strings) {
+                    Ok(_) => {
+                        let note_name = recommend_53edo_note_name_from_cents(cents);
+                        self.frets.push(CustomFret {
+                            fret_number: 1.0,
+                            manual_number: None,
+                            spec: spec.clone(),
+                            strings: all_strings.clone(),
+                            note_name,
+                        });
+                        added += 1;
+                    }
+                    Err(_) => {
+                        if let Some(existing_idx) = self
+                            .frets
+                            .iter()
+                            .position(|f| (f.cents() - cents).abs() < 0.05)
+                        {
+                            self.frets[existing_idx].strings = all_strings.clone();
+                            added += 1;
+                        }
+                    }
+                }
+            }
+        }
+        recompute_fret_numbers(&mut self.frets, self.num_strings);
+        self.status_msg = Some(format!("Placed/updated full frets at {} guide locations.", added));
+    }
+
+    /// Removes string `s` from `self.frets[f_idx]`.
+    /// If no strings remain, the fret is completely removed.
+    pub fn remove_fret_string_by_idx(&mut self, f_idx: usize, s: u8) {
+        if f_idx >= self.frets.len() {
+            return;
+        }
+        if !self.frets[f_idx].strings.contains(&s) {
+            return;
+        }
+        self.frets[f_idx].strings.retain(|&str_num| str_num != s);
+        let label = self.frets[f_idx].spec.display_label();
+        if self.frets[f_idx].strings.is_empty() {
+            self.frets.remove(f_idx);
+            self.selected_fret_idx = None;
+            self.status_msg = Some(format!("Removed fret '{}'.", label));
+        } else {
+            self.status_msg = Some(format!("Removed fret '{}' on string {}.", label, s));
+        }
+        recompute_fret_numbers(&mut self.frets, self.num_strings);
+    }
+
+    /// Removes string `s` from any fret matching `cents`.
+    /// If no strings remain on this fret, the fret is completely removed.
+    pub fn remove_fret_string_by_cents(&mut self, cents: f64, s: u8) {
+        if let Some(f_idx) = self
+            .frets
+            .iter()
+            .position(|f| (f.cents() - cents).abs() < 0.05)
+        {
+            self.remove_fret_string_by_idx(f_idx, s);
+        }
+    }
+
+    /// Removes an installed fret on string `s` at the given `cents` position.
+    /// Returns true if a fret string was found and removed.
+    pub fn remove_fret_on_string(&mut self, cents: f64, s: u8) -> bool {
+        let mut target_idx = None;
+        let mut min_diff = 10.0;
+        for (f_idx, fret) in self.frets.iter().enumerate() {
+            if fret.strings.contains(&s) {
+                let diff = (fret.cents() - cents).abs();
+                if diff < min_diff {
+                    min_diff = diff;
+                    target_idx = Some(f_idx);
+                }
+            }
+        }
+        if let Some(f_idx) = target_idx {
+            self.remove_fret_string_by_idx(f_idx, s);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Renders the interactive Custom Fretboard Editor UI inside an egui window/panel.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         // 1. Top controls: Dotted Guide Grid input + Reference 1/1 Hz
@@ -899,9 +1005,18 @@ impl FretboardEditorState {
             }
         });
 
-        if let Some(err) = &self.guide_error {
-            ui.colored_label(Color32::from_rgb(255, 110, 110), err);
-        }
+        ui.horizontal(|ui| {
+            if ui
+                .button("Add all frets")
+                .on_hover_text("Adds a full fret across all strings at every current blue dotted guide line")
+                .clicked()
+            {
+                self.add_all_guide_frets();
+            }
+            if let Some(err) = &self.guide_error {
+                ui.colored_label(Color32::from_rgb(255, 110, 110), err);
+            }
+        });
 
         ui.add_space(4.0);
 
@@ -1061,6 +1176,9 @@ impl FretboardEditorState {
                     }
                 }
 
+                let is_double_click = response.double_clicked();
+                let is_secondary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
+
                 // Placed solid frets / fretlets + clickable fret number badges
                 for (f_idx, fret) in self.frets.iter().enumerate() {
                     let fx = cents_to_x(rect.min.x, fret.cents());
@@ -1165,7 +1283,7 @@ impl FretboardEditorState {
                         }
                     }
 
-                    if response.clicked() {
+                    if !is_double_click && !is_secondary_down && response.clicked() {
                         if let Some(pos) = response.interact_pointer_pos() {
                             if badge_rect.expand(2.5).contains(pos) {
                                 badge_clicked = Some(f_idx);
@@ -1183,22 +1301,24 @@ impl FretboardEditorState {
 
                 // Handle click-and-drag along a dotted guide line to place frets/fretlets
                 if response.drag_started() {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        if pos.y >= neck_top_y - 8.0 && pos.y <= neck_bot_y + 8.0 {
-                            // Find nearest dotted guide within 14px
-                            let mut best_guide = None;
-                            let mut best_dist = 14.0_f32;
-                            for (g_idx, guide) in self.guides.iter().enumerate() {
-                                let gx = cents_to_x(rect.min.x, guide.to_cents());
-                                let dist = (pos.x - gx).abs();
-                                if dist < best_dist {
-                                    best_dist = dist;
-                                    best_guide = Some(g_idx);
+                    if !is_secondary_down {
+                        if let Some(pos) = response.interact_pointer_pos() {
+                            if pos.y >= neck_top_y - 8.0 && pos.y <= neck_bot_y + 8.0 {
+                                // Find nearest dotted guide within 14px
+                                let mut best_guide = None;
+                                let mut best_dist = 14.0_f32;
+                                for (g_idx, guide) in self.guides.iter().enumerate() {
+                                    let gx = cents_to_x(rect.min.x, guide.to_cents());
+                                    let dist = (pos.x - gx).abs();
+                                    if dist < best_dist {
+                                        best_dist = dist;
+                                        best_guide = Some(g_idx);
+                                    }
                                 }
-                            }
-                            if let Some(g_idx) = best_guide {
-                                let s = y_to_nearest_string(rect.min.y, pos.y);
-                                self.active_drag = Some((g_idx, s, s));
+                                if let Some(g_idx) = best_guide {
+                                    let s = y_to_nearest_string(rect.min.y, pos.y);
+                                    self.active_drag = Some((g_idx, s, s));
+                                }
                             }
                         }
                     }
@@ -1232,11 +1352,85 @@ impl FretboardEditorState {
                     }
                 }
 
-                if response.drag_stopped() {
+                // Draw active erase preview
+                if let Some((erase_cents, s_cur)) = self.active_erase {
+                    let fx = cents_to_x(rect.min.x, erase_cents);
+                    let sy = string_to_y(rect.min.y, s_cur);
+                    let half_span = string_spacing * 0.5;
+                    let seg_top = (sy - half_span).max(neck_top_y);
+                    let seg_bot = (sy + half_span).min(neck_bot_y);
+                    painter.line_segment(
+                        [Pos2::new(fx, seg_top), Pos2::new(fx, seg_bot)],
+                        Stroke::new(5.0, Color32::from_rgb(255, 90, 90)),
+                    );
+                }
+
+                if is_secondary_down {
+                    self.active_drag = None;
+                    // Right clicking and dragging up/down an installed fret erases out strings
+                    if let Some(pos) = response.interact_pointer_pos().or_else(|| hover_pos).or_else(|| ui.input(|i| i.pointer.latest_pos())) {
+                        if pos.y >= neck_top_y - 6.0 && pos.y <= neck_bot_y + 6.0 {
+                            let s_cur = y_to_nearest_string(rect.min.y, pos.y);
+                            if let Some((erase_cents, last_s)) = self.active_erase {
+                                let min_s = last_s.min(s_cur);
+                                let max_s = last_s.max(s_cur);
+                                for s in min_s..=max_s {
+                                    self.remove_fret_string_by_cents(erase_cents, s);
+                                }
+                                self.active_erase = Some((erase_cents, s_cur));
+                            } else {
+                                let mut best_fret_idx = None;
+                                let mut min_dist = 14.0_f32;
+                                for (f_idx, fret) in self.frets.iter().enumerate() {
+                                    let fx = cents_to_x(rect.min.x, fret.cents());
+                                    let dist = (pos.x - fx).abs();
+                                    if dist < min_dist {
+                                        if fret.strings.contains(&s_cur) {
+                                            min_dist = dist;
+                                            best_fret_idx = Some(f_idx);
+                                        } else if best_fret_idx.is_none() {
+                                            best_fret_idx = Some(f_idx);
+                                        }
+                                    }
+                                }
+                                if let Some(f_idx) = best_fret_idx {
+                                    let cents = self.frets[f_idx].cents();
+                                    self.active_erase = Some((cents, s_cur));
+                                    self.remove_fret_string_by_cents(cents, s_cur);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    self.active_erase = None;
+                }
+
+                if is_double_click {
+                    self.active_drag = None;
+                    self.active_erase = None;
+                    // Double clicking on the blue dotted line fills in the fret for all strings
+                    if let Some(pos) = response.interact_pointer_pos().or_else(|| hover_pos) {
+                        if pos.y >= neck_top_y - 8.0 && pos.y <= neck_bot_y + 16.0 {
+                            let mut best_guide = None;
+                            let mut best_dist = 14.0_f32;
+                            for (g_idx, guide) in self.guides.iter().enumerate() {
+                                let gx = cents_to_x(rect.min.x, guide.to_cents());
+                                let dist = (pos.x - gx).abs();
+                                if dist < best_dist {
+                                    best_dist = dist;
+                                    best_guide = Some(g_idx);
+                                }
+                            }
+                            if let Some(g_idx) = best_guide {
+                                self.commit_dragged_fret(g_idx, 1, self.num_strings);
+                            }
+                        }
+                    }
+                } else if response.drag_stopped() {
                     if let Some((g_idx, s1, s2)) = self.active_drag.take() {
                         self.commit_dragged_fret(g_idx, s1, s2);
                     }
-                } else if response.clicked() && badge_clicked.is_none() && fret_clicked.is_none() {
+                } else if !is_secondary_down && response.clicked() && badge_clicked.is_none() && fret_clicked.is_none() {
                     // Single click on a dotted guide line places a fretlet on the clicked string
                     if let Some(pos) = response.interact_pointer_pos() {
                         if pos.y >= neck_top_y && pos.y <= neck_bot_y {
@@ -1574,5 +1768,50 @@ mod tests {
         assert_eq!(fret_ratio.formatted_fret_number(), "1");
         assert_eq!(fret_cents.formatted_fret_number(), "2");
         assert_eq!(fret_edo.formatted_fret_number(), "3.5");
+    }
+
+    #[test]
+    fn test_custom_fretboard_add_all_frets_double_click_and_right_click_removal() {
+        let mut state = FretboardEditorState::new(6, Vec::new(), "D".to_string(), 4, 293.67);
+        state.guide_input = "5/4".to_string();
+        state.update_guides();
+        assert_eq!(state.guides.len(), 6); // 5/4, 25/16, 125/64, 625/256, 3125/1024, 15625/4096 across 2400c
+
+        // 1. "Add all frets" adds a full fret at every blue dotted line
+        state.add_all_guide_frets();
+        assert_eq!(state.frets.len(), 6);
+        for fret in &state.frets {
+            assert_eq!(fret.strings, vec![1, 2, 3, 4, 5, 6]);
+        }
+        assert_eq!(state.frets[0].formatted_fret_number(), "1");
+        assert_eq!(state.frets[1].formatted_fret_number(), "2");
+        assert_eq!(state.frets[2].formatted_fret_number(), "3");
+
+        // 2. Right-clicking removes fret for that specific string
+        let f0_cents = state.frets[0].cents();
+        assert!(state.remove_fret_on_string(f0_cents, 3));
+        assert_eq!(state.frets[0].strings, vec![1, 2, 4, 5, 6]);
+
+        assert!(state.remove_fret_on_string(f0_cents, 1));
+        assert_eq!(state.frets[0].strings, vec![2, 4, 5, 6]);
+
+        // 3. Double-clicking on the blue dotted line fills in the fret for all strings
+        // Guide 0 is 5/4
+        state.commit_dragged_fret(0, 1, 6);
+        assert_eq!(state.frets[0].strings, vec![1, 2, 3, 4, 5, 6]);
+
+        // 4. Pressing and holding right-click dragging across strings 2..=5 erases them out
+        for s in 2..=5 {
+            state.remove_fret_string_by_cents(f0_cents, s);
+        }
+        assert_eq!(state.frets[0].strings, vec![1, 6]);
+
+        // 5. Removing all remaining strings removes the entire fret
+        state.remove_fret_string_by_cents(f0_cents, 1);
+        state.remove_fret_string_by_cents(f0_cents, 6);
+        // Fret 0 is now deleted, leaving the other 5 frets
+        assert_eq!(state.frets.len(), 5);
+        assert_eq!(state.frets[0].spec.display_label(), "25/16");
+        assert_eq!(state.frets[1].spec.display_label(), "125/64");
     }
 }
