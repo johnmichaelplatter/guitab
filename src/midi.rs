@@ -50,30 +50,8 @@ pub fn calculate_pitch_bend(semitone_diff: f32, pb_range: u8) -> u16 {
         .clamp(0.0, 16383.0) as u16
 }
 
-#[cfg(target_os = "macos")]
-#[link(name = "CoreAudio", kind = "framework")]
-unsafe extern "C" {
-    fn AudioGetCurrentHostTime() -> u64;
-}
-
-pub trait MidiSender {
-    fn send(&mut self, data: &[u8]) -> Result<(), String>;
-}
-
-impl<T: MidiSender + ?Sized> MidiSender for &mut T {
-    fn send(&mut self, data: &[u8]) -> Result<(), String> {
-        (**self).send(data)
-    }
-}
-
-impl MidiSender for midir::MidiOutputConnection {
-    fn send(&mut self, data: &[u8]) -> Result<(), String> {
-        midir::MidiOutputConnection::send(self, data).map_err(|e| e.to_string())
-    }
-}
-
 /// Send MPE Configuration Message (MCM) on Master Channel 1 (0-indexed channel 0)
-pub fn send_mpe_configuration<S: MidiSender + ?Sized>(out_conn: &mut S, member_channels: u8) {
+pub fn send_mpe_configuration(out_conn: &mut midir::MidiOutputConnection, member_channels: u8) {
     let messages = [
         [0xB0, 101, 0],             // RPN MSB: 0
         [0xB0, 100, 6],             // RPN LSB: 6 (MPE Configuration)
@@ -1253,23 +1231,6 @@ pub struct MidiPortInfo {
     pub name: String,
 }
 
-#[cfg(target_os = "macos")]
-pub fn get_midi_output_ports() -> Vec<MidiPortInfo> {
-    let count = coremidi::Destinations::count();
-    let mut ports = Vec::with_capacity(count);
-    for idx in 0..count {
-        if let Some(dest) = coremidi::Destination::from_index(idx) {
-            let name = dest
-                .display_name()
-                .or_else(|| dest.name())
-                .unwrap_or_else(|| format!("Port {}", idx));
-            ports.push(MidiPortInfo { id: idx, name });
-        }
-    }
-    ports
-}
-
-#[cfg(not(target_os = "macos"))]
 pub fn get_midi_output_ports() -> Vec<MidiPortInfo> {
     match midir::MidiOutput::new("guitab_probe") {
         Ok(out) => {
@@ -1292,76 +1253,9 @@ pub struct NotePreview {
     pub velocity: midly::num::u7,
 }
 
-#[cfg(target_os = "macos")]
-pub struct CachedMidiConnection {
-    pub port_index: usize,
-    _client: coremidi::Client,
-    output_port: coremidi::OutputPort,
-    destination: coremidi::Destination,
-}
-
-#[cfg(target_os = "macos")]
-impl CachedMidiConnection {
-    pub fn new(port_index: usize) -> Result<Self, String> {
-        let client = coremidi::Client::new("guitab_player")
-            .map_err(|e| format!("Failed to create CoreMIDI client: OSStatus {}", e))?;
-        let output_port = client
-            .output_port("mnx_output")
-            .map_err(|e| format!("Failed to create CoreMIDI output port: OSStatus {}", e))?;
-        let destination = coremidi::Destination::from_index(port_index)
-            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
-        Ok(Self {
-            port_index,
-            _client: client,
-            output_port,
-            destination,
-        })
-    }
-
-    pub fn send(&mut self, data: &[u8]) -> Result<(), String> {
-        if data.is_empty() {
-            return Ok(());
-        }
-        let timestamp = unsafe { AudioGetCurrentHostTime() };
-        let packet_buffer = coremidi::PacketBuffer::new(timestamp, data);
-        self.output_port
-            .send(&self.destination, &packet_buffer)
-            .map_err(|e| format!("Failed to send CoreMIDI packet: OSStatus {}", e))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub struct CachedMidiConnection {
-    pub port_index: usize,
+struct CachedMidiConnection {
+    port_index: usize,
     conn: midir::MidiOutputConnection,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl CachedMidiConnection {
-    pub fn new(port_index: usize) -> Result<Self, String> {
-        let midi_out = midir::MidiOutput::new("guitab_player")
-            .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
-        let ports = midi_out.ports();
-        let port = ports
-            .get(port_index)
-            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
-        let conn = midi_out
-            .connect(port, "mnx_output")
-            .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
-        Ok(Self { port_index, conn })
-    }
-
-    pub fn send(&mut self, data: &[u8]) -> Result<(), String> {
-        self.conn
-            .send(data)
-            .map_err(|e| format!("Failed to send MIDI packet: {}", e))
-    }
-}
-
-impl MidiSender for CachedMidiConnection {
-    fn send(&mut self, data: &[u8]) -> Result<(), String> {
-        CachedMidiConnection::send(self, data)
-    }
 }
 
 pub struct MidiPlayer {
@@ -1397,8 +1291,16 @@ impl MidiPlayer {
                 return Ok(());
             }
         }
-        let conn = CachedMidiConnection::new(port_index)?;
-        *guard = Some(conn);
+        let midi_out = midir::MidiOutput::new("guitab_player")
+            .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
+        let ports = midi_out.ports();
+        let port = ports
+            .get(port_index)
+            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
+        let conn = midi_out
+            .connect(port, "mnx_output")
+            .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
+        *guard = Some(CachedMidiConnection { port_index, conn });
         Ok(())
     }
 
@@ -1493,7 +1395,7 @@ impl MidiPlayer {
                         if !bytes.is_empty() {
                             if let Ok(mut guard) = conn_arc.lock() {
                                 if let Some(cached) = guard.as_mut() {
-                                    let _ = cached.send(&bytes);
+                                    let _ = cached.conn.send(&bytes);
                                 }
                             }
                         }
@@ -1510,8 +1412,8 @@ impl MidiPlayer {
                 if let Some(cached) = guard.as_mut() {
                     for ch in 0..16 {
                         let status_cc = 0xB0 | ch;
-                        let _ = cached.send(&[status_cc, 123, 0]);
-                        let _ = cached.send(&[status_cc, 121, 0]);
+                        let _ = cached.conn.send(&[status_cc, 123, 0]);
+                        let _ = cached.conn.send(&[status_cc, 121, 0]);
                     }
                 }
             }
@@ -1542,16 +1444,17 @@ impl MidiPlayer {
 
         if let Ok(mut guard) = self.connection.lock() {
             if let Some(cached) = guard.as_mut() {
+                let conn_out = &mut cached.conn;
                 if is_mpe {
-                    send_mpe_configuration(cached, member_channels.min(15));
+                    send_mpe_configuration(conn_out, member_channels.min(15));
                 }
 
                 for n in &notes {
                     let ch = n.channel.as_int();
-                    let _ = cached.send(&[0xB0 | ch, 101, 0]);
-                    let _ = cached.send(&[0xB0 | ch, 100, 0]);
-                    let _ = cached.send(&[0xB0 | ch, 6, pb_range.min(127)]);
-                    let _ = cached.send(&[0xB0 | ch, 38, 0]);
+                    let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
+                    let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
+                    let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
+                    let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
                 }
 
                 for n in &notes {
@@ -1561,7 +1464,7 @@ impl MidiPlayer {
                         };
                         let bytes = serialize_midi_message(n.channel, &pb_msg);
                         if !bytes.is_empty() {
-                            let _ = cached.send(&bytes);
+                            let _ = conn_out.send(&bytes);
                         }
                     }
                     let note_on = midly::MidiMessage::NoteOn {
@@ -1570,7 +1473,7 @@ impl MidiPlayer {
                     };
                     let bytes = serialize_midi_message(n.channel, &note_on);
                     if !bytes.is_empty() {
-                        let _ = cached.send(&bytes);
+                        let _ = conn_out.send(&bytes);
                     }
                 }
             }
@@ -1603,7 +1506,7 @@ impl MidiPlayer {
                         };
                         let bytes = serialize_midi_message(n.channel, &note_off);
                         if !bytes.is_empty() {
-                            let _ = cached.send(&bytes);
+                            let _ = cached.conn.send(&bytes);
                         }
                     }
                 }
@@ -1636,15 +1539,16 @@ impl MidiPlayer {
             .lock()
             .map_err(|_| String::from("MIDI connection lock poisoned"))?;
         if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
             if is_mpe {
-                send_mpe_configuration(cached, member_channels.min(15));
+                send_mpe_configuration(conn_out, member_channels.min(15));
             }
 
             let ch = channel.as_int();
-            let _ = cached.send(&[0xB0 | ch, 101, 0]);
-            let _ = cached.send(&[0xB0 | ch, 100, 0]);
-            let _ = cached.send(&[0xB0 | ch, 6, pb_range.min(127)]);
-            let _ = cached.send(&[0xB0 | ch, 38, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
+            let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
 
             if let Some(pb_val) = pitch_bend {
                 let pb_msg = midly::MidiMessage::PitchBend {
@@ -1652,7 +1556,7 @@ impl MidiPlayer {
                 };
                 let bytes = serialize_midi_message(channel, &pb_msg);
                 if !bytes.is_empty() {
-                    let _ = cached.send(&bytes);
+                    let _ = conn_out.send(&bytes);
                 }
             }
 
@@ -1662,7 +1566,7 @@ impl MidiPlayer {
             };
             let bytes = serialize_midi_message(channel, &note_on);
             if !bytes.is_empty() {
-                let _ = cached.send(&bytes);
+                let _ = conn_out.send(&bytes);
             }
         }
         Ok(())
@@ -1685,13 +1589,14 @@ impl MidiPlayer {
             .lock()
             .map_err(|_| String::from("MIDI connection lock poisoned"))?;
         if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
             let note_off = midly::MidiMessage::NoteOff {
                 key,
                 vel: midly::num::u7::from(64),
             };
             let bytes = serialize_midi_message(channel, &note_off);
             if !bytes.is_empty() {
-                let _ = cached.send(&bytes);
+                let _ = conn_out.send(&bytes);
             }
         }
         Ok(())
@@ -1709,9 +1614,10 @@ impl MidiPlayer {
             .lock()
             .map_err(|_| String::from("MIDI connection lock poisoned"))?;
         if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
             for ch in 0..16 {
-                let _ = cached.send(&[0xB0 | ch, 123, 0]); // All Notes Off
-                let _ = cached.send(&[0xB0 | ch, 120, 0]); // All Sound Off
+                let _ = conn_out.send(&[0xB0 | ch, 123, 0]); // All Notes Off
+                let _ = conn_out.send(&[0xB0 | ch, 120, 0]); // All Sound Off
             }
         }
         Ok(())
@@ -2521,30 +2427,6 @@ parts:
             })
             .collect();
         assert_eq!(markers, vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 4, 5, 6, 7]);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_coremidi_host_time_and_packet_timestamp() {
-        let t1 = unsafe { AudioGetCurrentHostTime() };
-        assert!(t1 > 0, "AudioGetCurrentHostTime must return non-zero host time");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        let t2 = unsafe { AudioGetCurrentHostTime() };
-        assert!(t2 > t1, "Host time must advance monotonically");
-
-        let msg = [0x90, 60, 100];
-        let buffer = coremidi::PacketBuffer::new(t1, &msg);
-        assert_eq!(buffer.len(), 1);
-        let packet = buffer.iter().next().unwrap();
-        assert_eq!(packet.timestamp(), t1);
-        assert_eq!(packet.data(), &msg);
-
-        // Verify get_midi_output_ports() does not panic
-        let ports = get_midi_output_ports();
-        for (i, p) in ports.iter().enumerate() {
-            assert_eq!(p.id, i);
-            assert!(!p.name.is_empty());
-        }
     }
 }
 
