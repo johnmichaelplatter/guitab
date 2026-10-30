@@ -846,6 +846,11 @@ impl MnxEditorApp {
                 self.midi_status_msg = Some("Playback stopped.".to_string());
             } else if esc_pressed && self.grid_input.is_grid_input_mode {
                 self.grid_input.exit_grid_input_mode();
+            } else if esc_pressed && self.grid_input.just_play_mode {
+                let note_offs = self.grid_input.set_just_play_mode(false);
+                if !note_offs.is_empty() {
+                    self.handle_grid_live_play_events(note_offs);
+                }
             } else if p_pressed {
                 if shift_down {
                     self.start_midi_playback(false);

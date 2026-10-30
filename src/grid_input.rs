@@ -238,6 +238,15 @@ pub struct GridMidiEvent {
     pub velocity: u8,
 }
 
+/// Event emitted in "Just Play" mode to forward a played string/fret to MIDI output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridLivePlayEvent {
+    pub string: u8,
+    pub fret: i32,
+    pub is_note_on: bool,
+    pub velocity: u8,
+}
+
 /// Manages up to 4 live `midir::MidiInputConnection`s and tracks held pads + 500ms release latch.
 pub struct GridInputManager {
     pub slots: [GridControllerSlotConfig; MAX_GRID_CONTROLLERS],
@@ -252,6 +261,8 @@ pub struct GridInputManager {
     pub buffered_chord: BTreeMap<u8, i32>,
     /// Whether the editor is currently in Grid Controller Input Mode (light-red cursor).
     pub is_grid_input_mode: bool,
+    /// Whether "Just Play" mode is active (forwards MIDI through fretboard lookup to MIDI out without tab interception).
+    pub just_play_mode: bool,
     /// Timestamp when the last held pad was released (`held_pads` transitioned from non-empty to empty).
     pub release_latch_start: Option<Instant>,
     /// Active 4-corner calibration wizard state: `(slot_idx, step, partial_calibration)`
@@ -282,9 +293,28 @@ impl GridInputManager {
             held_pads: BTreeMap::new(),
             buffered_chord: BTreeMap::new(),
             is_grid_input_mode: false,
+            just_play_mode: false,
             release_latch_start: None,
             active_calibration: None,
         }
+    }
+
+    /// Sets or clears "Just Play" mode. If turning off, returns any NoteOff events needed for currently held pads.
+    pub fn set_just_play_mode(&mut self, active: bool) -> Vec<GridLivePlayEvent> {
+        let mut note_offs = Vec::new();
+        if self.just_play_mode && !active {
+            for ((_, _), &(string, fret)) in &self.held_pads {
+                note_offs.push(GridLivePlayEvent {
+                    string,
+                    fret,
+                    is_note_on: false,
+                    velocity: 0,
+                });
+            }
+            self.held_pads.clear();
+        }
+        self.just_play_mode = active;
+        note_offs
     }
 
     pub fn refresh_ports(&mut self) {
@@ -389,12 +419,13 @@ impl GridInputManager {
     /// Injects a synthetic or hardware `GridMidiEvent` and returns:
     /// - `chord_changed`: `Some(BTreeMap<u8, i32>)` if the held chord changed and should be rendered on the current duration.
     /// - `calibration_completed`: `Some(usize)` if a 4-corner calibration just finished on that slot.
+    /// - `live_play_event`: `Some(GridLivePlayEvent)` if "Just Play" mode is active and forwarded this note to MIDI out.
     pub fn process_event(
         &mut self,
         ev: GridMidiEvent,
         num_strings: u8,
         now: Instant,
-    ) -> (Option<BTreeMap<u8, i32>>, Option<usize>) {
+    ) -> (Option<BTreeMap<u8, i32>>, Option<usize>, Option<GridLivePlayEvent>) {
         // 1. If calibrating this slot, consume NoteOn events for the 4 corners
         if let Some((cal_slot, step, mut cal)) = self.active_calibration {
             if cal_slot == ev.slot_idx && ev.is_note_on {
@@ -403,19 +434,19 @@ impl GridInputManager {
                         cal.upper_left = ev.note;
                         self.active_calibration =
                             Some((cal_slot, CalibrationStep::LowerLeft, cal));
-                        return (None, None);
+                        return (None, None, None);
                     }
                     CalibrationStep::LowerLeft => {
                         cal.lower_left = ev.note;
                         self.active_calibration =
                             Some((cal_slot, CalibrationStep::UpperRight, cal));
-                        return (None, None);
+                        return (None, None, None);
                     }
                     CalibrationStep::UpperRight => {
                         cal.upper_right = ev.note;
                         self.active_calibration =
                             Some((cal_slot, CalibrationStep::LowerRight, cal));
-                        return (None, None);
+                        return (None, None, None);
                     }
                     CalibrationStep::LowerRight => {
                         cal.lower_right = ev.note;
@@ -429,17 +460,44 @@ impl GridInputManager {
                         }
                         self.slots[cal_slot].calibration = cal;
                         self.active_calibration = None;
-                        return (None, Some(cal_slot));
+                        return (None, Some(cal_slot), None);
                     }
                 }
             }
-            return (None, None);
+            return (None, None, None);
         }
 
         // 2. Normal note input processing
         let Some(slot) = self.slots.get(ev.slot_idx) else {
-            return (None, None);
+            return (None, None, None);
         };
+
+        // 3. "Just Play" mode: forward string/fret note directly to live MIDI output without tab interception
+        if self.just_play_mode {
+            if ev.is_note_on {
+                if let Some((string_num, col)) = slot.calibration.map_note(ev.note, num_strings) {
+                    let fret = (col + slot.fret_offset).max(0);
+                    self.held_pads
+                        .insert((ev.slot_idx, ev.note), (string_num, fret));
+                    let live_ev = GridLivePlayEvent {
+                        string: string_num,
+                        fret,
+                        is_note_on: true,
+                        velocity: ev.velocity,
+                    };
+                    return (None, None, Some(live_ev));
+                }
+            } else if let Some((string_num, fret)) = self.held_pads.remove(&(ev.slot_idx, ev.note)) {
+                let live_ev = GridLivePlayEvent {
+                    string: string_num,
+                    fret,
+                    is_note_on: false,
+                    velocity: 0,
+                };
+                return (None, None, Some(live_ev));
+            }
+            return (None, None, None);
+        }
 
         if ev.is_note_on {
             if let Some((string_num, col)) = slot.calibration.map_note(ev.note, num_strings) {
@@ -458,7 +516,7 @@ impl GridInputManager {
                 self.held_pads
                     .insert((ev.slot_idx, ev.note), (string_num, fret));
 
-                return (Some(self.buffered_chord.clone()), None);
+                return (Some(self.buffered_chord.clone()), None, None);
             }
         } else if self.held_pads.remove(&(ev.slot_idx, ev.note)).is_some() {
             // Note-off: do NOT remove released notes from buffered_chord; hold all prior pressed keys in the tab input buffer
@@ -468,10 +526,10 @@ impl GridInputManager {
                     self.release_latch_start = Some(now);
                 }
             }
-            return (None, None);
+            return (None, None, None);
         }
 
-        (None, None)
+        (None, None, None)
     }
 
     /// Returns the currently buffered chord mapped by `string (1..=N) -> fret`.
@@ -480,22 +538,26 @@ impl GridInputManager {
     }
 
     /// Polls all queued MIDI events and checks whether the 500ms release latch has expired.
-    /// Returns `(latest_chord_update, should_finalize_and_advance, finished_calibration_slot)`.
+    /// Returns `(latest_chord_update, should_finalize_and_advance, finished_calibration_slot, live_play_events)`.
     pub fn poll(
         &mut self,
         num_strings: u8,
         now: Instant,
-    ) -> (Option<BTreeMap<u8, i32>>, bool, Option<usize>) {
+    ) -> (Option<BTreeMap<u8, i32>>, bool, Option<usize>, Vec<GridLivePlayEvent>) {
         let mut latest_chord = None;
         let mut cal_done = None;
+        let mut live_events = Vec::new();
 
         while let Ok(ev) = self.rx.try_recv() {
-            let (chord_upd, cal_slot) = self.process_event(ev, num_strings, now);
+            let (chord_upd, cal_slot, live_ev) = self.process_event(ev, num_strings, now);
             if chord_upd.is_some() {
                 latest_chord = chord_upd;
             }
             if cal_slot.is_some() {
                 cal_done = cal_slot;
+            }
+            if let Some(le) = live_ev {
+                live_events.push(le);
             }
         }
 
@@ -512,7 +574,7 @@ impl GridInputManager {
             }
         }
 
-        (latest_chord, should_finalize, cal_done)
+        (latest_chord, should_finalize, cal_done, live_events)
     }
 }
 
@@ -637,7 +699,7 @@ mod tests {
         let t0 = Instant::now();
 
         // 1. Press pad (String 1, Col 0 -> Fret 5)
-        let (chord, _) = mgr.process_event(
+        let (chord, ..) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
                 note: 76,
@@ -652,7 +714,7 @@ mod tests {
         assert_eq!(chord.get(&1), Some(&5));
 
         // 2. Add second finger to chord (String 2, Col 2 -> note 76 - 8 + 2 = 70 -> Fret 7)
-        let (chord2, _) = mgr.process_event(
+        let (chord2, ..) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
                 note: 70,
@@ -667,7 +729,7 @@ mod tests {
         assert_eq!(chord2.get(&2), Some(&7));
 
         // 3. Release first finger while still holding second finger -> retains both notes in tab input buffer!
-        let (chord3, _) = mgr.process_event(
+        let (chord3, ..) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
                 note: 76,
@@ -684,7 +746,7 @@ mod tests {
         assert!(mgr.release_latch_start.is_none(), "Release latch should not start while second finger is held");
 
         // 4. Release last finger -> starts 500ms timer, does NOT wipe chord from input buffer
-        let (chord4, _) = mgr.process_event(
+        let (chord4, ..) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
                 note: 70,
@@ -699,12 +761,12 @@ mod tests {
         assert!(mgr.release_latch_start.is_some());
 
         // 5. Poll at +400ms (only 200ms after release) -> should NOT finalize yet
-        let (_, should_finalize_early, _) = mgr.poll(6, t0 + Duration::from_millis(400));
+        let (_, should_finalize_early, ..) = mgr.poll(6, t0 + Duration::from_millis(400));
         assert!(!should_finalize_early);
         assert_eq!(mgr.buffered_chord.len(), 2);
 
         // 6. Poll at +705ms (505ms after release) -> SHOULD finalize and advance!
-        let (_, should_finalize_now, _) = mgr.poll(6, t0 + Duration::from_millis(705));
+        let (_, should_finalize_now, ..) = mgr.poll(6, t0 + Duration::from_millis(705));
         assert!(should_finalize_now);
         assert!(mgr.release_latch_start.is_none());
         assert!(mgr.buffered_chord.is_empty());
@@ -720,7 +782,7 @@ mod tests {
         let t0 = Instant::now();
 
         // 1. Press String 1 Col 3 -> Fret 3
-        let (c1, _) = mgr.process_event(
+        let (c1, ..) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
                 note: 76 + 3, // String 1 Col 3
@@ -733,7 +795,7 @@ mod tests {
         assert_eq!(c1.unwrap().get(&1), Some(&3));
 
         // 2. Press String 1 Col 7 (Fret 7) while still holding Col 3 -> replaces String 1 note with 7
-        let (c2, _) = mgr.process_event(
+        let (c2, ..) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
                 note: 76 + 7,
@@ -748,7 +810,7 @@ mod tests {
         assert_eq!(chord2.get(&1), Some(&7));
 
         // 3. Press String 1 Col 5 (Fret 5) -> replaces String 1 note with 5
-        let (c3, _) = mgr.process_event(
+        let (c3, ..) = mgr.process_event(
             GridMidiEvent {
                 slot_idx: 0,
                 note: 76 + 5,
@@ -796,7 +858,7 @@ mod tests {
             6,
             t0,
         );
-        let (c1, _) = mgr.process_event(
+        let (c1, ..) = mgr.process_event(
             GridMidiEvent { slot_idx: 0, note: 68 + 5, is_note_on: true, velocity: 100 },
             6,
             t0 + Duration::from_millis(20),
@@ -822,7 +884,7 @@ mod tests {
 
         // 3. Before 500ms passes (e.g. +150ms), press a new key: String 3 Fret 4
         // Following note-offs of all pressed keys, this MUST overwrite the full set of red notes!
-        let (c2, _) = mgr.process_event(
+        let (c2, ..) = mgr.process_event(
             GridMidiEvent { slot_idx: 0, note: 60 + 4, is_note_on: true, velocity: 100 },
             6,
             t0 + Duration::from_millis(150),
@@ -835,7 +897,7 @@ mod tests {
         assert!(mgr.release_latch_start.is_none(), "Timer must reset on new keypress");
 
         // 4. Add String 4 Fret 2 while holding String 3 Fret 4
-        let (c3, _) = mgr.process_event(
+        let (c3, ..) = mgr.process_event(
             GridMidiEvent { slot_idx: 0, note: 52 + 2, is_note_on: true, velocity: 100 },
             6,
             t0 + Duration::from_millis(180),
@@ -856,8 +918,89 @@ mod tests {
             6,
             t0 + Duration::from_millis(230),
         );
-        let (_, should_finalize, _) = mgr.poll(6, t0 + Duration::from_millis(740));
+        let (_, should_finalize, ..) = mgr.poll(6, t0 + Duration::from_millis(740));
         assert!(should_finalize);
         assert!(mgr.buffered_chord.is_empty());
+    }
+
+    #[test]
+    fn test_just_play_mode_forwards_live_events_without_grid_input_mode() {
+        let mut mgr = GridInputManager::new();
+        mgr.slots[0].enabled = true;
+        mgr.slots[0].fret_offset = 2; // Leftmost column is fret 2
+        mgr.just_play_mode = true;
+
+        let t0 = Instant::now();
+
+        // 1. Press pad (String 1, Col 0 -> Fret 2)
+        let (chord, cal, live_ev) = mgr.process_event(
+            GridMidiEvent {
+                slot_idx: 0,
+                note: 76,
+                is_note_on: true,
+                velocity: 95,
+            },
+            6,
+            t0,
+        );
+        assert!(!mgr.is_grid_input_mode, "Must NOT enter red grid input mode");
+        assert!(chord.is_none(), "Must NOT update tab chord buffer");
+        assert!(cal.is_none());
+        assert_eq!(
+            live_ev,
+            Some(GridLivePlayEvent {
+                string: 1,
+                fret: 2,
+                is_note_on: true,
+                velocity: 95,
+            })
+        );
+        assert!(mgr.buffered_chord.is_empty(), "Tab buffered chord must remain empty");
+        assert_eq!(mgr.held_pads.len(), 1);
+
+        // 2. Release pad -> emits NoteOff live event, tab remains completely untouched
+        let (chord2, _, live_ev2) = mgr.process_event(
+            GridMidiEvent {
+                slot_idx: 0,
+                note: 76,
+                is_note_on: false,
+                velocity: 0,
+            },
+            6,
+            t0 + Duration::from_millis(100),
+        );
+        assert!(!mgr.is_grid_input_mode);
+        assert!(chord2.is_none());
+        assert_eq!(
+            live_ev2,
+            Some(GridLivePlayEvent {
+                string: 1,
+                fret: 2,
+                is_note_on: false,
+                velocity: 0,
+            })
+        );
+        assert!(mgr.release_latch_start.is_none(), "Must NOT start 500ms tab advance latch");
+        assert!(mgr.held_pads.is_empty());
+
+        // 3. Toggling off Just Play mode with held notes clears them and emits note-offs
+        mgr.process_event(
+            GridMidiEvent {
+                slot_idx: 0,
+                note: 76 + 4,
+                is_note_on: true,
+                velocity: 80,
+            },
+            6,
+            t0 + Duration::from_millis(200),
+        );
+        assert_eq!(mgr.held_pads.len(), 1);
+        let note_offs = mgr.set_just_play_mode(false);
+        assert_eq!(note_offs.len(), 1);
+        assert_eq!(note_offs[0].string, 1);
+        assert_eq!(note_offs[0].fret, 6);
+        assert!(!note_offs[0].is_note_on);
+        assert!(mgr.held_pads.is_empty());
+        assert!(!mgr.just_play_mode);
     }
 }

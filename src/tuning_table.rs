@@ -268,6 +268,65 @@ impl FretboardFrequencyTable {
         Some(self.pitch_to_midi_note_number(&note.pitch))
     }
 
+    /// Resolves the exact continuous MIDI note number for an arbitrary `(string, fret)` position on `part`,
+    /// leveraging custom frets (ratios, cents, EDO steps), open string tunings, and EDO math.
+    pub fn string_fret_to_midi_note_number(&self, part: &Part, string: u8, fret: i32) -> Option<f64> {
+        let open_hz = self
+            .get_hz(string, 0)
+            .or_else(|| part.get_string_tuning(string).map(|p| self.pitch_to_hz(&p)))?;
+
+        if fret == 0 {
+            return Some(69.0 + 12.0 * (open_hz / 440.0).log2());
+        }
+
+        if let Some(custom_frets) = &part.ext.custom_frets {
+            if !custom_frets.is_empty() {
+                let target_fret = fret as f64;
+                if let Some(cf) = custom_frets
+                    .iter()
+                    .find(|cf| {
+                        cf.has_string(string) && (cf.fret_number - target_fret).abs() < 0.05
+                    })
+                    .or_else(|| {
+                        custom_frets
+                            .iter()
+                            .find(|cf| (cf.fret_number - target_fret).abs() < 0.05)
+                    })
+                {
+                    let hz = open_hz * 2.0_f64.powf(cf.cents() / 1200.0);
+                    return Some(69.0 + 12.0 * (hz / 440.0).log2());
+                }
+            }
+        }
+
+        if let Some(state) = self.get(string, fret) {
+            return Some(state.midi_note_number);
+        }
+
+        // Fallback for fret beyond max_fret in standard EDO
+        let open_pitch = part.get_string_tuning(string)?;
+        let tuning_calc = EdoTuning::new(self.edo);
+        let capo = part.capo_fret();
+        let step_multiplier = part.step_multiplier();
+        let physical_capo_steps = (capo as i32) * step_multiplier;
+        let physical_fret_steps = fret * step_multiplier;
+
+        let frequency_hz = if open_pitch.is_ratio_or_cents_step() {
+            let open_cents = open_pitch.step_cents_above_reference().unwrap_or(0.0);
+            let oct_delta = open_pitch.octave - self.reference_pitch.pitch.octave;
+            let open_hz = self.reference_pitch.frequency_hz
+                * (2.0_f64).powf((open_cents / 1200.0) + (oct_delta as f64));
+            let fret_steps = (physical_capo_steps + physical_fret_steps) as f64;
+            open_hz * (2.0_f64).powf(fret_steps / (self.edo as f64))
+        } else {
+            let string_base_steps = tuning_calc.pitch_to_steps(&open_pitch);
+            let played_steps = string_base_steps + physical_capo_steps + physical_fret_steps;
+            let step_delta = (played_steps - self.ref_steps) as f64;
+            self.reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (self.edo as f64))
+        };
+        Some(69.0 + 12.0 * (frequency_hz / 440.0).log2())
+    }
+
     /// Compute frequency in Hz directly for any played step integer in this EDO space.
     pub fn steps_to_hz(&self, steps: i32) -> f64 {
         let step_delta = (steps - self.ref_steps) as f64;

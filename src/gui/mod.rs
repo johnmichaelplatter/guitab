@@ -112,6 +112,7 @@ pub struct MnxEditorApp {
     pub(crate) preset_status_msg: Option<String>,
     pub(crate) midi_input_ports: Vec<crate::midi::MidiPortInfo>,
     pub(crate) grid_input: crate::grid_input::GridInputManager,
+    pub(crate) active_grid_live_notes: std::collections::HashMap<(u8, i32), (midly::num::u4, midly::num::u7)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,6 +322,7 @@ impl Default for MnxEditorApp {
             preset_status_msg: None,
             midi_input_ports: input_ports,
             grid_input: crate::grid_input::GridInputManager::default(),
+            active_grid_live_notes: std::collections::HashMap::new(),
         };
 
         app.process_and_render();
@@ -690,6 +692,82 @@ impl MnxEditorApp {
                 num_strings,
                 self.pitch_bend_range,
             );
+        }
+    }
+
+    /// Handles live note-on/note-off events from grid controllers in "Just Play" mode,
+    /// looking up the exact pitch via `FretboardFrequencyTable` and streaming to MIDI output.
+    pub fn handle_grid_live_play_events(
+        &mut self,
+        events: Vec<crate::grid_input::GridLivePlayEvent>,
+    ) {
+        let port_idx = match self.selected_midi_port {
+            Some(p) => p,
+            None => return,
+        };
+        let doc = match &self.parsed_mnx {
+            Some(d) => d,
+            None => return,
+        };
+        let part = match doc.parts.first() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_doc_part(doc, part);
+        let num_strings = part.num_strings() as u8;
+
+        for ev in events {
+            let default_ch = if self.is_mpe_mode {
+                ev.string + 1
+            } else {
+                ev.string
+            };
+            let ch_1_based = self
+                .string_channel_map
+                .get(&ev.string)
+                .copied()
+                .unwrap_or(default_ch);
+            let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
+            let channel = midly::num::u4::from(ch_0_based);
+
+            if ev.is_note_on {
+                if let Some(midi_note_frac) =
+                    freq_table.string_fret_to_midi_note_number(part, ev.string, ev.fret)
+                {
+                    let base_note = midi_note_frac.round() as u8;
+                    let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+                    let pitch_bend_val = crate::midi::calculate_pitch_bend(
+                        semitone_diff,
+                        self.pitch_bend_range,
+                    );
+                    let key = midly::num::u7::from(base_note.min(127));
+                    let vel = midly::num::u7::from(ev.velocity.clamp(1, 127));
+
+                    let _ = self.midi_player.send_live_note_on(
+                        port_idx,
+                        channel,
+                        key,
+                        vel,
+                        Some(pitch_bend_val),
+                        self.is_mpe_mode,
+                        num_strings,
+                        self.pitch_bend_range,
+                    );
+                    self.active_grid_live_notes
+                        .insert((ev.string, ev.fret), (channel, key));
+                }
+            } else {
+                if let Some((ch, key)) = self.active_grid_live_notes.remove(&(ev.string, ev.fret)) {
+                    let _ = self.midi_player.send_live_note_off(port_idx, ch, key);
+                } else if let Some(midi_note_frac) =
+                    freq_table.string_fret_to_midi_note_number(part, ev.string, ev.fret)
+                {
+                    let base_note = midi_note_frac.round() as u8;
+                    let key = midly::num::u7::from(base_note.min(127));
+                    let _ = self.midi_player.send_live_note_off(port_idx, channel, key);
+                }
+            }
         }
     }
 
@@ -1305,8 +1383,11 @@ impl eframe::App for MnxEditorApp {
         }
 
         let was_grid_mode = self.grid_input.is_grid_input_mode;
-        let (latest_chord, should_finalize, _cal_done) =
+        let (latest_chord, should_finalize, _cal_done, live_events) =
             self.grid_input.poll(num_strings, std::time::Instant::now());
+        if !live_events.is_empty() {
+            self.handle_grid_live_play_events(live_events);
+        }
         if !was_grid_mode && self.grid_input.is_grid_input_mode {
             self.is_editing_fret = false;
             self.editing_fret_buf.clear();

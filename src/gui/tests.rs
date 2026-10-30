@@ -3051,7 +3051,7 @@ parts:
 
         let t0 = std::time::Instant::now();
         // Press String 1 Col 0 (note 76 -> fret 3) and String 2 Col 2 (note 70 -> fret 5)
-        let (chord1, _) = app.grid_input.process_event(
+        let (chord1, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent {
                 slot_idx: 0,
                 note: 76,
@@ -3071,7 +3071,7 @@ parts:
             }
         });
 
-        let (chord2, _) = app.grid_input.process_event(
+        let (chord2, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent {
                 slot_idx: 0,
                 note: 70,
@@ -3120,7 +3120,7 @@ parts:
             6,
             t0 + std::time::Duration::from_millis(60),
         );
-        let (_, should_finalize, _) = app
+        let (_, should_finalize, ..) = app
             .grid_input
             .poll(6, t0 + std::time::Duration::from_millis(600));
         assert!(should_finalize);
@@ -3151,7 +3151,7 @@ parts:
         let t0 = std::time::Instant::now();
 
         // 1. Press String 1 Fret 3 (note 76 + 3 = 79) and String 2 Fret 5 (note 68 + 5 = 73)
-        let (c1, _) = app.grid_input.process_event(
+        let (c1, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: true, velocity: 100 },
             6,
             t0,
@@ -3161,7 +3161,7 @@ parts:
             Some(())
         });
 
-        let (c2, _) = app.grid_input.process_event(
+        let (c2, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent { slot_idx: 0, note: 73, is_note_on: true, velocity: 100 },
             6,
             t0 + std::time::Duration::from_millis(20),
@@ -3183,7 +3183,7 @@ parts:
         }
 
         // 2. Press String 1 Fret 7 (note 76 + 7 = 83) while String 2 Fret 5 is held -> replaces String 1 note!
-        let (c3, _) = app.grid_input.process_event(
+        let (c3, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: true, velocity: 100 },
             6,
             t0 + std::time::Duration::from_millis(50),
@@ -3204,21 +3204,21 @@ parts:
         }
 
         // 3. Release pads: note 79, note 83 and note 73
-        let (c_rel0, _) = app.grid_input.process_event(
+        let (c_rel0, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: false, velocity: 0 },
             6,
             t0 + std::time::Duration::from_millis(60),
         );
         assert!(c_rel0.is_none(), "NoteOff should not remove notes from tab input buffer");
 
-        let (c_rel1, _) = app.grid_input.process_event(
+        let (c_rel1, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: false, velocity: 0 },
             6,
             t0 + std::time::Duration::from_millis(80),
         );
         assert!(c_rel1.is_none(), "NoteOff should not remove notes from tab input buffer");
 
-        let (c_rel2, _) = app.grid_input.process_event(
+        let (c_rel2, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent { slot_idx: 0, note: 73, is_note_on: false, velocity: 0 },
             6,
             t0 + std::time::Duration::from_millis(90),
@@ -3236,7 +3236,7 @@ parts:
 
         // 4. Before 500ms latch expires (at +150ms), press String 3 Fret 2 (note 60 + 2 = 62)
         // Following note-offs of all pressed keys, this MUST overwrite the full current set of red notes!
-        let (c4, _) = app.grid_input.process_event(
+        let (c4, ..) = app.grid_input.process_event(
             crate::grid_input::GridMidiEvent { slot_idx: 0, note: 62, is_note_on: true, velocity: 100 },
             6,
             t0 + std::time::Duration::from_millis(150),
@@ -3266,12 +3266,107 @@ parts:
             6,
             t0 + std::time::Duration::from_millis(200),
         );
-        let (_, should_finalize, _) = app.grid_input.poll(6, t0 + std::time::Duration::from_millis(710));
+        let (_, should_finalize, ..) = app.grid_input.poll(6, t0 + std::time::Duration::from_millis(710));
         assert!(should_finalize);
 
         let total_events = app.cached_event_ranges.len();
         app.advance_to_next_note_in_grid_mode(total_events);
         assert_eq!(app.selected_event_idx, Some(1));
+    }
+
+    #[test]
+    fn test_grid_controller_just_play_mode_bypasses_tab_and_tracks_live_notes() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].fret_offset = 0;
+        app.grid_input.just_play_mode = true;
+
+        // Record initial event 0 notes
+        let initial_notes = {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes.clone()
+        };
+
+        let t0 = std::time::Instant::now();
+
+        // 1. Press String 1 Fret 3 (note 76 + 3 = 79)
+        let (chord1, cal1, live_ev1) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: true, velocity: 100 },
+            6,
+            t0,
+        );
+        assert!(!app.grid_input.is_grid_input_mode, "Must NOT enter red grid input mode in Just Play");
+        assert!(chord1.is_none(), "Must NOT emit chord updates for the tab");
+        assert!(cal1.is_none());
+        assert_eq!(
+            live_ev1,
+            Some(crate::grid_input::GridLivePlayEvent {
+                string: 1,
+                fret: 3,
+                is_note_on: true,
+                velocity: 100,
+            })
+        );
+
+        // Feed live event into app
+        app.handle_grid_live_play_events(vec![live_ev1.unwrap()]);
+        // With selected_midi_port = Some(0), active_grid_live_notes tracks String 1 Fret 3 (MIDI note 67 for G4)
+        if app.selected_midi_port.is_some() {
+            assert!(app.active_grid_live_notes.contains_key(&(1, 3)));
+            let (ch, key) = app.active_grid_live_notes.get(&(1, 3)).copied().unwrap();
+            assert_eq!(key.as_int(), 67); // G4 = 67
+            assert_eq!(ch.as_int(), 0); // String 1 -> Channel 1 (0-indexed 0)
+        }
+
+        // Verify the tab event was completely UNTOUCHED
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes, initial_notes, "Tab notes must be unmodified");
+        }
+
+        // 2. Release pad
+        let (chord2, _, live_ev2) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(100),
+        );
+        assert!(!app.grid_input.is_grid_input_mode);
+        assert!(chord2.is_none());
+        assert_eq!(
+            live_ev2,
+            Some(crate::grid_input::GridLivePlayEvent {
+                string: 1,
+                fret: 3,
+                is_note_on: false,
+                velocity: 0,
+            })
+        );
+        app.handle_grid_live_play_events(vec![live_ev2.unwrap()]);
+        assert!(!app.active_grid_live_notes.contains_key(&(1, 3)));
+
+        // 3. Toggling off Just Play mode resets held pads and returns note-offs
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: true, velocity: 90 },
+            6,
+            t0 + std::time::Duration::from_millis(200),
+        );
+        let note_offs = app.grid_input.set_just_play_mode(false);
+        assert_eq!(note_offs.len(), 1);
+        assert_eq!(note_offs[0].string, 1);
+        assert_eq!(note_offs[0].fret, 3);
+        assert!(!note_offs[0].is_note_on);
+        assert!(!app.grid_input.just_play_mode);
     }
 
     #[test]

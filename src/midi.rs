@@ -1516,6 +1516,112 @@ impl MidiPlayer {
         self.handle = Some(handle);
         Ok(())
     }
+
+    /// Sends an immediate Note On message (with optional pitch bend for microtones) for live playing.
+    pub fn send_live_note_on(
+        &mut self,
+        port_index: usize,
+        channel: midly::num::u4,
+        key: midly::num::u7,
+        velocity: midly::num::u7,
+        pitch_bend: Option<u16>,
+        is_mpe: bool,
+        member_channels: u8,
+        pb_range: u8,
+    ) -> Result<(), String> {
+        if cfg!(test) {
+            return Ok(());
+        }
+        self.ensure_connection(port_index)?;
+
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+        if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
+            if is_mpe {
+                send_mpe_configuration(conn_out, member_channels.min(15));
+            }
+
+            let ch = channel.as_int();
+            let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
+            let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
+
+            if let Some(pb_val) = pitch_bend {
+                let pb_msg = midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::from(pb_val)),
+                };
+                let bytes = serialize_midi_message(channel, &pb_msg);
+                if !bytes.is_empty() {
+                    let _ = conn_out.send(&bytes);
+                }
+            }
+
+            let note_on = midly::MidiMessage::NoteOn {
+                key,
+                vel: velocity,
+            };
+            let bytes = serialize_midi_message(channel, &note_on);
+            if !bytes.is_empty() {
+                let _ = conn_out.send(&bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends an immediate Note Off message for live playing.
+    pub fn send_live_note_off(
+        &mut self,
+        port_index: usize,
+        channel: midly::num::u4,
+        key: midly::num::u7,
+    ) -> Result<(), String> {
+        if cfg!(test) {
+            return Ok(());
+        }
+        self.ensure_connection(port_index)?;
+
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+        if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
+            let note_off = midly::MidiMessage::NoteOff {
+                key,
+                vel: midly::num::u7::from(64),
+            };
+            let bytes = serialize_midi_message(channel, &note_off);
+            if !bytes.is_empty() {
+                let _ = conn_out.send(&bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends All Notes Off and All Sound Off to all 16 MIDI channels.
+    pub fn all_notes_off(&mut self, port_index: usize) -> Result<(), String> {
+        if cfg!(test) {
+            return Ok(());
+        }
+        self.ensure_connection(port_index)?;
+
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+        if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
+            for ch in 0..16 {
+                let _ = conn_out.send(&[0xB0 | ch, 123, 0]); // All Notes Off
+                let _ = conn_out.send(&[0xB0 | ch, 120, 0]); // All Sound Off
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

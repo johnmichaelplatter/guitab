@@ -1425,6 +1425,39 @@ impl MnxEditorApp {
                     }
                 }
 
+                ui.horizontal(|ui| {
+                    let just_play_btn = if self.grid_input.just_play_mode {
+                        egui::Button::new(
+                            egui::RichText::new("Just Play")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 215, 0))
+                    } else {
+                        egui::Button::new("Just Play")
+                    };
+                    if ui
+                        .add(just_play_btn)
+                        .on_hover_text(
+                            "Toggle Just Play mode: forward grid controller MIDI through internal string/fret pitches to MIDI output without tab interception",
+                        )
+                        .clicked()
+                    {
+                        let new_state = !self.grid_input.just_play_mode;
+                        let note_offs = self.grid_input.set_just_play_mode(new_state);
+                        if !note_offs.is_empty() {
+                            self.handle_grid_live_play_events(note_offs);
+                        }
+                    }
+                    if self.grid_input.just_play_mode {
+                        ui.label(
+                            egui::RichText::new("● Active (Bypassing tab)")
+                                .size(11.0)
+                                .color(Color32::from_rgb(255, 215, 0)),
+                        );
+                    }
+                });
+
                 if self.grid_input.is_grid_input_mode {
                     ui.separator();
                     if ui

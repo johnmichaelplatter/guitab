@@ -1694,6 +1694,46 @@ impl MnxEditorApp {
                                 refresh_grid_ports = true;
                             }
                         });
+
+                        ui.horizontal(|ui| {
+                            let just_play_btn = if self.grid_input.just_play_mode {
+                                egui::Button::new(
+                                    egui::RichText::new("Just Play")
+                                        .color(egui::Color32::BLACK)
+                                        .strong(),
+                                )
+                                .fill(egui::Color32::from_rgb(255, 215, 0))
+                            } else {
+                                egui::Button::new("Just Play")
+                            };
+                            if ui
+                                .add(just_play_btn)
+                                .on_hover_text(
+                                    "Toggle Just Play mode: forward grid controller MIDI through internal string/fret pitches to MIDI output without tab interception",
+                                )
+                                .clicked()
+                            {
+                                let new_state = !self.grid_input.just_play_mode;
+                                let note_offs = self.grid_input.set_just_play_mode(new_state);
+                                if !note_offs.is_empty() {
+                                    self.handle_grid_live_play_events(note_offs);
+                                }
+                            }
+
+                            if self.grid_input.just_play_mode {
+                                ui.label(
+                                    egui::RichText::new("● Just Play Active — Auditioning string/fret setups on MIDI output (Tab input bypassed)")
+                                        .size(11.5)
+                                        .color(egui::Color32::from_rgb(255, 215, 0)),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("Audition string/fret setups on MIDI output without entering red tab input mode")
+                                        .size(11.0)
+                                        .weak(),
+                                );
+                            }
+                        });
                         ui.label(
                             egui::RichText::new(
                                 "Tip: Press any calibrated pad to enter Grid Controller Input Mode (light-red highlight). Hold pads to preview/adjust chords, and release all pads for 500ms to finalize and advance.",
