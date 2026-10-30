@@ -110,8 +110,11 @@ impl MnxEditorApp {
                 num_strings: u8,
                 edo: u8,
                 step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
                 tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
                 tunings_octave: Vec<i32>,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
             },
             ExportAllPresetsYaml,
             DiscardChangesSave {
@@ -656,8 +659,11 @@ impl MnxEditorApp {
                             *num_strings,
                             *edo,
                             *step_multiplier,
+                            *tuning_mode,
                             tunings_text,
+                            tunings_name,
                             tunings_octave,
+                            fretboard_editor,
                         )
                         .ok();
 
@@ -668,6 +674,7 @@ impl MnxEditorApp {
                                     p.edo == probe.edo
                                         && p.step_multiplier == probe.step_multiplier
                                         && p.tuning == probe.tuning
+                                        && p.custom_frets == probe.custom_frets
                                 })
                             })
                             .map(|p| p.display_label())
@@ -679,28 +686,32 @@ impl MnxEditorApp {
                                 .selected_text(matched_preset_label)
                                 .width(240.0)
                                 .show_ui(ui, |ui| {
-                                    let mut last_edo: Option<u8> = None;
+                                    let mut last_group: Option<Option<u8>> = None;
                                     for preset in &presets_snapshot {
-                                        if last_edo.is_some() && last_edo != Some(preset.edo) {
+                                        let current_group = if preset.has_custom_frets() || preset.has_non_edo_tuning() {
+                                            None
+                                        } else {
+                                            Some(preset.edo())
+                                        };
+                                        if last_group.is_some() && last_group != Some(current_group) {
                                             ui.separator();
                                         }
-                                        last_edo = Some(preset.edo);
+                                        last_group = Some(current_group);
                                         if ui
                                             .selectable_label(false, preset.display_label())
                                             .clicked()
                                         {
-                                            *tuning_mode = InstrumentTuningMode::Edo;
                                             preset.apply_to_dialog_state(
                                                 num_strings,
                                                 edo,
                                                 step_multiplier,
+                                                tuning_mode,
                                                 tunings_text,
+                                                tunings_name,
                                                 tunings_octave,
+                                                fretboard_editor,
+                                                show_custom_fretboard,
                                             );
-                                            for s in 0..tunings_text.len().min(tunings_name.len()) {
-                                                tunings_name[s] = tunings_text[s].clone();
-                                            }
-                                            fretboard_editor.sync_num_strings(*num_strings);
                                         }
                                     }
                                 });
@@ -750,8 +761,11 @@ impl MnxEditorApp {
                                     num_strings: *num_strings,
                                     edo: *edo,
                                     step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
                                     tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
                                     tunings_octave: tunings_octave.clone(),
+                                    fretboard_editor: fretboard_editor.clone(),
                                 });
                             }
                             if ui
@@ -2146,8 +2160,11 @@ impl MnxEditorApp {
                         num_strings,
                         edo,
                         step_multiplier,
+                        tuning_mode,
                         &tunings_text,
+                        &tunings_name,
                         &tunings_octave,
+                        &fretboard_editor,
                     ) {
                         Ok(preset) => {
                             let saved_label = preset.display_label();
@@ -2224,7 +2241,7 @@ impl MnxEditorApp {
                     mut tunings_text,
                     mut tunings_name,
                     mut tunings_octave,
-                    show_custom_fretboard,
+                    mut show_custom_fretboard,
                     mut fretboard_editor,
                     is_new_tab,
                 } => {
@@ -2237,18 +2254,17 @@ impl MnxEditorApp {
                                 Ok(imported) => {
                                     let count = imported.len();
                                     if let Some(first) = imported.first() {
-                                        tuning_mode = InstrumentTuningMode::Edo;
                                         first.apply_to_dialog_state(
                                             &mut num_strings,
                                             &mut edo,
                                             &mut step_multiplier,
+                                            &mut tuning_mode,
                                             &mut tunings_text,
+                                            &mut tunings_name,
                                             &mut tunings_octave,
+                                            &mut fretboard_editor,
+                                            &mut show_custom_fretboard,
                                         );
-                                        for s in 0..tunings_text.len().min(tunings_name.len()) {
-                                            tunings_name[s] = tunings_text[s].clone();
-                                        }
-                                        fretboard_editor.sync_num_strings(num_strings);
                                     }
                                     for p in imported {
                                         crate::presets::add_or_update_preset(
@@ -2294,16 +2310,22 @@ impl MnxEditorApp {
                     num_strings,
                     edo,
                     step_multiplier,
+                    tuning_mode,
                     tunings_text,
+                    tunings_name,
                     tunings_octave,
+                    fretboard_editor,
                 } => {
                     let matched_name = crate::presets::InstrumentPreset::from_dialog_state(
                         "probe",
                         num_strings,
                         edo,
                         step_multiplier,
+                        tuning_mode,
                         &tunings_text,
+                        &tunings_name,
                         &tunings_octave,
+                        &fretboard_editor,
                     )
                     .ok()
                     .and_then(|probe| {
@@ -2313,18 +2335,30 @@ impl MnxEditorApp {
                                 p.edo == probe.edo
                                     && p.step_multiplier == probe.step_multiplier
                                     && p.tuning == probe.tuning
+                                    && p.custom_frets == probe.custom_frets
                             })
                             .map(|p| p.name.clone())
                     })
-                    .unwrap_or_else(|| format!("Custom {}-EDO ({}-str)", edo, num_strings));
+                    .unwrap_or_else(|| {
+                        if !fretboard_editor.frets.is_empty() {
+                            format!("Custom Fretboard ({}-str)", num_strings)
+                        } else if tuning_mode == InstrumentTuningMode::RatioCents {
+                            format!("JI ({}-str)", num_strings)
+                        } else {
+                            format!("Custom {}-EDO ({}-str)", edo, num_strings)
+                        }
+                    });
 
                     match crate::presets::InstrumentPreset::from_dialog_state(
                         &matched_name,
                         num_strings,
                         edo,
                         step_multiplier,
+                        tuning_mode,
                         &tunings_text,
+                        &tunings_name,
                         &tunings_octave,
+                        &fretboard_editor,
                     ) {
                         Ok(preset) => {
                             if let Ok(yaml) = crate::presets::serialize_preset_to_yaml(&preset) {

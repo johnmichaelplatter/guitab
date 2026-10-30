@@ -438,7 +438,7 @@ pub struct MnxMeta {
 pub struct ReferenceNoteSpec {
     #[serde(with = "flow_req")]
     pub pitch: Pitch,
-    #[serde(rename = "frequencyHz")]
+    #[serde(rename = "frequencyHz", alias = "frequency_hz")]
     pub frequency_hz: f64,
 }
 

@@ -3763,5 +3763,171 @@ parts:
         }
         assert!(app.validation_errors.is_empty(), "Validation errors on String 6: {:?}", app.validation_errors);
     }
+
+    #[test]
+    fn test_instrument_preset_custom_fretboard_and_ji_dialog_actions() {
+        let mut app = MnxEditorApp::default();
+        app.open_instrument_setup_dialog(true);
+
+        // Build a custom fretboard & JI preset
+        let custom_frets = vec![
+            crate::fretboard_editor::CustomFret {
+                fret_number: 1.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 22, den: 21 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "Db".to_string(),
+            },
+            crate::fretboard_editor::CustomFret {
+                fret_number: 2.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 13, den: 12 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "^C#".to_string(),
+            },
+        ];
+        let ji_tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt { name: Some("G".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch {
+                    step: "5/3".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt { name: Some("vB".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 3,
+                    ext: crate::mnx::PitchExt { name: Some("G".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch {
+                    step: "1/1".to_string(),
+                    alter: None,
+                    octave: 3,
+                    ext: crate::mnx::PitchExt { name: Some("D".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 2,
+                    ext: crate::mnx::PitchExt { name: Some("G".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch {
+                    step: "1/1".to_string(),
+                    alter: None,
+                    octave: 2,
+                    ext: crate::mnx::PitchExt { name: Some("D".to_string()) },
+                },
+            },
+        ];
+        let ref_note = crate::mnx::ReferenceNoteSpec {
+            pitch: crate::mnx::Pitch {
+                step: "D".to_string(),
+                alter: None,
+                octave: 4,
+                ext: Default::default(),
+            },
+            frequency_hz: 293.66,
+        };
+
+        let custom_preset = crate::presets::InstrumentPreset {
+            name: "Test JI Preset".to_string(),
+            edo: None,
+            step_multiplier: None,
+            capo: None,
+            custom_frets: Some(custom_frets),
+            reference_note: Some(ref_note),
+            tuning: ji_tunings,
+        };
+
+        // Extract dialog mutable state and apply preset
+        if let ActiveDialog::InstrumentSetup {
+            num_strings,
+            edo,
+            step_multiplier,
+            tuning_mode,
+            tunings_text,
+            tunings_name,
+            tunings_octave,
+            show_custom_fretboard,
+            fretboard_editor,
+            ..
+        } = &mut app.active_dialog
+        {
+            custom_preset.apply_to_dialog_state(
+                num_strings,
+                edo,
+                step_multiplier,
+                tuning_mode,
+                tunings_text,
+                tunings_name,
+                tunings_octave,
+                fretboard_editor,
+                show_custom_fretboard,
+            );
+
+            assert_eq!(*tuning_mode, InstrumentTuningMode::RatioCents);
+            assert!(*show_custom_fretboard);
+            assert_eq!(tunings_text[0], "4/3");
+            assert_eq!(tunings_name[0], "G");
+            assert_eq!(tunings_text[1], "5/3");
+            assert_eq!(tunings_name[1], "vB");
+            assert_eq!(fretboard_editor.frets.len(), 2);
+            assert_eq!(fretboard_editor.reference_note_step, "D");
+            assert_eq!(fretboard_editor.reference_frequency_hz, 293.66);
+
+            // Test creating and adding preset into app's preset list
+            let reconstructed = crate::presets::InstrumentPreset::from_dialog_state(
+                "Test JI Preset",
+                *num_strings,
+                *edo,
+                *step_multiplier,
+                *tuning_mode,
+                tunings_text,
+                tunings_name,
+                tunings_octave,
+                fretboard_editor,
+            )
+            .expect("from_dialog_state succeeds");
+            assert_eq!(reconstructed, custom_preset);
+        } else {
+            panic!("Expected ActiveDialog::InstrumentSetup");
+        }
+
+        crate::presets::add_or_update_preset(&mut app.instrument_presets, custom_preset);
+        assert!(app.instrument_presets.iter().any(|p| p.name == "Test JI Preset"));
+        let saved = app.instrument_presets.iter().find(|p| p.name == "Test JI Preset").unwrap();
+        assert!(saved.has_custom_frets());
+        assert!(saved.has_non_edo_tuning());
+        assert_eq!(saved.custom_frets.as_ref().unwrap().len(), 2);
+
+        // Verify YAML roundtrip of the preset
+        let yaml = crate::presets::serialize_preset_to_yaml(saved).expect("yaml serialization succeeds");
+        let parsed = crate::presets::parse_presets_from_yaml(&yaml).expect("yaml parsing succeeds");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0], *saved);
+    }
 }
 
