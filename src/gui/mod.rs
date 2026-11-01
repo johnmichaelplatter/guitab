@@ -46,7 +46,10 @@ fn load_texture_from_bytes(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egu
     for y in 0..orig_h {
         for x in 0..orig_w {
             let pixel = rgba.get_pixel(x, y);
-            square_img.put_pixel(offset_x + x, offset_y + y, *pixel);
+            // Convert to white alpha mask so tinting works adaptively in both light and dark mode
+            let alpha = pixel[3];
+            let white_pixel = image::Rgba([255, 255, 255, alpha]);
+            square_img.put_pixel(offset_x + x, offset_y + y, white_pixel);
         }
     }
 

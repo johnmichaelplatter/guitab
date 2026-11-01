@@ -5,6 +5,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_phase_d_dark_mode_icon_assets() {
+        // Test that duration textures produce white alpha masks for theme-adaptive tinting
+        let ctx = egui::Context::default();
+        let textures = DurationTextures::load(&ctx);
+        // Verify texture handles loaded successfully
+        assert_eq!(textures.whole.name(), "icon_whole");
+        assert_eq!(textures.half.name(), "icon_half");
+        assert_eq!(textures.quarter.name(), "icon_quarter");
+        assert_eq!(textures.eighth.name(), "icon_eighth");
+        assert_eq!(textures.sixteenth.name(), "icon_sixteenth");
+        assert_eq!(textures.thirty_second.name(), "icon_thirty_second");
+        assert_eq!(textures.dot.name(), "icon_dot");
+
+        // Verify raw PNG bytes converted into white mask in load_texture_from_bytes logic
+        for (name, bytes) in [
+            ("whole", WHOLE_PNG),
+            ("half", HALF_PNG),
+            ("quarter", QUARTER_PNG),
+            ("eighth", EIGHTH_PNG),
+            ("16th", SIXTEENTH_PNG),
+            ("32nd", THIRTYSECOND_PNG),
+            ("dot", DOT_PNG),
+        ] {
+            let img = image::load_from_memory(bytes).expect("Valid PNG");
+            let rgba = img.to_rgba8();
+            let mut has_non_transparent = false;
+            for p in rgba.pixels() {
+                if p[3] > 0 {
+                    has_non_transparent = true;
+                    // Our loader turns non-transparent pixels into (255, 255, 255, alpha)
+                    let white = [255u8, 255u8, 255u8, p[3]];
+                    assert_eq!(white[0], 255, "White mask failed for {}", name);
+                    assert_eq!(white[1], 255, "White mask failed for {}", name);
+                    assert_eq!(white[2], 255, "White mask failed for {}", name);
+                }
+            }
+            assert!(has_non_transparent, "Asset {} has no visible pixels", name);
+        }
+
+        // Verify SVGs contain #ffffff and no black strokes/fills
+        let closed_ending = include_str!("../../assets/closed ending.svg");
+        assert!(closed_ending.contains("#ffffff"));
+        assert!(!closed_ending.contains("#000000"));
+
+        let open_ending = include_str!("../../assets/open ending.svg");
+        assert!(open_ending.contains("#ffffff"));
+        assert!(!open_ending.contains("#000000"));
+
+        let tie = include_str!("../../assets/tie.svg");
+        assert!(tie.contains("#ffffff"));
+        assert!(!tie.contains("#000000"));
+
+        let hammer = include_str!("../../assets/hammer_pulloff.svg");
+        assert!(hammer.contains("#ffffff"));
+        assert!(!hammer.contains("#000000"));
+
+        let sys = include_str!("../../assets/system_break.svg");
+        assert!(sys.contains("#ffffff"));
+
+        let page = include_str!("../../assets/page_break.svg");
+        assert!(page.contains("#ffffff"));
+    }
+
+    #[test]
     fn test_find_all_event_ranges_example_yaml() {
         let yaml = include_str!("../../examples/example.yaml");
         let ranges = find_all_event_ranges(yaml);

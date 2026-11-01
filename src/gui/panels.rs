@@ -441,13 +441,13 @@ impl MnxEditorApp {
                     let btn_size = egui::vec2(30.0, 30.0);
 
                     let make_icon_btn = |ui: &mut egui::Ui, texture: &egui::TextureHandle, is_active: bool, tooltip: &str| -> bool {
-                        let img = egui::Image::new(texture).fit_to_exact_size(icon_size);
+                        let img = egui::Image::new(texture).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
                         let btn = egui::Button::image(img).selected(is_active);
                         ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                     };
 
                     let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
-                        let img = egui::Image::new(source).fit_to_exact_size(icon_size);
+                        let img = egui::Image::new(source).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
                         let btn = egui::Button::image(img).selected(is_active);
                         ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                     };
@@ -867,7 +867,7 @@ impl MnxEditorApp {
                 let btn_size = egui::vec2(30.0, 30.0);
                 let icon_size = egui::vec2(24.0, 24.0);
                 let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
-                    let img = egui::Image::new(source).fit_to_exact_size(icon_size);
+                    let img = egui::Image::new(source).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
                     let btn = egui::Button::image(img).selected(is_active);
                     ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                 };
@@ -1083,7 +1083,9 @@ impl MnxEditorApp {
                         self.process_and_render();
                     }
 
-                    let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg")).fit_to_exact_size(icon_size);
+                    let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg"))
+                        .fit_to_exact_size(icon_size)
+                        .tint(ui.visuals().text_color());
                     if ui.add_sized(btn_size, egui::Button::image(img_closed)).on_hover_text("Insert 1st... Ending").clicked() {
                         let (start_m, end_m) = self.get_selected_measure_range();
                         self.active_dialog = ActiveDialog::InsertEnding {
@@ -1093,7 +1095,9 @@ impl MnxEditorApp {
                         };
                     }
 
-                    let img_open = egui::Image::new(include_image!("../../assets/open ending.svg")).fit_to_exact_size(icon_size);
+                    let img_open = egui::Image::new(include_image!("../../assets/open ending.svg"))
+                        .fit_to_exact_size(icon_size)
+                        .tint(ui.visuals().text_color());
                     if ui.add_sized(btn_size, egui::Button::image(img_open)).on_hover_text("Insert Open Ending").clicked() {
                         let (start_m, end_m) = self.get_selected_measure_range();
                         let prev_max = if let Some(doc) = &self.parsed_mnx {
