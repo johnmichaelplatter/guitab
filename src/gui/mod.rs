@@ -95,6 +95,7 @@ pub struct MnxEditorApp {
     pub(crate) midi_player: crate::midi::MidiPlayer, // Real-time MIDI sequencer playback engine
     pub(crate) midi_status_msg: Option<String>, // Status or error message from MIDI playback
     pub active_dialog: ActiveDialog, // Active modal dialog
+    pub(crate) show_grid_controllers_popup: bool, // Toggle state for Grid Controllers dropdown panel
     pub(crate) undo_stack: Vec<String>,
     pub(crate) redo_stack: Vec<String>,
     pub(crate) clipboard: Option<ClipboardData>,
@@ -260,7 +261,6 @@ pub enum ActiveDialog {
         font_size: f32,
         has_existing: bool,
     },
-    GridControllerSetup,
 }
 
 impl Default for MnxEditorApp {
@@ -305,6 +305,7 @@ impl Default for MnxEditorApp {
             midi_player: crate::midi::MidiPlayer::new(),
             midi_status_msg: None,
             active_dialog: ActiveDialog::None,
+            show_grid_controllers_popup: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             clipboard: None,
@@ -1376,7 +1377,7 @@ impl eframe::App for MnxEditorApp {
         let any_grid_connected = self.grid_input.active_controller_count() > 0;
         if any_grid_connected
             || self.grid_input.release_latch_start.is_some()
-            || matches!(self.active_dialog, ActiveDialog::GridControllerSetup)
+            || self.grid_input.active_calibration.is_some()
         {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(20));

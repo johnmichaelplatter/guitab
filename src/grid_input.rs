@@ -8,6 +8,7 @@
 use crate::midi::MidiPortInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -209,6 +210,86 @@ impl CalibrationStep {
     }
 }
 
+/// Path to user's saved grid controller calibrations (`~/.config/guitab/grid_controllers.yaml` or `%APPDATA%/guitab/grid_controllers.yaml`).
+pub fn user_grid_controllers_file_path() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        let dir = Path::new(&home).join(".config").join("guitab");
+        return Some(dir.join("grid_controllers.yaml"));
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = Path::new(&appdata).join("guitab");
+        return Some(dir.join("grid_controllers.yaml"));
+    }
+    None
+}
+
+/// Parses a YAML string mapping device names to `GridCalibration`.
+pub fn parse_grid_calibrations_from_yaml(content: &str) -> Result<BTreeMap<String, GridCalibration>, String> {
+    serde_saphyr::from_str(content).map_err(|e| format!("Failed to parse grid calibrations YAML: {}", e))
+}
+
+/// Serializes a map of device names to `GridCalibration` as YAML.
+pub fn serialize_grid_calibrations_to_yaml(calibrations: &BTreeMap<String, GridCalibration>) -> Result<String, String> {
+    serde_saphyr::to_string(calibrations).map_err(|e| format!("Failed to serialize grid calibrations to YAML: {}", e))
+}
+
+/// Loads all saved grid calibrations from `~/.config/guitab/grid_controllers.yaml`.
+pub fn load_saved_grid_calibrations() -> BTreeMap<String, GridCalibration> {
+    if cfg!(test) {
+        return BTreeMap::new();
+    }
+    if let Some(path) = user_grid_controllers_file_path() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(map) = parse_grid_calibrations_from_yaml(&content) {
+                return map;
+            }
+        }
+    }
+    BTreeMap::new()
+}
+
+/// Saves or updates the calibration for a device name in `~/.config/guitab/grid_controllers.yaml`.
+pub fn save_grid_calibration_for_device(device_name: &str, cal: &GridCalibration) -> Result<(), String> {
+    if cfg!(test) || device_name.trim().is_empty() {
+        return Ok(());
+    }
+    if let Some(path) = user_grid_controllers_file_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut map = load_saved_grid_calibrations();
+        map.insert(device_name.trim().to_string(), *cal);
+        let yaml_str = serialize_grid_calibrations_to_yaml(&map)?;
+        std::fs::write(&path, yaml_str)
+            .map_err(|e| format!("Failed to write grid_controllers.yaml: {}", e))?;
+        Ok(())
+    } else {
+        Err("Unable to determine user config directory".to_string())
+    }
+}
+
+/// Finds a saved calibration for a device name (exact match or case-insensitive substring match).
+pub fn find_saved_calibration(
+    device_name: &str,
+    saved: &BTreeMap<String, GridCalibration>,
+) -> Option<GridCalibration> {
+    let clean = device_name.trim();
+    if clean.is_empty() {
+        return None;
+    }
+    if let Some(cal) = saved.get(clean) {
+        return Some(*cal);
+    }
+    let clean_lower = clean.to_lowercase();
+    for (k, cal) in saved {
+        let k_lower = k.to_lowercase();
+        if k_lower == clean_lower || k_lower.contains(&clean_lower) || clean_lower.contains(&k_lower) {
+            return Some(*cal);
+        }
+    }
+    None
+}
+
 /// Persisted configuration for a single Grid Controller slot (0..4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridControllerSlotConfig {
@@ -216,6 +297,8 @@ pub struct GridControllerSlotConfig {
     pub port_name: Option<String>,
     pub fret_offset: i32,
     pub calibration: GridCalibration,
+    #[serde(default)]
+    pub is_calibrated: bool,
 }
 
 impl Default for GridControllerSlotConfig {
@@ -225,6 +308,7 @@ impl Default for GridControllerSlotConfig {
             port_name: None,
             fret_offset: 0,
             calibration: GridCalibration::default(),
+            is_calibrated: false,
         }
     }
 }
@@ -301,6 +385,9 @@ impl GridInputManager {
 
     /// Sets or clears "Just Play" mode. If turning off, returns any NoteOff events needed for currently held pads.
     pub fn set_just_play_mode(&mut self, active: bool) -> Vec<GridLivePlayEvent> {
+        if active && !self.has_connected_and_calibrated_controller() {
+            return Vec::new();
+        }
         let mut note_offs = Vec::new();
         if self.just_play_mode && !active {
             for ((_, _), &(string, fret)) in &self.held_pads {
@@ -381,7 +468,16 @@ impl GridInputManager {
         self.connections[slot_idx] = Some(conn);
         self.selected_port_ids[slot_idx] = Some(pid);
         self.slots[slot_idx].enabled = true;
-        self.slots[slot_idx].port_name = Some(port_name);
+        self.slots[slot_idx].port_name = Some(port_name.clone());
+
+        // Check if there is a saved calibration for this device name
+        let saved = load_saved_grid_calibrations();
+        if let Some(cal) = find_saved_calibration(&port_name, &saved) {
+            self.slots[slot_idx].calibration = cal;
+            self.slots[slot_idx].is_calibrated = true;
+        } else {
+            self.slots[slot_idx].is_calibrated = false;
+        }
         Ok(())
     }
 
@@ -390,8 +486,25 @@ impl GridInputManager {
             self.connections[slot_idx] = None;
             self.selected_port_ids[slot_idx] = None;
             self.slots[slot_idx].enabled = false;
+            self.slots[slot_idx].port_name = None;
+            self.slots[slot_idx].is_calibrated = false;
             self.held_pads.retain(|&(s, _), _| s != slot_idx);
+            if !self.has_connected_and_calibrated_controller() {
+                self.just_play_mode = false;
+            }
         }
+    }
+
+    /// Returns true if at least one connected controller has a completed, valid calibration.
+    pub fn has_connected_and_calibrated_controller(&self) -> bool {
+        for slot_idx in 0..MAX_GRID_CONTROLLERS {
+            let slot = &self.slots[slot_idx];
+            let is_connected = slot.enabled && (self.selected_port_ids[slot_idx].is_some() || slot.port_name.is_some() || cfg!(test));
+            if is_connected && slot.is_calibrated && slot.calibration.solve_axes().is_some() {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn active_controller_count(&self) -> usize {
@@ -459,6 +572,7 @@ impl GridInputManager {
                             cal.num_cols = Some(n_cols);
                         }
                         self.slots[cal_slot].calibration = cal;
+                        self.slots[cal_slot].is_calibrated = true;
                         self.active_calibration = None;
                         return (None, Some(cal_slot), None);
                     }
@@ -553,8 +667,12 @@ impl GridInputManager {
             if chord_upd.is_some() {
                 latest_chord = chord_upd;
             }
-            if cal_slot.is_some() {
-                cal_done = cal_slot;
+            if let Some(s) = cal_slot {
+                cal_done = Some(s);
+                self.slots[s].is_calibrated = true;
+                if let Some(name) = &self.slots[s].port_name {
+                    let _ = save_grid_calibration_for_device(name, &self.slots[s].calibration);
+                }
             }
             if let Some(le) = live_ev {
                 live_events.push(le);
@@ -927,6 +1045,7 @@ mod tests {
     fn test_just_play_mode_forwards_live_events_without_grid_input_mode() {
         let mut mgr = GridInputManager::new();
         mgr.slots[0].enabled = true;
+        mgr.slots[0].is_calibrated = true;
         mgr.slots[0].fret_offset = 2; // Leftmost column is fret 2
         mgr.just_play_mode = true;
 
@@ -1002,5 +1121,53 @@ mod tests {
         assert!(!note_offs[0].is_note_on);
         assert!(mgr.held_pads.is_empty());
         assert!(!mgr.just_play_mode);
+    }
+
+    #[test]
+    fn test_just_play_disabled_when_uncalibrated() {
+        let mut mgr = GridInputManager::new();
+        // Disconnected / uncalibrated initially
+        assert!(!mgr.has_connected_and_calibrated_controller());
+        assert!(mgr.set_just_play_mode(true).is_empty());
+        assert!(!mgr.just_play_mode);
+
+        // Connected but not calibrated
+        mgr.slots[0].enabled = true;
+        mgr.slots[0].is_calibrated = false;
+        assert!(!mgr.has_connected_and_calibrated_controller());
+        assert!(mgr.set_just_play_mode(true).is_empty());
+        assert!(!mgr.just_play_mode);
+
+        // Connected and calibrated
+        mgr.slots[0].is_calibrated = true;
+        assert!(mgr.has_connected_and_calibrated_controller());
+        mgr.set_just_play_mode(true);
+        assert!(mgr.just_play_mode);
+    }
+
+    #[test]
+    fn test_grid_calibration_yaml_roundtrip_and_matching() {
+        let mut map = BTreeMap::new();
+        let cal = GridCalibration::new_corners(81, 11, 88, 18);
+        map.insert("Launchpad Pro MK3 LPProMK3 MIDI".to_string(), cal);
+
+        let yaml = serialize_grid_calibrations_to_yaml(&map).expect("Serialize failed");
+        let loaded = parse_grid_calibrations_from_yaml(&yaml).expect("Parse failed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.get("Launchpad Pro MK3 LPProMK3 MIDI"), Some(&cal));
+
+        // Exact match
+        let found = find_saved_calibration("Launchpad Pro MK3 LPProMK3 MIDI", &loaded);
+        assert_eq!(found, Some(cal));
+
+        // Case-insensitive / substring match (e.g. system adds port number or prefix)
+        let found_sub = find_saved_calibration("Launchpad Pro MK3 LPProMK3 MIDI 1", &loaded);
+        assert_eq!(found_sub, Some(cal));
+
+        let found_short = find_saved_calibration("Launchpad Pro MK3", &loaded);
+        assert_eq!(found_short, Some(cal));
+
+        let not_found = find_saved_calibration("LinnStrument", &loaded);
+        assert!(not_found.is_none());
     }
 }

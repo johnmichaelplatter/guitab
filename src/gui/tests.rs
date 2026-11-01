@@ -3144,6 +3144,7 @@ parts:
         app.start_new_tab(6, 12, 1, tunings);
         app.selected_event_idx = Some(0);
         app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].is_calibrated = true;
         app.grid_input.slots[0].fret_offset = 0;
 
         let t0 = std::time::Instant::now();
@@ -3286,6 +3287,7 @@ parts:
         app.start_new_tab(6, 12, 1, tunings);
         app.selected_event_idx = Some(0);
         app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].is_calibrated = true;
         app.grid_input.slots[0].fret_offset = 0;
         app.grid_input.just_play_mode = true;
 
@@ -4122,6 +4124,65 @@ parts:
         let n0_2 = ev0_2.notes.iter().find(|n| n.string == Some(1)).unwrap();
         assert_eq!(n0_2.fret, Some(12), "Untoggling harmonic on fret 12 must restore regular fret 12");
         assert_eq!(n0_2.pitch.step, "B");
+    }
+
+    #[test]
+    fn test_grid_controller_phase_c_popup_and_just_play_disabled() {
+        let mut app = MnxEditorApp::default();
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+
+        // 1. Initially no controller connected or calibrated -> Just Play must be disabled
+        assert!(!app.grid_input.has_connected_and_calibrated_controller());
+        assert!(!app.grid_input.just_play_mode);
+        assert!(app.grid_input.set_just_play_mode(true).is_empty());
+        assert!(!app.grid_input.just_play_mode);
+
+        // 2. Start calibration for Grid 1
+        app.grid_input.start_calibration(0);
+        assert!(app.grid_input.active_calibration.is_some());
+        let (slot, step, _) = app.grid_input.active_calibration.unwrap();
+        assert_eq!(slot, 0);
+        assert_eq!(step, crate::grid_input::CalibrationStep::UpperLeft);
+
+        // Render UI frame while calibrating and with popup open (verifies 4 rectangles and active yellow guide text)
+        app.show_grid_controllers_popup = true;
+        let event_ranges = app.cached_event_ranges.clone();
+        let total_events = event_ranges.len();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_top_panel(ui, &event_ranges, total_events);
+            });
+        });
+        out.textures_delta.clear();
+        assert!(app.show_grid_controllers_popup);
+
+        // 3. Complete 4-corner calibration for slot 0
+        let t0 = std::time::Instant::now();
+        app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 76, is_note_on: true, velocity: 100 }, 6, t0);
+        app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 36, is_note_on: true, velocity: 100 }, 6, t0);
+        app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: true, velocity: 100 }, 6, t0);
+        let (_, cal_done, _) = app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 43, is_note_on: true, velocity: 100 }, 6, t0);
+
+        assert_eq!(cal_done, Some(0));
+        assert!(app.grid_input.slots[0].is_calibrated);
+        assert!(app.grid_input.active_calibration.is_none());
+
+        // 4. Connect slot 0 with valid calibration -> Just Play mode can now be enabled!
+        app.grid_input.slots[0].enabled = true;
+        assert!(app.grid_input.has_connected_and_calibrated_controller());
+        app.grid_input.set_just_play_mode(true);
+        assert!(app.grid_input.just_play_mode);
     }
 }
 

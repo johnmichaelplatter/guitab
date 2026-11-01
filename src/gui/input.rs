@@ -844,6 +844,12 @@ impl MnxEditorApp {
             if self.midi_player.is_playing() && (space_pressed || esc_pressed) {
                 self.midi_player.stop();
                 self.midi_status_msg = Some("Playback stopped.".to_string());
+            } else if esc_pressed && self.show_grid_controllers_popup {
+                if self.grid_input.active_calibration.is_some() {
+                    self.grid_input.cancel_calibration();
+                } else {
+                    self.show_grid_controllers_popup = false;
+                }
             } else if esc_pressed && self.grid_input.is_grid_input_mode {
                 self.grid_input.exit_grid_input_mode();
             } else if esc_pressed && self.grid_input.just_play_mode {

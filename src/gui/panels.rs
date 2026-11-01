@@ -19,6 +19,12 @@ fn paint_corner_triangle(ui: &egui::Ui, response: &egui::Response) {
     ));
 }
 
+/// Helper to procedurally paint a status indicator circle instead of relying on unicode glyphs.
+fn paint_status_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 3.5, color);
+}
+
 /// Helper to render a menu button with a procedurally painted bottom-right corner triangle "◢".
 fn menu_button_with_corner_triangle<R>(
     ui: &mut egui::Ui,
@@ -1330,81 +1336,206 @@ impl MnxEditorApp {
                 ui.separator();
 
                 // 6. Grid Controllers Select UI/UX & Quick On-The-Fly Fret Offset Controls
-                menu_button_with_corner_triangle(ui, "Grid Controllers", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Grid Controller MIDI Inputs (up to 4)").strong(),
-                        );
-                        if ui.small_button("🔄 Refresh Ports").clicked() {
-                            self.midi_input_ports = crate::grid_input::get_midi_input_ports();
-                        }
-                    });
-                    ui.separator();
+                let btn = egui::Button::new("Grid Controllers  ")
+                    .selected(self.show_grid_controllers_popup);
+                let btn_resp = ui.add(btn);
+                paint_corner_triangle(ui, &btn_resp);
+                if btn_resp.clicked() {
+                    self.show_grid_controllers_popup = !self.show_grid_controllers_popup;
+                }
 
-                    let ports_snapshot = self.midi_input_ports.clone();
-                    let mut slot_port_change: Option<(usize, Option<usize>)> = None;
-                    for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
-                        let sel_port_id = self.grid_input.selected_port_ids[slot_idx];
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("Grid {}:", slot_idx + 1)).strong(),
-                            );
-                            let current_label = sel_port_id
-                                .and_then(|id| ports_snapshot.iter().find(|p| p.id == id))
-                                .map(|p| p.name.clone())
-                                .unwrap_or_else(|| "Disconnected".to_string());
+                if self.show_grid_controllers_popup {
+                    let area_id = ui.make_persistent_id("grid_controllers_dropdown_area");
+                    let popup_pos = btn_resp.rect.left_bottom() + egui::vec2(0.0, 3.0);
+                    let mut close_dropdown = false;
 
-                            egui::ComboBox::from_id_salt(format!("toolbar_grid_port_{}", slot_idx))
-                                .selected_text(current_label)
-                                .width(170.0)
-                                .show_ui(ui, |ui| {
-                                    if ui
-                                        .selectable_label(sel_port_id.is_none(), "Disconnected")
-                                        .clicked()
-                                    {
-                                        slot_port_change = Some((slot_idx, None));
+                    let area_resp = egui::Area::new(area_id)
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(popup_pos)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Grid Controller MIDI Inputs (up to 4)")
+                                            .strong(),
+                                    );
+                                    if ui.small_button("🔄 Refresh Ports").clicked() {
+                                        self.midi_input_ports =
+                                            crate::grid_input::get_midi_input_ports();
                                     }
-                                    for port in &ports_snapshot {
-                                        if ui
-                                            .selectable_label(
-                                                sel_port_id == Some(port.id),
-                                                &port.name,
-                                            )
-                                            .clicked()
-                                        {
-                                            slot_port_change = Some((slot_idx, Some(port.id)));
+                                });
+                                ui.separator();
+
+                                let mut row_width: f32 = 0.0;
+                                let ports_snapshot = self.midi_input_ports.clone();
+                                let mut slot_port_change: Option<(usize, Option<usize>)> = None;
+                                for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                                    let sel_port_id = self.grid_input.selected_port_ids[slot_idx];
+                                    let row_resp = ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("Grid {}:", slot_idx + 1))
+                                                .strong(),
+                                        );
+                                        let current_label = sel_port_id
+                                            .and_then(|id| ports_snapshot.iter().find(|p| p.id == id))
+                                            .map(|p| p.name.clone())
+                                            .unwrap_or_else(|| "Disconnected".to_string());
+
+                                        egui::ComboBox::from_id_salt(format!(
+                                            "toolbar_grid_port_{}",
+                                            slot_idx
+                                        ))
+                                        .selected_text(current_label)
+                                        .width(170.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(sel_port_id.is_none(), "Disconnected")
+                                                .clicked()
+                                            {
+                                                slot_port_change = Some((slot_idx, None));
+                                            }
+                                            for port in &ports_snapshot {
+                                                if ui
+                                                    .selectable_label(
+                                                        sel_port_id == Some(port.id),
+                                                        &port.name,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    slot_port_change =
+                                                        Some((slot_idx, Some(port.id)));
+                                                }
+                                            }
+                                        });
+
+                                        ui.label("Fret Offset:");
+                                        let slot_cfg = &mut self.grid_input.slots[slot_idx];
+                                        if ui.small_button("-").clicked() {
+                                            slot_cfg.fret_offset =
+                                                (slot_cfg.fret_offset - 1).max(0);
+                                        }
+                                        ui.add(
+                                            egui::DragValue::new(&mut slot_cfg.fret_offset)
+                                                .range(0..=48)
+                                                .speed(0.2),
+                                        );
+                                        if ui.small_button("+").clicked() {
+                                            slot_cfg.fret_offset =
+                                                (slot_cfg.fret_offset + 1).min(48);
+                                        }
+                                    });
+                                    row_width = row_width.max(row_resp.response.rect.width());
+                                }
+                                if let Some((s_idx, pid)) = slot_port_change {
+                                    if let Err(err) = self.grid_input.connect_slot(s_idx, pid) {
+                                        self.midi_status_msg = Some(err);
+                                    }
+                                }
+
+                                ui.separator();
+
+                                // 4 equally divided calibration rectangles matching exact content width
+                                ui.horizontal(|ui| {
+                                    let total_width = row_width;
+                                    let num_slots = crate::grid_input::MAX_GRID_CONTROLLERS as f32;
+                                    let spacing = ui.spacing().item_spacing.x;
+                                    let btn_width = ((total_width - (num_slots - 1.0) * spacing)
+                                        / num_slots)
+                                        .floor()
+                                        .max(40.0);
+                                    let btn_size = egui::vec2(btn_width, 42.0);
+
+                                    for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                                        let is_slot_calibrating = self
+                                            .grid_input
+                                            .active_calibration
+                                            .map(|(s, _, _)| s == slot_idx)
+                                            .unwrap_or(false);
+
+                                        let mut btn = egui::Button::new(
+                                            egui::RichText::new(format!(
+                                                "Calibrate\nGrid {}",
+                                                slot_idx + 1
+                                            ))
+                                            .size(11.0)
+                                            .strong(),
+                                        )
+                                        .min_size(btn_size);
+
+                                        if is_slot_calibrating {
+                                            btn = btn
+                                                .stroke(egui::Stroke::new(
+                                                    2.0,
+                                                    egui::Color32::from_rgb(255, 215, 0),
+                                                ))
+                                                .fill(egui::Color32::from_rgb(50, 45, 10));
+                                        }
+
+                                        if ui.add(btn).clicked() {
+                                            if is_slot_calibrating {
+                                                self.grid_input.cancel_calibration();
+                                            } else {
+                                                self.grid_input.start_calibration(slot_idx);
+                                            }
                                         }
                                     }
                                 });
 
-                            ui.label("Fret Offset:");
-                            let slot_cfg = &mut self.grid_input.slots[slot_idx];
-                            if ui.small_button("-").clicked() {
-                                slot_cfg.fret_offset = (slot_cfg.fret_offset - 1).max(0);
-                            }
-                            ui.add(
-                                egui::DragValue::new(&mut slot_cfg.fret_offset)
-                                    .range(0..=48)
-                                    .speed(0.2),
-                            );
-                            if ui.small_button("+").clicked() {
-                                slot_cfg.fret_offset = (slot_cfg.fret_offset + 1).min(48);
-                            }
+                                // Active step instructions or idle guide text
+                                ui.add_space(4.0);
+                                if let Some((cal_slot, step, _)) =
+                                    self.grid_input.active_calibration
+                                {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "Grid {}: {}",
+                                                cal_slot + 1,
+                                                step.prompt_text()
+                                            ))
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(255, 215, 0)),
+                                        );
+                                        if ui.button("Cancel Calibration").clicked() {
+                                            self.grid_input.cancel_calibration();
+                                        }
+                                    });
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Click a rectangle above to calibrate the 4 corners for that controller.",
+                                        )
+                                        .weak()
+                                        .size(11.5),
+                                    );
+                                }
+                            });
                         });
-                    }
-                    if let Some((s_idx, pid)) = slot_port_change {
-                        if let Err(err) = self.grid_input.connect_slot(s_idx, pid) {
-                            self.midi_status_msg = Some(err);
+
+                    // Check for click outside to close the dropdown cleanly
+                    if ui.input(|i| i.pointer.any_click()) {
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            let in_btn = btn_resp.rect.contains(pos);
+                            let in_dropdown = area_resp.response.rect.contains(pos);
+                            let any_combo_open = (0..crate::grid_input::MAX_GRID_CONTROLLERS).any(|s| {
+                                let cid = ui.make_persistent_id(format!("toolbar_grid_port_{}", s));
+                                egui::ComboBox::is_open(ui.ctx(), cid)
+                            });
+
+                            if !in_btn
+                                && !in_dropdown
+                                && !any_combo_open
+                                && self.grid_input.active_calibration.is_none()
+                            {
+                                close_dropdown = true;
+                            }
                         }
                     }
 
-                    ui.separator();
-                    if ui.button("Configure & Calibrate 4 Corners...").clicked() {
-                        self.midi_input_ports = crate::grid_input::get_midi_input_ports();
-                        self.active_dialog = ActiveDialog::GridControllerSetup;
-                        ui.close();
+                    if close_dropdown {
+                        self.show_grid_controllers_popup = false;
                     }
-                });
+                }
 
                 // Inline quick on-the-fly Fret Offset controls for connected grid controllers
                 for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
@@ -1446,6 +1577,7 @@ impl MnxEditorApp {
                 }
 
                 ui.horizontal(|ui| {
+                    let can_just_play = self.grid_input.has_connected_and_calibrated_controller();
                     let just_play_btn = if self.grid_input.just_play_mode {
                         egui::Button::new(
                             egui::RichText::new("Just Play")
@@ -1456,22 +1588,29 @@ impl MnxEditorApp {
                     } else {
                         egui::Button::new("Just Play")
                     };
-                    if ui
-                        .add(just_play_btn)
-                        .on_hover_text(
-                            "Toggle Just Play mode: forward grid controller MIDI through internal string/fret pitches to MIDI output without tab interception",
-                        )
-                        .clicked()
-                    {
-                        let new_state = !self.grid_input.just_play_mode;
-                        let note_offs = self.grid_input.set_just_play_mode(new_state);
-                        if !note_offs.is_empty() {
-                            self.handle_grid_live_play_events(note_offs);
+                    let resp = ui.add_enabled(can_just_play, just_play_btn);
+                    if can_just_play {
+                        if resp
+                            .on_hover_text(
+                                "Toggle Just Play mode: forward grid controller MIDI through internal string/fret pitches to MIDI output without tab interception",
+                            )
+                            .clicked()
+                        {
+                            let new_state = !self.grid_input.just_play_mode;
+                            let note_offs = self.grid_input.set_just_play_mode(new_state);
+                            if !note_offs.is_empty() {
+                                self.handle_grid_live_play_events(note_offs);
+                            }
                         }
+                    } else {
+                        resp.on_hover_text(
+                            "Connect and calibrate at least one grid controller to use Just Play",
+                        );
                     }
                     if self.grid_input.just_play_mode {
+                        paint_status_dot(ui, Color32::from_rgb(255, 215, 0));
                         ui.label(
-                            egui::RichText::new("● Active (Bypassing tab)")
+                            egui::RichText::new("Active (Bypassing tab)")
                                 .size(11.0)
                                 .color(Color32::from_rgb(255, 215, 0)),
                         );
@@ -1480,9 +1619,10 @@ impl MnxEditorApp {
 
                 if self.grid_input.is_grid_input_mode {
                     ui.separator();
+                    paint_status_dot(ui, Color32::from_rgb(255, 110, 110));
                     if ui
                         .button(
-                            egui::RichText::new("● GRID INPUT MODE (Esc to exit)")
+                            egui::RichText::new("GRID INPUT MODE (Esc to exit)")
                                 .strong()
                                 .color(Color32::from_rgb(255, 110, 110)),
                         )
