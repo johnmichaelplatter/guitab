@@ -1603,18 +1603,60 @@ impl MnxEditorApp {
             None => return,
         };
 
-        // If harmonic already exists: remove it and restore note to fret 0
-        if note.harmonic.is_some() {
-            let p0 = doc
-                .parts
-                .first()
-                .and_then(|part| crate::yaml_editor::calculate_pitch_for_string_fret(part, string_num, 0));
+        // If harmonic already exists: remove it and restore note to regularly fretted note if location exists, else fret 0
+        if let Some(harmonic) = &note.harmonic {
+            let touch = harmonic.touch;
+            let ref_note = doc
+                .global
+                .ext
+                .tuning
+                .as_ref()
+                .and_then(|t| t.reference_note.as_ref());
+            let part = match doc.parts.first() {
+                Some(p) => p,
+                None => return,
+            };
+
+            // Check if this fret location regularly exists on this string:
+            let fret_exists = if let Some(custom_frets) = &part.ext.custom_frets {
+                if !custom_frets.is_empty() {
+                    custom_frets.iter().any(|cf| {
+                        (cf.fret_number - touch).abs() < 1e-4
+                            && (cf.strings.is_empty() || cf.strings.contains(&string_num))
+                    })
+                } else {
+                    // Standard EDO guitar: whole integer frets
+                    (touch.fract().abs() < 1e-4) || ((1.0 - touch.fract()).abs() < 1e-4)
+                }
+            } else {
+                // Standard EDO guitar: whole integer frets
+                (touch.fract().abs() < 1e-4) || ((1.0 - touch.fract()).abs() < 1e-4)
+            };
+
+            let target_fret = if fret_exists {
+                touch
+            } else {
+                0.0
+            };
+
+            let target_pitch = crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                part,
+                string_num,
+                target_fret,
+                ref_note,
+            );
 
             if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
                 if let Some(n) = ev.notes.get_mut(note_idx) {
                     n.harmonic = None;
-                    n.fret = Some(0);
-                    if let Some(p) = p0 {
+                    if target_fret.fract().abs() > 1e-4 {
+                        n.decimal_fret = Some(target_fret);
+                        n.fret = Some(target_fret.round() as i32);
+                    } else {
+                        n.fret = Some(target_fret.round() as i32);
+                        n.decimal_fret = None;
+                    }
+                    if let Some(p) = target_pitch {
                         n.pitch = p;
                     }
                 }
@@ -1622,22 +1664,30 @@ impl MnxEditorApp {
             self.selected_note_idx_in_event = Some(note_idx);
             self.editing_string = Some(string_num);
             self.apply_mutated_doc(doc);
+            self.preview_selected_sound();
             return;
         }
 
         // Otherwise: check if the note's current fret is a valid harmonic location
-        let fret_num = note.fret.unwrap_or(0);
+        let fret_val = note.decimal_fret.or_else(|| note.fret.map(|f| f as f64)).unwrap_or(0.0);
         let part = match doc.parts.first() {
             Some(p) => p,
             None => return,
         };
-        let table = crate::harmonic::HarmonicLookupTable::from_part(part);
-        let matching_nodes = table.find_nodes_at_touch(string_num, fret_num as f64);
+        let table = crate::harmonic::HarmonicLookupTable::from_doc_part(&doc, part);
+        let matching_nodes = table.find_nodes_at_touch(string_num, fret_val);
 
         if !matching_nodes.is_empty() {
             let node = matching_nodes[0];
             if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
                 if let Some(n) = ev.notes.get_mut(note_idx) {
+                    if node.touch_fret.fract().abs() > 1e-4 {
+                        n.decimal_fret = Some(node.touch_fret);
+                        n.fret = Some(node.touch_fret.round() as i32);
+                    } else {
+                        n.fret = Some(node.touch_fret as i32);
+                        n.decimal_fret = None;
+                    }
                     n.harmonic = Some(crate::mnx::Harmonic {
                         touch: node.touch_fret,
                         sounding_note: Box::new(crate::mnx::Note {
@@ -1654,12 +1704,17 @@ impl MnxEditorApp {
             self.selected_note_idx_in_event = Some(note_idx);
             self.editing_string = Some(string_num);
             self.apply_mutated_doc(doc);
+            self.preview_selected_sound();
         } else {
             self.active_dialog = ActiveDialog::NaturalHarmonicPrompt {
                 event_idx,
                 string: string_num,
-                touch_buf: if fret_num > 0 {
-                    fret_num.to_string()
+                touch_buf: if fret_val > 0.0 {
+                    if fret_val.fract().abs() < 1e-4 {
+                        format!("{}", fret_val as i32)
+                    } else {
+                        format!("{:.1}", fret_val)
+                    }
                 } else {
                     String::new()
                 },
@@ -2242,6 +2297,15 @@ impl crate::gui::MnxEditorApp {
             None => return,
         };
 
+        let ref_note = doc
+            .global
+            .ext
+            .tuning
+            .as_ref()
+            .and_then(|t| t.reference_note.as_ref())
+            .cloned();
+        let table = crate::harmonic::HarmonicLookupTable::from_doc_part(&doc, &part_meta);
+
         let paths = doc.get_flattened_event_paths();
         let mut changed = false;
 
@@ -2259,11 +2323,26 @@ impl crate::gui::MnxEditorApp {
                     let new_fret = (cur_fret + delta_fret).max(0);
                     if note.fret != Some(new_fret) {
                         note.fret = Some(new_fret);
+                        note.decimal_fret = None;
                         if let Some(s) = note.string {
                             if let Some(new_pitch) =
-                                calculate_pitch_for_string_fret(&part_meta, s, new_fret)
+                                crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                                    &part_meta,
+                                    s,
+                                    new_fret as f64,
+                                    ref_note.as_ref(),
+                                )
                             {
                                 note.pitch = new_pitch;
+                            }
+                            if let Some(h) = &mut note.harmonic {
+                                let new_touch = new_fret as f64;
+                                if let Some(&node) = table.find_nodes_at_touch(s, new_touch).first() {
+                                    h.touch = node.touch_fret;
+                                    h.sounding_note.pitch = node.sounding_pitch.clone();
+                                } else {
+                                    note.harmonic = None;
+                                }
                             }
                         }
                         changed = true;
@@ -2275,11 +2354,26 @@ impl crate::gui::MnxEditorApp {
                     let new_fret = (cur_fret + delta_fret).max(0);
                     if note.fret != Some(new_fret) {
                         note.fret = Some(new_fret);
+                        note.decimal_fret = None;
                         if let Some(s) = note.string {
                             if let Some(new_pitch) =
-                                calculate_pitch_for_string_fret(&part_meta, s, new_fret)
+                                crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                                    &part_meta,
+                                    s,
+                                    new_fret as f64,
+                                    ref_note.as_ref(),
+                                )
                             {
                                 note.pitch = new_pitch;
+                            }
+                            if let Some(h) = &mut note.harmonic {
+                                let new_touch = new_fret as f64;
+                                if let Some(&node) = table.find_nodes_at_touch(s, new_touch).first() {
+                                    h.touch = node.touch_fret;
+                                    h.sounding_note.pitch = node.sounding_pitch.clone();
+                                } else {
+                                    note.harmonic = None;
+                                }
                             }
                         }
                         changed = true;
@@ -2293,6 +2387,151 @@ impl crate::gui::MnxEditorApp {
             self.preview_selected_sound();
         }
     }
+}
+
+fn shift_note_to_string(
+    note: &mut crate::mnx::Note,
+    cur_str: u8,
+    new_str: u8,
+    part_meta: &crate::mnx::Part,
+    ref_note: Option<&crate::mnx::ReferenceNoteSpec>,
+    table: &crate::harmonic::HarmonicLookupTable,
+) {
+    note.string = Some(new_str);
+    if let Some(h) = &mut note.harmonic {
+        // Find which harmonic node this was on cur_str
+        let cur_nodes = table.find_nodes_at_touch(cur_str, h.touch);
+        let actual_alter = h
+            .sounding_note
+            .pitch
+            .alter
+            .as_ref()
+            .map(|a| a.as_semitones())
+            .unwrap_or(0.0);
+        let cur_node = cur_nodes
+            .iter()
+            .find(|n| {
+                let n_alter = n
+                    .sounding_pitch
+                    .alter
+                    .as_ref()
+                    .map(|a| a.as_semitones())
+                    .unwrap_or(0.0);
+                n.sounding_pitch
+                    .step
+                    .eq_ignore_ascii_case(&h.sounding_note.pitch.step)
+                    && n.sounding_pitch.octave == h.sounding_note.pitch.octave
+                    && (n_alter - actual_alter).abs() < 0.005
+            })
+            .copied()
+            .or_else(|| cur_nodes.first().copied());
+
+        // Now find corresponding node on new_str
+        let target_node = if let Some(cn) = cur_node {
+            if let Some(new_string_nodes) = table.get_nodes_for_string(new_str) {
+                let candidates: Vec<&crate::harmonic::HarmonicNode> = new_string_nodes
+                    .iter()
+                    .filter(|n| {
+                        n.harmonic_number == cn.harmonic_number && n.node_index == cn.node_index
+                    })
+                    .collect();
+                candidates
+                    .iter()
+                    .min_by(|a, b| {
+                        (a.touch_fret - cn.touch_fret)
+                            .abs()
+                            .partial_cmp(&(b.touch_fret - cn.touch_fret).abs())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .copied()
+            } else {
+                None
+            }
+        } else {
+            table.find_nodes_at_touch(new_str, h.touch).first().copied()
+        };
+
+        if let Some(tn) = target_node {
+            h.touch = tn.touch_fret;
+            h.sounding_note.pitch = tn.sounding_pitch.clone();
+            if tn.touch_fret.fract().abs() > 1e-4 {
+                note.decimal_fret = Some(tn.touch_fret);
+                note.fret = Some(tn.touch_fret.round() as i32);
+            } else {
+                note.fret = Some(tn.touch_fret as i32);
+                note.decimal_fret = None;
+            }
+
+            let open_pitch_cur = part_meta.get_string_tuning(cur_str);
+            let is_open = if let Some(open) = &open_pitch_cur {
+                let cur_alter = note
+                    .pitch
+                    .alter
+                    .as_ref()
+                    .map(|a| a.as_semitones())
+                    .unwrap_or(0.0);
+                let open_alter = open
+                    .alter
+                    .as_ref()
+                    .map(|a| a.as_semitones())
+                    .unwrap_or(0.0);
+                note.pitch.step.eq_ignore_ascii_case(&open.step)
+                    && note.pitch.octave == open.octave
+                    && (cur_alter - open_alter).abs() < 0.01
+            } else {
+                false
+            };
+
+            if is_open {
+                if let Some(open_new) = part_meta.get_string_tuning(new_str) {
+                    note.pitch = open_new;
+                }
+            } else if let Some(new_pitch) =
+                crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                    part_meta,
+                    new_str,
+                    tn.touch_fret,
+                    ref_note,
+                )
+            {
+                note.pitch = new_pitch;
+            }
+        } else {
+            note.harmonic = None;
+            let fret_val = note
+                .decimal_fret
+                .or_else(|| note.fret.map(|f| f as f64))
+                .unwrap_or(0.0);
+            if let Some(new_pitch) =
+                crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                    part_meta,
+                    new_str,
+                    fret_val,
+                    ref_note,
+                )
+            {
+                note.pitch = new_pitch;
+            }
+        }
+    } else {
+        let fret_val = note
+            .decimal_fret
+            .or_else(|| note.fret.map(|f| f as f64))
+            .unwrap_or(0.0);
+        if let Some(new_pitch) =
+            crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                part_meta,
+                new_str,
+                fret_val,
+                ref_note,
+            )
+        {
+            note.pitch = new_pitch;
+        }
+    }
+}
+
+impl MnxEditorApp {
 
     pub fn action_shift_selected_strings(&mut self, delta_string: i8) {
         let cursor = match self.selected_event_idx {
@@ -2318,6 +2557,14 @@ impl crate::gui::MnxEditorApp {
             None => return,
         };
         let num_strings = part_meta.num_strings().max(1) as u8;
+        let ref_note = doc
+            .global
+            .ext
+            .tuning
+            .as_ref()
+            .and_then(|t| t.reference_note.as_ref())
+            .cloned();
+        let table = crate::harmonic::HarmonicLookupTable::from_doc_part(&doc, &part_meta);
 
         let paths = doc.get_flattened_event_paths();
         let mut changed = false;
@@ -2333,18 +2580,19 @@ impl crate::gui::MnxEditorApp {
 
             if let Some(n_idx) = single_note_idx {
                 if n_idx < ev.notes.len() {
-                    let cur_str = ev.notes[n_idx].string.unwrap_or(1) as i8;
-                    let new_str = (cur_str + delta_string).clamp(1, num_strings as i8) as u8;
-                    if new_str != cur_str as u8 {
+                    let cur_str = ev.notes[n_idx].string.unwrap_or(1);
+                    let new_str = (cur_str as i8 + delta_string).clamp(1, num_strings as i8) as u8;
+                    if new_str != cur_str {
                         let mut moved_note = ev.notes.remove(n_idx);
                         ev.notes.retain(|n| n.string != Some(new_str));
-                        moved_note.string = Some(new_str);
-                        let fret = moved_note.fret.unwrap_or(0);
-                        if let Some(new_pitch) =
-                            calculate_pitch_for_string_fret(&part_meta, new_str, fret)
-                        {
-                            moved_note.pitch = new_pitch;
-                        }
+                        shift_note_to_string(
+                            &mut moved_note,
+                            cur_str,
+                            new_str,
+                            &part_meta,
+                            ref_note.as_ref(),
+                            &table,
+                        );
                         ev.notes.push(moved_note);
                         ev.notes.sort_by_key(|n| n.string.unwrap_or(0));
                         single_new_string = Some(new_str);
@@ -2360,16 +2608,17 @@ impl crate::gui::MnxEditorApp {
                 }
                 let mut new_notes: Vec<crate::mnx::Note> = Vec::with_capacity(old_notes.len());
                 for mut note in old_notes {
-                    let cur_str = note.string.unwrap_or(1) as i8;
-                    let new_str = (cur_str + delta_string).clamp(1, num_strings as i8) as u8;
-                    if new_str != cur_str as u8 {
-                        note.string = Some(new_str);
-                        let fret = note.fret.unwrap_or(0);
-                        if let Some(new_pitch) =
-                            calculate_pitch_for_string_fret(&part_meta, new_str, fret)
-                        {
-                            note.pitch = new_pitch;
-                        }
+                    let cur_str = note.string.unwrap_or(1);
+                    let new_str = (cur_str as i8 + delta_string).clamp(1, num_strings as i8) as u8;
+                    if new_str != cur_str {
+                        shift_note_to_string(
+                            &mut note,
+                            cur_str,
+                            new_str,
+                            &part_meta,
+                            ref_note.as_ref(),
+                            &table,
+                        );
                         changed = true;
                     }
                     new_notes.retain(|n| n.string != Some(new_str));
@@ -2751,6 +3000,7 @@ impl crate::gui::MnxEditorApp {
                                 ev.notes.is_empty()
                                     && ev.lyrics.is_none()
                                     && ev.markings.is_none()
+                                    && ev.text_markings.is_empty()
                             }
                             _ => false,
                         };

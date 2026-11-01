@@ -12,7 +12,15 @@ pub struct DrawItem {
 pub enum DrawKind {
     Line { from: Pos2, to: Pos2, stroke: Stroke },
     Rect { rect: Rect, fill: Color32, stroke: Stroke, rounding: f32 },
-    Text { pos: Pos2, align: Align2, text: String, font_id: FontId, color: Color32 },
+    Text {
+        pos: Pos2,
+        align: Align2,
+        text: String,
+        font_id: FontId,
+        color: Color32,
+        bold: bool,
+        italic: bool,
+    },
     Glyph { pos: Pos2, align: Align2, codepoint: char, font_family: String, size: f32, color: Color32 },
     Curve { points: [Pos2; 4], stroke: Stroke },
     Circle { center: Pos2, radius: f32, fill: Color32 },
@@ -88,8 +96,47 @@ impl DrawItem {
                     painter.rect_stroke(*rect, *rounding, *stroke, eframe::egui::StrokeKind::Middle);
                 }
             }
-            DrawKind::Text { pos, align, text, font_id, color } => {
-                painter.text(*pos, *align, text, font_id.clone(), *color);
+            DrawKind::Text {
+                pos,
+                align,
+                text,
+                font_id,
+                color,
+                bold,
+                italic,
+            } => {
+                if *italic || *bold {
+                    let mut job = eframe::egui::text::LayoutJob::default();
+                    job.append(
+                        text,
+                        0.0,
+                        eframe::egui::TextFormat {
+                            font_id: font_id.clone(),
+                            color: *color,
+                            italics: *italic,
+                            ..Default::default()
+                        },
+                    );
+                    let galley = painter.layout_job(job);
+                    let size = galley.size();
+                    let min_x = match align.x() {
+                        eframe::emath::Align::Min => pos.x,
+                        eframe::emath::Align::Center => pos.x - size.x * 0.5,
+                        eframe::emath::Align::Max => pos.x - size.x,
+                    };
+                    let min_y = match align.y() {
+                        eframe::emath::Align::Min => pos.y,
+                        eframe::emath::Align::Center => pos.y - size.y * 0.5,
+                        eframe::emath::Align::Max => pos.y - size.y,
+                    };
+                    let draw_pos = Pos2::new(min_x, min_y);
+                    painter.galley(draw_pos, galley.clone(), *color);
+                    if *bold {
+                        painter.galley(draw_pos + Vec2::new(0.65, 0.0), galley, *color);
+                    }
+                } else {
+                    painter.text(*pos, *align, text, font_id.clone(), *color);
+                }
             }
             DrawKind::Glyph { pos, align, codepoint, font_family, size, color } => {
                 painter.text(

@@ -156,7 +156,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
 
                             if let Some(harmonic) = &note.harmonic {
                                 let table = harmonic_table
-                                    .get_or_insert_with(|| crate::harmonic::HarmonicLookupTable::from_part(part));
+                                    .get_or_insert_with(|| crate::harmonic::HarmonicLookupTable::from_doc_part(doc, part));
                                 match table.validate_harmonic(string, harmonic) {
                                     Ok(_) => {}
                                     Err(h_err) => {
@@ -167,6 +167,40 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                             fret,
                                             message: h_err.message,
                                         });
+                                    }
+                                }
+                            } else if let Some(custom_frets) = &part.ext.custom_frets {
+                                if !custom_frets.is_empty() {
+                                    let dec_fret = note.decimal_fret.unwrap_or(fret as f64);
+                                    if dec_fret < 0.0 {
+                                        errors.push(ValidationError {
+                                            measure_idx: m_idx + 1,
+                                            event_idx: e_idx,
+                                            string,
+                                            fret,
+                                            message: format!(
+                                                "Negative fret {} on String {} is physically impossible.",
+                                                dec_fret, string
+                                            ),
+                                        });
+                                    } else if dec_fret > 0.05 {
+                                        let exists = custom_frets.iter().any(|cf| {
+                                            (cf.fret_number - dec_fret).abs() < 0.05
+                                                && cf.strings.contains(&string)
+                                        });
+                                        if !exists {
+                                            errors.push(ValidationError {
+                                                measure_idx: m_idx + 1,
+                                                event_idx: e_idx,
+                                                string,
+                                                fret,
+                                                message: format!(
+                                                    "Fret {} does not exist on String {} in this custom fretboard.",
+                                                    crate::fretboard_editor::format_fret_number(dec_fret),
+                                                    string
+                                                ),
+                                            });
+                                        }
                                     }
                                 }
                             } else if let Some(string_pitch) = part.get_string_tuning(string) {
@@ -191,8 +225,11 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                                 }
 
                                 let expected_steps = tuning_calc.pitch_to_steps(&note.pitch);
+                                let is_ji_or_cents = string_pitch.is_ratio_or_cents_step()
+                                    || note.pitch.is_ratio_or_cents_step()
+                                    || note.pitch.has_ratio_alter();
 
-                                if played_steps != expected_steps {
+                                if !is_ji_or_cents && played_steps != expected_steps {
                                     let alter_str = note
                                         .pitch
                                         .alter

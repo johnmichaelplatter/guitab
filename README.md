@@ -1,6 +1,6 @@
 # guitab
 
-**guitab** is a microtonal-ready guitar and fretted instrument tablature editor built on the W3C MNX specification, featuring real-time YAML editing, MPE and multi-timbral MIDI playback, and print-ready PDF/MNX export. Currently, only EDO-based guitars are supported, but support for arbitrarily/movable fretted guitars is in the works.
+**guitab** is a microtonal-ready guitar and fretted instrument tablature editor built on the W3C MNX specification, featuring real-time YAML editing, MPE and multi-timbral MIDI playback, MIDI grid controller input, custom fretboard & Just Intonation fretlet editing, and print-ready PDF/MNX export.
 
 ---
 
@@ -35,12 +35,12 @@ Be sure to set the octave of each string. Current convention specifies A4 = 440H
 
 `guitab` uses two cursor modes on the tablature staff: **Select Mode** (blue highlight) and **Edit Mode** (orange highlight).
 
-- **Navigation**:
+- **Navigation & Transposition**:
   - `Left` / `Right` arrows move across rhythmic events; `Up` / `Down` arrows move across strings.
-  - Pressing `Right` at the end of the score automatically adds the next note according to the selected rhythm duration
+  - Pressing `Right` at the end of the score automatically adds the next note according to the selected rhythm duration.
   - Use `Shift` + `Left` / `Right` (or + click) to select a range of events.
-    - Events can be Cut/Copied/Pasted/Duplicated with standard hotkeys
-    - Additional hotkeys for convenience include Cut Time (`Shift+Ctrl+X`), Insert Paste (`Shift+Ctrl+V`), and Insert Duplicate (`Shift+Ctrl+D`). These operations change the timing of all following notes, but sometimes that is what you want when you're composing!
+    - Events can be Cut/Copied/Pasted/Duplicated with standard hotkeys.
+    - Additional hotkeys for convenience include Cut Time (`Shift+Ctrl+X`), Insert Paste (`Shift+Ctrl+V`), and Insert Duplicate (`Shift+Ctrl+D`). These operations change the timing of all following notes.
 - **Entering Notes**:
   - Press `Enter` or start typing digits (`0`–`9`) on a selected note to enter **Edit Mode** (orange highlight).
   - Type the fret number (or `X` for a muted string) and press `Enter` or an arrow key to accept the note.
@@ -56,12 +56,17 @@ Be sure to set the octave of each string. Current convention specifies A4 = 440H
   - `.` (Period): Toggle augmentation dot.
   - `R`: Convert the selected duration to a rest.
   - Use the toolbar to toggle **Tuplets** and **Grace Notes**, or add Tempo markings/changes.
+- **Quick Edit Shortcuts**:
+  - **Fret Shifts** (`Shift` + `Up` / `Down`): Shift fret numbers on selected notes up or down by 1 fret.
+  - **String Movement** (`Alt` + `Up` / `Down`): Move selected notes up or down strings.
+  - **Rhythm Movement** (`Alt` + `Left` / `Right`): Nudge selected notes earlier or later in time by the **Current Grid** division (e.g. 1/8, 1/16, etc...)
 - **Techniques & Articulations**:
   - `Shift+T`: Tie to the next note on the same string
   - `S`: Hammer-on / Pull-off (slur)
   - `T`: Tap
   - `L`: Slide to the next note on the same string
   - `B`: Add a bend to the note. Opens the interactive **Bend Curve Editor** which displays edo step gridlines (based on the current pitch bend settings).
+  - `H`: Natural Harmonic (`<N.H.>`)
   - Additional toolbar buttons: **Natural Harmonic** (`<N.H.>`), **Accent**, **Arpeggio Roll** (Up/Down), **Strum** (Up/Down), **Time Signatures**, **Tempo / rit. & accel.**, and **Repeats / Endings**. Click after selecting a note.
 - **Lyrics** (`Shift+L`):
   - Type word/syllable and hit OK/Enter to add a lyric to a duration
@@ -88,6 +93,28 @@ Be sure to set the octave of each string. Current convention specifies A4 = 440H
 
 ---
 
+## Grid Controller Input
+
+`guitab` supports hardware MIDI grid controllers (such as Novation Launchpads, LinnStrument, Ableton Push, or generic multi-row pad controllers) for fast tablature entry and live auditioning.
+
+### Multi-Controller Setup & Dropdown Panel
+- Click the "**Grid Controllers**" dropdown in the top toolbar.
+- Connect up to **4 simultaneous grid controllers** independently.
+- **Fret Offset** (`-` / `+`): Shift the fret range covered by each controller, enabling multiple grid controllers to span consecutive registers of the fretboard (e.g., Controller 1 for frets 0–8, Controller 2 for frets 9–17).
+
+### Calibration
+When you first use a new grid controller, be sure calibrate in the Grid Controller dropdown. You should only have to do this once. 
+
+### Grid Input Mode (Light-Red Highlight)
+Striking pads on a connected, calibrated grid controller activates the red **Grid Input Mode**. After waiting 0.5s, the notes will be written into the tab and move you over to the next note for input. 
+
+_Tip: change duration with the number keys before adding the notes from the grid controller, and use `Ctrl+Z` to undo a wrong chord from the grid input!_
+
+### "Just Play" Audition Mode
+To bypass red **Grid Input Mode**, click the yellow **Just Play** button next to the Grid Controllers menu (active when yellow). Use **Just Play** mode to freely jam, explore alternate tunings, or practice chord shapes on your grid.
+
+---
+
 ## Layout vs Continuous View Mode
 
 Switch between views anytime via **View → Layout Mode / Continuous Mode**:
@@ -102,12 +129,30 @@ Switch between views anytime via **View → Layout Mode / Continuous Mode**:
 
 ---
 
-## Instrument Setup
-The tuning of a guitar can change at any time and guitab will attempt to fit the old music onto the new tuning. This can be used to 
-- convert music between EDOs
-- play the same music with a different open string tuning
+## Instrument Setup & Custom Fretboard Editor
+Click **Instrument Setup...** in the top bar to configure open string tunings, pitch reference frequencies, and custom fretboards.
 
-If no acceptable fit can be found, guitab will highlight "impossible" notes in new instrument setups. `Ctrl+Z` can always be leveraged to undo any music conversion. 
+The open string tuning of a guitar can change at any time and `guitab` will attempt to fit existing music onto the new tuning. This can be used to:
+- Convert music between different EDOs (Equal Divisions of the Octave)
+- Play the same music with different open string tunings or capos
+- Adapt standard music to microtonal or Just Intonation fretboards
+
+If no acceptable fit can be found, `guitab` highlights "impossible" notes. `Ctrl+Z` can always be leveraged to undo any music conversion.
+
+### Custom Fretboard & Fretlet Editor
+Click the "Custom Fretboard Editor" button in instrument setup to create non-EDO fretboards. Essentially any fretboard can be accomodated in this setup.
+- Type a valid interval into the "Dotted Guide Grid:" box. This can be 
+  - a **JI ratio**, like 5/4 (has a fraction slash "/")
+  - a **cents value**, like 130.0 (has a decimal)
+  - an **EDO step**, like 1\12 (has a backslash "\\", interpreted as "1 step of 12 EDO")
+- **Placing Frets/Fretlets**: Click anywhere on the blue dotted line to add a fretlet for that string. Double-click on a blue dotted line to place a full fret at that physical location. Right-click to remove frets or parts of frets.
+- **Re-Numbering Frets**: Full frets are auto-counted up a whole number fret. Occasionally, you may want a certain fret to be interpreted as a "partial fret," e.g. 3.5 if it's inbetween the 3rd and 4th fret. To override the fret number, click on the fret's number above the fretboard and type your desired number.
+- **Note Names** are automatically inferred based on the resulting interval but you can override the note name (with respect to C) in the bottom fret list.
+
+### Instrument Presets & Library Export / Import
+- **Built-in Presets**: Pre-configured instrument setups for popular EDO systems (12, 19, 22, 31, Kite fretting) and Just Intonation tunings.
+- **Saving & Loading Presets**: Save custom instruments and fretboards to your local preset library or load existing presets with a single click.
+- **Export & Import YAML**: Export single presets or entire preset libraries to YAML files, making it easy to share custom microtonal or fretlet layouts with other musicians.
 
 ---
 

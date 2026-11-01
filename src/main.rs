@@ -1,11 +1,14 @@
 pub mod curve_editor;
 mod edo;
+pub mod fretboard_editor;
+pub mod grid_input;
 pub mod harmonic;
 mod gui;
 pub mod layout;
 pub mod midi;
 mod mnx;
 pub mod pdf_export;
+pub mod presets;
 mod render;
 pub mod tuning_table;
 mod validate;
@@ -34,6 +37,11 @@ pub(crate) fn setup_custom_fonts(ctx: &egui::Context) {
         .entry(egui::FontFamily::Name("BravuraText".into()))
         .or_default()
         .insert(0, "BravuraText".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Name("Serif".into()))
+        .or_default()
+        .push("Ubuntu-Light".to_owned());
     ctx.set_fonts(fonts);
 }
 

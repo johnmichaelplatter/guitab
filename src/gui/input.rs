@@ -34,19 +34,26 @@ impl MnxEditorApp {
             if let Some(cur_str) = self.editing_string {
                 let is_x = self.editing_fret_buf.to_lowercase() == "x";
                 let parsed = if is_x {
-                    Ok(0)
+                    Ok(0.0)
                 } else {
-                    self.editing_fret_buf.parse::<i32>()
+                    self.editing_fret_buf.parse::<f64>()
                 };
                 if let Ok(new_fret) = parsed {
-                    let new_pitch = self
-                        .parsed_mnx
-                        .as_ref()
-                        .and_then(|d| d.parts.first())
-                        .and_then(|part| calculate_pitch_for_string_fret(part, cur_str, new_fret));
+                    let new_pitch = self.parsed_mnx.as_ref().and_then(|d| {
+                        let part = d.parts.first()?;
+                        let ref_note = d
+                            .global
+                            .ext
+                            .tuning
+                            .as_ref()
+                            .and_then(|t| t.reference_note.as_ref());
+                        calculate_pitch_for_string_decimal_fret_with_ref(
+                            part, cur_str, new_fret, ref_note,
+                        )
+                    });
 
                     let res = self.mutate_doc(|doc| {
-                        if set_or_add_note_on_string_in_doc(
+                        if set_or_add_decimal_note_on_string_in_doc(
                             doc,
                             e_idx,
                             cur_str,
@@ -272,6 +279,15 @@ impl MnxEditorApp {
                 self.select_note_on_string(next_idx, s);
             }
         }
+    }
+
+    pub(crate) fn advance_to_next_note_in_grid_mode(&mut self, total_events: usize) {
+        self.advance_to_next_note_in_edit_mode(None, total_events);
+        self.is_editing_fret = false;
+        self.editing_fret_buf.clear();
+        self.editing_string = None;
+        self.selected_note_idx_in_event = None;
+        self.needs_scroll = true;
     }
 
     pub(crate) fn retreat_to_prev_note_in_edit_mode(&mut self, cur_str: Option<u8>) {
@@ -651,25 +667,44 @@ impl MnxEditorApp {
                     self.retreat_to_prev_note_in_edit_mode(cur_str);
                 }
             } else if up_pressed || down_pressed {
-                // If the user typed digits before moving string, commit them to the current string first
-                self.commit_fret_edit();
-                self.editing_fret_buf.clear();
-
-                // Move string Up (s - 1) or Down (s + 1)
-                if let Some(cur_str) = self.editing_string {
-                    if up_pressed && cur_str > 1 {
-                        self.editing_string = Some(cur_str - 1);
-                    } else if down_pressed && cur_str < num_strings {
-                        self.editing_string = Some(cur_str + 1);
+                let (shift_down, alt_down) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+                if alt_down {
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
+                    if up_pressed {
+                        self.action_shift_selected_strings(-1);
+                    } else if down_pressed {
+                        self.action_shift_selected_strings(1);
+                    }
+                } else if shift_down {
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
+                    if up_pressed {
+                        self.action_shift_selected_frets(1);
+                    } else if down_pressed {
+                        self.action_shift_selected_frets(-1);
                     }
                 } else {
-                    self.editing_string = Some(1);
-                }
+                    // If the user typed digits before moving string, commit them to the current string first
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
 
-                // Update selected_note_idx_in_event to the note on the new string if one exists
-                if let Some(e_idx) = self.selected_event_idx {
+                    // Move string Up (s - 1) or Down (s + 1)
                     if let Some(cur_str) = self.editing_string {
-                        self.select_note_on_string(e_idx, cur_str);
+                        if up_pressed && cur_str > 1 {
+                            self.editing_string = Some(cur_str - 1);
+                        } else if down_pressed && cur_str < num_strings {
+                            self.editing_string = Some(cur_str + 1);
+                        }
+                    } else {
+                        self.editing_string = Some(1);
+                    }
+
+                    // Update selected_note_idx_in_event to the note on the new string if one exists
+                    if let Some(e_idx) = self.selected_event_idx {
+                        if let Some(cur_str) = self.editing_string {
+                            self.select_note_on_string(e_idx, cur_str);
+                        }
                     }
                 }
             } else if backspace_pressed {
@@ -745,8 +780,11 @@ impl MnxEditorApp {
                 for ev in events {
                     if let egui::Event::Text(t) = ev {
                         for c in t.chars() {
-                            if (c.is_ascii_digit() || c == 'x' || c == 'X')
-                                && self.editing_fret_buf.len() < 3
+                            if (c.is_ascii_digit()
+                                || c == 'x'
+                                || c == 'X'
+                                || (c == '.' && !self.editing_fret_buf.contains('.')))
+                                && self.editing_fret_buf.len() < 4
                             {
                                 self.editing_fret_buf.push(c);
                             }
@@ -806,6 +844,19 @@ impl MnxEditorApp {
             if self.midi_player.is_playing() && (space_pressed || esc_pressed) {
                 self.midi_player.stop();
                 self.midi_status_msg = Some("Playback stopped.".to_string());
+            } else if esc_pressed && self.show_grid_controllers_popup {
+                if self.grid_input.active_calibration.is_some() {
+                    self.grid_input.cancel_calibration();
+                } else {
+                    self.show_grid_controllers_popup = false;
+                }
+            } else if esc_pressed && self.grid_input.is_grid_input_mode {
+                self.grid_input.exit_grid_input_mode();
+            } else if esc_pressed && self.grid_input.just_play_mode {
+                let note_offs = self.grid_input.set_just_play_mode(false);
+                if !note_offs.is_empty() {
+                    self.handle_grid_live_play_events(note_offs);
+                }
             } else if p_pressed {
                 if shift_down {
                     self.start_midi_playback(false);
@@ -1029,6 +1080,10 @@ impl MnxEditorApp {
                     }
                 } else {
                     if left_pressed || right_pressed {
+                        if self.grid_input.is_grid_input_mode {
+                            self.grid_input.release_latch_start = None;
+                            self.grid_input.buffered_chord.clear();
+                        }
                         if shift_down {
                             if self.selection_anchor.is_none() {
                                 self.selection_anchor = self.selected_event_idx;

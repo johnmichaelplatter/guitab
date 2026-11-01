@@ -2,6 +2,40 @@ use super::*;
 use crate::yaml_editor::*;
 use eframe::egui::{self, Color32};
 
+/// Helper to paint a DAW-style bottom-right corner triangle indicator (procedural "◢")
+/// onto a button's rect, dynamically matching the button's interactive text color.
+fn paint_corner_triangle(ui: &egui::Ui, response: &egui::Response) {
+    let r = response.rect;
+    let margin = 3.5;
+    let size = 5.0;
+    let color = ui.style().interact(response).fg_stroke.color;
+    let p_corner = egui::pos2(r.max.x - margin, r.max.y - margin);
+    let p_left = egui::pos2(r.max.x - margin - size, r.max.y - margin);
+    let p_top = egui::pos2(r.max.x - margin, r.max.y - margin - size);
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![p_left, p_corner, p_top],
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
+/// Helper to procedurally paint a status indicator circle instead of relying on unicode glyphs.
+fn paint_status_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 3.5, color);
+}
+
+/// Helper to render a menu button with a procedurally painted bottom-right corner triangle "◢".
+fn menu_button_with_corner_triangle<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let resp = ui.menu_button(format!("{}  ", title), add_contents);
+    paint_corner_triangle(ui, &resp.response);
+    resp
+}
+
 impl MnxEditorApp {
     pub(crate) fn render_top_panel(
         &mut self,
@@ -407,13 +441,13 @@ impl MnxEditorApp {
                     let btn_size = egui::vec2(30.0, 30.0);
 
                     let make_icon_btn = |ui: &mut egui::Ui, texture: &egui::TextureHandle, is_active: bool, tooltip: &str| -> bool {
-                        let img = egui::Image::new(texture).fit_to_exact_size(icon_size);
+                        let img = egui::Image::new(texture).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
                         let btn = egui::Button::image(img).selected(is_active);
                         ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                     };
 
                     let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
-                        let img = egui::Image::new(source).fit_to_exact_size(icon_size);
+                        let img = egui::Image::new(source).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
                         let btn = egui::Button::image(img).selected(is_active);
                         ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                     };
@@ -822,133 +856,9 @@ impl MnxEditorApp {
                     self.open_lyric_dialog(start_event_idx, 1);
                 }
 
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-
-                let bravura_font = egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
-                if ui.button(egui::RichText::new("\u{E040}").font(bravura_font.clone())).on_hover_text("Start Repeat").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let new_yaml = crate::yaml_editor::set_global_measure_property(
-                        &self.yaml_text,
-                        m_idx,
-                        "repeatStart",
-                        "{}"
-                    );
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                if ui.button(egui::RichText::new("\u{E041}").font(bravura_font.clone())).on_hover_text("End Repeat").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let new_yaml = crate::yaml_editor::set_global_measure_property(
-                        &self.yaml_text,
-                        m_idx,
-                        "repeatEnd",
-                        "{ times: 2 }"
-                    );
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                if ui.button(egui::RichText::new("\u{E031}").font(bravura_font.clone())).on_hover_text("Double Barline").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let is_already_double = self.parsed_mnx.as_ref()
-                        .and_then(|doc| doc.global.measures.get(m_idx))
-                        .and_then(|gm| gm.barline.as_ref())
-                        .map(|b| b.barline_type == "double")
-                        .unwrap_or(false);
-                    let new_yaml = if is_already_double {
-                        crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
-                    } else {
-                        crate::yaml_editor::set_global_measure_property(
-                            &self.yaml_text,
-                            m_idx,
-                            "barline",
-                            "{ type: double }"
-                        )
-                    };
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                if ui.button(egui::RichText::new("\u{E032}").font(bravura_font.clone())).on_hover_text("Ending Barline").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let is_already_final = self.parsed_mnx.as_ref()
-                        .and_then(|doc| doc.global.measures.get(m_idx))
-                        .and_then(|gm| gm.barline.as_ref())
-                        .map(|b| b.barline_type == "final" || b.barline_type == "ending")
-                        .unwrap_or(false);
-                    let new_yaml = if is_already_final {
-                        crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
-                    } else {
-                        crate::yaml_editor::set_global_measure_property(
-                            &self.yaml_text,
-                            m_idx,
-                            "barline",
-                            "{ type: final }"
-                        )
-                    };
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                let icon_size = egui::vec2(24.0, 24.0);
-                let btn_size = egui::vec2(30.0, 30.0);
-
-                let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg")).fit_to_exact_size(icon_size);
-                if ui.add_sized(btn_size, egui::Button::image(img_closed)).on_hover_text("Insert 1st... Ending").clicked() {
-                    let (start_m, end_m) = self.get_selected_measure_range();
-                    self.active_dialog = ActiveDialog::InsertEnding {
-                        start_m,
-                        end_m,
-                        times_str: "1".to_string(),
-                    };
-                }
-
-                let img_open = egui::Image::new(include_image!("../../assets/open ending.svg")).fit_to_exact_size(icon_size);
-                if ui.add_sized(btn_size, egui::Button::image(img_open)).on_hover_text("Insert Open Ending").clicked() {
-                    let (start_m, end_m) = self.get_selected_measure_range();
-                    let prev_max = if let Some(doc) = &self.parsed_mnx {
-                        doc.get_prior_ending_max(start_m)
-                    } else {
-                        None
-                    }.unwrap_or(0);
-                    let start_num = prev_max + 1;
-                    let numbers = vec![start_num];
-                    let duration = (end_m - start_m + 1) as u32;
-                    let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
-                    let yaml = crate::yaml_editor::set_global_measure_property(
-                        &self.yaml_text,
-                        start_m,
-                        "ending",
-                        &ending_val,
-                    );
-                    self.update_yaml(yaml);
-                    self.process_and_render();
-                }
-
-                let target_m = self.get_target_measure_for_layout_or_breaks();
-                let (is_system_break, is_page_break) = if let Some(doc) = &self.parsed_mnx {
-                    doc.global.measures.get(target_m).map(|gm| (gm.system_break.unwrap_or(false), gm.page_break.unwrap_or(false))).unwrap_or((false, false))
-                } else {
-                    (false, false)
-                };
-
-                let img_sys = egui::Image::new(include_image!("../../assets/system_break.svg"))
-                    .fit_to_exact_size(icon_size)
-                    .tint(ui.visuals().text_color());
-                if ui.add_sized(btn_size, egui::Button::image(img_sys).selected(is_system_break)).on_hover_text("Toggle System Break").clicked() {
-                    let target_m = self.get_target_measure_for_layout_or_breaks();
-                    self.action_toggle_system_break(target_m);
-                }
-
-                let img_page = egui::Image::new(include_image!("../../assets/page_break.svg"))
-                    .fit_to_exact_size(icon_size)
-                    .tint(ui.visuals().text_color());
-                if ui.add_sized(btn_size, egui::Button::image(img_page).selected(is_page_break)).on_hover_text("Toggle Page Break").clicked() {
-                    let target_m = self.get_target_measure_for_layout_or_breaks();
-                    self.action_toggle_page_break(target_m);
+                if ui.button("Insert Text").on_hover_text("Insert Text Marking on Duration").clicked() {
+                    let target_event_idx = self.selected_event_idx.unwrap_or(0);
+                    self.open_text_marking_dialog(target_event_idx);
                 }
             });
             ui.separator();
@@ -957,7 +867,7 @@ impl MnxEditorApp {
                 let btn_size = egui::vec2(30.0, 30.0);
                 let icon_size = egui::vec2(24.0, 24.0);
                 let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
-                    let img = egui::Image::new(source).fit_to_exact_size(icon_size);
+                    let img = egui::Image::new(source).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
                     let btn = egui::Button::image(img).selected(is_active);
                     ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                 };
@@ -1028,7 +938,9 @@ impl MnxEditorApp {
                     let is_harmonic = self.is_selected_note_harmonic();
                     let nh_btn = egui::Button::new(egui::RichText::new("<N.H.>").size(10.5).strong())
                         .selected(is_harmonic);
-                    if ui.add_sized(egui::vec2(44.0, 30.0), nh_btn).on_hover_text("Natural Harmonic").clicked() {
+                    if ui.add_sized(egui::vec2(44.0, 30.0), nh_btn).on_hover_text("Natural Harmonic (H)").clicked()
+                        || (!has_text_focus && !ui.input(|i| i.modifiers.any()) && ui.input(|i| i.key_pressed(egui::Key::H)))
+                    {
                         harmonic_clicked = true;
                     }
                     
@@ -1099,6 +1011,137 @@ impl MnxEditorApp {
                     }
                     if sdown_resp.on_hover_text("Down Strum").clicked() {
                         strum_down_clicked = true;
+                    }
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Barlines:").strong());
+
+                    let bravura_font = egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
+                    if ui.button(egui::RichText::new("\u{E040}").font(bravura_font.clone())).on_hover_text("Start Repeat").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let new_yaml = crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            m_idx,
+                            "repeatStart",
+                            "{}"
+                        );
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    if ui.button(egui::RichText::new("\u{E041}").font(bravura_font.clone())).on_hover_text("End Repeat").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let new_yaml = crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            m_idx,
+                            "repeatEnd",
+                            "{ times: 2 }"
+                        );
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    if ui.button(egui::RichText::new("\u{E031}").font(bravura_font.clone())).on_hover_text("Double Barline").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let is_already_double = self.parsed_mnx.as_ref()
+                            .and_then(|doc| doc.global.measures.get(m_idx))
+                            .and_then(|gm| gm.barline.as_ref())
+                            .map(|b| b.barline_type == "double")
+                            .unwrap_or(false);
+                        let new_yaml = if is_already_double {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
+                        } else {
+                            crate::yaml_editor::set_global_measure_property(
+                                &self.yaml_text,
+                                m_idx,
+                                "barline",
+                                "{ type: double }"
+                            )
+                        };
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    if ui.button(egui::RichText::new("\u{E032}").font(bravura_font.clone())).on_hover_text("Ending Barline").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let is_already_final = self.parsed_mnx.as_ref()
+                            .and_then(|doc| doc.global.measures.get(m_idx))
+                            .and_then(|gm| gm.barline.as_ref())
+                            .map(|b| b.barline_type == "final" || b.barline_type == "ending")
+                            .unwrap_or(false);
+                        let new_yaml = if is_already_final {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
+                        } else {
+                            crate::yaml_editor::set_global_measure_property(
+                                &self.yaml_text,
+                                m_idx,
+                                "barline",
+                                "{ type: final }"
+                            )
+                        };
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg"))
+                        .fit_to_exact_size(icon_size)
+                        .tint(ui.visuals().text_color());
+                    if ui.add_sized(btn_size, egui::Button::image(img_closed)).on_hover_text("Insert 1st... Ending").clicked() {
+                        let (start_m, end_m) = self.get_selected_measure_range();
+                        self.active_dialog = ActiveDialog::InsertEnding {
+                            start_m,
+                            end_m,
+                            times_str: "1".to_string(),
+                        };
+                    }
+
+                    let img_open = egui::Image::new(include_image!("../../assets/open ending.svg"))
+                        .fit_to_exact_size(icon_size)
+                        .tint(ui.visuals().text_color());
+                    if ui.add_sized(btn_size, egui::Button::image(img_open)).on_hover_text("Insert Open Ending").clicked() {
+                        let (start_m, end_m) = self.get_selected_measure_range();
+                        let prev_max = if let Some(doc) = &self.parsed_mnx {
+                            doc.get_prior_ending_max(start_m)
+                        } else {
+                            None
+                        }.unwrap_or(0);
+                        let start_num = prev_max + 1;
+                        let numbers = vec![start_num];
+                        let duration = (end_m - start_m + 1) as u32;
+                        let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
+                        let yaml = crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            start_m,
+                            "ending",
+                            &ending_val,
+                        );
+                        self.update_yaml(yaml);
+                        self.process_and_render();
+                    }
+
+                    if self.view_mode != ViewMode::Continuous {
+                        let target_m = self.get_target_measure_for_layout_or_breaks();
+                        let (is_system_break, is_page_break) = if let Some(doc) = &self.parsed_mnx {
+                            doc.global.measures.get(target_m).map(|gm| (gm.system_break.unwrap_or(false), gm.page_break.unwrap_or(false))).unwrap_or((false, false))
+                        } else {
+                            (false, false)
+                        };
+
+                        let img_sys = egui::Image::new(include_image!("../../assets/system_break.svg"))
+                            .fit_to_exact_size(icon_size)
+                            .tint(ui.visuals().text_color());
+                        if ui.add_sized(btn_size, egui::Button::image(img_sys).selected(is_system_break)).on_hover_text("Toggle System Break").clicked() {
+                            let target_m = self.get_target_measure_for_layout_or_breaks();
+                            self.action_toggle_system_break(target_m);
+                        }
+
+                        let img_page = egui::Image::new(include_image!("../../assets/page_break.svg"))
+                            .fit_to_exact_size(icon_size)
+                            .tint(ui.visuals().text_color());
+                        if ui.add_sized(btn_size, egui::Button::image(img_page).selected(is_page_break)).on_hover_text("Toggle Page Break").clicked() {
+                            let target_m = self.get_target_measure_for_layout_or_breaks();
+                            self.action_toggle_page_break(target_m);
+                        }
                     }
             });
                 if let Some(action) = clicked_action {
@@ -1255,54 +1298,7 @@ impl MnxEditorApp {
                 }
 
                 if ui.button("Instrument Setup").clicked() {
-                    let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
-                    let num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
-                    let edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
-                    let step_multiplier = part.map(|p| p.step_multiplier()).unwrap_or(1) as u8;
-                    let mut tunings_text = Vec::new();
-                    let mut tunings_octave = Vec::new();
-                    
-                    let edo_scale = crate::edo::generate_edo_scale(edo as u32);
-                    let tuning_calc = crate::edo::EdoTuning::new(edo as u32);
-                    
-                    for s in 1..=15 {
-                        if let Some(pitch) = part.and_then(|p| p.get_string_tuning(s)) {
-                            let steps = tuning_calc.pitch_to_steps(&pitch);
-                            let step_in_oct = steps.rem_euclid(edo as i32);
-                            let text = edo_scale.iter().find(|(st, _, _, _)| *st == step_in_oct).map(|(_, n, _, _)| n.clone()).unwrap_or_else(|| pitch.step.clone());
-                            tunings_text.push(text);
-                            tunings_octave.push(pitch.octave);
-                        } else {
-                            let (step, octave) = match s {
-                                1 => ("E", 4),
-                                2 => ("B", 3),
-                                3 => ("G", 3),
-                                4 => ("D", 3),
-                                5 => ("A", 2),
-                                6 => ("E", 2),
-                                7 => ("B", 1),
-                                8 => ("F#", 1),
-                                9 => ("C#", 1),
-                                10 => ("G#", 0),
-                                11 => ("D#", 0),
-                                12 => ("A#", 0),
-                                13 => ("F", 0),
-                                14 => ("C", 0),
-                                15 => ("G", 0),
-                                _ => ("E", 2),
-                            };
-                            tunings_text.push(step.to_string());
-                            tunings_octave.push(octave);
-                        }
-                    }
-                    self.active_dialog = ActiveDialog::InstrumentSetup {
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tunings_text,
-                        tunings_octave,
-                        is_new_tab: false,
-                    };
+                    self.open_instrument_setup_dialog(false);
                 }
 
                 ui.separator();
@@ -1313,7 +1309,7 @@ impl MnxEditorApp {
                     .map(|p| p.num_strings())
                     .unwrap_or(6) as u8;
 
-                ui.menu_button("String Channels ▾", |ui| {
+                menu_button_with_corner_triangle(ui, "String Channels", |ui| {
                     ui.label(egui::RichText::new(if self.is_mpe_mode {
                         "String to MPE Member Channel Mapping (Ch 2-16, Ch 1 is Master)"
                     } else {
@@ -1340,6 +1336,308 @@ impl MnxEditorApp {
                         }
                     }
                 });
+
+                ui.separator();
+
+                // 6. Grid Controllers Select UI/UX & Quick On-The-Fly Fret Offset Controls
+                let btn = egui::Button::new("Grid Controllers  ")
+                    .selected(self.show_grid_controllers_popup);
+                let btn_resp = ui.add(btn);
+                paint_corner_triangle(ui, &btn_resp);
+                if btn_resp.clicked() {
+                    self.show_grid_controllers_popup = !self.show_grid_controllers_popup;
+                }
+
+                if self.show_grid_controllers_popup {
+                    let area_id = ui.make_persistent_id("grid_controllers_dropdown_area");
+                    let popup_pos = btn_resp.rect.left_bottom() + egui::vec2(0.0, 3.0);
+                    let mut close_dropdown = false;
+
+                    let area_resp = egui::Area::new(area_id)
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(popup_pos)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Grid Controller MIDI Inputs (up to 4)")
+                                            .strong(),
+                                    );
+                                    if ui.small_button("🔄 Refresh Ports").clicked() {
+                                        self.midi_input_ports =
+                                            crate::grid_input::get_midi_input_ports();
+                                    }
+                                });
+                                ui.separator();
+
+                                let mut row_width: f32 = 0.0;
+                                let ports_snapshot = self.midi_input_ports.clone();
+                                let mut slot_port_change: Option<(usize, Option<usize>)> = None;
+                                for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                                    let sel_port_id = self.grid_input.selected_port_ids[slot_idx];
+                                    let row_resp = ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("Grid {}:", slot_idx + 1))
+                                                .strong(),
+                                        );
+                                        let current_label = sel_port_id
+                                            .and_then(|id| ports_snapshot.iter().find(|p| p.id == id))
+                                            .map(|p| p.name.clone())
+                                            .unwrap_or_else(|| "Disconnected".to_string());
+
+                                        egui::ComboBox::from_id_salt(format!(
+                                            "toolbar_grid_port_{}",
+                                            slot_idx
+                                        ))
+                                        .selected_text(current_label)
+                                        .width(170.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(sel_port_id.is_none(), "Disconnected")
+                                                .clicked()
+                                            {
+                                                slot_port_change = Some((slot_idx, None));
+                                            }
+                                            for port in &ports_snapshot {
+                                                if ui
+                                                    .selectable_label(
+                                                        sel_port_id == Some(port.id),
+                                                        &port.name,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    slot_port_change =
+                                                        Some((slot_idx, Some(port.id)));
+                                                }
+                                            }
+                                        });
+
+                                        ui.label("Fret Offset:");
+                                        let slot_cfg = &mut self.grid_input.slots[slot_idx];
+                                        if ui.small_button("-").clicked() {
+                                            slot_cfg.fret_offset =
+                                                (slot_cfg.fret_offset - 1).max(0);
+                                        }
+                                        ui.add(
+                                            egui::DragValue::new(&mut slot_cfg.fret_offset)
+                                                .range(0..=48)
+                                                .speed(0.2),
+                                        );
+                                        if ui.small_button("+").clicked() {
+                                            slot_cfg.fret_offset =
+                                                (slot_cfg.fret_offset + 1).min(48);
+                                        }
+                                    });
+                                    row_width = row_width.max(row_resp.response.rect.width());
+                                }
+                                if let Some((s_idx, pid)) = slot_port_change {
+                                    if let Err(err) = self.grid_input.connect_slot(s_idx, pid) {
+                                        self.midi_status_msg = Some(err);
+                                    }
+                                }
+
+                                ui.separator();
+
+                                // 4 equally divided calibration rectangles matching exact content width
+                                ui.horizontal(|ui| {
+                                    let total_width = row_width;
+                                    let num_slots = crate::grid_input::MAX_GRID_CONTROLLERS as f32;
+                                    let spacing = ui.spacing().item_spacing.x;
+                                    let btn_width = ((total_width - (num_slots - 1.0) * spacing)
+                                        / num_slots)
+                                        .floor()
+                                        .max(40.0);
+                                    let btn_size = egui::vec2(btn_width, 42.0);
+
+                                    for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                                        let is_slot_calibrating = self
+                                            .grid_input
+                                            .active_calibration
+                                            .map(|(s, _, _)| s == slot_idx)
+                                            .unwrap_or(false);
+
+                                        let mut btn = egui::Button::new(
+                                            egui::RichText::new(format!(
+                                                "Calibrate\nGrid {}",
+                                                slot_idx + 1
+                                            ))
+                                            .size(11.0)
+                                            .strong(),
+                                        )
+                                        .min_size(btn_size);
+
+                                        if is_slot_calibrating {
+                                            btn = btn
+                                                .stroke(egui::Stroke::new(
+                                                    2.0,
+                                                    egui::Color32::from_rgb(255, 215, 0),
+                                                ))
+                                                .fill(egui::Color32::from_rgb(50, 45, 10));
+                                        }
+
+                                        if ui.add(btn).clicked() {
+                                            if is_slot_calibrating {
+                                                self.grid_input.cancel_calibration();
+                                            } else {
+                                                self.grid_input.start_calibration(slot_idx);
+                                            }
+                                        }
+                                    }
+                                });
+
+                                // Active step instructions or idle guide text
+                                ui.add_space(4.0);
+                                if let Some((cal_slot, step, _)) =
+                                    self.grid_input.active_calibration
+                                {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "Grid {}: {}",
+                                                cal_slot + 1,
+                                                step.prompt_text()
+                                            ))
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(255, 215, 0)),
+                                        );
+                                        if ui.button("Cancel Calibration").clicked() {
+                                            self.grid_input.cancel_calibration();
+                                        }
+                                    });
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Click a rectangle above to calibrate the 4 corners for that controller.",
+                                        )
+                                        .weak()
+                                        .size(11.5),
+                                    );
+                                }
+                            });
+                        });
+
+                    // Check for click outside to close the dropdown cleanly
+                    if ui.input(|i| i.pointer.any_click()) {
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            let in_btn = btn_resp.rect.contains(pos);
+                            let in_dropdown = area_resp.response.rect.contains(pos);
+                            let any_combo_open = (0..crate::grid_input::MAX_GRID_CONTROLLERS).any(|s| {
+                                let cid = ui.make_persistent_id(format!("toolbar_grid_port_{}", s));
+                                egui::ComboBox::is_open(ui.ctx(), cid)
+                            });
+
+                            if !in_btn
+                                && !in_dropdown
+                                && !any_combo_open
+                                && self.grid_input.active_calibration.is_none()
+                            {
+                                close_dropdown = true;
+                            }
+                        }
+                    }
+
+                    if close_dropdown {
+                        self.show_grid_controllers_popup = false;
+                    }
+                }
+
+                // Inline quick on-the-fly Fret Offset controls for connected grid controllers
+                for slot_idx in 0..crate::grid_input::MAX_GRID_CONTROLLERS {
+                    if self.grid_input.selected_port_ids[slot_idx].is_some()
+                        || self.grid_input.slots[slot_idx].enabled
+                    {
+                        let slot_cfg = &mut self.grid_input.slots[slot_idx];
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("G{} Offset:", slot_idx + 1))
+                                    .size(11.5)
+                                    .color(Color32::from_rgb(255, 160, 160)),
+                            );
+                            if ui
+                                .small_button("-")
+                                .on_hover_text("Decrease leftmost column fret offset")
+                                .clicked()
+                            {
+                                slot_cfg.fret_offset = (slot_cfg.fret_offset - 1).max(0);
+                            }
+                            ui.add(
+                                egui::DragValue::new(&mut slot_cfg.fret_offset)
+                                    .range(0..=48)
+                                    .speed(0.2),
+                            )
+                            .on_hover_text(format!(
+                                "Grid {} leftmost column fret number (quick on-the-fly adjustment)",
+                                slot_idx + 1
+                            ));
+                            if ui
+                                .small_button("+")
+                                .on_hover_text("Increase leftmost column fret offset")
+                                .clicked()
+                            {
+                                slot_cfg.fret_offset = (slot_cfg.fret_offset + 1).min(48);
+                            }
+                        });
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    let can_just_play = self.grid_input.has_connected_and_calibrated_controller();
+                    let just_play_btn = if self.grid_input.just_play_mode {
+                        egui::Button::new(
+                            egui::RichText::new("Just Play")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 215, 0))
+                    } else {
+                        egui::Button::new("Just Play")
+                    };
+                    let resp = ui.add_enabled(can_just_play, just_play_btn);
+                    if can_just_play {
+                        if resp
+                            .on_hover_text(
+                                "Toggle Just Play mode: forward grid controller MIDI through internal string/fret pitches to MIDI output without tab interception",
+                            )
+                            .clicked()
+                        {
+                            let new_state = !self.grid_input.just_play_mode;
+                            let note_offs = self.grid_input.set_just_play_mode(new_state);
+                            if !note_offs.is_empty() {
+                                self.handle_grid_live_play_events(note_offs);
+                            }
+                        }
+                    } else {
+                        resp.on_hover_text(
+                            "Connect and calibrate at least one grid controller to use Just Play",
+                        );
+                    }
+                    if self.grid_input.just_play_mode {
+                        paint_status_dot(ui, Color32::from_rgb(255, 215, 0));
+                        ui.label(
+                            egui::RichText::new("Active (Bypassing tab)")
+                                .size(11.0)
+                                .color(Color32::from_rgb(255, 215, 0)),
+                        );
+                    }
+                });
+
+                if self.grid_input.is_grid_input_mode {
+                    ui.separator();
+                    paint_status_dot(ui, Color32::from_rgb(255, 110, 110));
+                    if ui
+                        .button(
+                            egui::RichText::new("GRID INPUT MODE (Esc to exit)")
+                                .strong()
+                                .color(Color32::from_rgb(255, 110, 110)),
+                        )
+                        .on_hover_text(
+                            "Hold pads to preview chord, release all pads for 500ms to finalize & advance. Press Esc or click to exit.",
+                        )
+                        .clicked()
+                    {
+                        self.grid_input.exit_grid_input_mode();
+                    }
+                }
 
                 // Status message tooltip / indicator
                 if let Some(msg) = &self.midi_status_msg {
@@ -1394,6 +1692,7 @@ impl MnxEditorApp {
                     });
 
                     let is_editing_now = self.is_editing_fret;
+                    let is_grid_mode_now = self.grid_input.is_grid_input_mode;
 
                     let mut layouter =
                         |ui: &egui::Ui, text_buf: &dyn egui::TextBuffer, wrap_width: f32| {
@@ -1422,6 +1721,8 @@ impl MnxEditorApp {
                                 if sel_end > sel_start {
                                     let bg_hl = if is_editing_now {
                                         Color32::from_rgba_unmultiplied(220, 140, 40, 140) // Orange highlight
+                                    } else if is_grid_mode_now {
+                                        Color32::from_rgba_unmultiplied(245, 95, 95, 140) // Light-red Grid Input Mode highlight
                                     } else {
                                         Color32::from_rgba_unmultiplied(60, 130, 210, 120) // Blue highlight
                                     };
@@ -1497,6 +1798,7 @@ impl MnxEditorApp {
                                         selection_anchor: self.selection_anchor,
                                         selected_note_in_event: self.selected_note_idx_in_event,
                                         is_editing_fret: self.is_editing_fret,
+                                        is_grid_input_mode: self.grid_input.is_grid_input_mode,
                                         editing_fret_text: &self.editing_fret_buf,
                                         editing_string: self.editing_string,
                                         is_editing_lyric: self.is_editing_lyric,
@@ -1542,6 +1844,10 @@ impl MnxEditorApp {
                                         }
                                     } else {
                                         self.selection_anchor = None;
+                                    }
+                                    if self.grid_input.is_grid_input_mode {
+                                        self.grid_input.release_latch_start = None;
+                                        self.grid_input.buffered_chord.clear();
                                     }
                                     self.selected_event_idx = Some(clicked_event);
                                     self.selected_note_idx_in_event = clicked_note;
@@ -1825,14 +2131,54 @@ impl MnxEditorApp {
                                     painter.rect_stroke(srect, *rounding, *stroke, egui::StrokeKind::Middle);
                                 }
                             }
-                            crate::layout::display_list::DrawKind::Text { pos, align, text, font_id, color } => {
-                                painter.text(
-                                    *pos + page_origin,
-                                    *align,
-                                    text,
-                                    font_id.clone(),
-                                    *color,
-                                );
+                            crate::layout::display_list::DrawKind::Text {
+                                pos,
+                                align,
+                                text,
+                                font_id,
+                                color,
+                                bold,
+                                italic,
+                            } => {
+                                let screen_pos = *pos + page_origin;
+                                if *italic || *bold {
+                                    let mut job = egui::text::LayoutJob::default();
+                                    job.append(
+                                        text,
+                                        0.0,
+                                        egui::TextFormat {
+                                            font_id: font_id.clone(),
+                                            color: *color,
+                                            italics: *italic,
+                                            ..Default::default()
+                                        },
+                                    );
+                                    let galley = painter.layout_job(job);
+                                    let size = galley.size();
+                                    let min_x = match align.x() {
+                                        eframe::emath::Align::Min => screen_pos.x,
+                                        eframe::emath::Align::Center => screen_pos.x - size.x * 0.5,
+                                        eframe::emath::Align::Max => screen_pos.x - size.x,
+                                    };
+                                    let min_y = match align.y() {
+                                        eframe::emath::Align::Min => screen_pos.y,
+                                        eframe::emath::Align::Center => screen_pos.y - size.y * 0.5,
+                                        eframe::emath::Align::Max => screen_pos.y - size.y,
+                                    };
+                                    let draw_pos = egui::pos2(min_x, min_y);
+                                    painter.galley(draw_pos, galley.clone(), *color);
+                                    if *bold {
+                                        painter.galley(draw_pos + egui::vec2(0.65, 0.0), galley, *color);
+                                    }
+                                } else {
+                                    painter.text(
+                                        screen_pos,
+                                        *align,
+                                        text,
+                                        font_id.clone(),
+                                        *color,
+                                    );
+                                }
                             }
                             crate::layout::display_list::DrawKind::Glyph { pos, align, codepoint, font_family, size, color } => {
                                 let font_id = egui::FontId::new(*size, egui::FontFamily::Name(font_family.clone().into()));

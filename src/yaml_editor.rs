@@ -113,6 +113,16 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
             continue;
         }
 
+        if !in_content && trimmed.contains("content:") && trimmed.contains("duration:") {
+            if let Some(start_line) = current_event_start_line {
+                let end_line = i.saturating_sub(1);
+                finish_event(start_line, end_line, &mut results);
+                current_event_start_line = None;
+            }
+            finish_event(i, i, &mut results);
+            continue;
+        }
+
         if trimmed.starts_with("content:") || trimmed.ends_with("content:") {
             if let Some(start_line) = current_event_start_line {
                 let end_line = i.saturating_sub(1);
@@ -163,20 +173,87 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
     results
 }
 
-/// Calculates the exact microtonal Pitch for a given string and fret.
+/// Calculates the exact microtonal Pitch for a given string and fret (including custom fretboards).
 pub fn calculate_pitch_for_string_fret(
     part: &crate::mnx::Part,
     string: u8,
     fret: i32,
 ) -> Option<crate::mnx::Pitch> {
-    let capo_fret = part.capo_fret();
+    calculate_pitch_for_string_decimal_fret_with_ref(part, string, fret as f64, None)
+}
+
+/// Calculates the exact microtonal or custom-fretboard Pitch for a given string and decimal fret (e.g. `1.5`).
+pub fn calculate_pitch_for_string_decimal_fret(
+    part: &crate::mnx::Part,
+    string: u8,
+    decimal_fret: f64,
+) -> Option<crate::mnx::Pitch> {
+    calculate_pitch_for_string_decimal_fret_with_ref(part, string, decimal_fret, None)
+}
+
+/// Calculates the exact microtonal or custom-fretboard Pitch for a given string and decimal fret,
+/// with an optional `1/1` reference note for Ratio/Cents open strings.
+pub fn calculate_pitch_for_string_decimal_fret_with_ref(
+    part: &crate::mnx::Part,
+    string: u8,
+    decimal_fret: f64,
+    ref_note: Option<&crate::mnx::ReferenceNoteSpec>,
+) -> Option<crate::mnx::Pitch> {
+    let string_pitch = part.get_string_tuning(string)?;
     let edo = part.edo();
+
+    if let Some(custom_frets) = &part.ext.custom_frets {
+        if !custom_frets.is_empty() {
+            let ref_hz = ref_note.map(|rn| rn.frequency_hz).unwrap_or(261.626);
+            let mode =
+                crate::fretboard_editor::classify_fretboard_alter_mode(custom_frets, ref_hz);
+            if decimal_fret.abs() < 1e-4 {
+                return Some(crate::fretboard_editor::calculate_custom_fret_pitch_with_ref(
+                    &string_pitch,
+                    None,
+                    &mode,
+                    edo,
+                    ref_note,
+                ));
+            }
+            if let Some(cf) = custom_frets
+                .iter()
+                .find(|f| (f.fret_number - decimal_fret).abs() < 0.05 && f.strings.contains(&string))
+            {
+                return Some(crate::fretboard_editor::calculate_custom_fret_pitch_with_ref(
+                    &string_pitch,
+                    Some(cf),
+                    &mode,
+                    edo,
+                    ref_note,
+                ));
+            }
+        }
+    }
+
+    if decimal_fret.abs() < 1e-4 && string_pitch.is_ratio_or_cents_step() {
+        let mut p = string_pitch.clone();
+        if p.ext.name.is_none() {
+            let ref_name = ref_note.map(|rn| {
+                rn.pitch
+                    .ext
+                    .name
+                    .as_deref()
+                    .unwrap_or(rn.pitch.step.as_str())
+            });
+            p.ext.name = Some(crate::fretboard_editor::resolve_open_string_53edo_name(
+                &p, edo, ref_name,
+            ));
+        }
+        return Some(p);
+    }
+
+    let capo_fret = part.capo_fret();
     let step_multiplier = part.step_multiplier();
     let tuning_calc = crate::edo::EdoTuning::new(edo);
-    let string_pitch = part.get_string_tuning(string)?;
     let string_base = tuning_calc.pitch_to_steps(&string_pitch);
     let physical_capo_steps = (capo_fret as i32) * step_multiplier;
-    let physical_fret_steps = (fret as i32) * step_multiplier;
+    let physical_fret_steps = (decimal_fret.round() as i32) * step_multiplier;
     let played_steps = string_base + physical_capo_steps + physical_fret_steps;
     Some(tuning_calc.steps_to_pitch(played_steps))
 }
@@ -193,7 +270,7 @@ pub fn get_note_string_from_text(note_text: &str) -> Option<u8> {
     None
 }
 
-fn new_blank_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
+pub fn new_blank_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
     crate::mnx::Event {
         duration,
         ..Default::default()
@@ -227,6 +304,7 @@ pub fn update_note_in_doc(
         return false;
     };
     note.fret = Some(new_fret);
+    note.decimal_fret = None;
     note.muted = None;
     if let Some(pitch) = new_pitch {
         note.pitch = pitch.clone();
@@ -257,6 +335,17 @@ pub fn set_or_add_note_on_string_in_doc(
     new_fret: i32,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> bool {
+    set_or_add_decimal_note_on_string_in_doc(doc, event_idx, target_string, new_fret as f64, new_pitch)
+}
+
+/// Updates an existing note on `target_string` in `event_idx` with a whole or decimal fret (e.g. `1.5`), or appends a new note.
+pub fn set_or_add_decimal_note_on_string_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    target_string: u8,
+    decimal_fret: f64,
+    new_pitch: Option<&crate::mnx::Pitch>,
+) -> bool {
     let paths = doc.get_flattened_event_paths();
     let Some(&path) = paths.get(event_idx) else {
         return false;
@@ -266,8 +355,17 @@ pub fn set_or_add_note_on_string_in_doc(
     };
     ev.rest = None;
 
+    let int_fret = decimal_fret.round() as i32;
+    let is_decimal = (decimal_fret - (int_fret as f64)).abs() >= 0.05;
+    let dec_opt = if is_decimal {
+        Some((decimal_fret * 10.0).round() / 10.0)
+    } else {
+        None
+    };
+
     if let Some(existing) = ev.notes.iter_mut().find(|n| n.string == Some(target_string)) {
-        existing.fret = Some(new_fret);
+        existing.fret = Some(int_fret);
+        existing.decimal_fret = dec_opt;
         existing.muted = None;
         if let Some(p) = new_pitch {
             existing.pitch = p.clone();
@@ -277,12 +375,67 @@ pub fn set_or_add_note_on_string_in_doc(
             step: "C".to_string(),
             alter: None,
             octave: 4,
+            ext: crate::mnx::PitchExt::default(),
         });
         ev.notes.push(crate::mnx::Note {
             pitch,
             ext: crate::mnx::NoteExt {
                 string: Some(target_string),
-                fret: Some(new_fret),
+                fret: Some(int_fret),
+                decimal_fret: dec_opt,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
+    true
+}
+
+/// Replaces all notes in `event_idx` with the given `string -> fret` chord map (used by Grid Controller Input Mode).
+pub fn set_chord_on_event_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    chord: &std::collections::BTreeMap<u8, i32>,
+) -> bool {
+    let part_clone = match doc.parts.first().cloned() {
+        Some(p) => p,
+        None => return false,
+    };
+    let ref_note = doc
+        .global
+        .ext
+        .tuning
+        .as_ref()
+        .and_then(|t| t.reference_note.as_ref())
+        .cloned();
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    ev.rest = None;
+    ev.notes.clear();
+
+    for (&string_num, &fret_val) in chord {
+        let pitch = calculate_pitch_for_string_decimal_fret_with_ref(
+            &part_clone,
+            string_num,
+            fret_val as f64,
+            ref_note.as_ref(),
+        )
+        .unwrap_or(crate::mnx::Pitch {
+            step: "C".to_string(),
+            alter: None,
+            octave: 4,
+            ext: crate::mnx::PitchExt::default(),
+        });
+        ev.notes.push(crate::mnx::Note {
+            pitch,
+            ext: crate::mnx::NoteExt {
+                string: Some(string_num),
+                fret: Some(fret_val),
                 ..Default::default()
             },
             ..Default::default()
@@ -408,6 +561,7 @@ pub fn add_measure_to_doc(
     doc: &mut crate::mnx::MnxDocument,
     duration: &crate::mnx::Duration,
 ) -> bool {
+    doc.ensure_measure_parity();
     if doc.global.measures.is_empty() {
         let last_time = crate::mnx::TimeSignature { count: 4, unit: 4 };
         doc.global.measures.push(crate::mnx::GlobalMeasure {
@@ -1058,3 +1212,35 @@ pub fn append_blank_note_to_grace_block_in_yaml(yaml: &str, e_idx: usize) -> Opt
     }
     serde_saphyr::to_string(&doc).ok()
 }
+
+pub fn set_event_text_markings_in_doc(
+    doc: &mut crate::mnx::MnxDocument,
+    event_idx: usize,
+    markings: Vec<crate::mnx::TextMarking>,
+) -> bool {
+    let paths = doc.get_flattened_event_paths();
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_path(path) else {
+        return false;
+    };
+    ev.text_markings = markings
+        .into_iter()
+        .filter(|m| !m.text.trim().is_empty())
+        .collect();
+    true
+}
+
+pub fn set_event_text_markings_in_yaml(
+    yaml: &str,
+    event_idx: usize,
+    markings: Vec<crate::mnx::TextMarking>,
+) -> Option<String> {
+    let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
+    if !set_event_text_markings_in_doc(&mut doc, event_idx, markings) {
+        return None;
+    }
+    serde_saphyr::to_string(&doc).ok()
+}
+

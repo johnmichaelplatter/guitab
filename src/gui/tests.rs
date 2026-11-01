@@ -5,6 +5,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_phase_d_dark_mode_icon_assets() {
+        // Test that duration textures produce white alpha masks for theme-adaptive tinting
+        let ctx = egui::Context::default();
+        let textures = DurationTextures::load(&ctx);
+        // Verify texture handles loaded successfully
+        assert_eq!(textures.whole.name(), "icon_whole");
+        assert_eq!(textures.half.name(), "icon_half");
+        assert_eq!(textures.quarter.name(), "icon_quarter");
+        assert_eq!(textures.eighth.name(), "icon_eighth");
+        assert_eq!(textures.sixteenth.name(), "icon_sixteenth");
+        assert_eq!(textures.thirty_second.name(), "icon_thirty_second");
+        assert_eq!(textures.dot.name(), "icon_dot");
+
+        // Verify raw PNG bytes converted into white mask in load_texture_from_bytes logic
+        for (name, bytes) in [
+            ("whole", WHOLE_PNG),
+            ("half", HALF_PNG),
+            ("quarter", QUARTER_PNG),
+            ("eighth", EIGHTH_PNG),
+            ("16th", SIXTEENTH_PNG),
+            ("32nd", THIRTYSECOND_PNG),
+            ("dot", DOT_PNG),
+        ] {
+            let img = image::load_from_memory(bytes).expect("Valid PNG");
+            let rgba = img.to_rgba8();
+            let mut has_non_transparent = false;
+            for p in rgba.pixels() {
+                if p[3] > 0 {
+                    has_non_transparent = true;
+                    // Our loader turns non-transparent pixels into (255, 255, 255, alpha)
+                    let white = [255u8, 255u8, 255u8, p[3]];
+                    assert_eq!(white[0], 255, "White mask failed for {}", name);
+                    assert_eq!(white[1], 255, "White mask failed for {}", name);
+                    assert_eq!(white[2], 255, "White mask failed for {}", name);
+                }
+            }
+            assert!(has_non_transparent, "Asset {} has no visible pixels", name);
+        }
+
+        // Verify SVGs contain #ffffff and no black strokes/fills
+        let closed_ending = include_str!("../../assets/closed ending.svg");
+        assert!(closed_ending.contains("#ffffff"));
+        assert!(!closed_ending.contains("#000000"));
+
+        let open_ending = include_str!("../../assets/open ending.svg");
+        assert!(open_ending.contains("#ffffff"));
+        assert!(!open_ending.contains("#000000"));
+
+        let tie = include_str!("../../assets/tie.svg");
+        assert!(tie.contains("#ffffff"));
+        assert!(!tie.contains("#000000"));
+
+        let hammer = include_str!("../../assets/hammer_pulloff.svg");
+        assert!(hammer.contains("#ffffff"));
+        assert!(!hammer.contains("#000000"));
+
+        let sys = include_str!("../../assets/system_break.svg");
+        assert!(sys.contains("#ffffff"));
+
+        let page = include_str!("../../assets/page_break.svg");
+        assert!(page.contains("#ffffff"));
+    }
+
+    #[test]
     fn test_find_all_event_ranges_example_yaml() {
         let yaml = include_str!("../../examples/example.yaml");
         let ranges = find_all_event_ranges(yaml);
@@ -363,10 +427,10 @@ parts:
 
         for filename in &[
             "examples/example.yaml",
-            "example_endings.yaml",
-            "example_harmonics.yaml",
-            "example_layout_lyrics.yaml",
-            "c scale.yaml",
+            "examples/example_endings.yaml",
+            "examples/example_harmonics.yaml",
+            "examples/example_layout_lyrics.yaml",
+            "examples/c scale.yaml",
             "chord examples/example.yaml",
         ] {
             let path = std::path::Path::new(filename);
@@ -383,7 +447,7 @@ parts:
 
             if matches!(
                 *filename,
-                "examples/example.yaml" | "example_endings.yaml" | "example_harmonics.yaml" | "example_layout_lyrics.yaml"
+                "examples/example.yaml" | "examples/example_endings.yaml" | "examples/example_harmonics.yaml" | "examples/example_layout_lyrics.yaml"
             ) {
                 let initial_m_count = raw_doc.parts[0].measures.len();
                 let updated_raw = add_measure_to_yaml(&raw_yaml, &dur).expect("Add measure to raw");
@@ -1102,6 +1166,7 @@ mod tuplet_button_tests {
                     step: "E".to_string(),
                     alter: None,
                     octave: 4,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1110,6 +1175,7 @@ mod tuplet_button_tests {
                     step: "B".to_string(),
                     alter: None,
                     octave: 3,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1118,6 +1184,7 @@ mod tuplet_button_tests {
                     step: "G".to_string(),
                     alter: None,
                     octave: 3,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1126,6 +1193,7 @@ mod tuplet_button_tests {
                     step: "D".to_string(),
                     alter: None,
                     octave: 3,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1134,6 +1202,7 @@ mod tuplet_button_tests {
                     step: "A".to_string(),
                     alter: None,
                     octave: 2,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -1142,6 +1211,7 @@ mod tuplet_button_tests {
                     step: "E".to_string(),
                     alter: None,
                     octave: 2,
+                    ..Default::default()
                 },
             },
         ];
@@ -1354,6 +1424,7 @@ parts:
             step: "D".to_string(),
             alter: None,
             octave: 4,
+            ..Default::default()
         };
         let edited_yaml = crate::yaml_editor::set_or_add_note_on_string(&grace_yaml, 0, 3, 12, Some(&pitch))
             .expect("set note on grace event failed");
@@ -1597,9 +1668,175 @@ parts:
         let doc2 = app.parsed_mnx.as_ref().unwrap();
         let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
         assert!(ev2.notes[0].harmonic.is_none());
-        assert_eq!(ev2.notes[0].fret, Some(0));
+        assert_eq!(ev2.notes[0].fret, Some(12));
         assert_eq!(ev2.notes[0].pitch.step, "E");
-        assert_eq!(ev2.notes[0].pitch.octave, 4);
+        assert_eq!(ev2.notes[0].pitch.octave, 5);
+    }
+
+    #[test]
+    fn test_natural_harmonic_custom_fretboard_toggle_and_yaml_cleanup() {
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Custom Guitar"
+    _x:
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: G, octave: 4 }
+        - string: 2
+          pitch: { step: D, octave: 4 }
+      customFrets:
+        - fret_number: 6.0
+          spec: { kind: ratio, num: 5, den: 4 }
+          strings: [1]
+          note_name: "vE"
+        - fret_number: 7.0
+          spec: { kind: ratio, num: 4, den: 3 }
+          strings: [1, 2]
+          note_name: "F"
+    measures:
+      - sequences:
+          - content:
+              - id: ev1
+                duration: { base: quarter }
+                notes:
+                  - id: n1
+                    pitch: { step: G, octave: 4 }
+                    _x:
+                      string: 1
+                      fret: 6
+"#
+        .to_string();
+        app.process_and_render();
+
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.selected_note_idx_in_event = Some(0);
+        assert!(!app.is_selected_note_harmonic());
+
+        // Toggle Natural Harmonic ON
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        assert!(app.yaml_text.contains("harmonic:"));
+        assert!(app.yaml_text.contains("touch: 6"));
+        assert!(!app.yaml_text.contains("microFretDivisions"));
+        assert!(!app.yaml_text.contains("fretStepMultiplier"));
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let h = ev.notes[0].harmonic.as_ref().expect("Harmonic should be present");
+        assert_eq!(h.touch, 6.0);
+        assert_eq!(h.sounding_note.pitch.step, "B");
+        assert_eq!(h.sounding_note.pitch.octave, 6);
+
+        // Toggle Natural Harmonic OFF
+        app.action_toggle_harmonic();
+        assert!(!app.is_selected_note_harmonic());
+        assert!(!app.yaml_text.contains("harmonic:"));
+
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev2.notes[0].harmonic.is_none());
+        assert_eq!(ev2.notes[0].fret, Some(6));
+    }
+
+    #[test]
+    fn test_custom_fretboard_harmonic_entry_and_following_measures_workflow() {
+        let mut app = MnxEditorApp::default();
+        // 1. Create new tab with instrument setup matching the bug file
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch { step: "5/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("vB".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+
+        // Apply custom frets from the bug file
+        let bug_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(
+            include_str!("../../context/harmonics entry bug.yaml")
+        ).expect("Bug file must parse");
+        let custom_frets = bug_doc.parts[0].ext.custom_frets.clone().unwrap();
+
+        let fb_state = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            custom_frets,
+            "D".to_string(),
+            4,
+            293.66,
+        );
+        app.apply_custom_fretboard_state(fb_state);
+
+        // 2. Enter fret 18 in measure 1 on string 6
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(6);
+        app.editing_fret_buf = "18".to_string();
+        assert!(app.commit_fret_edit());
+
+        // 3. Hit Natural Harmonic button
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+
+        // Verify sounding note pitch: D3 (harmonic 2 on D2 open string is D3)
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let h = ev.notes[0].harmonic.as_ref().expect("Harmonic should be present");
+        assert_eq!(h.touch, 18.0);
+        assert_eq!(h.sounding_note.pitch.step, "D");
+        assert_eq!(h.sounding_note.pitch.octave, 3);
+        assert_eq!(h.sounding_note.pitch.alter, None);
+        assert_eq!(h.sounding_note.pitch.ext.name.as_deref(), Some("D"));
+
+        // Verify YAML format is clean and does not have multi-line single braces or leaked pending_flow
+        assert!(app.yaml_text.contains("harmonic:"));
+        assert!(app.yaml_text.contains("touch: 18"));
+        assert!(app.yaml_text.contains("soundingNote:"));
+        assert!(!app.yaml_text.contains("- {sequences:"));
+
+        // 4. Advance and add notes into following measures
+        app.add_measure_to_end();
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc2.parts[0].measures.len(), 2);
+        assert_eq!(doc2.global.measures.len(), 2);
+        assert_eq!(app.cached_event_ranges.len(), 2, "Both measures must have cached event ranges");
+
+        // Enter note on Measure 2, string 6, fret 18
+        app.selected_event_idx = Some(1);
+        app.editing_string = Some(6);
+        app.editing_fret_buf = "18".to_string();
+        assert!(app.commit_fret_edit());
+
+        let doc3 = app.parsed_mnx.as_ref().unwrap();
+        let m2_ev = doc3.parts[0].measures[1].sequences[0].flattened_events()[0];
+        assert_eq!(m2_ev.notes.len(), 1);
+        assert_eq!(m2_ev.notes[0].string, Some(6));
+        assert_eq!(m2_ev.notes[0].fret, Some(18));
     }
 
     #[test]
@@ -2185,6 +2422,7 @@ parts:
                     step: "E".to_string(),
                     octave: 4,
                     alter: Some(crate::mnx::Alteration::Value(0.5)),
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2193,6 +2431,7 @@ parts:
                     step: "B".to_string(),
                     octave: 3,
                     alter: Some(crate::mnx::Alteration::Value(-0.5)),
+                    ..Default::default()
                 },
             },
         ];
@@ -2225,6 +2464,7 @@ parts:
                     step: "G".to_string(),
                     octave: 3,
                     alter: Some(crate::mnx::Alteration::Value(0.5)),
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2233,6 +2473,7 @@ parts:
                     step: "D".to_string(),
                     octave: 3,
                     alter: None,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2241,6 +2482,7 @@ parts:
                     step: "A".to_string(),
                     octave: 2,
                     alter: None,
+                    ..Default::default()
                 },
             },
             crate::mnx::StringTuning {
@@ -2249,6 +2491,7 @@ parts:
                     step: "E".to_string(),
                     octave: 2,
                     alter: None,
+                    ..Default::default()
                 },
             },
         ];
@@ -2906,6 +3149,1151 @@ parts:
         assert_eq!(app.active_dialog, ActiveDialog::None);
         assert!(app.validation_errors.is_empty());
         assert!(app.parsed_mnx.is_some());
+    }
+
+    #[test]
+    fn test_phase_2a_grid_controller_chord_entry_and_advance() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+        app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].fret_offset = 3; // Leftmost column = fret 3
+
+        let t0 = std::time::Instant::now();
+        // Press String 1 Col 0 (note 76 -> fret 3) and String 2 Col 2 (note 70 -> fret 5)
+        let (chord1, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 76,
+                is_note_on: true,
+                velocity: 100,
+            },
+            6,
+            t0,
+        );
+        assert!(app.grid_input.is_grid_input_mode);
+        let chord1 = chord1.unwrap();
+        app.mutate_doc(|doc| {
+            if crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &chord1) {
+                Some(())
+            } else {
+                None
+            }
+        });
+
+        let (chord2, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 70,
+                is_note_on: true,
+                velocity: 100,
+            },
+            6,
+            t0 + std::time::Duration::from_millis(20),
+        );
+        let chord2 = chord2.unwrap();
+        app.mutate_doc(|doc| {
+            if crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &chord2) {
+                Some(())
+            } else {
+                None
+            }
+        });
+
+        // Verify event 0 now has 2 notes: String 1 Fret 3 and String 2 Fret 5
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev0.notes.len(), 2);
+        assert_eq!(ev0.notes[0].string, Some(1));
+        assert_eq!(ev0.notes[0].fret, Some(3));
+        assert_eq!(ev0.notes[1].string, Some(2));
+        assert_eq!(ev0.notes[1].fret, Some(5));
+
+        // Release both pads and advance after 500ms
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 76,
+                is_note_on: false,
+                velocity: 0,
+            },
+            6,
+            t0 + std::time::Duration::from_millis(50),
+        );
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent {
+                slot_idx: 0,
+                note: 70,
+                is_note_on: false,
+                velocity: 0,
+            },
+            6,
+            t0 + std::time::Duration::from_millis(60),
+        );
+        let (_, should_finalize, ..) = app
+            .grid_input
+            .poll(6, t0 + std::time::Duration::from_millis(600));
+        assert!(should_finalize);
+
+        let total_events = app.cached_event_ranges.len();
+        app.advance_to_next_note_in_grid_mode(total_events);
+        assert_eq!(app.selected_event_idx, Some(1));
+        assert!(app.grid_input.is_grid_input_mode);
+        assert!(!app.is_editing_fret);
+    }
+
+    #[test]
+    fn test_grid_controller_input_buffer_hold_replace_and_overwrite() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].is_calibrated = true;
+        app.grid_input.slots[0].fret_offset = 0;
+
+        let t0 = std::time::Instant::now();
+
+        // 1. Press String 1 Fret 3 (note 76 + 3 = 79) and String 2 Fret 5 (note 68 + 5 = 73)
+        let (c1, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: true, velocity: 100 },
+            6,
+            t0,
+        );
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &c1.unwrap());
+            Some(())
+        });
+
+        let (c2, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 73, is_note_on: true, velocity: 100 },
+            6,
+            t0 + std::time::Duration::from_millis(20),
+        );
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &c2.unwrap());
+            Some(())
+        });
+
+        // Verify event 0 has both notes
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 2);
+            assert_eq!(ev.notes[0].string, Some(1));
+            assert_eq!(ev.notes[0].fret, Some(3));
+            assert_eq!(ev.notes[1].string, Some(2));
+            assert_eq!(ev.notes[1].fret, Some(5));
+        }
+
+        // 2. Press String 1 Fret 7 (note 76 + 7 = 83) while String 2 Fret 5 is held -> replaces String 1 note!
+        let (c3, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: true, velocity: 100 },
+            6,
+            t0 + std::time::Duration::from_millis(50),
+        );
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &c3.unwrap());
+            Some(())
+        });
+
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 2);
+            assert_eq!(ev.notes[0].string, Some(1));
+            assert_eq!(ev.notes[0].fret, Some(7), "String 1 note should be replaced with fret 7");
+            assert_eq!(ev.notes[1].string, Some(2));
+            assert_eq!(ev.notes[1].fret, Some(5));
+        }
+
+        // 3. Release pads: note 79, note 83 and note 73
+        let (c_rel0, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(60),
+        );
+        assert!(c_rel0.is_none(), "NoteOff should not remove notes from tab input buffer");
+
+        let (c_rel1, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(80),
+        );
+        assert!(c_rel1.is_none(), "NoteOff should not remove notes from tab input buffer");
+
+        let (c_rel2, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 73, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(90),
+        );
+        assert!(c_rel2.is_none(), "NoteOff should not remove notes from tab input buffer");
+
+        // Event 0 still holds the full chord in score
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 2);
+            assert_eq!(ev.notes[0].fret, Some(7));
+            assert_eq!(ev.notes[1].fret, Some(5));
+        }
+
+        // 4. Before 500ms latch expires (at +150ms), press String 3 Fret 2 (note 60 + 2 = 62)
+        // Following note-offs of all pressed keys, this MUST overwrite the full current set of red notes!
+        let (c4, ..) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 62, is_note_on: true, velocity: 100 },
+            6,
+            t0 + std::time::Duration::from_millis(150),
+        );
+        let chord4 = c4.expect("Should emit new chord");
+        assert_eq!(chord4.len(), 1, "Input buffer must be overwritten");
+        assert_eq!(chord4.get(&3), Some(&2));
+        assert_eq!(chord4.get(&1), None);
+        assert_eq!(chord4.get(&2), None);
+
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::set_chord_on_event_in_doc(doc, 0, &chord4);
+            Some(())
+        });
+
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes.len(), 1, "Event 0 notes should be fully overwritten");
+            assert_eq!(ev.notes[0].string, Some(3));
+            assert_eq!(ev.notes[0].fret, Some(2));
+        }
+
+        // 5. Release String 3 pad and wait for 500ms latch
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 62, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(200),
+        );
+        let (_, should_finalize, ..) = app.grid_input.poll(6, t0 + std::time::Duration::from_millis(710));
+        assert!(should_finalize);
+
+        let total_events = app.cached_event_ranges.len();
+        app.advance_to_next_note_in_grid_mode(total_events);
+        assert_eq!(app.selected_event_idx, Some(1));
+    }
+
+    #[test]
+    fn test_grid_controller_just_play_mode_bypasses_tab_and_tracks_live_notes() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.grid_input.slots[0].enabled = true;
+        app.grid_input.slots[0].is_calibrated = true;
+        app.grid_input.slots[0].fret_offset = 0;
+        app.grid_input.just_play_mode = true;
+
+        // Record initial event 0 notes
+        let initial_notes = {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes.clone()
+        };
+
+        let t0 = std::time::Instant::now();
+
+        // 1. Press String 1 Fret 3 (note 76 + 3 = 79)
+        let (chord1, cal1, live_ev1) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: true, velocity: 100 },
+            6,
+            t0,
+        );
+        assert!(!app.grid_input.is_grid_input_mode, "Must NOT enter red grid input mode in Just Play");
+        assert!(chord1.is_none(), "Must NOT emit chord updates for the tab");
+        assert!(cal1.is_none());
+        assert_eq!(
+            live_ev1,
+            Some(crate::grid_input::GridLivePlayEvent {
+                string: 1,
+                fret: 3,
+                is_note_on: true,
+                velocity: 100,
+            })
+        );
+
+        // Feed live event into app
+        app.handle_grid_live_play_events(vec![live_ev1.unwrap()]);
+        // With selected_midi_port = Some(0), active_grid_live_notes tracks String 1 Fret 3 (MIDI note 67 for G4)
+        if app.selected_midi_port.is_some() {
+            assert!(app.active_grid_live_notes.contains_key(&(1, 3)));
+            let (ch, key) = app.active_grid_live_notes.get(&(1, 3)).copied().unwrap();
+            assert_eq!(key.as_int(), 67); // G4 = 67
+            assert_eq!(ch.as_int(), 0); // String 1 -> Channel 1 (0-indexed 0)
+        }
+
+        // Verify the tab event was completely UNTOUCHED
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes, initial_notes, "Tab notes must be unmodified");
+        }
+
+        // 2. Release pad
+        let (chord2, _, live_ev2) = app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: false, velocity: 0 },
+            6,
+            t0 + std::time::Duration::from_millis(100),
+        );
+        assert!(!app.grid_input.is_grid_input_mode);
+        assert!(chord2.is_none());
+        assert_eq!(
+            live_ev2,
+            Some(crate::grid_input::GridLivePlayEvent {
+                string: 1,
+                fret: 3,
+                is_note_on: false,
+                velocity: 0,
+            })
+        );
+        app.handle_grid_live_play_events(vec![live_ev2.unwrap()]);
+        assert!(!app.active_grid_live_notes.contains_key(&(1, 3)));
+
+        // 3. Toggling off Just Play mode resets held pads and returns note-offs
+        app.grid_input.process_event(
+            crate::grid_input::GridMidiEvent { slot_idx: 0, note: 79, is_note_on: true, velocity: 90 },
+            6,
+            t0 + std::time::Duration::from_millis(200),
+        );
+        let note_offs = app.grid_input.set_just_play_mode(false);
+        assert_eq!(note_offs.len(), 1);
+        assert_eq!(note_offs[0].string, 1);
+        assert_eq!(note_offs[0].fret, 3);
+        assert!(!note_offs[0].is_note_on);
+        assert!(!app.grid_input.just_play_mode);
+    }
+
+    #[test]
+    fn test_phase_2b_custom_fretboard_ratio_and_decimal_fretlet_end_to_end() {
+        let mut app = MnxEditorApp::default();
+        let doc = app.parsed_mnx.as_ref().unwrap().clone();
+        let mut state = crate::fretboard_editor::FretboardEditorState::from_doc(&doc);
+
+        // 1. Place pure ratio frets: 5/4 (full neck -> Fret 1), 11/8 (fretlet on String 1 -> Fret 1.5), 3/2 (full neck -> Fret 2)
+        state.frets = vec![
+            crate::fretboard_editor::CustomFret {
+                fret_number: 1.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 5, den: 4 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "vE".to_string(),
+            },
+            crate::fretboard_editor::CustomFret {
+                fret_number: 1.5,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 11, den: 8 },
+                strings: vec![1],
+                note_name: "^F".to_string(),
+            },
+            crate::fretboard_editor::CustomFret {
+                fret_number: 2.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 3, den: 2 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "G".to_string(),
+            },
+        ];
+        crate::fretboard_editor::recompute_fret_numbers(&mut state.frets, 6);
+        assert!((state.frets[1].fret_number - 1.5).abs() < 1e-4);
+
+        app.apply_custom_fretboard_state(state);
+
+        // Verify global._x.tuning.referenceNote was written to YAML for PureRatio mode
+        assert!(app.yaml_text.contains("referenceNote:"));
+        assert!(app.yaml_text.contains("customFrets:"));
+
+        // Enter decimal fret 1.5 on String 1 at Event 0
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "1.5".to_string();
+        assert!(app.commit_fret_edit());
+
+        let doc_after = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc_after.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let n0 = ev0.notes.iter().find(|n| n.string == Some(1)).unwrap();
+        assert_eq!(n0.decimal_fret, Some(1.5));
+        assert_eq!(n0.formatted_fret().as_deref(), Some("1.5"));
+        assert_eq!(n0.pitch.step, "E");
+        assert_eq!(
+            n0.pitch.alter,
+            Some(crate::mnx::Alteration::Fraction("11/8".to_string()))
+        );
+        // Open String 1 is vE (step 17 in 53-EDO) + 11/8 (^F = step 23 in 53-EDO) -> step 40 in 53-EDO = A
+        assert_eq!(n0.pitch.ext.name.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn test_ji_custom_fretboard_three_string_tuning_examples_and_mnx_export() {
+        let mut app = MnxEditorApp::default();
+
+        // Set up custom fret 6 as a full 5/4 fret (with manual_number = Some(6.0)), reference note D4 = 293.67 Hz
+        let custom_fret_6 = crate::fretboard_editor::CustomFret {
+            fret_number: 6.0,
+            manual_number: Some(6.0),
+            spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 5, den: 4 },
+            strings: vec![1, 2, 3, 4, 5, 6],
+            note_name: crate::fretboard_editor::recommend_53edo_note_name_from_cents(
+                1200.0 * (5.0_f64 / 4.0).log2(),
+            ), // "vE"
+        };
+        assert_eq!(custom_fret_6.note_name, "vE");
+
+        // ---------------------------------------------------------------------
+        // Example 1: Open string 1 tuned to G4 in 41-EDO, custom fret 6 = 5/4
+        // ---------------------------------------------------------------------
+        app.start_new_tab(
+            6,
+            41,
+            1,
+            vec![crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "G".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt::default(),
+                },
+            }],
+        );
+        let state1 = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            vec![custom_fret_6.clone()],
+            "D".to_string(),
+            4,
+            293.67,
+        );
+        app.apply_custom_fretboard_state(state1);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "6".to_string();
+        assert!(app.commit_fret_edit());
+
+        assert!(
+            app.yaml_text
+                .contains("pitch: {step: G, alter: 5/4, octave: 4, _x: {name: vB}}"),
+            "Example 1 YAML mismatch:\n{}",
+            app.yaml_text
+        );
+        assert!(
+            app.yaml_text.contains("_x: {string: 1, fret: 6}"),
+            "Example 1 NoteExt mismatch:\n{}",
+            app.yaml_text
+        );
+
+        let mnx_json_1 = crate::mnx::export_yaml_to_mnx_json(&app.yaml_text).unwrap();
+        assert!(mnx_json_1.contains("\"step\": \"B\""));
+        assert!(mnx_json_1.contains("\"alter\": -0.137"));
+
+        // ---------------------------------------------------------------------
+        // Example 2: Open string 1 tuned to 4/3, reference note 1/1 is D4 = 293.67 Hz
+        // ---------------------------------------------------------------------
+        let (_, cents_4_3) =
+            crate::fretboard_editor::parse_ratio_or_cents_to_cents("4/3").unwrap();
+        let rec_name_2 =
+            crate::fretboard_editor::recommend_53edo_name_from_reference("D", cents_4_3);
+        assert_eq!(rec_name_2, "G");
+
+        app.start_new_tab(
+            6,
+            41,
+            1,
+            vec![crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt {
+                        name: Some(rec_name_2),
+                    },
+                },
+            }],
+        );
+        let state2 = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            vec![custom_fret_6.clone()],
+            "D".to_string(),
+            4,
+            293.67,
+        );
+        app.apply_custom_fretboard_state(state2);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "6".to_string();
+        assert!(app.commit_fret_edit());
+
+        assert!(
+            app.yaml_text
+                .contains("pitch: {step: 4/3, alter: 5/4, octave: 4, _x: {name: vB}}"),
+            "Example 2 YAML mismatch:\n{}",
+            app.yaml_text
+        );
+        assert!(
+            app.yaml_text.contains("_x: {string: 1, fret: 6}"),
+            "Example 2 NoteExt mismatch:\n{}",
+            app.yaml_text
+        );
+
+        let mnx_json_2 = crate::mnx::export_yaml_to_mnx_json(&app.yaml_text).unwrap();
+        assert!(mnx_json_2.contains("\"step\": \"B\""));
+        assert!(mnx_json_2.contains("\"alter\": -0.156"));
+
+        // ---------------------------------------------------------------------
+        // Example 3: Open string 1 tuned to 498.0 (cents), reference note 1/1 is D4 = 293.67 Hz
+        // ---------------------------------------------------------------------
+        let (step_498, cents_498) =
+            crate::fretboard_editor::parse_ratio_or_cents_to_cents("498.0").unwrap();
+        assert_eq!(step_498, "498.0");
+        let rec_name_3 =
+            crate::fretboard_editor::recommend_53edo_name_from_reference("D", cents_498);
+        assert_eq!(rec_name_3, "G");
+
+        app.start_new_tab(
+            6,
+            41,
+            1,
+            vec![crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: step_498,
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt {
+                        name: Some(rec_name_3),
+                    },
+                },
+            }],
+        );
+        let state3 = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            vec![custom_fret_6],
+            "D".to_string(),
+            4,
+            293.67,
+        );
+        app.apply_custom_fretboard_state(state3);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "6".to_string();
+        assert!(app.commit_fret_edit());
+
+        assert!(
+            app.yaml_text
+                .contains("pitch: {step: 498.0, alter: 5/4, octave: 4, _x: {name: vB}}"),
+            "Example 3 YAML mismatch:\n{}",
+            app.yaml_text
+        );
+        assert!(
+            app.yaml_text.contains("_x: {string: 1, fret: 6}"),
+            "Example 3 NoteExt mismatch:\n{}",
+            app.yaml_text
+        );
+
+        let mnx_json_3 = crate::mnx::export_yaml_to_mnx_json(&app.yaml_text).unwrap();
+        assert!(mnx_json_3.contains("\"step\": \"B\""));
+        assert!(mnx_json_3.contains("\"alter\": -0.157"));
+
+        // Verify opening Instrument Setup from this Ratio/Cents document detects RatioCents mode
+        app.open_instrument_setup_dialog(true);
+        match &app.active_dialog {
+            ActiveDialog::InstrumentSetup {
+                tuning_mode,
+                tunings_text,
+                tunings_name,
+                show_custom_fretboard,
+                ..
+            } => {
+                assert_eq!(*tuning_mode, InstrumentTuningMode::RatioCents);
+                assert_eq!(tunings_text[0], "498.0");
+                assert_eq!(tunings_name[0], "G");
+                assert!(*show_custom_fretboard);
+            }
+            other => panic!("Expected InstrumentSetup dialog, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_natural_harmonic_shift_selected_strings_recalculates_sounding_pitch() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "12".to_string();
+        assert!(app.commit_fret_edit());
+        app.selected_note_idx_in_event = Some(0);
+
+        // Toggle natural harmonic at fret 12 on String 1 (E4 -> sounding E5)
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 12.0);
+            assert_eq!(h.sounding_note.pitch.step, "E");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors: {:?}", app.validation_errors);
+
+        // Shift down a string (Option+Down): String 1 -> String 2 (B3 open -> sounding B4)
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(2));
+            assert_eq!(ev.notes[0].fret, Some(12));
+            let h = ev.notes[0].harmonic.as_ref().expect("Harmonic must persist when shifted to string 2");
+            assert_eq!(h.touch, 12.0);
+            assert_eq!(h.sounding_note.pitch.step, "B");
+            assert_eq!(h.sounding_note.pitch.octave, 4);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 2: {:?}", app.validation_errors);
+
+        // Shift down to String 3 (G3 open -> sounding G4)
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(3));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.sounding_note.pitch.step, "G");
+            assert_eq!(h.sounding_note.pitch.octave, 4);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 3: {:?}", app.validation_errors);
+
+        // Shift all the way down to String 6 (E2 open -> sounding E3)
+        app.action_shift_selected_strings(1); // 4 (D3 -> D4)
+        app.action_shift_selected_strings(1); // 5 (A2 -> A3)
+        app.action_shift_selected_strings(1); // 6 (E2 -> E3)
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(6));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.sounding_note.pitch.step, "E");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 6: {:?}", app.validation_errors);
+
+        // Shift back up to String 1 (Option+Up): String 6 -> 1
+        for _ in 0..5 {
+            app.action_shift_selected_strings(-1);
+        }
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(1));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.sounding_note.pitch.step, "E");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 1: {:?}", app.validation_errors);
+    }
+
+    #[test]
+    fn test_natural_harmonic_7th_fret_shift_selected_strings() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "7".to_string();
+        assert!(app.commit_fret_edit());
+        app.selected_note_idx_in_event = Some(0);
+
+        // Fret 7 on String 1 (n = 3, 1/3 node on E4 -> sounding B5)
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 7.0);
+            assert_eq!(h.sounding_note.pitch.step, "B");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+        }
+        assert!(app.validation_errors.is_empty());
+
+        // Shift to String 2 (n = 3 on B3 -> sounding F#5)
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(2));
+            assert_eq!(ev.notes[0].fret, Some(7));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 7.0);
+            assert_eq!(h.sounding_note.pitch.step, "F");
+            assert_eq!(h.sounding_note.pitch.octave, 5);
+            let alter = h.sounding_note.pitch.alter.as_ref().map(|a| a.as_semitones()).unwrap_or(0.0);
+            assert!((alter - 1.0).abs() < 0.05);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 2: {:?}", app.validation_errors);
+    }
+
+    #[test]
+    fn test_natural_harmonic_shift_selected_strings_custom_fretboard() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch { step: "5/3".to_string(), alter: None, octave: 4, ext: crate::mnx::PitchExt { name: Some("vB".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 3, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch { step: "4/3".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("G".to_string()) } },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch { step: "1/1".to_string(), alter: None, octave: 2, ext: crate::mnx::PitchExt { name: Some("D".to_string()) } },
+            },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+
+        let bug_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(
+            include_str!("../../context/harmonics entry bug.yaml")
+        ).expect("Bug file must parse");
+        let custom_frets = bug_doc.parts[0].ext.custom_frets.clone().unwrap();
+
+        let fb_state = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            custom_frets,
+            "D".to_string(),
+            4,
+            293.66,
+        );
+        app.apply_custom_fretboard_state(fb_state);
+
+        // Enter fret 18 on String 6 (D2 open -> harmonic 2 sounds D3)
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(6);
+        app.editing_fret_buf = "18".to_string();
+        assert!(app.commit_fret_edit());
+
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic());
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "D");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors: {:?}", app.validation_errors);
+
+        // Shift up to String 5 (G2 open -> harmonic 2 sounds G3)
+        app.action_shift_selected_strings(-1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(5));
+            assert_eq!(ev.notes[0].fret, Some(18));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "G");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 5: {:?}", app.validation_errors);
+
+        // Shift up to String 4 (D3 open -> harmonic 2 sounds D4)
+        app.action_shift_selected_strings(-1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(4));
+            assert_eq!(ev.notes[0].fret, Some(18));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "D");
+            assert_eq!(h.sounding_note.pitch.octave, 4);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 4: {:?}", app.validation_errors);
+
+        // Shift back to String 6 (D2 open -> harmonic 2 sounds D3)
+        app.action_shift_selected_strings(1);
+        app.action_shift_selected_strings(1);
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let ev = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+            assert_eq!(ev.notes[0].string, Some(6));
+            assert_eq!(ev.notes[0].fret, Some(18));
+            let h = ev.notes[0].harmonic.as_ref().unwrap();
+            assert_eq!(h.touch, 18.0);
+            assert_eq!(h.sounding_note.pitch.step, "D");
+            assert_eq!(h.sounding_note.pitch.octave, 3);
+        }
+        assert!(app.validation_errors.is_empty(), "Validation errors on String 6: {:?}", app.validation_errors);
+    }
+
+    #[test]
+    fn test_instrument_preset_custom_fretboard_and_ji_dialog_actions() {
+        let mut app = MnxEditorApp::default();
+        app.open_instrument_setup_dialog(true);
+
+        // Build a custom fretboard & JI preset
+        let custom_frets = vec![
+            crate::fretboard_editor::CustomFret {
+                fret_number: 1.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 22, den: 21 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "Db".to_string(),
+            },
+            crate::fretboard_editor::CustomFret {
+                fret_number: 2.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 13, den: 12 },
+                strings: vec![1, 2, 3, 4, 5, 6],
+                note_name: "^C#".to_string(),
+            },
+        ];
+        let ji_tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt { name: Some("G".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch {
+                    step: "5/3".to_string(),
+                    alter: None,
+                    octave: 4,
+                    ext: crate::mnx::PitchExt { name: Some("vB".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 3,
+                    ext: crate::mnx::PitchExt { name: Some("G".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch {
+                    step: "1/1".to_string(),
+                    alter: None,
+                    octave: 3,
+                    ext: crate::mnx::PitchExt { name: Some("D".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch {
+                    step: "4/3".to_string(),
+                    alter: None,
+                    octave: 2,
+                    ext: crate::mnx::PitchExt { name: Some("G".to_string()) },
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch {
+                    step: "1/1".to_string(),
+                    alter: None,
+                    octave: 2,
+                    ext: crate::mnx::PitchExt { name: Some("D".to_string()) },
+                },
+            },
+        ];
+        let ref_note = crate::mnx::ReferenceNoteSpec {
+            pitch: crate::mnx::Pitch {
+                step: "D".to_string(),
+                alter: None,
+                octave: 4,
+                ext: Default::default(),
+            },
+            frequency_hz: 293.66,
+        };
+
+        let custom_preset = crate::presets::InstrumentPreset {
+            name: "Test JI Preset".to_string(),
+            edo: None,
+            step_multiplier: None,
+            capo: None,
+            custom_frets: Some(custom_frets),
+            reference_note: Some(ref_note),
+            tuning: ji_tunings,
+        };
+
+        // Extract dialog mutable state and apply preset
+        if let ActiveDialog::InstrumentSetup {
+            num_strings,
+            edo,
+            step_multiplier,
+            tuning_mode,
+            tunings_text,
+            tunings_name,
+            tunings_octave,
+            show_custom_fretboard,
+            fretboard_editor,
+            ..
+        } = &mut app.active_dialog
+        {
+            custom_preset.apply_to_dialog_state(
+                num_strings,
+                edo,
+                step_multiplier,
+                tuning_mode,
+                tunings_text,
+                tunings_name,
+                tunings_octave,
+                fretboard_editor,
+                show_custom_fretboard,
+            );
+
+            assert_eq!(*tuning_mode, InstrumentTuningMode::RatioCents);
+            assert!(*show_custom_fretboard);
+            assert_eq!(tunings_text[0], "4/3");
+            assert_eq!(tunings_name[0], "G");
+            assert_eq!(tunings_text[1], "5/3");
+            assert_eq!(tunings_name[1], "vB");
+            assert_eq!(fretboard_editor.frets.len(), 2);
+            assert_eq!(fretboard_editor.reference_note_step, "D");
+            assert_eq!(fretboard_editor.reference_frequency_hz, 293.66);
+
+            // Test creating and adding preset into app's preset list
+            let reconstructed = crate::presets::InstrumentPreset::from_dialog_state(
+                "Test JI Preset",
+                *num_strings,
+                *edo,
+                *step_multiplier,
+                *tuning_mode,
+                tunings_text,
+                tunings_name,
+                tunings_octave,
+                fretboard_editor,
+            )
+            .expect("from_dialog_state succeeds");
+            assert_eq!(reconstructed, custom_preset);
+        } else {
+            panic!("Expected ActiveDialog::InstrumentSetup");
+        }
+
+        crate::presets::add_or_update_preset(&mut app.instrument_presets, custom_preset);
+        assert!(app.instrument_presets.iter().any(|p| p.name == "Test JI Preset"));
+        let saved = app.instrument_presets.iter().find(|p| p.name == "Test JI Preset").unwrap();
+        assert!(saved.has_custom_frets());
+        assert!(saved.has_non_edo_tuning());
+        assert_eq!(saved.custom_frets.as_ref().unwrap().len(), 2);
+
+        // Verify YAML roundtrip of the preset
+        let yaml = crate::presets::serialize_preset_to_yaml(saved).expect("yaml serialization succeeds");
+        let parsed = crate::presets::parse_presets_from_yaml(&yaml).expect("yaml parsing succeeds");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0], *saved);
+    }
+
+    #[test]
+    fn test_phase_a_toolbar_and_harmonic_hotkey() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Select first event and select note on string 1
+        app.selected_event_idx = Some(0);
+        app.select_note_on_string(0, 1);
+        assert!(!app.is_selected_note_harmonic());
+
+        // Trigger action_toggle_harmonic (hotkey H behavior)
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic(), "Hotkey H toggles harmonic on");
+
+        // Toggle again turns it off
+        app.action_toggle_harmonic();
+        assert!(!app.is_selected_note_harmonic(), "Hotkey H toggles harmonic off");
+
+        // Verify Continuous mode vs Layout mode break button condition
+        assert_eq!(app.view_mode, ViewMode::Continuous);
+        assert!(!(app.view_mode != ViewMode::Continuous), "Continuous mode suppresses break buttons");
+
+        app.view_mode = ViewMode::Layout;
+        assert!(app.view_mode != ViewMode::Continuous, "Layout mode enables break buttons");
+    }
+
+    #[test]
+    fn test_harmonic_hotkey_single_toggle_in_ui_frame() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Put a note on String 1 at Fret 12 (standard harmonic node on E4)
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "12".to_string();
+        assert!(app.commit_fret_edit());
+        app.select_note_on_string(0, 1);
+        assert!(!app.is_selected_note_harmonic());
+
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        let total_events = app.cached_event_ranges.len();
+        let event_ranges = app.cached_event_ranges.clone();
+
+        // Frame 1: User presses 'H'
+        let mut raw_input = egui::RawInput::default();
+        raw_input.events.push(egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+
+        let mut output = ctx.run_ui(raw_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_top_panel(ui, &event_ranges, total_events);
+                app.handle_keyboard_input(ui, false, &event_ranges, total_events);
+            });
+        });
+        output.textures_delta.clear();
+
+        assert!(
+            app.is_selected_note_harmonic(),
+            "Pressing 'H' once MUST leave the note as harmonic, not double-toggle it back to 0!"
+        );
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let n0 = ev0.notes.iter().find(|n| n.string == Some(1)).unwrap();
+        assert!(n0.harmonic.is_some(), "Note must have harmonic property");
+        assert_ne!(n0.fret, Some(0), "Fret must NOT be 0");
+
+        // Frame 2: User presses 'H' again
+        let mut raw_input2 = egui::RawInput::default();
+        raw_input2.events.push(egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+
+        let mut output2 = ctx.run_ui(raw_input2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_top_panel(ui, &event_ranges, total_events);
+                app.handle_keyboard_input(ui, false, &event_ranges, total_events);
+            });
+        });
+        output2.textures_delta.clear();
+
+        assert!(
+            !app.is_selected_note_harmonic(),
+            "Pressing 'H' a second time must toggle harmonic off"
+        );
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let n0_2 = ev0_2.notes.iter().find(|n| n.string == Some(1)).unwrap();
+        assert_eq!(n0_2.fret, Some(12), "Untoggling harmonic on fret 12 must restore regular fret 12");
+        assert_eq!(n0_2.pitch.step, "B");
+    }
+
+    #[test]
+    fn test_grid_controller_phase_c_popup_and_just_play_disabled() {
+        let mut app = MnxEditorApp::default();
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+
+        // 1. Initially no controller connected or calibrated -> Just Play must be disabled
+        assert!(!app.grid_input.has_connected_and_calibrated_controller());
+        assert!(!app.grid_input.just_play_mode);
+        assert!(app.grid_input.set_just_play_mode(true).is_empty());
+        assert!(!app.grid_input.just_play_mode);
+
+        // 2. Start calibration for Grid 1
+        app.grid_input.start_calibration(0);
+        assert!(app.grid_input.active_calibration.is_some());
+        let (slot, step, _) = app.grid_input.active_calibration.unwrap();
+        assert_eq!(slot, 0);
+        assert_eq!(step, crate::grid_input::CalibrationStep::UpperLeft);
+
+        // Render UI frame while calibrating and with popup open (verifies 4 rectangles and active yellow guide text)
+        app.show_grid_controllers_popup = true;
+        let event_ranges = app.cached_event_ranges.clone();
+        let total_events = event_ranges.len();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_top_panel(ui, &event_ranges, total_events);
+            });
+        });
+        out.textures_delta.clear();
+        assert!(app.show_grid_controllers_popup);
+
+        // 3. Complete 4-corner calibration for slot 0
+        let t0 = std::time::Instant::now();
+        app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 76, is_note_on: true, velocity: 100 }, 6, t0);
+        app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 36, is_note_on: true, velocity: 100 }, 6, t0);
+        app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 83, is_note_on: true, velocity: 100 }, 6, t0);
+        let (_, cal_done, _) = app.grid_input.process_event(crate::grid_input::GridMidiEvent { slot_idx: 0, note: 43, is_note_on: true, velocity: 100 }, 6, t0);
+
+        assert_eq!(cal_done, Some(0));
+        assert!(app.grid_input.slots[0].is_calibrated);
+        assert!(app.grid_input.active_calibration.is_none());
+
+        // 4. Connect slot 0 with valid calibration -> Just Play mode can now be enabled!
+        app.grid_input.slots[0].enabled = true;
+        assert!(app.grid_input.has_connected_and_calibrated_controller());
+        app.grid_input.set_just_play_mode(true);
+        assert!(app.grid_input.just_play_mode);
     }
 }
 

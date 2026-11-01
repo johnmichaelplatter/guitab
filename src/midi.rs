@@ -370,7 +370,8 @@ impl<'a> PlaybackTrackGenerator<'a> {
         measure_start_ticks: &[u32],
         schedule_map: &HashMap<(usize, usize, usize), (u32, u32)>,
     ) {
-        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_part_default(part);
+        let freq_table =
+            crate::tuning_table::FretboardFrequencyTable::from_doc_part(self.doc, part);
         let mut string_notes_timeline: std::collections::HashMap<u8, Vec<(u32, f64)>> =
             std::collections::HashMap::new();
         for (fm_idx, &m_idx) in flattened_measures.iter().enumerate() {
@@ -397,13 +398,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                             .string
                             .or_else(|| note.harmonic.as_ref().and_then(|h| h.sounding_note.string));
                         if let Some(string) = string_opt {
-                            let midi_frac_opt = if let Some(harmonic) = &note.harmonic {
-                                Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
-                            } else if let Some(fret) = note.fret {
-                                freq_table.get(string, fret).map(|s| s.midi_note_number)
-                            } else {
-                                Some(freq_table.pitch_to_midi_note_number(&note.pitch))
-                            };
+                            let midi_frac_opt = freq_table.note_to_midi_note_number(part, note);
                             if let Some(midi_frac) = midi_frac_opt {
                                 string_notes_timeline
                                     .entry(string)
@@ -656,13 +651,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 .copied()
                                 .unwrap_or(default_ch);
 
-                            let midi_note_frac_opt = if let Some(harmonic) = &note.harmonic {
-                                Some(freq_table.pitch_to_midi_note_number(&harmonic.sounding_note.pitch))
-                            } else if let Some(fret) = note.fret {
-                                freq_table.get(string, fret).map(|s| s.midi_note_number)
-                            } else {
-                                Some(freq_table.pitch_to_midi_note_number(&note.pitch))
-                            };
+                            let midi_note_frac_opt = freq_table.note_to_midi_note_number(part, note);
 
                             if let Some(midi_note_frac) = midi_note_frac_opt {
                                 let base_note = midi_note_frac.round() as u8;
@@ -1525,6 +1514,112 @@ impl MidiPlayer {
         });
 
         self.handle = Some(handle);
+        Ok(())
+    }
+
+    /// Sends an immediate Note On message (with optional pitch bend for microtones) for live playing.
+    pub fn send_live_note_on(
+        &mut self,
+        port_index: usize,
+        channel: midly::num::u4,
+        key: midly::num::u7,
+        velocity: midly::num::u7,
+        pitch_bend: Option<u16>,
+        is_mpe: bool,
+        member_channels: u8,
+        pb_range: u8,
+    ) -> Result<(), String> {
+        if cfg!(test) {
+            return Ok(());
+        }
+        self.ensure_connection(port_index)?;
+
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+        if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
+            if is_mpe {
+                send_mpe_configuration(conn_out, member_channels.min(15));
+            }
+
+            let ch = channel.as_int();
+            let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
+            let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
+
+            if let Some(pb_val) = pitch_bend {
+                let pb_msg = midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::from(pb_val)),
+                };
+                let bytes = serialize_midi_message(channel, &pb_msg);
+                if !bytes.is_empty() {
+                    let _ = conn_out.send(&bytes);
+                }
+            }
+
+            let note_on = midly::MidiMessage::NoteOn {
+                key,
+                vel: velocity,
+            };
+            let bytes = serialize_midi_message(channel, &note_on);
+            if !bytes.is_empty() {
+                let _ = conn_out.send(&bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends an immediate Note Off message for live playing.
+    pub fn send_live_note_off(
+        &mut self,
+        port_index: usize,
+        channel: midly::num::u4,
+        key: midly::num::u7,
+    ) -> Result<(), String> {
+        if cfg!(test) {
+            return Ok(());
+        }
+        self.ensure_connection(port_index)?;
+
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+        if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
+            let note_off = midly::MidiMessage::NoteOff {
+                key,
+                vel: midly::num::u7::from(64),
+            };
+            let bytes = serialize_midi_message(channel, &note_off);
+            if !bytes.is_empty() {
+                let _ = conn_out.send(&bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends All Notes Off and All Sound Off to all 16 MIDI channels.
+    pub fn all_notes_off(&mut self, port_index: usize) -> Result<(), String> {
+        if cfg!(test) {
+            return Ok(());
+        }
+        self.ensure_connection(port_index)?;
+
+        let mut guard = self
+            .connection
+            .lock()
+            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+        if let Some(cached) = guard.as_mut() {
+            let conn_out = &mut cached.conn;
+            for ch in 0..16 {
+                let _ = conn_out.send(&[0xB0 | ch, 123, 0]); // All Notes Off
+                let _ = conn_out.send(&[0xB0 | ch, 120, 0]); // All Sound Off
+            }
+        }
         Ok(())
     }
 }
