@@ -762,7 +762,6 @@ impl MnxEditorApp {
                         });
 
                         ui.horizontal(|ui| {
-                            ui.label("YAML Presets:");
                             if ui
                                 .button("Import Preset(s)...")
                                 .on_hover_text("Import a single preset or a list of presets from a YAML file")
@@ -1028,7 +1027,7 @@ impl MnxEditorApp {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut tunings_name[s])
                                             .text_color(name_color)
-                                            .desired_width(50.0)
+                                            .desired_width(34.0)
                                             .hint_text("e.g. G"),
                                     );
 

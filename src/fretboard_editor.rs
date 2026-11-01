@@ -955,48 +955,20 @@ impl FretboardEditorState {
 
     /// Renders the interactive Custom Fretboard Editor UI inside an egui window/panel.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        // 1. Top controls: Dotted Guide Grid input + Reference 1/1 Hz
+        // 1. Top controls: Dotted Guide Grid input
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Dotted Guide Grid:").strong());
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.guide_input)
                     .desired_width(95.0)
                     .hint_text("e.g. 5/4, 128.0, 2\\41"),
-            );
+            )
+            .on_hover_text("Type an interval. Examples:\nRatio: 5/4 • Cents: 128.0 • EDO Step: 2\\41");
             if resp.changed() {
                 self.update_guides();
             }
-            ui.label(
-                egui::RichText::new("(Ratio: 5/4 • Cents: 128.0 • EDO Step: 2\\41)")
-                    .small()
-                    .color(Color32::GRAY),
-            );
 
             ui.separator();
-            ui.label("1/1 Reference:");
-            egui::ComboBox::from_id_salt("custom_fret_ref_step")
-                .selected_text(&self.reference_note_step)
-                .width(45.0)
-                .show_ui(ui, |ui| {
-                    for step in ["C", "D", "E", "F", "G", "A", "B"] {
-                        ui.selectable_value(
-                            &mut self.reference_note_step,
-                            step.to_string(),
-                            step,
-                        );
-                    }
-                });
-            ui.add(
-                egui::DragValue::new(&mut self.reference_note_octave)
-                    .range(0..=8)
-                    .prefix("Oct "),
-            );
-            ui.add(
-                egui::DragValue::new(&mut self.reference_frequency_hz)
-                    .range(20.0..=2000.0)
-                    .speed(0.5)
-                    .suffix(" Hz"),
-            );
 
             if ui.button("Clear All Frets").clicked() {
                 self.frets.clear();
@@ -1539,7 +1511,7 @@ impl FretboardEditorState {
                         ));
                         ui.label("Note Name:");
                         ui.add(
-                            egui::TextEdit::singleline(&mut fret.note_name).desired_width(60.0),
+                            egui::TextEdit::singleline(&mut fret.note_name).desired_width(34.0),
                         );
                         if ui.small_button("Default").clicked() {
                             fret.note_name = recommend_53edo_note_name_from_cents(fret.cents());
@@ -1813,5 +1785,28 @@ mod tests {
         assert_eq!(state.frets.len(), 5);
         assert_eq!(state.frets[0].spec.display_label(), "25/16");
         assert_eq!(state.frets[1].spec.display_label(), "125/64");
+    }
+
+    #[test]
+    fn test_custom_fretboard_phase_b_ui_layout_and_clear_all() {
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        let mut state = FretboardEditorState::new(6, Vec::new(), "D".to_string(), 4, 293.67);
+        state.guide_input = "5/4".to_string();
+        state.update_guides();
+        state.add_all_guide_frets();
+        assert_eq!(state.frets.len(), 6);
+
+        // Run UI frame with egui
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            state.ui(ui);
+        });
+        out.textures_delta.clear();
+
+        // Test clearing all frets
+        state.frets.clear();
+        state.selected_fret_idx = None;
+        state.editing_badge = None;
+        assert!(state.frets.is_empty());
     }
 }
