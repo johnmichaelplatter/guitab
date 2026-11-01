@@ -1603,25 +1603,60 @@ impl MnxEditorApp {
             None => return,
         };
 
-        // If harmonic already exists: remove it and restore note to fret 0
-        if note.harmonic.is_some() {
+        // If harmonic already exists: remove it and restore note to regularly fretted note if location exists, else fret 0
+        if let Some(harmonic) = &note.harmonic {
+            let touch = harmonic.touch;
             let ref_note = doc
                 .global
                 .ext
                 .tuning
                 .as_ref()
                 .and_then(|t| t.reference_note.as_ref());
-            let p0 = doc
-                .parts
-                .first()
-                .and_then(|part| crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(part, string_num, 0.0, ref_note));
+            let part = match doc.parts.first() {
+                Some(p) => p,
+                None => return,
+            };
+
+            // Check if this fret location regularly exists on this string:
+            let fret_exists = if let Some(custom_frets) = &part.ext.custom_frets {
+                if !custom_frets.is_empty() {
+                    custom_frets.iter().any(|cf| {
+                        (cf.fret_number - touch).abs() < 1e-4
+                            && (cf.strings.is_empty() || cf.strings.contains(&string_num))
+                    })
+                } else {
+                    // Standard EDO guitar: whole integer frets
+                    (touch.fract().abs() < 1e-4) || ((1.0 - touch.fract()).abs() < 1e-4)
+                }
+            } else {
+                // Standard EDO guitar: whole integer frets
+                (touch.fract().abs() < 1e-4) || ((1.0 - touch.fract()).abs() < 1e-4)
+            };
+
+            let target_fret = if fret_exists {
+                touch
+            } else {
+                0.0
+            };
+
+            let target_pitch = crate::yaml_editor::calculate_pitch_for_string_decimal_fret_with_ref(
+                part,
+                string_num,
+                target_fret,
+                ref_note,
+            );
 
             if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
                 if let Some(n) = ev.notes.get_mut(note_idx) {
                     n.harmonic = None;
-                    n.fret = Some(0);
-                    n.decimal_fret = None;
-                    if let Some(p) = p0 {
+                    if target_fret.fract().abs() > 1e-4 {
+                        n.decimal_fret = Some(target_fret);
+                        n.fret = Some(target_fret.round() as i32);
+                    } else {
+                        n.fret = Some(target_fret.round() as i32);
+                        n.decimal_fret = None;
+                    }
+                    if let Some(p) = target_pitch {
                         n.pitch = p;
                     }
                 }
@@ -1629,6 +1664,7 @@ impl MnxEditorApp {
             self.selected_note_idx_in_event = Some(note_idx);
             self.editing_string = Some(string_num);
             self.apply_mutated_doc(doc);
+            self.preview_selected_sound();
             return;
         }
 
@@ -1668,6 +1704,7 @@ impl MnxEditorApp {
             self.selected_note_idx_in_event = Some(note_idx);
             self.editing_string = Some(string_num);
             self.apply_mutated_doc(doc);
+            self.preview_selected_sound();
         } else {
             self.active_dialog = ActiveDialog::NaturalHarmonicPrompt {
                 event_idx,

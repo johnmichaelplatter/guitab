@@ -1,6 +1,35 @@
 use super::*;
 use eframe::egui::{self};
 
+/// Helper to paint a directional triangle (up or right) on the right side of a button,
+/// dynamically matching the button's interactive foreground stroke color.
+fn paint_directional_triangle(ui: &egui::Ui, response: &egui::Response, point_up: bool) {
+    let r = response.rect;
+    let margin_right = 10.0;
+    let center_x = r.max.x - margin_right;
+    let center_y = r.center().y;
+    let color = ui.style().interact(response).fg_stroke.color;
+    let size = 4.0;
+    let points = if point_up {
+        vec![
+            egui::pos2(center_x - size, center_y + size * 0.7),
+            egui::pos2(center_x + size, center_y + size * 0.7),
+            egui::pos2(center_x, center_y - size * 0.9),
+        ]
+    } else {
+        vec![
+            egui::pos2(center_x - size * 0.7, center_y - size),
+            egui::pos2(center_x - size * 0.7, center_y + size),
+            egui::pos2(center_x + size * 0.9, center_y),
+        ]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
 impl MnxEditorApp {
     pub(crate) fn render_dialogs(&mut self, ctx: &egui::Context) {
         enum DialogAction {
@@ -1035,17 +1064,15 @@ impl MnxEditorApp {
                                 close_dialog = true;
                             }
                             let toggle_label = if *show_custom_fretboard {
-                                "Hide Custom Fretboard Editor ▴"
+                                "Hide Custom Fretboard Editor    "
                             } else {
-                                "Custom Fretboard Editor ▸"
+                                "Custom Fretboard Editor    "
                             };
-                            if ui
-                                .button(toggle_label)
-                                .on_hover_text(
-                                    "Pop out / collapse the visual editor for custom fretlets, Just Intonation ratios, cents, or EDO steps",
-                                )
-                                .clicked()
-                            {
+                            let resp = ui.button(toggle_label).on_hover_text(
+                                "Pop out / collapse the visual editor for custom fretlets, Just Intonation ratios, cents, or EDO steps",
+                            );
+                            paint_directional_triangle(ui, &resp, *show_custom_fretboard);
+                            if resp.clicked() {
                                 *show_custom_fretboard = !*show_custom_fretboard;
                                 fretboard_editor.sync_num_strings(*num_strings);
                             }
@@ -2488,6 +2515,7 @@ impl MnxEditorApp {
                     let flattened = doc.get_flattened_event_paths();
                     if event_idx < flattened.len() {
                         let cur_path = flattened[event_idx];
+                        let mut matched_idx = None;
                         if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
                             let note_idx = ev
                                 .notes
@@ -2502,6 +2530,7 @@ impl MnxEditorApp {
                                 });
 
                             if let Some(idx) = note_idx {
+                                matched_idx = Some(idx);
                                 let note = &mut ev.notes[idx];
                                 if note.string.is_none() {
                                     note.string = Some(string);
@@ -2527,6 +2556,12 @@ impl MnxEditorApp {
                             }
                         }
                         self.apply_mutated_doc(doc);
+                        self.selected_event_idx = Some(event_idx);
+                        self.editing_string = Some(string);
+                        if let Some(idx) = matched_idx {
+                            self.selected_note_idx_in_event = Some(idx);
+                        }
+                        self.preview_selected_sound();
                     }
                 }
                 DialogAction::InsertEnding {

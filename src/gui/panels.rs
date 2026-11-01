@@ -2,6 +2,34 @@ use super::*;
 use crate::yaml_editor::*;
 use eframe::egui::{self, Color32};
 
+/// Helper to paint a DAW-style bottom-right corner triangle indicator (procedural "◢")
+/// onto a button's rect, dynamically matching the button's interactive text color.
+fn paint_corner_triangle(ui: &egui::Ui, response: &egui::Response) {
+    let r = response.rect;
+    let margin = 3.5;
+    let size = 5.0;
+    let color = ui.style().interact(response).fg_stroke.color;
+    let p_corner = egui::pos2(r.max.x - margin, r.max.y - margin);
+    let p_left = egui::pos2(r.max.x - margin - size, r.max.y - margin);
+    let p_top = egui::pos2(r.max.x - margin, r.max.y - margin - size);
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![p_left, p_corner, p_top],
+        color,
+        egui::Stroke::NONE,
+    ));
+}
+
+/// Helper to render a menu button with a procedurally painted bottom-right corner triangle "◢".
+fn menu_button_with_corner_triangle<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let resp = ui.menu_button(format!("{}  ", title), add_contents);
+    paint_corner_triangle(ui, &resp.response);
+    resp
+}
+
 impl MnxEditorApp {
     pub(crate) fn render_top_panel(
         &mut self,
@@ -826,135 +854,6 @@ impl MnxEditorApp {
                     let target_event_idx = self.selected_event_idx.unwrap_or(0);
                     self.open_text_marking_dialog(target_event_idx);
                 }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-
-                let bravura_font = egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
-                if ui.button(egui::RichText::new("\u{E040}").font(bravura_font.clone())).on_hover_text("Start Repeat").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let new_yaml = crate::yaml_editor::set_global_measure_property(
-                        &self.yaml_text,
-                        m_idx,
-                        "repeatStart",
-                        "{}"
-                    );
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                if ui.button(egui::RichText::new("\u{E041}").font(bravura_font.clone())).on_hover_text("End Repeat").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let new_yaml = crate::yaml_editor::set_global_measure_property(
-                        &self.yaml_text,
-                        m_idx,
-                        "repeatEnd",
-                        "{ times: 2 }"
-                    );
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                if ui.button(egui::RichText::new("\u{E031}").font(bravura_font.clone())).on_hover_text("Double Barline").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let is_already_double = self.parsed_mnx.as_ref()
-                        .and_then(|doc| doc.global.measures.get(m_idx))
-                        .and_then(|gm| gm.barline.as_ref())
-                        .map(|b| b.barline_type == "double")
-                        .unwrap_or(false);
-                    let new_yaml = if is_already_double {
-                        crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
-                    } else {
-                        crate::yaml_editor::set_global_measure_property(
-                            &self.yaml_text,
-                            m_idx,
-                            "barline",
-                            "{ type: double }"
-                        )
-                    };
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                if ui.button(egui::RichText::new("\u{E032}").font(bravura_font.clone())).on_hover_text("Ending Barline").clicked() {
-                    let m_idx = self.get_target_measure_for_layout_or_breaks();
-                    let is_already_final = self.parsed_mnx.as_ref()
-                        .and_then(|doc| doc.global.measures.get(m_idx))
-                        .and_then(|gm| gm.barline.as_ref())
-                        .map(|b| b.barline_type == "final" || b.barline_type == "ending")
-                        .unwrap_or(false);
-                    let new_yaml = if is_already_final {
-                        crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
-                    } else {
-                        crate::yaml_editor::set_global_measure_property(
-                            &self.yaml_text,
-                            m_idx,
-                            "barline",
-                            "{ type: final }"
-                        )
-                    };
-                    self.update_yaml(new_yaml);
-                    self.process_and_render();
-                }
-
-                let icon_size = egui::vec2(24.0, 24.0);
-                let btn_size = egui::vec2(30.0, 30.0);
-
-                let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg")).fit_to_exact_size(icon_size);
-                if ui.add_sized(btn_size, egui::Button::image(img_closed)).on_hover_text("Insert 1st... Ending").clicked() {
-                    let (start_m, end_m) = self.get_selected_measure_range();
-                    self.active_dialog = ActiveDialog::InsertEnding {
-                        start_m,
-                        end_m,
-                        times_str: "1".to_string(),
-                    };
-                }
-
-                let img_open = egui::Image::new(include_image!("../../assets/open ending.svg")).fit_to_exact_size(icon_size);
-                if ui.add_sized(btn_size, egui::Button::image(img_open)).on_hover_text("Insert Open Ending").clicked() {
-                    let (start_m, end_m) = self.get_selected_measure_range();
-                    let prev_max = if let Some(doc) = &self.parsed_mnx {
-                        doc.get_prior_ending_max(start_m)
-                    } else {
-                        None
-                    }.unwrap_or(0);
-                    let start_num = prev_max + 1;
-                    let numbers = vec![start_num];
-                    let duration = (end_m - start_m + 1) as u32;
-                    let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
-                    let yaml = crate::yaml_editor::set_global_measure_property(
-                        &self.yaml_text,
-                        start_m,
-                        "ending",
-                        &ending_val,
-                    );
-                    self.update_yaml(yaml);
-                    self.process_and_render();
-                }
-
-                let target_m = self.get_target_measure_for_layout_or_breaks();
-                let (is_system_break, is_page_break) = if let Some(doc) = &self.parsed_mnx {
-                    doc.global.measures.get(target_m).map(|gm| (gm.system_break.unwrap_or(false), gm.page_break.unwrap_or(false))).unwrap_or((false, false))
-                } else {
-                    (false, false)
-                };
-
-                let img_sys = egui::Image::new(include_image!("../../assets/system_break.svg"))
-                    .fit_to_exact_size(icon_size)
-                    .tint(ui.visuals().text_color());
-                if ui.add_sized(btn_size, egui::Button::image(img_sys).selected(is_system_break)).on_hover_text("Toggle System Break").clicked() {
-                    let target_m = self.get_target_measure_for_layout_or_breaks();
-                    self.action_toggle_system_break(target_m);
-                }
-
-                let img_page = egui::Image::new(include_image!("../../assets/page_break.svg"))
-                    .fit_to_exact_size(icon_size)
-                    .tint(ui.visuals().text_color());
-                if ui.add_sized(btn_size, egui::Button::image(img_page).selected(is_page_break)).on_hover_text("Toggle Page Break").clicked() {
-                    let target_m = self.get_target_measure_for_layout_or_breaks();
-                    self.action_toggle_page_break(target_m);
-                }
             });
             ui.separator();
             ui.horizontal(|ui| {
@@ -1033,7 +932,9 @@ impl MnxEditorApp {
                     let is_harmonic = self.is_selected_note_harmonic();
                     let nh_btn = egui::Button::new(egui::RichText::new("<N.H.>").size(10.5).strong())
                         .selected(is_harmonic);
-                    if ui.add_sized(egui::vec2(44.0, 30.0), nh_btn).on_hover_text("Natural Harmonic").clicked() {
+                    if ui.add_sized(egui::vec2(44.0, 30.0), nh_btn).on_hover_text("Natural Harmonic (H)").clicked()
+                        || (!has_text_focus && !ui.input(|i| i.modifiers.any()) && ui.input(|i| i.key_pressed(egui::Key::H)))
+                    {
                         harmonic_clicked = true;
                     }
                     
@@ -1104,6 +1005,133 @@ impl MnxEditorApp {
                     }
                     if sdown_resp.on_hover_text("Down Strum").clicked() {
                         strum_down_clicked = true;
+                    }
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Barlines:").strong());
+
+                    let bravura_font = egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
+                    if ui.button(egui::RichText::new("\u{E040}").font(bravura_font.clone())).on_hover_text("Start Repeat").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let new_yaml = crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            m_idx,
+                            "repeatStart",
+                            "{}"
+                        );
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    if ui.button(egui::RichText::new("\u{E041}").font(bravura_font.clone())).on_hover_text("End Repeat").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let new_yaml = crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            m_idx,
+                            "repeatEnd",
+                            "{ times: 2 }"
+                        );
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    if ui.button(egui::RichText::new("\u{E031}").font(bravura_font.clone())).on_hover_text("Double Barline").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let is_already_double = self.parsed_mnx.as_ref()
+                            .and_then(|doc| doc.global.measures.get(m_idx))
+                            .and_then(|gm| gm.barline.as_ref())
+                            .map(|b| b.barline_type == "double")
+                            .unwrap_or(false);
+                        let new_yaml = if is_already_double {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
+                        } else {
+                            crate::yaml_editor::set_global_measure_property(
+                                &self.yaml_text,
+                                m_idx,
+                                "barline",
+                                "{ type: double }"
+                            )
+                        };
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    if ui.button(egui::RichText::new("\u{E032}").font(bravura_font.clone())).on_hover_text("Ending Barline").clicked() {
+                        let m_idx = self.get_target_measure_for_layout_or_breaks();
+                        let is_already_final = self.parsed_mnx.as_ref()
+                            .and_then(|doc| doc.global.measures.get(m_idx))
+                            .and_then(|gm| gm.barline.as_ref())
+                            .map(|b| b.barline_type == "final" || b.barline_type == "ending")
+                            .unwrap_or(false);
+                        let new_yaml = if is_already_final {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
+                        } else {
+                            crate::yaml_editor::set_global_measure_property(
+                                &self.yaml_text,
+                                m_idx,
+                                "barline",
+                                "{ type: final }"
+                            )
+                        };
+                        self.update_yaml(new_yaml);
+                        self.process_and_render();
+                    }
+
+                    let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg")).fit_to_exact_size(icon_size);
+                    if ui.add_sized(btn_size, egui::Button::image(img_closed)).on_hover_text("Insert 1st... Ending").clicked() {
+                        let (start_m, end_m) = self.get_selected_measure_range();
+                        self.active_dialog = ActiveDialog::InsertEnding {
+                            start_m,
+                            end_m,
+                            times_str: "1".to_string(),
+                        };
+                    }
+
+                    let img_open = egui::Image::new(include_image!("../../assets/open ending.svg")).fit_to_exact_size(icon_size);
+                    if ui.add_sized(btn_size, egui::Button::image(img_open)).on_hover_text("Insert Open Ending").clicked() {
+                        let (start_m, end_m) = self.get_selected_measure_range();
+                        let prev_max = if let Some(doc) = &self.parsed_mnx {
+                            doc.get_prior_ending_max(start_m)
+                        } else {
+                            None
+                        }.unwrap_or(0);
+                        let start_num = prev_max + 1;
+                        let numbers = vec![start_num];
+                        let duration = (end_m - start_m + 1) as u32;
+                        let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
+                        let yaml = crate::yaml_editor::set_global_measure_property(
+                            &self.yaml_text,
+                            start_m,
+                            "ending",
+                            &ending_val,
+                        );
+                        self.update_yaml(yaml);
+                        self.process_and_render();
+                    }
+
+                    if self.view_mode != ViewMode::Continuous {
+                        let target_m = self.get_target_measure_for_layout_or_breaks();
+                        let (is_system_break, is_page_break) = if let Some(doc) = &self.parsed_mnx {
+                            doc.global.measures.get(target_m).map(|gm| (gm.system_break.unwrap_or(false), gm.page_break.unwrap_or(false))).unwrap_or((false, false))
+                        } else {
+                            (false, false)
+                        };
+
+                        let img_sys = egui::Image::new(include_image!("../../assets/system_break.svg"))
+                            .fit_to_exact_size(icon_size)
+                            .tint(ui.visuals().text_color());
+                        if ui.add_sized(btn_size, egui::Button::image(img_sys).selected(is_system_break)).on_hover_text("Toggle System Break").clicked() {
+                            let target_m = self.get_target_measure_for_layout_or_breaks();
+                            self.action_toggle_system_break(target_m);
+                        }
+
+                        let img_page = egui::Image::new(include_image!("../../assets/page_break.svg"))
+                            .fit_to_exact_size(icon_size)
+                            .tint(ui.visuals().text_color());
+                        if ui.add_sized(btn_size, egui::Button::image(img_page).selected(is_page_break)).on_hover_text("Toggle Page Break").clicked() {
+                            let target_m = self.get_target_measure_for_layout_or_breaks();
+                            self.action_toggle_page_break(target_m);
+                        }
                     }
             });
                 if let Some(action) = clicked_action {
@@ -1263,14 +1291,6 @@ impl MnxEditorApp {
                     self.open_instrument_setup_dialog(false);
                 }
 
-                if ui
-                    .button("Custom Fretboard...")
-                    .on_hover_text("Open Instrument Setup expanded with the Custom Fretboard / Fretlet & JI Editor")
-                    .clicked()
-                {
-                    self.open_instrument_setup_dialog(true);
-                }
-
                 ui.separator();
 
                 // 5. String-to-Channel Mappings button with Popup
@@ -1279,7 +1299,7 @@ impl MnxEditorApp {
                     .map(|p| p.num_strings())
                     .unwrap_or(6) as u8;
 
-                ui.menu_button("String Channels ◢", |ui| {
+                menu_button_with_corner_triangle(ui, "String Channels", |ui| {
                     ui.label(egui::RichText::new(if self.is_mpe_mode {
                         "String to MPE Member Channel Mapping (Ch 2-16, Ch 1 is Master)"
                     } else {
@@ -1310,7 +1330,7 @@ impl MnxEditorApp {
                 ui.separator();
 
                 // 6. Grid Controllers Select UI/UX & Quick On-The-Fly Fret Offset Controls
-                ui.menu_button("Grid Controllers ◢", |ui| {
+                menu_button_with_corner_triangle(ui, "Grid Controllers", |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("Grid Controller MIDI Inputs (up to 4)").strong(),

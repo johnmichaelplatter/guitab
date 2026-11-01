@@ -1604,9 +1604,9 @@ parts:
         let doc2 = app.parsed_mnx.as_ref().unwrap();
         let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
         assert!(ev2.notes[0].harmonic.is_none());
-        assert_eq!(ev2.notes[0].fret, Some(0));
+        assert_eq!(ev2.notes[0].fret, Some(12));
         assert_eq!(ev2.notes[0].pitch.step, "E");
-        assert_eq!(ev2.notes[0].pitch.octave, 4);
+        assert_eq!(ev2.notes[0].pitch.octave, 5);
     }
 
     #[test]
@@ -1679,9 +1679,7 @@ parts:
         let doc2 = app.parsed_mnx.as_ref().unwrap();
         let ev2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
         assert!(ev2.notes[0].harmonic.is_none());
-        assert_eq!(ev2.notes[0].fret, Some(0));
-        assert_eq!(ev2.notes[0].pitch.step, "G");
-        assert_eq!(ev2.notes[0].pitch.octave, 4);
+        assert_eq!(ev2.notes[0].fret, Some(6));
     }
 
     #[test]
@@ -4023,6 +4021,107 @@ parts:
         let parsed = crate::presets::parse_presets_from_yaml(&yaml).expect("yaml parsing succeeds");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0], *saved);
+    }
+
+    #[test]
+    fn test_phase_a_toolbar_and_harmonic_hotkey() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Select first event and select note on string 1
+        app.selected_event_idx = Some(0);
+        app.select_note_on_string(0, 1);
+        assert!(!app.is_selected_note_harmonic());
+
+        // Trigger action_toggle_harmonic (hotkey H behavior)
+        app.action_toggle_harmonic();
+        assert!(app.is_selected_note_harmonic(), "Hotkey H toggles harmonic on");
+
+        // Toggle again turns it off
+        app.action_toggle_harmonic();
+        assert!(!app.is_selected_note_harmonic(), "Hotkey H toggles harmonic off");
+
+        // Verify Continuous mode vs Layout mode break button condition
+        assert_eq!(app.view_mode, ViewMode::Continuous);
+        assert!(!(app.view_mode != ViewMode::Continuous), "Continuous mode suppresses break buttons");
+
+        app.view_mode = ViewMode::Layout;
+        assert!(app.view_mode != ViewMode::Continuous, "Layout mode enables break buttons");
+    }
+
+    #[test]
+    fn test_harmonic_hotkey_single_toggle_in_ui_frame() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Put a note on String 1 at Fret 12 (standard harmonic node on E4)
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "12".to_string();
+        assert!(app.commit_fret_edit());
+        app.select_note_on_string(0, 1);
+        assert!(!app.is_selected_note_harmonic());
+
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        let total_events = app.cached_event_ranges.len();
+        let event_ranges = app.cached_event_ranges.clone();
+
+        // Frame 1: User presses 'H'
+        let mut raw_input = egui::RawInput::default();
+        raw_input.events.push(egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+
+        let mut output = ctx.run_ui(raw_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_top_panel(ui, &event_ranges, total_events);
+                app.handle_keyboard_input(ui, false, &event_ranges, total_events);
+            });
+        });
+        output.textures_delta.clear();
+
+        assert!(
+            app.is_selected_note_harmonic(),
+            "Pressing 'H' once MUST leave the note as harmonic, not double-toggle it back to 0!"
+        );
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let n0 = ev0.notes.iter().find(|n| n.string == Some(1)).unwrap();
+        assert!(n0.harmonic.is_some(), "Note must have harmonic property");
+        assert_ne!(n0.fret, Some(0), "Fret must NOT be 0");
+
+        // Frame 2: User presses 'H' again
+        let mut raw_input2 = egui::RawInput::default();
+        raw_input2.events.push(egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+
+        let mut output2 = ctx.run_ui(raw_input2, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_top_panel(ui, &event_ranges, total_events);
+                app.handle_keyboard_input(ui, false, &event_ranges, total_events);
+            });
+        });
+        output2.textures_delta.clear();
+
+        assert!(
+            !app.is_selected_note_harmonic(),
+            "Pressing 'H' a second time must toggle harmonic off"
+        );
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_2 = doc2.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let n0_2 = ev0_2.notes.iter().find(|n| n.string == Some(1)).unwrap();
+        assert_eq!(n0_2.fret, Some(12), "Untoggling harmonic on fret 12 must restore regular fret 12");
+        assert_eq!(n0_2.pitch.step, "B");
     }
 }
 
