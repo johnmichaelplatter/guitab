@@ -291,6 +291,67 @@ impl MnxDocument {
             }
         }
     }
+
+    pub fn clean_dangling_slides(&mut self) {
+        for part in &mut self.parts {
+            let mut string_events: std::collections::HashMap<u8, Vec<usize>> = std::collections::HashMap::new();
+            let mut event_idx = 0;
+            for measure in &part.measures {
+                for seq in &measure.sequences {
+                    for ev in seq.flattened_events() {
+                        for note in &ev.notes {
+                            if let Some(s) = note.string {
+                                string_events.entry(s).or_default().push(event_idx);
+                            }
+                        }
+                        event_idx += 1;
+                    }
+                }
+            }
+
+            fn clean_slides_in_items(
+                items: &mut [SequenceItem],
+                string_events: &std::collections::HashMap<u8, Vec<usize>>,
+                cur_ev: &mut usize,
+            ) {
+                for item in items {
+                    match item {
+                        SequenceItem::Event(ev) => {
+                            let ev_i = *cur_ev;
+                            *cur_ev += 1;
+                            for note in &mut ev.notes {
+                                if note.slide.is_some() {
+                                    if let Some(s) = note.string {
+                                        let has_next = string_events.get(&s).map_or(false, |list| {
+                                            list.iter().any(|&next_ev| next_ev > ev_i)
+                                        });
+                                        if !has_next {
+                                            note.slide = None;
+                                        }
+                                    } else {
+                                        note.slide = None;
+                                    }
+                                }
+                            }
+                        }
+                        SequenceItem::Tuplet(t) => {
+                            clean_slides_in_items(&mut t.content, string_events, cur_ev);
+                        }
+                        SequenceItem::Grace(g) => {
+                            clean_slides_in_items(&mut g.content, string_events, cur_ev);
+                        }
+                    }
+                }
+            }
+
+            let mut cur_ev = 0;
+            for measure in &mut part.measures {
+                for seq in &mut measure.sequences {
+                    clean_slides_in_items(&mut seq.content, &string_events, &mut cur_ev);
+                }
+            }
+        }
+    }
 }
 
 pub fn deserialize_ext<'de, D, T>(d: D) -> Result<T, D::Error>
@@ -1056,9 +1117,9 @@ pub struct NoteExt {
         skip_serializing_if = "Option::is_none"
     )]
     pub decimal_fret: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tap: Option<Tap>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "flow_opt")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide: Option<Slide>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bend: Option<String>,

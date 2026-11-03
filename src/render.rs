@@ -409,6 +409,7 @@ pub struct TablatureOptions<'a> {
     pub min_prefix_width: Option<f32>,
     pub target_measure_widths: Option<&'a [f32]>,
     pub show_global_headers: bool,
+    pub selected_tempo: Option<(usize, usize)>,
 }
 
 /// Computes the maximum pixel width of the string tuning labels for `part`.
@@ -556,7 +557,14 @@ pub fn compute_part_measure_content_widths(
 pub fn draw_tablature(
     ui: &mut egui::Ui,
     opts: TablatureOptions<'_>,
-) -> (egui::Response, Option<(usize, Option<usize>)>, bool, Option<(usize, usize)>) {
+) -> (
+    egui::Response,
+    Option<(usize, Option<usize>)>,
+    bool,
+    Option<(usize, usize)>,
+    Option<(usize, usize)>,
+    Option<(usize, usize)>,
+) {
     let part = opts.part;
     let global = opts.global;
     let errors = opts.errors;
@@ -569,7 +577,7 @@ pub fn draw_tablature(
 
     let num_strings = part.num_strings();
     if num_strings == 0 {
-        return (ui.label("No strings found."), None, false, None);
+        return (ui.label("No strings found."), None, false, None, None, None);
     }
 
     // ── Layout constants ─────────────────────────────────────────────────────
@@ -634,6 +642,8 @@ pub fn draw_tablature(
 
     let mut num_rendered_time_sigs = 0;
     let mut current_ts_check: Option<TimeSignature> = None;
+    let mut clicked_tempo: Option<(usize, usize)> = None;
+    let mut double_clicked_tempo: Option<(usize, usize)> = None;
     for m_idx in 0..part.measures.len() {
         let m_ts = global
             .and_then(|g| g.measures.get(m_idx))
@@ -1145,7 +1155,7 @@ pub fn draw_tablature(
                             }
                         }
 
-                        for tempo in &gm.tempos {
+                        for (t_idx, tempo) in gm.tempos.iter().enumerate() {
                             let tempo_beat = tempo
                                 .location
                                 .as_ref()
@@ -1179,13 +1189,39 @@ pub fn draw_tablature(
                                 );
                                 
 
-                                painter.text(
+                                let text_rect = painter.text(
                                     Pos2::new(glyph_rect.max.x + 2.0, string_y_coords[0] - 45.0),
                                     egui::Align2::LEFT_BOTTOM,
                                     text,
                                     egui::FontId::proportional(16.0),
                                     note_color,
                                 );
+
+                                let total_rect = glyph_rect.union(text_rect).expand(3.0);
+                                if opts.selected_tempo == Some((m_idx, t_idx)) {
+                                    painter.rect_filled(
+                                        total_rect,
+                                        3.0,
+                                        egui::Color32::from_rgba_unmultiplied(60, 140, 240, 60),
+                                    );
+                                    painter.rect_stroke(
+                                        total_rect,
+                                        3.0,
+                                        egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 160, 255)),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                }
+
+                                let tempo_resp = ui.interact(
+                                    total_rect,
+                                    egui::Id::new(("tempo_hit", opts.part_idx, m_idx, t_idx)),
+                                    egui::Sense::click(),
+                                );
+                                if tempo_resp.double_clicked() {
+                                    double_clicked_tempo = Some((m_idx, t_idx));
+                                } else if tempo_resp.clicked() {
+                                    clicked_tempo = Some((m_idx, t_idx));
+                                }
                                 
                                 // Check if this tempo is a target for any active tempo change
                                 if let Some(tid) = &tempo.id {
@@ -2641,7 +2677,14 @@ pub fn draw_tablature(
         }
     }
 
-    (response, clicked_selection, add_bar_clicked, double_clicked_lyric)
+    (
+        response,
+        clicked_selection,
+        add_bar_clicked,
+        double_clicked_lyric,
+        clicked_tempo,
+        double_clicked_tempo,
+    )
 }
 
 #[cfg(test)]
@@ -2706,8 +2749,9 @@ mod tests {
                 min_prefix_width: None,
                 target_measure_widths: None,
                 show_global_headers: true,
+                selected_tempo: None,
             };
-            let (_resp, _clicked, _add_bar, _lyric_dc) = draw_tablature(ui, opts);
+            let (_resp, _clicked, _add_bar, _lyric_dc, _c_tempo, _dc_tempo) = draw_tablature(ui, opts);
         });
         output.textures_delta.clear();
     }

@@ -709,11 +709,35 @@ impl MnxEditorApp {
 
                 if ui.button("Insert tempo").clicked() {
                     let start_event_idx = self.selected_event_idx.unwrap_or(0);
+                    let mut bpm_str = "120".to_string();
+                    let mut duration_value = "quarter".to_string();
+                    let mut dots = 0;
+                    let mut existing_tempo = None;
+
+                    if let Some((m_idx, t_idx)) = self.selected_tempo {
+                        if let Some(doc) = &self.parsed_mnx {
+                            if let Some(gm) = doc.global.measures.get(m_idx) {
+                                if let Some(t) = gm.tempos.get(t_idx) {
+                                    bpm_str = t.bpm.to_string();
+                                    duration_value = t.value.base.clone();
+                                    dots = t.value.dots.unwrap_or(0);
+                                    existing_tempo = Some((m_idx, t_idx));
+                                }
+                            }
+                        }
+                    } else if let Some((m_idx, t_idx, tempo)) = self.find_tempo_at_event(start_event_idx) {
+                        bpm_str = tempo.bpm.to_string();
+                        duration_value = tempo.value.base.clone();
+                        dots = tempo.value.dots.unwrap_or(0);
+                        existing_tempo = Some((m_idx, t_idx));
+                    }
+
                     self.active_dialog = ActiveDialog::InsertTempo {
-                        bpm_str: "120".to_string(),
-                        duration_value: "quarter".to_string(),
-                        dots: 0,
+                        bpm_str,
+                        duration_value,
+                        dots,
                         event_idx: start_event_idx,
+                        existing_tempo,
                     };
                 }
 
@@ -727,7 +751,7 @@ impl MnxEditorApp {
                     // calculate default duration beats based on selected range
                     let mut default_beats = 4.0;
                     if let (Some(_anchor), Some(_current)) = (self.selection_anchor, self.selected_event_idx) {
-                        if let Some((items, _, _, _, _)) = self.extract_selected_items() {
+                        if let Some((items, ..)) = self.extract_selected_items() {
                             let mut total = 0.0;
                             for item in &items {
                                 total += item.total_beats();
@@ -2159,6 +2183,8 @@ impl MnxEditorApp {
                         let mut pending_lyric_click: Option<(usize, usize, usize)> = None;
                         let mut pending_add_bar = false;
                         let mut pending_event_click: Option<(usize, usize, Option<usize>)> = None;
+                        let mut pending_tempo_click: Option<(usize, usize)> = None;
+                        let mut pending_tempo_double_click: Option<(usize, usize)> = None;
 
                         if let Some(doc) = &self.parsed_mnx {
                             for (p_idx, part) in doc.parts.iter().enumerate() {
@@ -2189,7 +2215,7 @@ impl MnxEditorApp {
                                 };
                                 let part_pb = part.pitch_bend_range.unwrap_or(self.pitch_bend_range);
 
-                                let (_resp, clicked, add_bar_clicked, double_clicked_lyric) = render::draw_tablature(
+                                let (_resp, clicked, add_bar_clicked, double_clicked_lyric, clicked_tempo, double_clicked_tempo) = render::draw_tablature(
                                     ui,
                                     crate::render::TablatureOptions {
                                         part,
@@ -2230,11 +2256,16 @@ impl MnxEditorApp {
                                         min_prefix_width: Some(min_prefix_width),
                                         target_measure_widths: Some(&shared_measure_widths),
                                         show_global_headers: p_idx == 0,
+                                        selected_tempo: if is_active_part { self.selected_tempo } else { None },
                                     },
                                 );
 
                                 if let Some((ev_idx, line_idx)) = double_clicked_lyric {
                                     pending_lyric_click = Some((p_idx, ev_idx, line_idx));
+                                } else if double_clicked_tempo.is_some() {
+                                    pending_tempo_double_click = double_clicked_tempo;
+                                } else if clicked_tempo.is_some() {
+                                    pending_tempo_click = clicked_tempo;
                                 } else if add_bar_clicked {
                                     pending_add_bar = true;
                                 } else if let Some((clicked_event, clicked_note)) = clicked {
@@ -2245,7 +2276,31 @@ impl MnxEditorApp {
 
                         self.needs_scroll = false;
 
-                        if let Some((p_idx, ev_idx, line_idx)) = pending_lyric_click {
+                        if let Some((m_idx, t_idx)) = pending_tempo_double_click {
+                            let mut bpm_str = "120".to_string();
+                            let mut duration_value = "quarter".to_string();
+                            let mut dots = 0;
+                            if let Some(doc) = &self.parsed_mnx {
+                                if let Some(gm) = doc.global.measures.get(m_idx) {
+                                    if let Some(t) = gm.tempos.get(t_idx) {
+                                        bpm_str = t.bpm.to_string();
+                                        duration_value = t.value.base.clone();
+                                        dots = t.value.dots.unwrap_or(0);
+                                    }
+                                }
+                            }
+                            self.selected_tempo = Some((m_idx, t_idx));
+                            self.active_dialog = ActiveDialog::InsertTempo {
+                                bpm_str,
+                                duration_value,
+                                dots,
+                                event_idx: self.selected_event_idx.unwrap_or(0),
+                                existing_tempo: Some((m_idx, t_idx)),
+                            };
+                        } else if let Some((m_idx, t_idx)) = pending_tempo_click {
+                            self.selected_tempo = Some((m_idx, t_idx));
+                        } else if let Some((p_idx, ev_idx, line_idx)) = pending_lyric_click {
+                            self.selected_tempo = None;
                             if p_idx != self.selected_part_idx {
                                 self.select_part(p_idx);
                             }
@@ -2253,8 +2308,10 @@ impl MnxEditorApp {
                             self.selected_note_idx_in_event = None;
                             self.open_lyric_dialog(ev_idx, line_idx);
                         } else if pending_add_bar {
+                            self.selected_tempo = None;
                             self.add_measure_to_end();
                         } else if let Some((p_idx, mut clicked_event, clicked_note)) = pending_event_click {
+                            self.selected_tempo = None;
                             self.needs_scroll = false;
                             let old_part_idx = self.selected_part_idx;
                             let old_event_idx = self.selected_event_idx;
@@ -2370,6 +2427,15 @@ impl MnxEditorApp {
                     if parts.len() >= 4 {
                         if let (Ok(s), Ok(e)) = (parts[2].parse::<usize>(), parts[3].parse::<usize>()) {
                             self.action_unlock_system(s, e);
+                        }
+                    }
+                } else if sel_id.starts_with("tempo_") {
+                    let parts: Vec<&str> = sel_id.split('_').collect();
+                    if parts.len() >= 3 {
+                        if let (Ok(m_idx), Ok(t_idx)) = (parts[1].parse::<usize>(), parts[2].parse::<usize>()) {
+                            self.action_remove_tempo(m_idx, t_idx);
+                            self.selected_layout_element_id = None;
+                            self.selected_layout_element_ids.clear();
                         }
                     }
                 } else {

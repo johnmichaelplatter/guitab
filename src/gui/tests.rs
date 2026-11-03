@@ -1778,11 +1778,14 @@ parts:
         ];
         app.start_new_tab(6, 12, 1, tunings);
 
-        // Apply custom frets from the bug file
-        let bug_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(
-            include_str!("../../context/harmonics entry bug.yaml")
-        ).expect("Bug file must parse");
-        let custom_frets = bug_doc.parts[0].ext.custom_frets.clone().unwrap();
+        // Apply custom frets with fret 18 as octave (2/1)
+        let custom_frets = vec![crate::fretboard_editor::CustomFret {
+            fret_number: 18.0,
+            manual_number: Some(18.0),
+            spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 2, den: 1 },
+            strings: vec![1, 2, 3, 4, 5, 6],
+            note_name: "D".to_string(),
+        }];
 
         let fb_state = crate::fretboard_editor::FretboardEditorState::new(
             6,
@@ -3894,10 +3897,13 @@ parts:
         ];
         app.start_new_tab(6, 12, 1, tunings);
 
-        let bug_doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(
-            include_str!("../../context/harmonics entry bug.yaml")
-        ).expect("Bug file must parse");
-        let custom_frets = bug_doc.parts[0].ext.custom_frets.clone().unwrap();
+        let custom_frets = vec![crate::fretboard_editor::CustomFret {
+            fret_number: 18.0,
+            manual_number: Some(18.0),
+            spec: crate::fretboard_editor::FretLocationSpec::Ratio { num: 2, den: 1 },
+            strings: vec![1, 2, 3, 4, 5, 6],
+            note_name: "D".to_string(),
+        }];
 
         let fb_state = crate::fretboard_editor::FretboardEditorState::new(
             6,
@@ -5068,6 +5074,262 @@ parts:
             1,
             "Confirming removal via warning dialog should remove the instrument"
         );
+    }
+
+    #[test]
+    fn test_tempo_dialog_recall_and_remove() {
+        let yaml = r#"---
+mnx: { version: 1 }
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+      tempos:
+        - bpm: 135
+          value: { base: half, dots: 1 }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+
+        // Verify tempo exists initially
+        let found = app.find_tempo_at_event(0);
+        assert!(found.is_some(), "Should find tempo at event 0");
+        let (m_idx, t_idx, tempo) = found.unwrap();
+        assert_eq!(m_idx, 0);
+        assert_eq!(t_idx, 0);
+        assert_eq!(tempo.bpm, 135.0);
+        assert_eq!(tempo.value.base, "half");
+        assert_eq!(tempo.value.dots, Some(1));
+
+        // Simulate dialog opening at event 0 (as done in panel "Insert tempo" button)
+        let (bpm_str, duration_value, dots, existing_tempo) = if let Some((m, t, tempo)) = app.find_tempo_at_event(0) {
+            (tempo.bpm.to_string(), tempo.value.base.clone(), tempo.value.dots.unwrap_or(0), Some((m, t)))
+        } else {
+            ("120".to_string(), "quarter".to_string(), 0, None)
+        };
+        assert_eq!(bpm_str, "135");
+        assert_eq!(duration_value, "half");
+        assert_eq!(dots, 1);
+        assert_eq!(existing_tempo, Some((0, 0)));
+
+        app.active_dialog = ActiveDialog::InsertTempo {
+            bpm_str,
+            duration_value,
+            dots,
+            event_idx: 0,
+            existing_tempo,
+        };
+
+        // Render dialog and trigger remove action
+        app.action_remove_tempo(0, 0);
+        app.selected_tempo = None;
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert!(doc.global.measures[0].tempos.is_empty(), "Tempos should be empty after removal");
+        assert!(app.find_tempo_at_event(0).is_none(), "find_tempo_at_event should return None");
+    }
+
+    #[test]
+    fn test_tempo_continuous_and_layout_mode_delete() {
+        let yaml = r#"---
+mnx: { version: 1 }
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+      tempos:
+        - bpm: 120
+          value: { base: quarter }
+    - tempos:
+        - bpm: 90
+          value: { base: quarter }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+
+        // 1. Continuous mode: select tempo at (0, 0) and remove
+        app.selected_tempo = Some((0, 0));
+        if let Some((m_idx, t_idx)) = app.selected_tempo {
+            app.action_remove_tempo(m_idx, t_idx);
+            app.selected_tempo = None;
+        }
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert!(doc.global.measures[0].tempos.is_empty(), "Measure 0 tempo should be removed");
+        assert_eq!(doc.global.measures[1].tempos.len(), 1, "Measure 1 tempo should remain");
+
+        // 2. Layout mode: select element id "tempo_1_0_tempo" and remove
+        let sel_id = "tempo_1_0_tempo";
+        app.selected_layout_element_id = Some(sel_id.to_string());
+        let parts: Vec<&str> = sel_id.split('_').collect();
+        assert!(parts.len() >= 3);
+        let m_idx = parts[1].parse::<usize>().unwrap();
+        let t_idx = parts[2].parse::<usize>().unwrap();
+        app.action_remove_tempo(m_idx, t_idx);
+        app.selected_layout_element_id = None;
+
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        assert!(doc2.global.measures[1].tempos.is_empty(), "Measure 1 tempo should be removed");
+    }
+
+    #[test]
+    fn test_duplicate_insert_preserves_and_copies_special_barlines() {
+        let yaml = r#"---
+mnx: { version: 1 }
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+      repeatStart: {}
+    - repeatEnd: { times: 2 }
+      ending: { duration: 1, numbers: [1] }
+    - ending: { duration: 1, numbers: [2] }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+
+        // Select measure 0 (event 0)
+        app.selected_event_idx = Some(0);
+        app.selection_anchor = Some(0);
+
+        // Run duplicate insert
+        app.action_duplicate_insert();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures.len(), 4, "Should have 4 measures after duplicating 1 measure");
+        assert_eq!(doc.parts[0].measures.len(), 4);
+
+        // Measure 0 has repeat_start
+        assert!(doc.global.measures[0].repeat_start.is_some());
+        // Measure 1 (duplicate of measure 0) also has repeat_start copied
+        assert!(doc.global.measures[1].repeat_start.is_some());
+        // Measure 2 (shifted measure 1) has repeat_end and ending [1]
+        assert!(doc.global.measures[2].repeat_end.is_some());
+        assert_eq!(doc.global.measures[2].ending.as_ref().unwrap().numbers, vec![1]);
+        // Measure 3 (shifted measure 2) has ending [2]
+        assert_eq!(doc.global.measures[3].ending.as_ref().unwrap().numbers, vec![2]);
+    }
+
+    #[test]
+    fn test_paste_insert_preserves_and_copies_special_barlines() {
+        let yaml = r#"---
+mnx: { version: 1 }
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - barline: { type: dotted }
+      ending: { duration: 1, numbers: [1] }
+    - ending: { duration: 1, numbers: [2] }
+parts:
+  - measures:
+      - sequences:
+          - content:
+              - duration: { base: half }
+                rest: {}
+              - duration: { base: half }
+                rest: {}
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+
+        // Select Measure 1 (event 2, whole rest)
+        app.selected_event_idx = Some(2);
+        app.selection_anchor = Some(2);
+        app.action_copy();
+
+        let cb = app.clipboard.as_ref().expect("Clipboard should contain copied measure");
+        assert_eq!(cb.measure_attrs.len(), 1);
+        assert_eq!(cb.measure_attrs[0].barline.as_ref().map(|b| b.barline_type.as_str()), Some("dotted"));
+        assert_eq!(cb.measure_attrs[0].ending.as_ref().unwrap().numbers, vec![1]);
+
+        // Now move cursor to event 0 (start of Measure 0) and paste insert
+        app.selected_event_idx = Some(0);
+        app.selection_anchor = None;
+        app.action_paste_insert();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.global.measures.len(), 4, "Should have 4 measures after paste insert");
+        // Inserted measure at 0 has the dotted barline and ending [1]
+        assert_eq!(doc.global.measures[0].barline.as_ref().map(|b| b.barline_type.as_str()), Some("dotted"));
+        assert_eq!(doc.global.measures[0].ending.as_ref().unwrap().numbers, vec![1]);
+        // Shifted original measure 1 is now at index 2
+        assert_eq!(doc.global.measures[2].barline.as_ref().map(|b| b.barline_type.as_str()), Some("dotted"));
+        assert_eq!(doc.global.measures[2].ending.as_ref().unwrap().numbers, vec![1]);
+        // Shifted original measure 2 is now at index 3
+        assert_eq!(doc.global.measures[3].ending.as_ref().unwrap().numbers, vec![2]);
+    }
+
+    #[test]
+    fn test_slide_toggle_serialization_and_duplicate_insert() {
+        let yaml = include_str!("../../examples/example.yaml");
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.to_string());
+        app.process_and_render();
+
+        let total_events = app.cached_event_ranges.len();
+        assert!(total_events > 0);
+
+        app.selected_event_idx = Some(1);
+        app.editing_string = Some(6);
+        app.selected_note_idx_in_event = Some(0);
+
+        // Toggle slide on
+        app.action_toggle_slide();
+        assert!(app.is_selected_note_sliding());
+        assert!(app.validation_errors.is_empty(), "Validation errors: {:?}", app.validation_errors);
+
+        // Verify that YAML serialization did not leak flow style into measures/events
+        assert_eq!(app.cached_event_ranges.len(), total_events);
+        for range in &app.cached_event_ranges {
+            assert!(!range.note_ranges.is_empty());
+        }
+
+        // Test insert duplicate with the slide present
+        app.action_duplicate_insert();
+        assert!(app.validation_errors.is_empty(), "Validation errors after duplicate: {:?}", app.validation_errors);
+        assert!(app.cached_event_ranges.len() > total_events);
+        for range in &app.cached_event_ranges[..total_events] {
+            assert!(!range.note_ranges.is_empty());
+        }
     }
 }
 

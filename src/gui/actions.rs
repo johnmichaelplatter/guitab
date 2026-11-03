@@ -211,6 +211,50 @@ impl MnxEditorApp {
         });
     }
 
+    pub(crate) fn action_remove_tempo(&mut self, measure_idx: usize, tempo_idx: usize) {
+        self.mutate_doc(|doc| {
+            if let Some(gm) = doc.global.measures.get_mut(measure_idx) {
+                if tempo_idx < gm.tempos.len() {
+                    gm.tempos.remove(tempo_idx);
+                    return Some(());
+                }
+            }
+            None
+        });
+    }
+
+    pub fn find_tempo_at_event(&self, event_idx: usize) -> Option<(usize, usize, crate::mnx::Tempo)> {
+        let doc = self.parsed_mnx.as_ref()?;
+        let p_idx = self.selected_part_idx;
+        let part = doc.parts.get(p_idx).or_else(|| doc.parts.first())?;
+
+        let mut current_idx = 0;
+        for (m_idx, measure) in part.measures.iter().enumerate() {
+            if let Some(seq) = measure.sequences.first() {
+                let mut events_scaled = Vec::new();
+                crate::midi::walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                let mut sum_quarter_beats = 0.0;
+                for (e, scale) in events_scaled {
+                    if current_idx == event_idx {
+                        if let Some(gm) = doc.global.measures.get(m_idx) {
+                            for (t_idx, tempo) in gm.tempos.iter().enumerate() {
+                                let tempo_beat = tempo.location.as_ref().map(|p| p.to_quarter_beats()).unwrap_or(0.0);
+                                if (tempo_beat - sum_quarter_beats).abs() < 0.001 {
+                                    return Some((m_idx, t_idx, tempo.clone()));
+                                }
+                            }
+                        }
+                        return None;
+                    }
+                    let beats = crate::validate::duration_to_quarter_beats(&e.duration);
+                    sum_quarter_beats += beats * scale;
+                    current_idx += 1;
+                }
+            }
+        }
+        None
+    }
+
 
     
 

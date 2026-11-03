@@ -10,6 +10,7 @@ impl MnxEditorApp {
         Vec<crate::mnx::Arpeggio>,
         Vec<crate::mnx::Tempo>,
         Vec<crate::mnx::TempoChange>,
+        Vec<crate::gui::CopiedMeasureAttrs>,
     )> {
         let cursor = self.selected_event_idx?;
         let anchor = self.selection_anchor.unwrap_or(cursor);
@@ -27,6 +28,7 @@ impl MnxEditorApp {
         let mut captured_ts = None;
         let mut copied_tempos = Vec::new();
         let mut copied_tcs = Vec::new();
+        let mut copied_measure_attrs = Vec::new();
 
         let parse_loc = |loc: &Option<String>| -> f64 {
             if let Some(s) = loc {
@@ -100,6 +102,21 @@ impl MnxEditorApp {
                     cur_e += item_ev_count;
                 }
                 measure_beats = f64::max(measure_beats, current_beat);
+            }
+            let measure_end_e = cur_e.saturating_sub(1);
+            if cur_e > measure_start_e {
+                let start_selected = min_idx <= measure_start_e;
+                let end_selected = max_idx >= measure_end_e;
+                if start_selected && end_selected {
+                    let gm = doc.global.measures.get(m_idx);
+                    copied_measure_attrs.push(crate::gui::CopiedMeasureAttrs {
+                        time: gm.and_then(|g| g.time.clone()),
+                        repeat_start: gm.and_then(|g| g.repeat_start.clone()),
+                        repeat_end: gm.and_then(|g| g.repeat_end.clone()),
+                        barline: gm.and_then(|g| g.barline.clone()),
+                        ending: gm.and_then(|g| g.ending.clone()),
+                    });
+                }
             }
             global_measure_beat += measure_beats;
         }
@@ -211,18 +228,19 @@ impl MnxEditorApp {
         if items.is_empty() {
             None
         } else {
-            Some((items, captured_ts, copied_arpeggios, final_copied_tempos, final_copied_tcs))
+            Some((items, captured_ts, copied_arpeggios, final_copied_tempos, final_copied_tcs, copied_measure_attrs))
         }
     }
 
     pub fn action_copy(&mut self) {
-        if let Some((items, ts, arps, tempos, tempo_changes)) = self.extract_selected_items() {
+        if let Some((items, ts, arps, tempos, tempo_changes, measure_attrs)) = self.extract_selected_items() {
             self.clipboard = Some(ClipboardData {
                 items,
                 time_signature: ts,
                 arpeggios: arps,
                 tempos,
                 tempo_changes,
+                measure_attrs,
             });
         }
     }
@@ -890,6 +908,9 @@ impl MnxEditorApp {
         let mut dest_beat = 0.0;
         let mut found_dest_beat = false;
         let mut cur_beat = 0.0;
+        let mut insert_m_idx = 0;
+        let mut is_measure_start = false;
+        let mut found_insert_m = false;
 
         let mut pasted_tempos = cb.tempos.clone();
         let mut pasted_tcs = cb.tempo_changes.clone();
@@ -908,7 +929,12 @@ impl MnxEditorApp {
                         found_dest_beat = true;
                     }
                     if cur_e == cursor {
-                        if cur_e == measure_start_e {
+                        if !found_insert_m {
+                            insert_m_idx = m_idx;
+                            is_measure_start = cur_e == measure_start_e;
+                            found_insert_m = true;
+                        }
+                        if cur_e == measure_start_e && cb.measure_attrs.is_empty() {
                             if let Some(ts) = &cb.time_signature {
                                 if let Some(gm) = doc.global.measures.get_mut(m_idx) {
                                     gm.time = Some(ts.clone());
@@ -936,8 +962,32 @@ impl MnxEditorApp {
 
         if !inserted {
             dest_beat = cur_beat;
+            insert_m_idx = part.measures.len();
+            is_measure_start = true;
             flat_items.extend(pasted_items.clone());
             all_pasted_arps.extend(pasted_arps.clone());
+        }
+
+        if !cb.measure_attrs.is_empty() {
+            let insert_pos = if is_measure_start {
+                insert_m_idx
+            } else {
+                insert_m_idx + 1
+            };
+
+            while doc.global.measures.len() < insert_pos {
+                doc.global.measures.push(crate::mnx::GlobalMeasure::default());
+            }
+
+            for (i, attrs) in cb.measure_attrs.iter().enumerate() {
+                let mut new_gm = crate::mnx::GlobalMeasure::default();
+                new_gm.time = attrs.time.clone();
+                new_gm.repeat_start = attrs.repeat_start.clone();
+                new_gm.repeat_end = attrs.repeat_end.clone();
+                new_gm.barline = attrs.barline.clone();
+                new_gm.ending = attrs.ending.clone();
+                doc.global.measures.insert(insert_pos + i, new_gm);
+            }
         }
 
         Self::rebuild_part_with_rebar(part, &mut doc.global.measures, flat_items, all_pasted_arps);
@@ -1251,19 +1301,7 @@ impl MnxEditorApp {
     }
 
     pub fn action_duplicate_insert(&mut self) {
-        let cb_before = self
-            .clipboard
-            .as_ref()
-            .map(|cb| cb.items.len())
-            .unwrap_or(0);
-        println!("action_duplicate_insert called. cb_before: {}", cb_before);
         self.action_copy();
-        let cb_after = self
-            .clipboard
-            .as_ref()
-            .map(|cb| cb.items.len())
-            .unwrap_or(0);
-        println!("action_copy finished. cb_after: {}", cb_after);
         let max_idx = if let Some(cursor) = self.selected_event_idx {
             let anchor = self.selection_anchor.unwrap_or(cursor);
             cursor.max(anchor)

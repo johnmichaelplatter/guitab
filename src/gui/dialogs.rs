@@ -39,6 +39,10 @@ impl MnxEditorApp {
                 dots: u32,
                 event_idx: usize,
             },
+            RemoveTempo {
+                measure_idx: usize,
+                tempo_idx: usize,
+            },
             ApplyBend {
                 event_idx: usize,
                 string: u8,
@@ -334,13 +338,16 @@ impl MnxEditorApp {
                 duration_value,
                 dots,
                 event_idx,
+                existing_tempo,
             } => {
                 let mut close_dialog = false;
                 
                 let event_idx_val = *event_idx;
                 let dots_val = *dots;
+                let existing_val = *existing_tempo;
+                let title = if existing_val.is_some() { "Edit Tempo" } else { "Insert Tempo" };
 
-                egui::Window::new("Insert Tempo")
+                egui::Window::new(title)
                     .collapsible(false)
                     .resizable(false)
                     .show(ctx, |ui| {
@@ -376,13 +383,23 @@ impl MnxEditorApp {
                         });
 
                         ui.horizontal(|ui| {
-                            if ui.button("Insert").clicked() {
+                            let action_btn_text = if existing_val.is_some() { "Update" } else { "Insert" };
+                            if ui.button(action_btn_text).clicked() {
                                 if let Ok(bpm) = bpm_str.parse::<f64>() {
                                     apply_action = Some(DialogAction::InsertTempo {
                                         bpm,
                                         duration_value: duration_value.clone(),
                                         dots: dots_val,
                                         event_idx: event_idx_val,
+                                    });
+                                    close_dialog = true;
+                                }
+                            }
+                            if let Some((m_idx, t_idx)) = existing_val {
+                                if ui.button("Remove Tempo").clicked() {
+                                    apply_action = Some(DialogAction::RemoveTempo {
+                                        measure_idx: m_idx,
+                                        tempo_idx: t_idx,
                                     });
                                     close_dialog = true;
                                 }
@@ -1856,6 +1873,10 @@ impl MnxEditorApp {
                 }
                 DialogAction::InsertTempo { bpm, duration_value, dots, event_idx } => {
                     self.insert_tempo(bpm, &duration_value, dots, event_idx);
+                }
+                DialogAction::RemoveTempo { measure_idx, tempo_idx } => {
+                    self.action_remove_tempo(measure_idx, tempo_idx);
+                    self.selected_tempo = None;
                 }
                 DialogAction::ApplyBend {
                     event_idx,

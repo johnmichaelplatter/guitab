@@ -124,6 +124,37 @@ pub fn find_all_event_ranges_by_part(yaml: &str) -> Vec<Vec<EventRange>> {
             note_ranges.push(n_start..n_end);
         }
 
+        if note_ranges.is_empty() {
+            if let Some(pos) = event_text.find("notes:") {
+                let after = &event_text[pos + 6..];
+                if let Some(bracket_start) = after.find('[') {
+                    let seq_text = &after[bracket_start + 1..];
+                    let mut depth = 0;
+                    let mut obj_start = None;
+                    for (b_i, ch) in seq_text.char_indices() {
+                        if ch == '{' {
+                            if depth == 0 {
+                                obj_start = Some(b_i);
+                            }
+                            depth += 1;
+                        } else if ch == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                if let Some(s) = obj_start {
+                                    let global_start = total_start + pos + 6 + bracket_start + 1 + s;
+                                    let global_end = total_start + pos + 6 + bracket_start + 1 + b_i + 1;
+                                    note_ranges.push(global_start..global_end);
+                                    obj_start = None;
+                                }
+                            }
+                        } else if ch == ']' && depth == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         results.push(EventRange {
             total_range: total_start..total_end,
             note_ranges,

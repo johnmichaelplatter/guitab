@@ -83,6 +83,7 @@ pub struct MnxEditorApp {
     pub(crate) current_file_path: Option<std::path::PathBuf>, // Tracks the active file
     pub(crate) selected_part_idx: usize,                      // Active instrument/part index in doc.parts
     pub(crate) selected_event_idx: Option<usize>,             // Selected note/beat index within active part
+    pub(crate) selected_tempo: Option<(usize, usize)>,        // Selected (measure_idx, tempo_idx) in continuous mode
     pub(crate) selection_anchor: Option<usize>,               // Anchor for shift-select
     pub(crate) selected_note_idx_in_event: Option<usize>, // Selected sub-note within chord/event (None = all)
     pub(crate) is_editing_fret: bool,                     // In-place fret number editing mode
@@ -149,6 +150,15 @@ pub enum DiscardTarget {
     OpenFile,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CopiedMeasureAttrs {
+    pub time: Option<crate::mnx::TimeSignature>,
+    pub repeat_start: Option<crate::mnx::RepeatStart>,
+    pub repeat_end: Option<crate::mnx::RepeatEnd>,
+    pub barline: Option<crate::mnx::Barline>,
+    pub ending: Option<crate::mnx::Ending>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipboardData {
     pub items: Vec<crate::mnx::SequenceItem>,
@@ -156,6 +166,7 @@ pub struct ClipboardData {
     pub arpeggios: Vec<crate::mnx::Arpeggio>,
     pub tempos: Vec<crate::mnx::Tempo>,
     pub tempo_changes: Vec<crate::mnx::TempoChange>,
+    pub measure_attrs: Vec<CopiedMeasureAttrs>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -182,6 +193,7 @@ pub enum ActiveDialog {
         duration_value: String,
         dots: u32,
         event_idx: usize,
+        existing_tempo: Option<(usize, usize)>,
     },
     Message {
         title: String,
@@ -434,6 +446,7 @@ impl MnxEditorApp {
             current_file_path: None,
             selected_part_idx: 0,
             selected_event_idx: None,
+            selected_tempo: None,
             selection_anchor: None,
             selected_note_idx_in_event: None,
             is_editing_fret: false,
@@ -1363,6 +1376,7 @@ impl MnxEditorApp {
     pub fn apply_mutated_doc(&mut self, mut doc: MnxDocument) {
         doc.ensure_measure_parity();
         doc.clean_unneeded_fret_fields();
+        doc.clean_dangling_slides();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
             self.sync_from_parsed_doc(doc);

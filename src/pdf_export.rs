@@ -898,7 +898,7 @@ pub fn populate_page_display_list_for_parts(
                 });
                 let tempo_y = if has_endings_in_sys { staff_top_y - 34.0 } else { staff_top_y - 20.0 };
 
-                for tempo in &gm.tempos {
+                for (t_idx, tempo) in gm.tempos.iter().enumerate() {
                     let glyph = match tempo.value.base.as_str() {
                         "16th" | "sixteenth" => "\u{ECA9}",
                         "eighth" => "\u{ECA7}",
@@ -912,7 +912,7 @@ pub fn populate_page_display_list_for_parts(
                     let tempo_x = m_x + start_pad;
                     let tid = tempo.id.as_deref().unwrap_or("tempo");
 
-                    let tempo_mark_id = Some(format!("tempo_{}_{}", m_idx, tid));
+                    let tempo_mark_id = Some(format!("tempo_{}_{}_{}", m_idx, t_idx, tid));
 
                     dl.push(DrawItem {
                         id: tempo_mark_id.clone(),

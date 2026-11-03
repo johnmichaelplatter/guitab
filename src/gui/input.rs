@@ -923,6 +923,8 @@ impl MnxEditorApp {
                 if !note_offs.is_empty() {
                     self.handle_grid_live_play_events(note_offs);
                 }
+            } else if esc_pressed {
+                self.selected_tempo = None;
             } else if p_pressed {
                 if shift_down {
                     self.start_midi_playback(false);
@@ -943,7 +945,13 @@ impl MnxEditorApp {
             let r_pressed = ui.input(|i| i.key_pressed(egui::Key::R));
 
             let delete_pressed = ui.input(|i| i.key_pressed(egui::Key::Delete));
-            if r_pressed && self.selected_event_idx.is_some() {
+            if (backspace_pressed || delete_pressed) && self.selected_tempo.is_some() {
+                if let Some((m_idx, t_idx)) = self.selected_tempo {
+                    self.action_remove_tempo(m_idx, t_idx);
+                    self.selected_tempo = None;
+                    return;
+                }
+            } else if r_pressed && self.selected_event_idx.is_some() {
                 self.convert_selected_to_rest();
             } else if (backspace_pressed || delete_pressed) && self.selected_event_idx.is_some() {
                 let e_idx = self.selected_event_idx.unwrap();
