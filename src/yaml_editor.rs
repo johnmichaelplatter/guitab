@@ -5,10 +5,26 @@ pub struct EventRange {
 }
 
 pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
-    let mut results = Vec::new();
+    find_all_event_ranges_by_part(yaml)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+pub fn find_event_ranges_for_part(yaml: &str, target_part_idx: usize) -> Vec<EventRange> {
+    let mut by_part = find_all_event_ranges_by_part(yaml);
+    if target_part_idx < by_part.len() {
+        by_part.swap_remove(target_part_idx)
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn find_all_event_ranges_by_part(yaml: &str) -> Vec<Vec<EventRange>> {
+    let mut results_by_part: Vec<Vec<EventRange>> = Vec::new();
     let lines: Vec<&str> = yaml.lines().collect();
     if lines.is_empty() {
-        return results;
+        return results_by_part;
     }
 
     let mut line_starts = Vec::with_capacity(lines.len());
@@ -23,12 +39,21 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
         line_starts.push(last_start + prev_len);
     }
 
+    let mut in_parts = false;
+    let mut parts_indent = 0;
+    let mut part_item_indent: Option<usize> = None;
     let mut in_content = false;
     let mut content_indent = 0;
     let mut current_event_start_line: Option<usize> = None;
     let mut event_indent = 0;
 
-    let finish_event = |start_line: usize, end_line: usize, results: &mut Vec<EventRange>| {
+    let finish_event = |start_line: usize,
+                        end_line: usize,
+                        results_by_part: &mut Vec<Vec<EventRange>>| {
+        if results_by_part.is_empty() {
+            results_by_part.push(Vec::new());
+        }
+        let results = results_by_part.last_mut().unwrap();
         let total_start = line_starts[start_line];
         let total_end = line_starts[end_line] + lines[end_line].len();
 
@@ -113,20 +138,62 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
             continue;
         }
 
+        if trimmed == "parts:" || trimmed.starts_with("parts:") {
+            if let Some(start_line) = current_event_start_line {
+                let end_line = i.saturating_sub(1);
+                finish_event(start_line, end_line, &mut results_by_part);
+                current_event_start_line = None;
+            }
+            in_content = false;
+            in_parts = true;
+            parts_indent = indent;
+            part_item_indent = None;
+            continue;
+        }
+
+        if in_parts {
+            if !trimmed.starts_with('-') && indent <= parts_indent {
+                if let Some(start_line) = current_event_start_line {
+                    let end_line = i.saturating_sub(1);
+                    finish_event(start_line, end_line, &mut results_by_part);
+                    current_event_start_line = None;
+                }
+                in_content = false;
+                in_parts = false;
+            } else if trimmed.starts_with('-') {
+                match part_item_indent {
+                    None => {
+                        part_item_indent = Some(indent);
+                        results_by_part.push(Vec::new());
+                    }
+                    Some(p_indent) if indent == p_indent => {
+                        if let Some(start_line) = current_event_start_line {
+                            let end_line = i.saturating_sub(1);
+                            finish_event(start_line, end_line, &mut results_by_part);
+                            current_event_start_line = None;
+                        }
+                        in_content = false;
+                        results_by_part.push(Vec::new());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if !in_content && trimmed.contains("content:") && trimmed.contains("duration:") {
             if let Some(start_line) = current_event_start_line {
                 let end_line = i.saturating_sub(1);
-                finish_event(start_line, end_line, &mut results);
+                finish_event(start_line, end_line, &mut results_by_part);
                 current_event_start_line = None;
             }
-            finish_event(i, i, &mut results);
+            finish_event(i, i, &mut results_by_part);
             continue;
         }
 
         if trimmed.starts_with("content:") || trimmed.ends_with("content:") {
             if let Some(start_line) = current_event_start_line {
                 let end_line = i.saturating_sub(1);
-                finish_event(start_line, end_line, &mut results);
+                finish_event(start_line, end_line, &mut results_by_part);
                 current_event_start_line = None;
             }
             if !in_content {
@@ -142,7 +209,7 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
             {
                 if let Some(start_line) = current_event_start_line {
                     let end_line = i.saturating_sub(1);
-                    finish_event(start_line, end_line, &mut results);
+                    finish_event(start_line, end_line, &mut results_by_part);
                     current_event_start_line = None;
                 }
                 in_content = false;
@@ -153,7 +220,7 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
                 if let Some(start_line) = current_event_start_line {
                     if indent <= event_indent {
                         let end_line = i.saturating_sub(1);
-                        finish_event(start_line, end_line, &mut results);
+                        finish_event(start_line, end_line, &mut results_by_part);
                         current_event_start_line = Some(i);
                         event_indent = indent;
                     }
@@ -167,10 +234,10 @@ pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
 
     if let Some(start_line) = current_event_start_line {
         let end_line = lines.len().saturating_sub(1);
-        finish_event(start_line, end_line, &mut results);
+        finish_event(start_line, end_line, &mut results_by_part);
     }
 
-    results
+    results_by_part
 }
 
 /// Calculates the exact microtonal Pitch for a given string and fret (including custom fretboards).
@@ -285,6 +352,83 @@ fn new_rest_event(duration: crate::mnx::Duration) -> crate::mnx::Event {
     }
 }
 
+pub fn make_rest_items_for_beats(mut rem_beats: f64) -> Vec<crate::mnx::SequenceItem> {
+    if let Some(single_dur) = crate::validate::quarter_beats_to_duration(rem_beats) {
+        return vec![crate::mnx::SequenceItem::Event(new_rest_event(single_dur))];
+    }
+    let mut items = Vec::new();
+    let bases = [
+        ("whole", 4.0),
+        ("half", 2.0),
+        ("quarter", 1.0),
+        ("eighth", 0.5),
+        ("16th", 0.25),
+        ("32nd", 0.125),
+        ("64th", 0.0625),
+    ];
+    while rem_beats > 0.01 {
+        if let Some(rem_dur) = crate::validate::quarter_beats_to_duration(rem_beats) {
+            items.push(crate::mnx::SequenceItem::Event(new_rest_event(rem_dur)));
+            break;
+        }
+        let mut matched = false;
+        for &(b, val) in &bases {
+            if rem_beats >= val - 1e-4 {
+                items.push(crate::mnx::SequenceItem::Event(new_rest_event(
+                    crate::mnx::Duration {
+                        base: b.to_string(),
+                        dots: None,
+                        multiple: None,
+                    },
+                )));
+                rem_beats -= val;
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            break;
+        }
+    }
+    items
+}
+
+pub fn fill_measure_to_capacity_with_rests(
+    measure: &mut crate::mnx::Measure,
+    expected_beats: f64,
+) {
+    if measure.sequences.is_empty() {
+        measure.sequences.push(crate::mnx::Sequence {
+            comment: None,
+            content: make_rest_items_for_beats(expected_beats),
+        });
+        return;
+    }
+    let seq = &mut measure.sequences[0];
+    let has_any_notes = seq
+        .flattened_events()
+        .iter()
+        .any(|ev| !ev.notes.is_empty());
+    if !has_any_notes {
+        // Measure has no music in it: replace with a single rest spanning the full measure
+        seq.content = make_rest_items_for_beats(expected_beats);
+        return;
+    }
+    // Convert any trailing blank events into rests first
+    for item in &mut seq.content {
+        if let crate::mnx::SequenceItem::Event(ev) = item {
+            if ev.notes.is_empty() && ev.rest.is_none() {
+                ev.rest = Some(crate::mnx::Rest {});
+            }
+        }
+    }
+    let current_beats = seq.total_beats();
+    if current_beats + 1e-4 < expected_beats {
+        let rem = expected_beats - current_beats;
+        seq.content.extend(make_rest_items_for_beats(rem));
+    }
+}
+
 /// Replaces the fret number and pitch of the given note inside `doc`.
 pub fn update_note_in_doc(
     doc: &mut crate::mnx::MnxDocument,
@@ -293,11 +437,22 @@ pub fn update_note_in_doc(
     new_fret: i32,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    update_note_in_doc_part(doc, 0, event_idx, note_idx, new_fret, new_pitch)
+}
+
+pub fn update_note_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    note_idx: usize,
+    new_fret: i32,
+    new_pitch: Option<&crate::mnx::Pitch>,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     let Some(note) = ev.notes.get_mut(note_idx) else {
@@ -335,7 +490,32 @@ pub fn set_or_add_note_on_string_in_doc(
     new_fret: i32,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> bool {
-    set_or_add_decimal_note_on_string_in_doc(doc, event_idx, target_string, new_fret as f64, new_pitch)
+    set_or_add_decimal_note_on_string_in_doc_part(
+        doc,
+        0,
+        event_idx,
+        target_string,
+        new_fret as f64,
+        new_pitch,
+    )
+}
+
+pub fn set_or_add_note_on_string_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    target_string: u8,
+    new_fret: i32,
+    new_pitch: Option<&crate::mnx::Pitch>,
+) -> bool {
+    set_or_add_decimal_note_on_string_in_doc_part(
+        doc,
+        part_idx,
+        event_idx,
+        target_string,
+        new_fret as f64,
+        new_pitch,
+    )
 }
 
 /// Updates an existing note on `target_string` in `event_idx` with a whole or decimal fret (e.g. `1.5`), or appends a new note.
@@ -346,11 +526,29 @@ pub fn set_or_add_decimal_note_on_string_in_doc(
     decimal_fret: f64,
     new_pitch: Option<&crate::mnx::Pitch>,
 ) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    set_or_add_decimal_note_on_string_in_doc_part(
+        doc,
+        0,
+        event_idx,
+        target_string,
+        decimal_fret,
+        new_pitch,
+    )
+}
+
+pub fn set_or_add_decimal_note_on_string_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    target_string: u8,
+    decimal_fret: f64,
+    new_pitch: Option<&crate::mnx::Pitch>,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     ev.rest = None;
@@ -397,7 +595,16 @@ pub fn set_chord_on_event_in_doc(
     event_idx: usize,
     chord: &std::collections::BTreeMap<u8, i32>,
 ) -> bool {
-    let part_clone = match doc.parts.first().cloned() {
+    set_chord_on_event_in_doc_part(doc, 0, event_idx, chord)
+}
+
+pub fn set_chord_on_event_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    chord: &std::collections::BTreeMap<u8, i32>,
+) -> bool {
+    let part_clone = match doc.parts.get(part_idx).cloned() {
         Some(p) => p,
         None => return false,
     };
@@ -408,11 +615,11 @@ pub fn set_chord_on_event_in_doc(
         .as_ref()
         .and_then(|t| t.reference_note.as_ref())
         .cloned();
-    let paths = doc.get_flattened_event_paths();
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     ev.rest = None;
@@ -465,11 +672,20 @@ pub fn remove_note_on_string_in_doc(
     event_idx: usize,
     target_string: u8,
 ) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    remove_note_on_string_in_doc_part(doc, 0, event_idx, target_string)
+}
+
+pub fn remove_note_on_string_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    target_string: u8,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     let initial_len = ev.notes.len();
@@ -492,11 +708,20 @@ pub fn update_event_duration_in_doc(
     event_idx: usize,
     new_duration: &crate::mnx::Duration,
 ) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    update_event_duration_in_doc_part(doc, 0, event_idx, new_duration)
+}
+
+pub fn update_event_duration_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    new_duration: &crate::mnx::Duration,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     ev.duration = new_duration.clone();
@@ -556,12 +781,39 @@ pub fn set_bpm_in_yaml(yaml: &str, new_bpm: f64) -> String {
     serde_saphyr::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
 }
 
-/// Appends a new measure to `global/measures` and to the first part in `doc`, containing a single blank note with `duration`.
+/// Appends a new measure to `global/measures` and to all parts in `doc`, containing a single blank note with `duration`.
 pub fn add_measure_to_doc(
     doc: &mut crate::mnx::MnxDocument,
     duration: &crate::mnx::Duration,
 ) -> bool {
+    add_measure_to_doc_part(doc, 0, duration)
+}
+
+pub fn add_measure_to_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    active_part_idx: usize,
+    duration: &crate::mnx::Duration,
+) -> bool {
+    if doc.parts.is_empty() {
+        return false;
+    }
     doc.ensure_measure_parity();
+
+    // If there are multiple parts, ensure the previous final measure in non-active parts
+    // is filled to capacity with rests so it doesn't become an incomplete non-final measure.
+    if doc.parts.len() > 1 && !doc.global.measures.is_empty() {
+        let prev_last_m = doc.global.measures.len() - 1;
+        let time_sig = crate::validate::get_time_signature_for_measure(doc, prev_last_m);
+        let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+        for (p_idx, part) in doc.parts.iter_mut().enumerate() {
+            if p_idx != active_part_idx {
+                if let Some(m) = part.measures.get_mut(prev_last_m) {
+                    fill_measure_to_capacity_with_rests(m, expected_beats);
+                }
+            }
+        }
+    }
+
     if doc.global.measures.is_empty() {
         let last_time = crate::mnx::TimeSignature { count: 4, unit: 4 };
         doc.global.measures.push(crate::mnx::GlobalMeasure {
@@ -572,20 +824,28 @@ pub fn add_measure_to_doc(
         doc.global.measures.push(crate::mnx::GlobalMeasure::default());
     }
 
-    let Some(part) = doc.parts.first_mut() else {
-        return false;
-    };
-    part.measures.push(crate::mnx::Measure {
-        comment: None,
-        beams: None,
-        arpeggios: None,
-        sequences: vec![crate::mnx::Sequence {
-            comment: None,
-            content: vec![crate::mnx::SequenceItem::Event(new_blank_event(
+    let new_m_idx = doc.global.measures.len() - 1;
+    let new_time_sig = crate::validate::get_time_signature_for_measure(doc, new_m_idx);
+    let new_expected_beats = (new_time_sig.count as f64) * (4.0 / new_time_sig.unit as f64);
+
+    for (p_idx, part) in doc.parts.iter_mut().enumerate() {
+        let content = if p_idx == active_part_idx {
+            vec![crate::mnx::SequenceItem::Event(new_blank_event(
                 duration.clone(),
-            ))],
-        }],
-    });
+            ))]
+        } else {
+            make_rest_items_for_beats(new_expected_beats)
+        };
+        part.measures.push(crate::mnx::Measure {
+            comment: None,
+            beams: None,
+            arpeggios: None,
+            sequences: vec![crate::mnx::Sequence {
+                comment: None,
+                content,
+            }],
+        });
+    }
     true
 }
 
@@ -603,10 +863,34 @@ pub fn add_blank_note_to_last_measure_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     duration: &crate::mnx::Duration,
 ) -> bool {
+    add_blank_note_to_last_measure_in_doc_part(doc, 0, duration)
+}
+
+pub fn add_blank_note_to_last_measure_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    duration: &crate::mnx::Duration,
+) -> bool {
+    let Some(last_m_idx) = doc
+        .parts
+        .get(part_idx)
+        .and_then(|p| p.measures.len().checked_sub(1))
+    else {
+        return false;
+    };
+    add_blank_note_to_measure_in_doc_part(doc, part_idx, last_m_idx, duration)
+}
+
+pub fn add_blank_note_to_measure_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    measure_idx: usize,
+    duration: &crate::mnx::Duration,
+) -> bool {
     let Some(seq) = doc
         .parts
-        .first_mut()
-        .and_then(|p| p.measures.last_mut())
+        .get_mut(part_idx)
+        .and_then(|p| p.measures.get_mut(measure_idx))
         .and_then(|m| m.sequences.first_mut())
     else {
         return false;
@@ -615,6 +899,41 @@ pub fn add_blank_note_to_last_measure_in_doc(
         .push(crate::mnx::SequenceItem::Event(new_blank_event(
             duration.clone(),
         )));
+    true
+}
+
+/// If `measure_idx` in `part_idx` currently contains only a single default full-measure rest
+/// (1 event with `rest.is_some()` and `notes.is_empty()` spanning the measure), replaces it
+/// with a single blank note (`rest: None`, `notes: []`) of `duration`.
+pub fn replace_default_rest_with_blank_note_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    measure_idx: usize,
+    duration: &crate::mnx::Duration,
+) -> bool {
+    let time_sig = crate::validate::get_time_signature_for_measure(doc, measure_idx);
+    let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+    let Some(seq) = doc
+        .parts
+        .get_mut(part_idx)
+        .and_then(|p| p.measures.get_mut(measure_idx))
+        .and_then(|m| m.sequences.first_mut())
+    else {
+        return false;
+    };
+    let is_default_full_rest = {
+        let evs = seq.flattened_events();
+        evs.len() == 1
+            && evs[0].rest.is_some()
+            && evs[0].notes.is_empty()
+            && (seq.total_beats() - expected_beats).abs() < 1e-3
+    };
+    if !is_default_full_rest {
+        return false;
+    }
+    seq.content = vec![crate::mnx::SequenceItem::Event(new_blank_event(
+        duration.clone(),
+    ))];
     true
 }
 
@@ -635,9 +954,18 @@ pub fn insert_blank_note_after_tuplet_in_doc(
     event_idx: usize,
     base: &str,
 ) -> Option<usize> {
-    let info = doc.find_event_tuplet_info(event_idx)?;
+    insert_blank_note_after_tuplet_in_doc_part(doc, 0, event_idx, base)
+}
+
+pub fn insert_blank_note_after_tuplet_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    base: &str,
+) -> Option<usize> {
+    let info = doc.find_event_tuplet_info_for_part(part_idx, event_idx)?;
     let tuplet_end = info.event_range.end;
-    let paths = doc.get_flattened_event_paths();
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _) = *paths.get(event_idx)? else {
         return None;
     };
@@ -649,7 +977,7 @@ pub fn insert_blank_note_after_tuplet_in_doc(
     };
     let seq = doc
         .parts
-        .first_mut()?
+        .get_mut(part_idx)?
         .measures
         .get_mut(m_idx)?
         .sequences
@@ -673,12 +1001,22 @@ pub fn insert_blank_note_after_tuplet(
 /// If the final event in the last measure is blank (notes: []), removes it from `doc`.
 /// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
 pub fn remove_last_blank_event_in_doc(doc: &mut crate::mnx::MnxDocument) -> bool {
-    if doc.parts.is_empty() || doc.parts[0].measures.is_empty() {
+    remove_last_blank_event_in_doc_part(doc, 0)
+}
+
+pub fn remove_last_blank_event_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+) -> bool {
+    let Some(part) = doc.parts.get_mut(part_idx) else {
+        return false;
+    };
+    if part.measures.is_empty() {
         return false;
     }
 
-    let last_measure_idx = doc.parts[0].measures.len().saturating_sub(1);
-    let measure = &mut doc.parts[0].measures[last_measure_idx];
+    let last_measure_idx = part.measures.len().saturating_sub(1);
+    let measure = &mut part.measures[last_measure_idx];
     if measure.sequences.is_empty() {
         return false;
     }
@@ -722,12 +1060,115 @@ pub fn remove_last_blank_event_in_doc(doc: &mut crate::mnx::MnxDocument) -> bool
     }
 
     if seq.content.is_empty() {
-        doc.parts[0].measures.pop();
-        if doc.global.measures.len() > last_measure_idx {
-            doc.global.measures.remove(last_measure_idx);
+        let other_parts_have_notes_in_last_measure = doc
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != part_idx)
+            .any(|(_, p)| {
+                p.measures
+                    .get(last_measure_idx)
+                    .map(|m| {
+                        m.sequences
+                            .iter()
+                            .any(|s| s.flattened_events().iter().any(|ev| !ev.notes.is_empty()))
+                    })
+                    .unwrap_or(false)
+            });
+
+        if other_parts_have_notes_in_last_measure {
+            let time_sig = crate::validate::get_time_signature_for_measure(doc, last_measure_idx);
+            let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+            doc.parts[part_idx].measures[last_measure_idx].sequences[0].content =
+                make_rest_items_for_beats(expected_beats);
+        } else {
+            for p in &mut doc.parts {
+                if p.measures.len() > last_measure_idx {
+                    p.measures.remove(last_measure_idx);
+                }
+            }
+            if doc.global.measures.len() > last_measure_idx {
+                doc.global.measures.remove(last_measure_idx);
+            }
         }
     }
     true
+}
+
+/// Removes a trailing blank event at the end of `measure_idx` in `part_idx`.
+/// If `measure_idx` is the last measure of `part_idx`, behaves identically to `remove_last_blank_event_in_doc_part`.
+/// If `measure_idx` is an earlier measure, removes the trailing blank event if the measure has more than 1 event,
+/// or restores the measure's default full-measure rest if `measure_idx > 0` and its single event is a blank note.
+pub fn remove_blank_event_at_end_of_measure_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    measure_idx: usize,
+) -> bool {
+    let Some(num_measures) = doc.parts.get(part_idx).map(|p| p.measures.len()) else {
+        return false;
+    };
+    if num_measures == 0 || measure_idx >= num_measures {
+        return false;
+    }
+    if measure_idx + 1 == num_measures {
+        return remove_last_blank_event_in_doc_part(doc, part_idx);
+    }
+
+    let time_sig = crate::validate::get_time_signature_for_measure(doc, measure_idx);
+    let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+
+    let Some(seq) = doc
+        .parts
+        .get_mut(part_idx)
+        .and_then(|p| p.measures.get_mut(measure_idx))
+        .and_then(|m| m.sequences.first_mut())
+    else {
+        return false;
+    };
+
+    let flat_evs = seq.flattened_events();
+    if flat_evs.len() <= 1 {
+        if measure_idx > 0
+            && flat_evs.len() == 1
+            && flat_evs[0].notes.is_empty()
+            && flat_evs[0].rest.is_none()
+        {
+            seq.content = make_rest_items_for_beats(expected_beats);
+            return true;
+        }
+        return false;
+    }
+
+    fn remove_last_blank(items: &mut Vec<crate::mnx::SequenceItem>) -> bool {
+        if let Some(last_item) = items.last_mut() {
+            match last_item {
+                crate::mnx::SequenceItem::Event(e) => {
+                    if e.notes.is_empty() && e.rest.is_none() {
+                        items.pop();
+                        return true;
+                    }
+                    return false;
+                }
+                crate::mnx::SequenceItem::Tuplet(t) => {
+                    let removed = remove_last_blank(&mut t.content);
+                    if t.content.is_empty() {
+                        items.pop();
+                    }
+                    return removed;
+                }
+                crate::mnx::SequenceItem::Grace(g) => {
+                    let removed = remove_last_blank(&mut g.content);
+                    if g.content.is_empty() {
+                        items.pop();
+                    }
+                    return removed;
+                }
+            }
+        }
+        false
+    }
+
+    remove_last_blank(&mut seq.content)
 }
 
 /// If the final event in the last measure is blank (notes: []), removes it from the YAML.
@@ -741,11 +1182,19 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
 }
 
 pub fn convert_rest_to_blank_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    convert_rest_to_blank_in_doc_part(doc, 0, event_idx)
+}
+
+pub fn convert_rest_to_blank_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     if ev.rest.is_none() {
@@ -764,11 +1213,19 @@ pub fn convert_rest_to_blank(yaml: &str, event_idx: usize) -> Option<String> {
 }
 
 pub fn convert_event_to_rest_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    convert_event_to_rest_in_doc_part(doc, 0, event_idx)
+}
+
+pub fn convert_event_to_rest_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     if ev.rest.is_some() && ev.notes.is_empty() {
@@ -794,14 +1251,25 @@ pub fn create_tuplet_in_doc(
     outer_multiple: u32,
     base: &str,
 ) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    create_tuplet_in_doc_part(doc, 0, event_idx, inner_multiple, outer_multiple, base)
+}
+
+pub fn create_tuplet_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    inner_multiple: u32,
+    outer_multiple: u32,
+    base: &str,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&crate::mnx::AstPath::TopLevel(m_idx, s_idx, i_idx)) = paths.get(event_idx) else {
         return false;
     };
 
     let Some(seq) = doc
         .parts
-        .first_mut()
+        .get_mut(part_idx)
         .and_then(|p| p.measures.get_mut(m_idx))
         .and_then(|m| m.sequences.get_mut(s_idx))
     else {
@@ -860,17 +1328,25 @@ pub fn create_tuplet_in_yaml(
 }
 
 pub fn remove_tuplet_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
-    if doc.find_event_tuplet_info(event_idx).is_none() {
+    remove_tuplet_in_doc_part(doc, 0, event_idx)
+}
+
+pub fn remove_tuplet_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+) -> bool {
+    if doc.find_event_tuplet_info_for_part(part_idx, event_idx).is_none() {
         return false;
     }
-    let paths = doc.get_flattened_event_paths();
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _)) = paths.get(event_idx) else {
         return false;
     };
 
     let Some(seq) = doc
         .parts
-        .first_mut()
+        .get_mut(part_idx)
         .and_then(|p| p.measures.get_mut(m_idx))
         .and_then(|m| m.sequences.get_mut(s_idx))
     else {
@@ -897,17 +1373,25 @@ pub fn fill_tuplet_rests_and_add_blank_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
 ) -> Option<usize> {
-    let info = doc.find_event_tuplet_info(event_idx)?;
+    fill_tuplet_rests_and_add_blank_in_doc_part(doc, 0, event_idx)
+}
+
+pub fn fill_tuplet_rests_and_add_blank_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+) -> Option<usize> {
+    let info = doc.find_event_tuplet_info_for_part(part_idx, event_idx)?;
     let tuplet_end = info.event_range.end;
     let outer_base = info.tuplet.outer.duration.base.clone();
 
-    let paths = doc.get_flattened_event_paths();
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _) = *paths.get(event_idx)? else {
         return None;
     };
 
     let cur_is_blank = doc
-        .get_event_at_path(paths[event_idx])
+        .get_event_at_part_path(part_idx, paths[event_idx])
         .map(|e| e.notes.is_empty() && e.rest.is_none())
         .unwrap_or(false);
 
@@ -918,7 +1402,7 @@ pub fn fill_tuplet_rests_and_add_blank_in_doc(
     };
 
     for idx in convert_start..tuplet_end {
-        if let Some(ev) = doc.get_event_mut_at_path(paths[idx]) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(part_idx, paths[idx]) {
             ev.notes.clear();
             ev.rest = Some(crate::mnx::Rest {});
         }
@@ -930,9 +1414,9 @@ pub fn fill_tuplet_rests_and_add_blank_in_doc(
         multiple: None,
     };
 
-    let part_measures_len = doc.parts.first()?.measures.len();
+    let part_measures_len = doc.parts.get(part_idx)?.measures.len();
     let is_last_measure = m_idx == part_measures_len.saturating_sub(1);
-    let seq_items_len = doc.parts[0].measures[m_idx]
+    let seq_items_len = doc.parts[part_idx].measures[m_idx]
         .sequences
         .get(s_idx)
         .map(|s| s.content.len())
@@ -942,21 +1426,21 @@ pub fn fill_tuplet_rests_and_add_blank_in_doc(
     let dur_beats = crate::validate::duration_to_quarter_beats(&outer_dur);
     let time_sig = crate::validate::get_time_signature_for_measure(doc, m_idx);
     let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
-    let seq_beats = doc.parts[0].measures[m_idx]
+    let seq_beats = doc.parts[part_idx].measures[m_idx]
         .sequences
         .get(s_idx)
         .map(|s| s.total_beats())
         .unwrap_or(0.0);
 
     if is_last_measure && is_last_item_in_measure && (seq_beats + dur_beats > max_beats + 1e-4) {
-        if add_measure_to_doc(doc, &outer_dur) {
-            let new_total = doc.get_flattened_event_paths().len();
+        if add_measure_to_doc_part(doc, part_idx, &outer_dur) {
+            let new_total = doc.get_flattened_event_paths_for_part(part_idx).len();
             return Some(new_total.saturating_sub(1));
         }
         return None;
     }
 
-    doc.parts[0].measures[m_idx].sequences[s_idx]
+    doc.parts[part_idx].measures[m_idx].sequences[s_idx]
         .content
         .insert(
             i_idx + 1,
@@ -1016,11 +1500,21 @@ pub fn set_note_bend_in_doc(
     string_val: u8,
     bend_str: &str,
 ) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    set_note_bend_in_doc_part(doc, 0, event_idx, string_val, bend_str)
+}
+
+pub fn set_note_bend_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    string_val: u8,
+    bend_str: &str,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     let target_note = if let Some(idx) = ev.notes.iter().position(|n| n.string == Some(string_val))
@@ -1125,18 +1619,26 @@ pub fn set_global_measure_property(
 }
 
 pub fn insert_grace_before_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
-    if doc.find_event_grace_info(event_idx).is_some() {
+    insert_grace_before_in_doc_part(doc, 0, event_idx)
+}
+
+pub fn insert_grace_before_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+) -> bool {
+    if doc.find_event_grace_info_for_part(part_idx, event_idx).is_some() {
         return false;
     }
     if event_idx > 0 {
-        if let Some(prev_info) = doc.find_event_grace_info(event_idx - 1) {
+        if let Some(prev_info) = doc.find_event_grace_info_for_part(part_idx, event_idx - 1) {
             if prev_info.event_range.end == event_idx {
                 return false;
             }
         }
     }
 
-    let paths = doc.get_flattened_event_paths();
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&crate::mnx::AstPath::TopLevel(m_idx, s_idx, i_idx)) = paths.get(event_idx) else {
         return false;
     };
@@ -1151,7 +1653,7 @@ pub fn insert_grace_before_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: 
         content: vec![crate::mnx::SequenceItem::Event(new_rest_event(grace_dur))],
     };
 
-    let Some(part) = doc.parts.first_mut() else {
+    let Some(part) = doc.parts.get_mut(part_idx) else {
         return false;
     };
     let Some(measure) = part.measures.get_mut(m_idx) else {
@@ -1177,10 +1679,18 @@ pub fn append_blank_note_to_grace_block_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     e_idx: usize,
 ) -> bool {
-    if doc.find_event_grace_info(e_idx).is_none() {
+    append_blank_note_to_grace_block_in_doc_part(doc, 0, e_idx)
+}
+
+pub fn append_blank_note_to_grace_block_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    e_idx: usize,
+) -> bool {
+    if doc.find_event_grace_info_for_part(part_idx, e_idx).is_none() {
         return false;
     }
-    let paths = doc.get_flattened_event_paths();
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _)) = paths.get(e_idx) else {
         return false;
     };
@@ -1192,7 +1702,7 @@ pub fn append_blank_note_to_grace_block_in_doc(
     };
     if let Some(crate::mnx::SequenceItem::Grace(g)) = doc
         .parts
-        .first_mut()
+        .get_mut(part_idx)
         .and_then(|p| p.measures.get_mut(m_idx))
         .and_then(|m| m.sequences.get_mut(s_idx))
         .and_then(|s| s.content.get_mut(i_idx))
@@ -1218,11 +1728,20 @@ pub fn set_event_text_markings_in_doc(
     event_idx: usize,
     markings: Vec<crate::mnx::TextMarking>,
 ) -> bool {
-    let paths = doc.get_flattened_event_paths();
+    set_event_text_markings_in_doc_part(doc, 0, event_idx, markings)
+}
+
+pub fn set_event_text_markings_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    markings: Vec<crate::mnx::TextMarking>,
+) -> bool {
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
     };
-    let Some(ev) = doc.get_event_mut_at_path(path) else {
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
     ev.text_markings = markings

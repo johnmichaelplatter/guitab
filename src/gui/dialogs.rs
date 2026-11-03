@@ -385,6 +385,7 @@ impl MnxEditorApp {
                                 }
                             }
                             if ui.button("Cancel").clicked() {
+                                self.is_adding_instrument_in_dialog = false;
                                 close_dialog = true;
                             }
                         });
@@ -506,6 +507,7 @@ impl MnxEditorApp {
                                 close_dialog = true;
                             }
                             if ui.button("Cancel").clicked() {
+                                self.is_adding_instrument_in_dialog = false;
                                 close_dialog = true;
                             }
                         });
@@ -594,13 +596,19 @@ impl MnxEditorApp {
                             ui.horizontal(|ui| {
                                 if ui.button("OK").clicked() {
                                     let capacity = (*count as f64) * 4.0 / (*unit as f64);
-                                    let measure_beats = self.parsed_mnx.as_ref()
-                                        .and_then(|d| d.parts.first())
-                                        .and_then(|p| p.measures.get(*m_idx))
-                                        .and_then(|m| m.sequences.first())
-                                        .map(|s| s.total_beats())
+                                    let measure_beats = self
+                                        .parsed_mnx
+                                        .as_ref()
+                                        .map(|d| {
+                                            d.parts
+                                                .iter()
+                                                .filter_map(|p| p.measures.get(*m_idx))
+                                                .filter_map(|m| m.sequences.first())
+                                                .map(|s| s.total_beats())
+                                                .fold(0.0_f64, f64::max)
+                                        })
                                         .unwrap_or(0.0);
-                                        
+
                                     if measure_beats > capacity + 0.001 {
                                         *warning = Some(format!("Warning: there is note content outside the new barline ({} beats in bar, new TS holds {} beats)", measure_beats, capacity));
                                     } else {
@@ -723,7 +731,13 @@ impl MnxEditorApp {
                 fretboard_editor,
                 is_new_tab,
             } => {
-                let win_title = if *show_custom_fretboard {
+                let win_title = if self.is_adding_instrument_in_dialog {
+                    if *show_custom_fretboard {
+                        "Add Instrument & Custom Fretboard Editor"
+                    } else {
+                        "Add Instrument"
+                    }
+                } else if *show_custom_fretboard {
                     "Instrument Setup & Custom Fretboard Editor"
                 } else {
                     "Instrument Setup"
@@ -735,6 +749,15 @@ impl MnxEditorApp {
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ctx, |ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Instrument Name:").strong());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.instrument_setup_name_buf)
+                                    .desired_width(240.0)
+                                    .hint_text("e.g. Electric Guitar, Bass, 19-EDO Guitar..."),
+                            );
+                        });
 
                         // ── Preset Selector & Save as Preset Row ─────────────────────
                         let current_probe = crate::presets::InstrumentPreset::from_dialog_state(
@@ -1143,6 +1166,7 @@ impl MnxEditorApp {
                                 fretboard_editor.editing_badge = None;
                             }
                             if ui.button("Cancel").clicked() {
+                                self.is_adding_instrument_in_dialog = false;
                                 close_dialog = true;
                             }
                         });
@@ -1257,6 +1281,7 @@ impl MnxEditorApp {
                                 close_dialog = true;
                             }
                             if ui.button("Cancel").clicked() {
+                                self.is_adding_instrument_in_dialog = false;
                                 close_dialog = true;
                             }
                         });
@@ -1290,7 +1315,7 @@ impl MnxEditorApp {
                     let mfd = self
                         .parsed_mnx
                         .as_ref()
-                        .and_then(|d| d.parts.first())
+                        .and_then(|d| d.parts.get(self.selected_part_idx))
                         .and_then(|p| p.micro_fret_divisions)
                         .unwrap_or(12) as u32;
                     curve_editor.ui(ui, rect, pb_range, mfd);
@@ -1354,6 +1379,7 @@ impl MnxEditorApp {
                                 close_dialog = true;
                             }
                             if ui.button("Cancel").clicked() {
+                                self.is_adding_instrument_in_dialog = false;
                                 close_dialog = true;
                             }
                         });
@@ -1367,7 +1393,10 @@ impl MnxEditorApp {
                 let event_idx_val = *event_idx;
                 let string_val = *string;
 
-                let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
+                let part = self
+                    .parsed_mnx
+                    .as_ref()
+                    .and_then(|d| d.parts.get(self.selected_part_idx));
                 let table = match (&self.parsed_mnx, part) {
                     (Some(doc), Some(p)) => {
                         Some(crate::harmonic::HarmonicLookupTable::from_doc_part(doc, p))
@@ -1482,7 +1511,7 @@ impl MnxEditorApp {
                 let total_events = self
                     .parsed_mnx
                     .as_ref()
-                    .map(|d| d.get_flattened_event_paths().len())
+                    .map(|d| d.get_flattened_event_paths_for_part(self.selected_part_idx).len())
                     .unwrap_or(0);
 
                 egui::Window::new(format!("Lyrics - Line {}", curr_line))
@@ -1801,8 +1830,11 @@ impl MnxEditorApp {
                     string,
                     bend_str,
                 } => {
+                    let p_idx = self.selected_part_idx;
                     self.mutate_doc(|doc| {
-                        if crate::yaml_editor::set_note_bend_in_doc(doc, event_idx, string, &bend_str) {
+                        if crate::yaml_editor::set_note_bend_in_doc_part(
+                            doc, p_idx, event_idx, string, &bend_str,
+                        ) {
                             Some(())
                         } else {
                             None
@@ -1824,14 +1856,11 @@ impl MnxEditorApp {
                     from_select_mode,
                     event_idx,
                 } => {
+                    let p_idx = self.selected_part_idx;
                     if self
                         .mutate_doc(|doc| {
-                            if crate::yaml_editor::create_tuplet_in_doc(
-                                doc,
-                                event_idx,
-                                inner,
-                                outer,
-                                &base,
+                            if crate::yaml_editor::create_tuplet_in_doc_part(
+                                doc, p_idx, event_idx, inner, outer, &base,
                             ) {
                                 Some(())
                             } else {
@@ -1852,9 +1881,11 @@ impl MnxEditorApp {
                     }
                 }
                 DialogAction::RemoveTuplet { event_idx } => {
+                    let p_idx = self.selected_part_idx;
                     if self
                         .mutate_doc(|doc| {
-                            if crate::yaml_editor::remove_tuplet_in_doc(doc, event_idx) {
+                            if crate::yaml_editor::remove_tuplet_in_doc_part(doc, p_idx, event_idx)
+                            {
                                 Some(())
                             } else {
                                 None
@@ -1876,7 +1907,8 @@ impl MnxEditorApp {
                     fretboard_editor,
                     is_new_tab,
                 } => {
-                    let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.first());
+                    let p_idx = self.selected_part_idx;
+                    let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.get(p_idx));
                     let old_num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
                     let old_edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
                     let old_step = part.map(|p| p.step_multiplier()).unwrap_or(1) as u8;
@@ -1967,12 +1999,38 @@ impl MnxEditorApp {
                         {
                             self.apply_custom_fretboard_state(fb_state);
                         }
+                    } else if self.is_adding_instrument_in_dialog {
+                        let new_name = self.instrument_setup_name_buf.trim().to_string();
+                        let custom_frets = if !fb_state.frets.is_empty() {
+                            Some(fb_state.frets.clone())
+                        } else {
+                            None
+                        };
+                        self.add_new_instrument_part(
+                            new_name,
+                            num_strings,
+                            edo,
+                            step_multiplier,
+                            tunings,
+                            custom_frets,
+                        );
+                        if !fb_state.frets.is_empty()
+                            || tuning_mode == InstrumentTuningMode::RatioCents
+                        {
+                            self.apply_custom_fretboard_state(fb_state);
+                        }
+                        self.is_adding_instrument_in_dialog = false;
+                        self.active_dialog = ActiveDialog::None;
                     } else if !fb_state.frets.is_empty()
                         || had_custom_frets
                         || tuning_mode == InstrumentTuningMode::RatioCents
                     {
+                        let new_name = self.instrument_setup_name_buf.trim().to_string();
                         self.mutate_doc(|doc| {
-                            if let Some(p) = doc.parts.first_mut() {
+                            if let Some(p) = doc.parts.get_mut(p_idx) {
+                                if !new_name.is_empty() {
+                                    p.name = Some(new_name.clone());
+                                }
                                 if !fb_state.frets.is_empty() {
                                     p.custom_frets = Some(fb_state.frets.clone());
                                     p.micro_fret_divisions = None;
@@ -1989,6 +2047,15 @@ impl MnxEditorApp {
                         self.apply_custom_fretboard_state(fb_state);
                         self.active_dialog = ActiveDialog::None;
                     } else if edo != old_edo || step_multiplier != old_step {
+                        let new_name = self.instrument_setup_name_buf.trim().to_string();
+                        if !new_name.is_empty() {
+                            self.mutate_doc(|doc| {
+                                if let Some(p) = doc.parts.get_mut(p_idx) {
+                                    p.name = Some(new_name.clone());
+                                }
+                                Some(())
+                            });
+                        }
                         self.active_dialog = ActiveDialog::ConfirmEdoChange {
                             new_num_strings: num_strings,
                             new_edo: edo,
@@ -1998,6 +2065,15 @@ impl MnxEditorApp {
                     } else if num_strings != old_num_strings
                         || part.and_then(|p| p.tuning.as_ref()) != Some(&tunings)
                     {
+                        let new_name = self.instrument_setup_name_buf.trim().to_string();
+                        if !new_name.is_empty() {
+                            self.mutate_doc(|doc| {
+                                if let Some(p) = doc.parts.get_mut(p_idx) {
+                                    p.name = Some(new_name.clone());
+                                }
+                                Some(())
+                            });
+                        }
                         self.active_dialog = ActiveDialog::ConfirmTuningChange {
                             new_num_strings: num_strings,
                             new_edo: edo,
@@ -2005,6 +2081,17 @@ impl MnxEditorApp {
                             new_tunings: tunings,
                         };
                     } else {
+                        let new_name = self.instrument_setup_name_buf.trim().to_string();
+                        if !new_name.is_empty()
+                            && part.and_then(|p| p.name.as_deref()) != Some(new_name.as_str())
+                        {
+                            self.mutate_doc(|doc| {
+                                if let Some(p) = doc.parts.get_mut(p_idx) {
+                                    p.name = Some(new_name.clone());
+                                }
+                                Some(())
+                            });
+                        }
                         self.active_dialog = ActiveDialog::None;
                     }
                 }
@@ -2370,15 +2457,16 @@ impl MnxEditorApp {
                     touch,
                     sounding_pitch,
                 } => {
+                    let p_idx = self.selected_part_idx;
                     let mut doc = match self.parsed_mnx.clone() {
                         Some(d) => d,
                         None => return,
                     };
-                    let flattened = doc.get_flattened_event_paths();
+                    let flattened = doc.get_flattened_event_paths_for_part(p_idx);
                     if event_idx < flattened.len() {
                         let cur_path = flattened[event_idx];
                         let mut matched_idx = None;
-                        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+                        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
                             let note_idx = ev
                                 .notes
                                 .iter()
@@ -2459,10 +2547,11 @@ impl MnxEditorApp {
                     });
                 }
                 DialogAction::ApplyTextMarking { event_idx, marking } => {
+                    let p_idx = self.selected_part_idx;
                     let markings = marking.into_iter().collect();
                     self.mutate_doc(|doc| {
-                        if crate::yaml_editor::set_event_text_markings_in_doc(
-                            doc, event_idx, markings,
+                        if crate::yaml_editor::set_event_text_markings_in_doc_part(
+                            doc, p_idx, event_idx, markings,
                         ) {
                             Some(())
                         } else {
@@ -2478,15 +2567,16 @@ impl MnxEditorApp {
         &mut self,
         state: crate::fretboard_editor::FretboardEditorState,
     ) {
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.clone() {
             Some(d) => d,
             None => return,
         };
-        if doc.parts.is_empty() {
+        if p_idx >= doc.parts.len() {
             return;
         }
 
-        let any_ratio_or_cents_tuning = doc.parts[0]
+        let any_ratio_or_cents_tuning = doc.parts[p_idx]
             .ext
             .tuning
             .as_ref()
@@ -2494,16 +2584,16 @@ impl MnxEditorApp {
             .unwrap_or(false);
 
         let need_ref_note = if state.frets.is_empty() {
-            doc.parts[0].ext.custom_frets = None;
+            doc.parts[p_idx].ext.custom_frets = None;
             any_ratio_or_cents_tuning
         } else {
             let alter_mode = crate::fretboard_editor::classify_fretboard_alter_mode(
                 &state.frets,
                 state.reference_frequency_hz,
             );
-            doc.parts[0].ext.custom_frets = Some(state.frets);
-            doc.parts[0].ext.micro_fret_divisions = None;
-            doc.parts[0].ext.fret_step_multiplier = None;
+            doc.parts[p_idx].ext.custom_frets = Some(state.frets);
+            doc.parts[p_idx].ext.micro_fret_divisions = None;
+            doc.parts[p_idx].ext.fret_step_multiplier = None;
             any_ratio_or_cents_tuning
                 || matches!(
                     alter_mode,
@@ -2523,11 +2613,18 @@ impl MnxEditorApp {
                     frequency_hz: state.reference_frequency_hz,
                 }),
             });
-        } else {
+        } else if !doc.parts.iter().any(|p| {
+            p.ext
+                .tuning
+                .as_ref()
+                .map(|tunings| tunings.iter().any(|t| t.pitch.is_ratio_or_cents_step()))
+                .unwrap_or(false)
+                || p.has_custom_frets()
+        }) {
             doc.global.ext.tuning = None;
         }
 
-        let part_clone = doc.parts[0].clone();
+        let part_clone = doc.parts[p_idx].clone();
         let ref_note = doc
             .global
             .ext
@@ -2569,7 +2666,7 @@ impl MnxEditorApp {
             }
         }
 
-        for m in &mut doc.parts[0].measures {
+        for m in &mut doc.parts[p_idx].measures {
             for seq in &mut m.sequences {
                 resynthesize_items(&mut seq.content, &part_clone, ref_note.as_ref());
             }
@@ -2585,30 +2682,31 @@ impl MnxEditorApp {
         new_step_multiplier: u8,
         new_tunings: Vec<crate::mnx::StringTuning>,
     ) {
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.clone() {
             Some(d) => d,
             None => return,
         };
-        if doc.parts.is_empty() {
+        if p_idx >= doc.parts.len() {
             return;
         }
 
-        let old_edo = doc.parts[0].edo() as u32;
+        let old_edo = doc.parts[p_idx].edo() as u32;
         let old_tuning = crate::edo::EdoTuning::new(old_edo);
         let new_tuning = crate::edo::EdoTuning::new(new_edo as u32);
         let step_mult = (new_step_multiplier.max(1)) as i32;
 
-        if doc.parts[0].name.is_none() {
-            doc.parts[0].name = Some("Electric Guitar".to_string());
+        if doc.parts[p_idx].name.is_none() {
+            doc.parts[p_idx].name = Some(format!("Instrument {}", p_idx + 1));
         }
-        if doc.parts[0].has_custom_frets() {
-            doc.parts[0].micro_fret_divisions = None;
-            doc.parts[0].fret_step_multiplier = None;
+        if doc.parts[p_idx].has_custom_frets() {
+            doc.parts[p_idx].micro_fret_divisions = None;
+            doc.parts[p_idx].fret_step_multiplier = None;
         } else {
-            doc.parts[0].micro_fret_divisions = Some(new_edo);
-            doc.parts[0].fret_step_multiplier = Some(new_step_multiplier);
+            doc.parts[p_idx].micro_fret_divisions = Some(new_edo);
+            doc.parts[p_idx].fret_step_multiplier = Some(new_step_multiplier);
         }
-        doc.parts[0].tuning = Some(new_tunings.clone());
+        doc.parts[p_idx].tuning = Some(new_tunings.clone());
 
         if let Some(s) = self.editing_string {
             if s > new_num_strings {
@@ -2616,7 +2714,7 @@ impl MnxEditorApp {
             }
         }
 
-        let part_clone = doc.parts[0].clone();
+        let part_clone = doc.parts[p_idx].clone();
 
         fn translate_items(
             items: &mut [crate::mnx::SequenceItem],
@@ -2749,7 +2847,7 @@ impl MnxEditorApp {
             }
         }
 
-        for m in &mut doc.parts[0].measures {
+        for m in &mut doc.parts[p_idx].measures {
             for seq in &mut m.sequences {
                 translate_items(
                     &mut seq.content,

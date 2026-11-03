@@ -94,7 +94,14 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
         let num_measures = part.measures.len();
 
         for (m_idx, measure) in part.measures.iter().enumerate() {
-            let is_final_measure = m_idx + 1 == num_measures;
+            let is_final_or_frontier_measure = m_idx + 1 == num_measures
+                || (doc.parts.len() > 1
+                    && part.measures[m_idx + 1..].iter().all(|m| {
+                        m.sequences.iter().all(|s| {
+                            let evs = s.flattened_events();
+                            evs.len() == 1 && evs[0].rest.is_some() && evs[0].notes.is_empty()
+                        })
+                    }));
             let time_sig = get_time_signature_for_measure(doc, m_idx);
             let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
 
@@ -102,10 +109,10 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                 // Validate sequence total duration against measure time signature
                 let total_beats: f64 = seq.total_beats();
 
-                // Final measure exception: allowed to be under-capacity while writing,
+                // Final or frontier measure exception: allowed to be under-capacity while writing,
                 // but still flags errors if it overflows the measure.
-                // Non-final measures must match the time signature exactly.
-                if is_final_measure {
+                // Non-final/non-frontier measures must match the time signature exactly.
+                if is_final_or_frontier_measure {
                     if total_beats > expected_beats + 1e-4 {
                         errors.push(ValidationError {
                             measure_idx: m_idx + 1,
@@ -476,10 +483,28 @@ parts:
 
 pub fn quarter_beats_to_duration(beats: f64) -> Option<Duration> {
     let eps = 0.001;
-    if (beats - 4.0).abs() < eps {
+    if (beats - 8.0).abs() < eps {
+        Some(Duration {
+            base: "breve".to_string(),
+            dots: None,
+            multiple: None,
+        })
+    } else if (beats - 6.0).abs() < eps {
+        Some(Duration {
+            base: "whole".to_string(),
+            dots: Some(1),
+            multiple: None,
+        })
+    } else if (beats - 4.0).abs() < eps {
         Some(Duration {
             base: "whole".to_string(),
             dots: None,
+            multiple: None,
+        })
+    } else if (beats - 3.5).abs() < eps {
+        Some(Duration {
+            base: "half".to_string(),
+            dots: Some(2),
             multiple: None,
         })
     } else if (beats - 3.0).abs() < eps {

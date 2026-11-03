@@ -61,8 +61,12 @@ impl AstPath {
 
 impl MnxDocument {
     pub fn get_flattened_event_paths(&self) -> Vec<AstPath> {
+        self.get_flattened_event_paths_for_part(0)
+    }
+
+    pub fn get_flattened_event_paths_for_part(&self, part_idx: usize) -> Vec<AstPath> {
         let mut flattened_events = Vec::new();
-        if let Some(part) = self.parts.get(0) {
+        if let Some(part) = self.parts.get(part_idx) {
             for (m_idx, measure) in part.measures.iter().enumerate() {
                 for (s_idx, seq) in measure.sequences.iter().enumerate() {
                     for (i_idx, item) in seq.content.iter().enumerate() {
@@ -95,11 +99,15 @@ impl MnxDocument {
     }
 
     pub fn get_event_at_path(&self, path: AstPath) -> Option<&Event> {
+        self.get_event_at_part_path(0, path)
+    }
+
+    pub fn get_event_at_part_path(&self, part_idx: usize, path: AstPath) -> Option<&Event> {
         match path {
             AstPath::TopLevel(m, s, i) => {
                 if let SequenceItem::Event(e) = self
                     .parts
-                    .get(0)?
+                    .get(part_idx)?
                     .measures
                     .get(m)?
                     .sequences
@@ -115,7 +123,7 @@ impl MnxDocument {
             AstPath::InTuplet(m, s, i, t) => {
                 let item = self
                     .parts
-                    .get(0)?
+                    .get(part_idx)?
                     .measures
                     .get(m)?
                     .sequences
@@ -144,11 +152,19 @@ impl MnxDocument {
     }
 
     pub fn get_event_mut_at_path(&mut self, path: AstPath) -> Option<&mut Event> {
+        self.get_event_mut_at_part_path(0, path)
+    }
+
+    pub fn get_event_mut_at_part_path(
+        &mut self,
+        part_idx: usize,
+        path: AstPath,
+    ) -> Option<&mut Event> {
         match path {
             AstPath::TopLevel(m, s, i) => {
                 if let SequenceItem::Event(e) = self
                     .parts
-                    .get_mut(0)?
+                    .get_mut(part_idx)?
                     .measures
                     .get_mut(m)?
                     .sequences
@@ -164,7 +180,7 @@ impl MnxDocument {
             AstPath::InTuplet(m, s, i, t) => {
                 let item = self
                     .parts
-                    .get_mut(0)?
+                    .get_mut(part_idx)?
                     .measures
                     .get_mut(m)?
                     .sequences
@@ -1489,6 +1505,14 @@ impl Part {
             self.ext.fret_step_multiplier = None;
         }
     }
+
+    pub fn display_name(&self, idx: usize) -> String {
+        self.name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Part {}", idx + 1))
+    }
 }
 
 impl MnxDocument {
@@ -1502,35 +1526,47 @@ impl MnxDocument {
         if self.parts.is_empty() {
             return;
         }
-        let g_len = self.global.measures.len();
-        let p_len = self.parts[0].measures.len();
-        if g_len > p_len {
-            for m_i in p_len..g_len {
-                let time_sig = crate::validate::get_time_signature_for_measure(self, m_i);
-                let dur = crate::mnx::Duration {
-                    base: if time_sig.unit == 8 {
-                        "eighth".to_string()
-                    } else {
-                        "quarter".to_string()
-                    },
-                    dots: None,
-                    multiple: None,
-                };
-                self.parts[0].measures.push(crate::mnx::Measure {
-                    comment: None,
-                    beams: None,
-                    arpeggios: None,
-                    sequences: vec![crate::mnx::Sequence {
+        let max_part_len = self
+            .parts
+            .iter()
+            .map(|p| p.measures.len())
+            .max()
+            .unwrap_or(0);
+        let target_len = self.global.measures.len().max(max_part_len);
+
+        while self.global.measures.len() < target_len {
+            self.global.measures.push(crate::mnx::GlobalMeasure::default());
+        }
+
+        let time_sigs: Vec<TimeSignature> = (0..target_len)
+            .map(|m_i| crate::validate::get_time_signature_for_measure(self, m_i))
+            .collect();
+
+        for part in &mut self.parts {
+            let p_len = part.measures.len();
+            if target_len > p_len {
+                // Ensure the previous final measure in this part is filled to full measure capacity
+                if p_len > 0 {
+                    let prev_m = p_len - 1;
+                    let prev_ts = time_sigs[prev_m];
+                    let prev_expected = (prev_ts.count as f64) * (4.0 / (prev_ts.unit as f64));
+                    if let Some(m) = part.measures.get_mut(prev_m) {
+                        crate::yaml_editor::fill_measure_to_capacity_with_rests(m, prev_expected);
+                    }
+                }
+                for m_i in p_len..target_len {
+                    let time_sig = time_sigs[m_i];
+                    let expected_beats = (time_sig.count as f64) * (4.0 / (time_sig.unit as f64));
+                    part.measures.push(crate::mnx::Measure {
                         comment: None,
-                        content: vec![crate::mnx::SequenceItem::Event(
-                            crate::yaml_editor::new_blank_event(dur),
-                        )],
-                    }],
-                });
-            }
-        } else if p_len > g_len {
-            while self.global.measures.len() < p_len {
-                self.global.measures.push(crate::mnx::GlobalMeasure::default());
+                        beams: None,
+                        arpeggios: None,
+                        sequences: vec![crate::mnx::Sequence {
+                            comment: None,
+                            content: crate::yaml_editor::make_rest_items_for_beats(expected_beats),
+                        }],
+                    });
+                }
             }
         }
     }
@@ -1597,7 +1633,15 @@ pub struct GraceInfo<'a> {
 
 impl MnxDocument {
     pub fn find_event_tuplet_info(&self, flat_event_idx: usize) -> Option<TupletInfo<'_>> {
-        let part = self.parts.first()?;
+        self.find_event_tuplet_info_for_part(0, flat_event_idx)
+    }
+
+    pub fn find_event_tuplet_info_for_part(
+        &self,
+        part_idx: usize,
+        flat_event_idx: usize,
+    ) -> Option<TupletInfo<'_>> {
+        let part = self.parts.get(part_idx)?;
         let mut cur_e = 0;
         for measure in &part.measures {
             for seq in &measure.sequences {
@@ -1647,7 +1691,15 @@ impl MnxDocument {
     }
 
     pub fn find_event_grace_info(&self, flat_event_idx: usize) -> Option<GraceInfo<'_>> {
-        let part = self.parts.first()?;
+        self.find_event_grace_info_for_part(0, flat_event_idx)
+    }
+
+    pub fn find_event_grace_info_for_part(
+        &self,
+        part_idx: usize,
+        flat_event_idx: usize,
+    ) -> Option<GraceInfo<'_>> {
+        let part = self.parts.get(part_idx)?;
         let mut cur_e = 0;
         for measure in &part.measures {
             for seq in &measure.sequences {

@@ -392,6 +392,7 @@ pub struct RenderedLyric {
 
 pub struct TablatureOptions<'a> {
     pub part: &'a Part,
+    pub part_idx: usize,
     pub global: Option<&'a Global>,
     pub errors: &'a [ValidationError],
     pub selected_event: Option<usize>,
@@ -405,6 +406,151 @@ pub struct TablatureOptions<'a> {
     pub scroll_to_selected: bool,
     pub pitch_bend_range: u8,
     pub is_grid_input_mode: bool,
+    pub min_prefix_width: Option<f32>,
+    pub target_measure_widths: Option<&'a [f32]>,
+    pub show_global_headers: bool,
+}
+
+/// Computes the maximum pixel width of the string tuning labels for `part`.
+pub fn compute_part_max_prefix_width(ui: &egui::Ui, part: &Part) -> f32 {
+    let num_strings = part.num_strings();
+    if num_strings == 0 {
+        return 0.0;
+    }
+    let font_id = FontId::monospace(14.0);
+    let mut prefixes: Vec<String> = (1..=num_strings).map(|i| i.to_string()).collect();
+    if let Some(tuning) = &part.tuning {
+        for t in tuning {
+            if t.string >= 1 && (t.string as usize) <= num_strings {
+                prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch, part.edo());
+            }
+        }
+    }
+    prefixes
+        .iter()
+        .map(|p| {
+            ui.painter()
+                .layout_no_wrap(p.clone(), font_id.clone(), Color32::WHITE)
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max)
+}
+
+/// Computes the natural horizontal content width (`extra_start + sum(event_spacings)`) for each measure in `part`.
+pub fn compute_part_measure_content_widths(
+    part: &Part,
+    is_editing_fret: bool,
+    selected_event: Option<usize>,
+    editing_fret_text: &str,
+) -> Vec<f32> {
+    let event_spacing = 30.0_f32;
+    let measure_spacing = 20.0_f32;
+    let first_bar_pad = 25.0_f32;
+
+    let mut widths = Vec::with_capacity(part.measures.len());
+    let mut flat_event_idx = 0usize;
+
+    for (m_idx, m) in part.measures.iter().enumerate() {
+        let mut m_width = 0.0_f32;
+        if let Some(seq) = m.sequences.first() {
+            let mut layout_items = Vec::new();
+            for item in &seq.content {
+                item.to_layout_items(&mut layout_items);
+            }
+
+            let mut first_ev_info = None;
+            let mut temp_grace = false;
+            for item in &layout_items {
+                match item {
+                    LayoutItem::GraceStart => temp_grace = true,
+                    LayoutItem::GraceEnd => temp_grace = false,
+                    LayoutItem::Event(e) => {
+                        first_ev_info = Some((*e, temp_grace));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some((first_ev, first_grace)) = first_ev_info {
+                let is_editing_first = is_editing_fret
+                    && selected_event == Some(flat_event_idx)
+                    && !editing_fret_text.is_empty();
+                let edit_len = if is_editing_first {
+                    Some(editing_fret_text.len())
+                } else {
+                    None
+                };
+                let w_first = event_text_width(first_ev, first_grace, edit_len);
+                let def_pad = if m_idx == 0 {
+                    first_bar_pad
+                } else {
+                    measure_spacing
+                };
+                let extra_start = (w_first * 0.5 + 10.0 - def_pad).max(0.0);
+                m_width += extra_start;
+            }
+
+            let mut in_grace = false;
+            let mut has_events = false;
+            for (item_idx, l_item) in layout_items.iter().enumerate() {
+                match l_item {
+                    LayoutItem::GraceStart => in_grace = true,
+                    LayoutItem::GraceEnd => in_grace = false,
+                    LayoutItem::Event(ev) => {
+                        has_events = true;
+                        let mut next_ev_info = None;
+                        let mut look_grace = in_grace;
+                        for next_item in &layout_items[item_idx + 1..] {
+                            match next_item {
+                                LayoutItem::GraceStart => look_grace = true,
+                                LayoutItem::GraceEnd => look_grace = false,
+                                LayoutItem::Event(ne) => {
+                                    next_ev_info = Some((*ne, look_grace));
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                        let is_editing_this = is_editing_fret
+                            && selected_event == Some(flat_event_idx)
+                            && !editing_fret_text.is_empty();
+                        let edit_len = if is_editing_this {
+                            Some(editing_fret_text.len())
+                        } else {
+                            None
+                        };
+                        let next_editing_len = if is_editing_fret
+                            && selected_event == Some(flat_event_idx + 1)
+                            && !editing_fret_text.is_empty()
+                        {
+                            Some(editing_fret_text.len())
+                        } else {
+                            None
+                        };
+                        let sp = calculate_event_spacing(
+                            ev,
+                            in_grace,
+                            event_spacing,
+                            next_ev_info,
+                            edit_len,
+                            next_editing_len,
+                        );
+                        m_width += sp;
+                        flat_event_idx += 1;
+                    }
+                    _ => {}
+                }
+            }
+            if !has_events {
+                m_width = event_spacing;
+            }
+        } else {
+            m_width = event_spacing;
+        }
+        widths.push(m_width);
+    }
+    widths
 }
 
 pub fn draw_tablature(
@@ -463,75 +609,26 @@ pub fn draw_tablature(
                 .size()
                 .x
         })
-        .fold(0.0_f32, f32::max);
+        .fold(opts.min_prefix_width.unwrap_or(0.0_f32), f32::max);
 
-    // ── Total events width ────────────────────────────────────────────────────
+    // ── Per-measure natural widths & total events width ───────────────────────
 
-    let total_events_width: f32 = {
-        let mut total = 0.0_f32;
-        for (m_idx, m) in part.measures.iter().enumerate() {
-            if let Some(seq) = m.sequences.first() {
-                let mut layout_items = Vec::new();
-                for item in &seq.content {
-                    item.to_layout_items(&mut layout_items);
-                }
+    let natural_measure_widths = compute_part_measure_content_widths(
+        part,
+        is_editing_fret,
+        selected_event,
+        editing_fret_text,
+    );
 
-                let mut first_ev_info = None;
-                let mut temp_grace = false;
-                for item in &layout_items {
-                    match item {
-                        LayoutItem::GraceStart => temp_grace = true,
-                        LayoutItem::GraceEnd => temp_grace = false,
-                        LayoutItem::Event(e) => {
-                            first_ev_info = Some((*e, temp_grace));
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                if let Some((first_ev, first_grace)) = first_ev_info {
-                    let w_first = event_text_width(first_ev, first_grace, None);
-                    let def_pad = if m_idx == 0 { first_bar_pad } else { measure_spacing };
-                    let extra_start = (w_first * 0.5 + 10.0 - def_pad).max(0.0);
-                    total += extra_start;
-                }
-
-                let mut in_grace = false;
-                for (item_idx, l_item) in layout_items.iter().enumerate() {
-                    match l_item {
-                        LayoutItem::GraceStart => in_grace = true,
-                        LayoutItem::GraceEnd => in_grace = false,
-                        LayoutItem::Event(ev) => {
-                            let mut next_ev_info = None;
-                            let mut look_grace = in_grace;
-                            for next_item in &layout_items[item_idx + 1..] {
-                                match next_item {
-                                    LayoutItem::GraceStart => look_grace = true,
-                                    LayoutItem::GraceEnd => look_grace = false,
-                                    LayoutItem::Event(ne) => {
-                                        next_ev_info = Some((*ne, look_grace));
-                                        break;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            let sp = calculate_event_spacing(
-                                ev,
-                                in_grace,
-                                event_spacing,
-                                next_ev_info,
-                                None,
-                                None,
-                            );
-                            total += sp;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        total
-    };
+    let total_events_width: f32 = (0..part.measures.len())
+        .map(|m_idx| {
+            let nat = natural_measure_widths.get(m_idx).copied().unwrap_or(0.0);
+            opts.target_measure_widths
+                .and_then(|tw| tw.get(m_idx).copied())
+                .unwrap_or(nat)
+                .max(nat)
+        })
+        .sum();
 
     // ── Time signatures to render ─────────────────────────────────────────────
 
@@ -561,12 +658,18 @@ pub fn draw_tablature(
 
     let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
     let rhythm_row_h = rhythm_gap + stem_height + 10.0; // stem + flags/dots + pad
-    let has_endings = global
-        .map(|g| g.measures.iter().any(|m| m.ending.is_some()))
-        .unwrap_or(false);
-    let has_tempos = global
-        .map(|g| g.measures.iter().any(|m| !m.tempos.is_empty() || !m.tempo_changes.is_empty()))
-        .unwrap_or(false);
+    let has_endings = opts.show_global_headers
+        && global
+            .map(|g| g.measures.iter().any(|m| m.ending.is_some()))
+            .unwrap_or(false);
+    let has_tempos = opts.show_global_headers
+        && global
+            .map(|g| {
+                g.measures
+                    .iter()
+                    .any(|m| !m.tempos.is_empty() || !m.tempo_changes.is_empty())
+            })
+            .unwrap_or(false);
     let max_lyric_lines = part.measures.iter().map(|m| {
         m.sequences.iter().map(|s| {
             s.flattened_events().iter().map(|e| {
@@ -587,8 +690,10 @@ pub fn draw_tablature(
         130.0_f32
     } else if has_endings {
         108.0_f32
-    } else {
+    } else if opts.show_global_headers {
         96.0_f32
+    } else {
+        76.0_f32
     }; // room for name + EDO label + voltas + tempos + slurs on top string
     let total_height = top_pad + staff_height + rhythm_row_h + lyrics_row_h + 10.0; // top pad + staff + rhythm + lyrics + bottom pad
     let total_width = start_offset_x
@@ -614,12 +719,21 @@ pub fn draw_tablature(
         .as_ref()
         .map(|cf| !cf.is_empty())
         .unwrap_or(false);
-    if part.name.is_some() || part.micro_fret_divisions.is_some() || has_custom_frets {
+    if part.name.is_some()
+        || part.micro_fret_divisions.is_some()
+        || has_custom_frets
+        || opts.part_idx > 0
+    {
         let header_x = rect.min.x + margin_left;
         let name_y = rect.min.y + 14.0;
         let edo_y = rect.min.y + 32.0;
 
-        if let Some(name) = &part.name {
+        let display_name_str = if part.name.is_some() || opts.part_idx > 0 {
+            Some(part.display_name(opts.part_idx))
+        } else {
+            None
+        };
+        if let Some(name) = &display_name_str {
             // Bold instrument name
             painter.text(
                 Pos2::new(header_x, name_y),
@@ -736,6 +850,7 @@ pub fn draw_tablature(
 
     // Render time signature at start of measure 0 if specified
     let m0_ts = global.and_then(|g| g.measures.first()).and_then(|m| m.time);
+    let mut measure_visual_left_x = current_x;
     if let Some(ts) = m0_ts {
         current_time_sig = Some(ts);
         let left_pad = 12.0_f32;
@@ -749,6 +864,7 @@ pub fn draw_tablature(
             last_string_y,
             note_color,
         );
+        measure_visual_left_x = ts_left_x + ts_w;
         current_x = ts_left_x + ts_w + right_pad;
     } else {
         current_x += first_bar_pad;
@@ -803,6 +919,18 @@ pub fn draw_tablature(
         let mut current_measure_beat: f64 = 0.0;
         tuplet_stack.clear();
 
+        let measure_start_x = current_x;
+        let nat_measure_w = natural_measure_widths.get(m_idx).copied().unwrap_or(0.0);
+        let target_measure_w = opts
+            .target_measure_widths
+            .and_then(|tw| tw.get(m_idx).copied())
+            .unwrap_or(nat_measure_w)
+            .max(nat_measure_w);
+        let measure_end_barline_x = measure_start_x + target_measure_w;
+        let active_ts = current_time_sig.unwrap_or(TimeSignature { count: 4, unit: 4 });
+        let expected_beats = (active_ts.count as f64) * (4.0 / (active_ts.unit as f64));
+        let mut measure_extra_start = 0.0_f32;
+
         if let Some(seq) = measure.sequences.first() {
             let mut layout_items = Vec::new();
             for item in &seq.content {
@@ -822,22 +950,53 @@ pub fn draw_tablature(
                     _ => {}
                 }
             }
-            if let Some((first_ev, first_grace)) = first_ev_info {
-                let is_editing_first = opts.is_editing_fret
-                    && opts.selected_event == Some(flat_event_idx)
-                    && !opts.editing_fret_text.is_empty();
-                let edit_len = if is_editing_first {
-                    Some(opts.editing_fret_text.len())
-                } else {
-                    None
-                };
-                let w_first = event_text_width(first_ev, first_grace, edit_len);
-                let def_pad = if m_idx == 0 { first_bar_pad } else { measure_spacing };
-                let extra_start = (w_first * 0.5 + 10.0 - def_pad).max(0.0);
-                current_x += extra_start;
-            }
 
+            let seq_beats = seq.total_beats();
             let num_events = seq.flattened_events().len();
+            let is_single_full_measure_rest = num_events == 1
+                && first_ev_info
+                    .map(|(ev, in_g)| !in_g && ev.rest.is_some() && ev.notes.is_empty())
+                    .unwrap_or(false)
+                && (seq_beats - expected_beats).abs() < 1e-3;
+
+            let spacing_scale = if is_single_full_measure_rest {
+                current_x = (measure_visual_left_x + measure_end_barline_x) * 0.5;
+                1.0
+            } else {
+                if let Some((first_ev, first_grace)) = first_ev_info {
+                    let is_editing_first = opts.is_editing_fret
+                        && opts.selected_event == Some(flat_event_idx)
+                        && !opts.editing_fret_text.is_empty();
+                    let edit_len = if is_editing_first {
+                        Some(opts.editing_fret_text.len())
+                    } else {
+                        None
+                    };
+                    let w_first = event_text_width(first_ev, first_grace, edit_len);
+                    let def_pad = if m_idx == 0 { first_bar_pad } else { measure_spacing };
+                    let extra_start = (w_first * 0.5 + 10.0 - def_pad).max(0.0);
+                    measure_extra_start = extra_start;
+                    current_x += extra_start;
+                }
+
+                let nat_events_sum = (nat_measure_w - measure_extra_start).max(0.0);
+                let beat_fraction = if expected_beats > 0.0 {
+                    (seq_beats / expected_beats).clamp(0.0, 1.0) as f32
+                } else {
+                    1.0
+                };
+                let avail_target_w = (target_measure_w - measure_extra_start).max(nat_events_sum);
+                let allocated_events_w = (avail_target_w * beat_fraction).max(nat_events_sum);
+                if nat_events_sum > 1e-4 && allocated_events_w > nat_events_sum {
+                    allocated_events_w / nat_events_sum
+                } else {
+                    1.0
+                }
+            };
+
+            if num_events == 0 {
+                current_x = measure_end_barline_x;
+            }
             let mut e_idx = 0;
             let mut in_grace = false;
             for (item_idx, l_item) in layout_items.iter().enumerate() {
@@ -912,8 +1071,10 @@ pub fn draw_tablature(
                 let end_beat = current_measure_beat + event_beats;
                 current_measure_beat = end_beat;
 
-                if let Some(g) = global {
-                    if let Some(gm) = g.measures.get(m_idx) {
+                if opts.show_global_headers
+                    && let Some(g) = global
+                    && let Some(gm) = g.measures.get(m_idx)
+                {
 
                         // Check for tempo_changes
                         for tc in &gm.tempo_changes {
@@ -1047,7 +1208,6 @@ pub fn draw_tablature(
 
                             }
                         }
-                    }
                 }
 
                 if let Some(ev_id) = &event.id {
@@ -1094,7 +1254,7 @@ pub fn draw_tablature(
                     next_ev_info,
                     edit_len,
                     next_editing_len,
-                );
+                ) * spacing_scale;
 
                 let is_selected = if let Some(cursor) = selected_event {
                     let anchor = opts.selection_anchor.unwrap_or(cursor);
@@ -1701,6 +1861,9 @@ pub fn draw_tablature(
                 current_x += spacing;
                 last_event_spacing = spacing;
             }
+            current_x = measure_end_barline_x;
+        } else {
+            current_x = measure_end_barline_x;
         }
 
         // Barline at end of measure (spans staff only — rhythms are outside)
@@ -1839,6 +2002,7 @@ pub fn draw_tablature(
         measure_barlines.push(current_x);
 
         if m_idx + 1 < part.measures.len() {
+            measure_visual_left_x = current_x;
             let next_ts = global
                 .and_then(|g| g.measures.get(m_idx + 1))
                 .and_then(|m| m.time);
@@ -1856,6 +2020,7 @@ pub fn draw_tablature(
                         last_string_y,
                         note_color,
                     );
+                    measure_visual_left_x = ts_left_x + ts_w;
                     current_x = ts_left_x + ts_w + right_pad;
                 } else {
                     current_x += measure_spacing;
@@ -1867,7 +2032,9 @@ pub fn draw_tablature(
     }
 
     // ── Draw Alternate Endings (Voltas) ────────────────────────────────────────
-    if let Some(g) = global {
+    if opts.show_global_headers
+        && let Some(g) = global
+    {
         let bracket_y = if has_tempos {
             string_y_coords[0] - 56.0
         } else {
@@ -2285,7 +2452,7 @@ pub fn draw_tablature(
         let hit_rect = Rect::from_center_size(Pos2::new(lyr.x, y), egui::vec2(hit_w, 18.0));
         let lyr_resp = ui.interact(
             hit_rect,
-            egui::Id::new(("rendered_lyric_hit", lyr.event_idx, lyr.line)),
+            egui::Id::new(("rendered_lyric_hit", opts.part_idx, lyr.event_idx, lyr.line)),
             egui::Sense::click(),
         );
         if lyr_resp.double_clicked() {
@@ -2387,7 +2554,7 @@ pub fn draw_tablature(
 
     if is_btn_hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        egui::Area::new(egui::Id::new("add_bar_tooltip"))
+        egui::Area::new(egui::Id::new(("add_bar_tooltip", opts.part_idx)))
             .fixed_pos(Pos2::new(btn_x + btn_w / 2.0 - 50.0, btn_top_y - 28.0))
             .order(egui::Order::Tooltip)
             .interactable(false)
@@ -2522,6 +2689,7 @@ mod tests {
             let errors = Vec::new();
             let opts = TablatureOptions {
                 part,
+                part_idx: 0,
                 global: Some(&doc.global),
                 errors: &errors,
                 selected_event: None,
@@ -2535,6 +2703,9 @@ mod tests {
                 scroll_to_selected: false,
                 pitch_bend_range: 2,
                 is_grid_input_mode: false,
+                min_prefix_width: None,
+                target_measure_widths: None,
+                show_global_headers: true,
             };
             let (_resp, _clicked, _add_bar, _lyric_dc) = draw_tablature(ui, opts);
         });

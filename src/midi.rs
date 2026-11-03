@@ -80,6 +80,36 @@ pub enum PlaybackEventKind {
 }
 
 #[derive(Debug, Clone)]
+pub struct PartMidiConfig {
+    pub part_idx: usize,
+    pub port_index: usize,
+    pub pitch_bend_range: u8,
+    pub string_to_channel: HashMap<u8, u4>,
+    pub is_mpe: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiPartPlaybackEvent {
+    pub delta_ticks: u32,
+    pub kind: MultiPartPlaybackEventKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum MultiPartPlaybackEventKind {
+    Tempo(u32),
+    Midi {
+        port_index: usize,
+        channel: u4,
+        message: MidiMessage,
+    },
+    PartEventMarker {
+        part_idx: usize,
+        event_idx: usize,
+    },
+    EndOfTrack,
+}
+
+#[derive(Debug, Clone)]
 struct InternalAbsoluteEvent {
     time_ticks: u32,
     kind: InternalEventKind,
@@ -988,6 +1018,192 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let ppq = self.ppq;
         (self.resolve_deltas(), ppq)
     }
+
+    fn generate_for_part_with_offset(
+        mut self,
+        part_idx: usize,
+        start_tick_offset: u32,
+    ) -> Vec<InternalAbsoluteEvent> {
+        let Some(part) = self.doc.parts.get(part_idx) else {
+            return Vec::new();
+        };
+        let total_part_measures = part.measures.len();
+        let flattened_measures = compute_flattened_measures(&self.doc.global, total_part_measures);
+
+        let num_strings = part.num_strings() as u8;
+        self.setup_channels_and_mpe(num_strings);
+
+        let mut raw_event_idx_map = Vec::new();
+        let mut current_raw_idx = 0;
+        for measure in &part.measures {
+            let mut seq_map = Vec::new();
+            for seq in &measure.sequences {
+                let mut ev_map = Vec::new();
+                let mut events_scaled = Vec::new();
+                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                for _ in events_scaled {
+                    ev_map.push(current_raw_idx);
+                    current_raw_idx += 1;
+                }
+                seq_map.push(ev_map);
+            }
+            raw_event_idx_map.push(seq_map);
+        }
+
+        let (measure_start_ticks, schedule_map) =
+            self.compute_event_schedule(part, &flattened_measures);
+
+        self.process_events(
+            part,
+            start_tick_offset,
+            &flattened_measures,
+            &raw_event_idx_map,
+            &measure_start_ticks,
+            &schedule_map,
+        );
+        self.abs_events
+    }
+}
+
+/// Generates a unified multi-instrument playback track across all configured parts in `doc`.
+pub fn generate_multi_part_playback_track(
+    doc: &MnxDocument,
+    part_configs: &[PartMidiConfig],
+    default_bpm: f64,
+    ppq: u15,
+    start_part_idx: usize,
+    start_event_idx: Option<usize>,
+) -> (Vec<MultiPartPlaybackEvent>, f64) {
+    let ppq_f64 = u16::from(ppq) as f64;
+    if part_configs.is_empty() || doc.parts.is_empty() {
+        return (Vec::new(), ppq_f64);
+    }
+
+    // 1. Compute start_tick_offset from start_part_idx and start_event_idx
+    let start_tick_offset = if let (Some(start_ev), Some(start_part)) =
+        (start_event_idx, doc.parts.get(start_part_idx))
+    {
+        let probe_gen = PlaybackTrackGenerator::new(
+            doc,
+            MidiOptions {
+                default_bpm,
+                ppq,
+                ..Default::default()
+            },
+        );
+        let flattened_measures =
+            compute_flattened_measures(&doc.global, start_part.measures.len());
+        let mut raw_event_idx_map = Vec::new();
+        let mut current_raw_idx = 0;
+        for measure in &start_part.measures {
+            let mut seq_map = Vec::new();
+            for seq in &measure.sequences {
+                let mut ev_map = Vec::new();
+                let mut events_scaled = Vec::new();
+                walk_events_with_scaling(&seq.content, &mut events_scaled, 1.0);
+                for _ in events_scaled {
+                    ev_map.push(current_raw_idx);
+                    current_raw_idx += 1;
+                }
+                seq_map.push(ev_map);
+            }
+            raw_event_idx_map.push(seq_map);
+        }
+        let (_measure_start_ticks, schedule_map) =
+            probe_gen.compute_event_schedule(start_part, &flattened_measures);
+        probe_gen.find_start_offset(
+            start_part,
+            start_ev,
+            &flattened_measures,
+            &raw_event_idx_map,
+            &schedule_map,
+        )
+    } else {
+        0
+    };
+
+    #[derive(Clone)]
+    struct TaggedAbsEvent {
+        time_ticks: u32,
+        kind: MultiPartPlaybackEventKind,
+    }
+
+    let mut combined_abs: Vec<TaggedAbsEvent> = Vec::new();
+    let mut max_end_tick = 0u32;
+
+    for (cfg_i, cfg) in part_configs.iter().enumerate() {
+        if cfg.part_idx >= doc.parts.len() {
+            continue;
+        }
+        let opts = MidiOptions {
+            pitch_bend_range: cfg.pitch_bend_range,
+            string_to_channel: cfg.string_to_channel.clone(),
+            default_bpm,
+            ppq,
+            start_event_idx: None,
+            is_mpe: cfg.is_mpe,
+        };
+        let generator = PlaybackTrackGenerator::new(doc, opts);
+        let part_abs = generator.generate_for_part_with_offset(cfg.part_idx, start_tick_offset);
+
+        for ev in part_abs {
+            match ev.kind {
+                InternalEventKind::Tempo(mpb) => {
+                    // Only emit global tempo events once (from the first configured part)
+                    if cfg_i == 0 {
+                        combined_abs.push(TaggedAbsEvent {
+                            time_ticks: ev.time_ticks,
+                            kind: MultiPartPlaybackEventKind::Tempo(mpb),
+                        });
+                    }
+                }
+                InternalEventKind::Midi { channel, message } => {
+                    combined_abs.push(TaggedAbsEvent {
+                        time_ticks: ev.time_ticks,
+                        kind: MultiPartPlaybackEventKind::Midi {
+                            port_index: cfg.port_index,
+                            channel,
+                            message,
+                        },
+                    });
+                }
+                InternalEventKind::EventMarker(idx) => {
+                    combined_abs.push(TaggedAbsEvent {
+                        time_ticks: ev.time_ticks,
+                        kind: MultiPartPlaybackEventKind::PartEventMarker {
+                            part_idx: cfg.part_idx,
+                            event_idx: idx,
+                        },
+                    });
+                }
+                InternalEventKind::EndOfTrack => {
+                    max_end_tick = max_end_tick.max(ev.time_ticks);
+                }
+            }
+        }
+    }
+
+    if max_end_tick > 0 {
+        combined_abs.push(TaggedAbsEvent {
+            time_ticks: max_end_tick,
+            kind: MultiPartPlaybackEventKind::EndOfTrack,
+        });
+    }
+
+    combined_abs.sort_by_key(|e| e.time_ticks);
+
+    let mut playback_events = Vec::with_capacity(combined_abs.len());
+    let mut last_time = 0u32;
+    for abs_e in combined_abs {
+        let delta = abs_e.time_ticks.saturating_sub(last_time);
+        last_time = abs_e.time_ticks;
+        playback_events.push(MultiPartPlaybackEvent {
+            delta_ticks: delta,
+            kind: abs_e.kind,
+        });
+    }
+
+    (playback_events, ppq_f64)
 }
 
 /// Computes the flattened playback order of measures respecting repeats (repeatStart, repeatEnd)
@@ -1261,8 +1477,10 @@ struct CachedMidiConnection {
 pub struct MidiPlayer {
     stop_signal: std::sync::Arc<std::sync::atomic::AtomicBool>,
     current_event: std::sync::Arc<std::sync::atomic::AtomicI64>,
-    connection: std::sync::Arc<std::sync::Mutex<Option<CachedMidiConnection>>>,
+    current_part_events: std::sync::Arc<std::sync::Mutex<Vec<Option<usize>>>>,
+    connections: std::sync::Arc<std::sync::Mutex<Vec<CachedMidiConnection>>>,
     handle: Option<std::thread::JoinHandle<()>>,
+    is_preview: bool,
 }
 
 impl Drop for MidiPlayer {
@@ -1276,20 +1494,20 @@ impl MidiPlayer {
         Self {
             stop_signal: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             current_event: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1)),
-            connection: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            current_part_events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            connections: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             handle: None,
+            is_preview: false,
         }
     }
 
     fn ensure_connection(&self, port_index: usize) -> Result<(), String> {
         let mut guard = self
-            .connection
+            .connections
             .lock()
             .map_err(|_| String::from("MIDI connection lock poisoned"))?;
-        if let Some(cached) = guard.as_ref() {
-            if cached.port_index == port_index {
-                return Ok(());
-            }
+        if guard.iter().any(|c| c.port_index == port_index) {
+            return Ok(());
         }
         let midi_out = midir::MidiOutput::new("guitab_player")
             .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
@@ -1300,11 +1518,14 @@ impl MidiPlayer {
         let conn = midi_out
             .connect(port, "mnx_output")
             .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
-        *guard = Some(CachedMidiConnection { port_index, conn });
+        guard.push(CachedMidiConnection { port_index, conn });
         Ok(())
     }
 
     pub fn is_playing(&self) -> bool {
+        if self.is_preview {
+            return false;
+        }
         if let Some(h) = &self.handle {
             if h.is_finished() {
                 false
@@ -1326,11 +1547,31 @@ impl MidiPlayer {
         if val >= 0 { Some(val as usize) } else { None }
     }
 
+    pub fn current_event_idx_for_part(&self, part_idx: usize) -> Option<usize> {
+        if !self.is_playing() {
+            return None;
+        }
+        if let Ok(guard) = self.current_part_events.lock() {
+            if let Some(val) = guard.get(part_idx).copied().flatten() {
+                return Some(val);
+            }
+        }
+        if part_idx == 0 {
+            self.current_event_idx()
+        } else {
+            None
+        }
+    }
+
     pub fn stop(&mut self) {
+        self.is_preview = false;
         self.stop_signal
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self.current_event
             .store(-1, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut guard) = self.current_part_events.lock() {
+            guard.clear();
+        }
         if let Some(h) = self.handle.take() {
             h.thread().unpark();
             let _ = h.join();
@@ -1354,7 +1595,10 @@ impl MidiPlayer {
         let current_event_tracker = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1));
         self.current_event = current_event_tracker.clone();
 
-        let conn_arc = self.connection.clone();
+        let part_events_tracker = std::sync::Arc::new(std::sync::Mutex::new(vec![None; doc.parts.len().max(1)]));
+        self.current_part_events = part_events_tracker.clone();
+
+        let conn_arc = self.connections.clone();
 
         let handle = std::thread::spawn(move || {
             let mut tempo_micros_per_beat = 500_000.0_f64;
@@ -1394,7 +1638,7 @@ impl MidiPlayer {
                         let bytes = serialize_midi_message(channel, &message);
                         if !bytes.is_empty() {
                             if let Ok(mut guard) = conn_arc.lock() {
-                                if let Some(cached) = guard.as_mut() {
+                                if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
                                     let _ = cached.conn.send(&bytes);
                                 }
                             }
@@ -1403,17 +1647,147 @@ impl MidiPlayer {
                     PlaybackEventKind::EventMarker(idx) => {
                         current_event_tracker
                             .store(idx as i64, std::sync::atomic::Ordering::Relaxed);
+                        if let Ok(mut guard) = part_events_tracker.lock() {
+                            if let Some(slot) = guard.get_mut(0) {
+                                *slot = Some(idx);
+                            }
+                        }
                     }
                     PlaybackEventKind::EndOfTrack => {}
                 }
             }
 
             if let Ok(mut guard) = conn_arc.lock() {
-                if let Some(cached) = guard.as_mut() {
+                if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
                     for ch in 0..16 {
                         let status_cc = 0xB0 | ch;
                         let _ = cached.conn.send(&[status_cc, 123, 0]);
                         let _ = cached.conn.send(&[status_cc, 121, 0]);
+                    }
+                }
+            }
+
+            current_event_tracker.store(-1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        self.handle = Some(handle);
+        Ok(())
+    }
+
+    pub fn play_multi_part(
+        &mut self,
+        doc: &MnxDocument,
+        part_configs: Vec<PartMidiConfig>,
+        default_bpm: f64,
+        ppq: u15,
+        active_part_idx: usize,
+        start_event_idx: Option<usize>,
+    ) -> Result<(), String> {
+        self.stop();
+
+        for cfg in &part_configs {
+            self.ensure_connection(cfg.port_index)?;
+        }
+
+        let (track, ppq_f64) = generate_multi_part_playback_track(
+            doc,
+            &part_configs,
+            default_bpm,
+            ppq,
+            active_part_idx,
+            start_event_idx,
+        );
+
+        let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.stop_signal = stop_flag.clone();
+
+        let current_event_tracker = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1));
+        self.current_event = current_event_tracker.clone();
+
+        let part_events_tracker = std::sync::Arc::new(std::sync::Mutex::new(vec![None; doc.parts.len().max(1)]));
+        self.current_part_events = part_events_tracker.clone();
+
+        let conn_arc = self.connections.clone();
+        let mut used_ports: Vec<usize> = part_configs.iter().map(|c| c.port_index).collect();
+        used_ports.sort_unstable();
+        used_ports.dedup();
+
+        let handle = std::thread::spawn(move || {
+            let mut tempo_micros_per_beat = 500_000.0_f64;
+            let mut next_deadline = std::time::Instant::now();
+
+            for event in track {
+                if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+
+                let delta_ticks = event.delta_ticks as f64;
+                if delta_ticks > 0.0 {
+                    let micros = delta_ticks * (tempo_micros_per_beat / ppq_f64);
+                    next_deadline += std::time::Duration::from_micros(micros.round() as u64);
+
+                    loop {
+                        if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            break;
+                        }
+                        let now = std::time::Instant::now();
+                        if now >= next_deadline {
+                            break;
+                        }
+                        std::thread::park_timeout(next_deadline - now);
+                    }
+
+                    if stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                }
+
+                match event.kind {
+                    MultiPartPlaybackEventKind::Tempo(t) => {
+                        tempo_micros_per_beat = t as f64;
+                    }
+                    MultiPartPlaybackEventKind::Midi {
+                        port_index,
+                        channel,
+                        message,
+                    } => {
+                        let bytes = serialize_midi_message(channel, &message);
+                        if !bytes.is_empty() {
+                            if let Ok(mut guard) = conn_arc.lock() {
+                                if let Some(cached) =
+                                    guard.iter_mut().find(|c| c.port_index == port_index)
+                                {
+                                    let _ = cached.conn.send(&bytes);
+                                }
+                            }
+                        }
+                    }
+                    MultiPartPlaybackEventKind::PartEventMarker {
+                        part_idx,
+                        event_idx,
+                    } => {
+                        if part_idx == active_part_idx {
+                            current_event_tracker
+                                .store(event_idx as i64, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        if let Ok(mut guard) = part_events_tracker.lock() {
+                            if let Some(slot) = guard.get_mut(part_idx) {
+                                *slot = Some(event_idx);
+                            }
+                        }
+                    }
+                    MultiPartPlaybackEventKind::EndOfTrack => {}
+                }
+            }
+
+            if let Ok(mut guard) = conn_arc.lock() {
+                for &p_idx in &used_ports {
+                    if let Some(cached) = guard.iter_mut().find(|c| c.port_index == p_idx) {
+                        for ch in 0..16 {
+                            let status_cc = 0xB0 | ch;
+                            let _ = cached.conn.send(&[status_cc, 123, 0]);
+                            let _ = cached.conn.send(&[status_cc, 121, 0]);
+                        }
                     }
                 }
             }
@@ -1442,8 +1816,8 @@ impl MidiPlayer {
 
         self.ensure_connection(port_index)?;
 
-        if let Ok(mut guard) = self.connection.lock() {
-            if let Some(cached) = guard.as_mut() {
+        if let Ok(mut guard) = self.connections.lock() {
+            if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
                 let conn_out = &mut cached.conn;
                 if is_mpe {
                     send_mpe_configuration(conn_out, member_channels.min(15));
@@ -1481,7 +1855,7 @@ impl MidiPlayer {
 
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.stop_signal = stop_flag.clone();
-        let conn_arc = self.connection.clone();
+        let conn_arc = self.connections.clone();
 
         let handle = std::thread::spawn(move || {
             let deadline =
@@ -1498,7 +1872,7 @@ impl MidiPlayer {
             }
 
             if let Ok(mut guard) = conn_arc.lock() {
-                if let Some(cached) = guard.as_mut() {
+                if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
                     for n in &notes {
                         let note_off = midly::MidiMessage::NoteOff {
                             key: n.key,
@@ -1513,6 +1887,7 @@ impl MidiPlayer {
             }
         });
 
+        self.is_preview = true;
         self.handle = Some(handle);
         Ok(())
     }
@@ -1535,10 +1910,10 @@ impl MidiPlayer {
         self.ensure_connection(port_index)?;
 
         let mut guard = self
-            .connection
+            .connections
             .lock()
             .map_err(|_| String::from("MIDI connection lock poisoned"))?;
-        if let Some(cached) = guard.as_mut() {
+        if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
             let conn_out = &mut cached.conn;
             if is_mpe {
                 send_mpe_configuration(conn_out, member_channels.min(15));
@@ -1585,10 +1960,10 @@ impl MidiPlayer {
         self.ensure_connection(port_index)?;
 
         let mut guard = self
-            .connection
+            .connections
             .lock()
             .map_err(|_| String::from("MIDI connection lock poisoned"))?;
-        if let Some(cached) = guard.as_mut() {
+        if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
             let conn_out = &mut cached.conn;
             let note_off = midly::MidiMessage::NoteOff {
                 key,
@@ -1610,10 +1985,10 @@ impl MidiPlayer {
         self.ensure_connection(port_index)?;
 
         let mut guard = self
-            .connection
+            .connections
             .lock()
             .map_err(|_| String::from("MIDI connection lock poisoned"))?;
-        if let Some(cached) = guard.as_mut() {
+        if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
             let conn_out = &mut cached.conn;
             for ch in 0..16 {
                 let _ = conn_out.send(&[0xB0 | ch, 123, 0]); // All Notes Off

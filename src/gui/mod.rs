@@ -81,7 +81,8 @@ pub struct MnxEditorApp {
     pub(crate) parsed_errors: Vec<validate::ValidationError>,
     pub(crate) validation_errors: Vec<String>,
     pub(crate) current_file_path: Option<std::path::PathBuf>, // Tracks the active file
-    pub(crate) selected_event_idx: Option<usize>,             // Selected note/beat index
+    pub(crate) selected_part_idx: usize,                      // Active instrument/part index in doc.parts
+    pub(crate) selected_event_idx: Option<usize>,             // Selected note/beat index within active part
     pub(crate) selection_anchor: Option<usize>,               // Anchor for shift-select
     pub(crate) selected_note_idx_in_event: Option<usize>, // Selected sub-note within chord/event (None = all)
     pub(crate) is_editing_fret: bool,                     // In-place fret number editing mode
@@ -94,10 +95,17 @@ pub struct MnxEditorApp {
     pub(crate) selected_midi_port: Option<usize>, // Selected MIDI port id
     pub(crate) pitch_bend_range: u8,              // Pitchbend range (1-48, default 2)
     pub(crate) string_channel_map: std::collections::HashMap<u8, u8>, // String (1..n) -> MIDI channel (1..16)
+    pub(crate) part_midi_ports: std::collections::HashMap<usize, usize>, // Per-part MIDI port id
+    pub(crate) part_string_channel_maps:
+        std::collections::HashMap<usize, std::collections::HashMap<u8, u8>>, // Per-part string -> channel
+    pub(crate) string_channel_dialog_part_idx: usize, // Selected part in String Channels popup
     pub(crate) is_mpe_mode: bool, // Toggle button for multi-timbral vs MPE output
     pub(crate) midi_player: crate::midi::MidiPlayer, // Real-time MIDI sequencer playback engine
     pub(crate) midi_status_msg: Option<String>, // Status or error message from MIDI playback
     pub active_dialog: ActiveDialog, // Active modal dialog
+    pub(crate) instrument_setup_name_buf: String, // Name buffer for InstrumentSetup dialog
+    pub(crate) is_adding_instrument_in_dialog: bool, // True when InstrumentSetup is adding a new part
+    pub(crate) show_string_channels_popup: bool, // Toggle state for String Channels dropdown panel
     pub(crate) show_grid_controllers_popup: bool, // Toggle state for Grid Controllers dropdown panel
     pub(crate) undo_stack: Vec<String>,
     pub(crate) redo_stack: Vec<String>,
@@ -105,6 +113,8 @@ pub struct MnxEditorApp {
     pub is_editing_lyric: bool,
     pub editing_lyric_buf: String,
     pub view_mode: ViewMode,
+    pub layout_view_tab: LayoutViewTab,
+    pub ensemble_visible_parts: Vec<bool>,
     pub show_yaml_panel: bool,
     pub selected_layout_element_id: Option<String>,
     pub selected_layout_element_ids: std::collections::HashSet<String>,
@@ -116,13 +126,21 @@ pub struct MnxEditorApp {
     pub(crate) preset_status_msg: Option<String>,
     pub(crate) midi_input_ports: Vec<crate::midi::MidiPortInfo>,
     pub(crate) grid_input: crate::grid_input::GridInputManager,
-    pub(crate) active_grid_live_notes: std::collections::HashMap<(u8, i32), (midly::num::u4, midly::num::u7)>,
+    pub(crate) active_grid_live_notes:
+        std::collections::HashMap<(u8, i32), (midly::num::u4, midly::num::u7)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     Continuous,
     Layout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayoutViewTab {
+    #[default]
+    Ensemble,
+    Part(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,6 +429,7 @@ impl MnxEditorApp {
             needs_scroll: true,
             validation_errors: Vec::new(),
             current_file_path: None,
+            selected_part_idx: 0,
             selected_event_idx: None,
             selection_anchor: None,
             selected_note_idx_in_event: None,
@@ -424,6 +443,9 @@ impl MnxEditorApp {
             selected_midi_port: selected_port,
             pitch_bend_range: 2,
             string_channel_map: std::collections::HashMap::new(),
+            part_midi_ports: std::collections::HashMap::new(),
+            part_string_channel_maps: std::collections::HashMap::new(),
+            string_channel_dialog_part_idx: 0,
             is_mpe_mode: false,
             midi_player: crate::midi::MidiPlayer::new(),
             midi_status_msg: None,
@@ -432,6 +454,9 @@ impl MnxEditorApp {
             } else {
                 ActiveDialog::StartupPrompt
             },
+            instrument_setup_name_buf: String::from("Guitar"),
+            is_adding_instrument_in_dialog: false,
+            show_string_channels_popup: false,
             show_grid_controllers_popup: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -439,6 +464,8 @@ impl MnxEditorApp {
             is_editing_lyric: false,
             editing_lyric_buf: String::new(),
             view_mode: ViewMode::Continuous,
+            layout_view_tab: LayoutViewTab::Ensemble,
+            ensemble_visible_parts: vec![true],
             show_yaml_panel: true,
             selected_layout_element_id: None,
             selected_layout_element_ids: std::collections::HashSet::new(),
@@ -459,6 +486,91 @@ impl MnxEditorApp {
 }
 
 impl MnxEditorApp {
+    pub fn active_part(&self) -> Option<&crate::mnx::Part> {
+        let doc = self.parsed_mnx.as_ref()?;
+        doc.parts
+            .get(self.selected_part_idx)
+            .or_else(|| doc.parts.first())
+    }
+
+    pub fn select_part(&mut self, part_idx: usize) {
+        let part_count = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| d.parts.len())
+            .unwrap_or(1)
+            .max(1);
+        let new_idx = part_idx.min(part_count - 1);
+
+        // Save current part's MIDI channel map and port before switching
+        self.part_string_channel_maps
+            .insert(self.selected_part_idx, self.string_channel_map.clone());
+        if let Some(p) = self.selected_midi_port {
+            self.part_midi_ports.entry(self.selected_part_idx).or_insert(p);
+        }
+
+        if self.selected_part_idx != new_idx {
+            self.selected_part_idx = new_idx;
+            self.selected_note_idx_in_event = None;
+            self.is_editing_fret = false;
+            self.editing_fret_buf.clear();
+            self.editing_string = None;
+            self.pending_slur = None;
+        }
+
+        self.string_channel_map = self
+            .part_string_channel_maps
+            .get(&self.selected_part_idx)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(&port) = self.part_midi_ports.get(&self.selected_part_idx) {
+            self.selected_midi_port = Some(port);
+        }
+        if let Some(pb) = self
+            .parsed_mnx
+            .as_ref()
+            .and_then(|d| d.parts.get(self.selected_part_idx))
+            .and_then(|p| p.pitch_bend_range)
+        {
+            self.pitch_bend_range = pb.clamp(1, 48);
+        }
+
+        self.cached_event_ranges =
+            find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
+        let total_events = self.cached_event_ranges.len();
+        if let Some(ev_idx) = self.selected_event_idx {
+            if total_events == 0 {
+                self.selected_event_idx = None;
+            } else if ev_idx >= total_events {
+                self.selected_event_idx = Some(total_events - 1);
+            }
+        }
+        self.selection_anchor = None;
+    }
+
+    pub fn active_layout_part_indices(&self) -> Vec<usize> {
+        let num_parts = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| d.parts.len())
+            .unwrap_or(1)
+            .max(1);
+        match self.layout_view_tab {
+            LayoutViewTab::Part(p_idx) => {
+                vec![p_idx.min(num_parts - 1)]
+            }
+            LayoutViewTab::Ensemble => {
+                let mut indices: Vec<usize> = (0..num_parts)
+                    .filter(|&i| self.ensemble_visible_parts.get(i).copied().unwrap_or(true))
+                    .collect();
+                if indices.is_empty() {
+                    indices.push(0);
+                }
+                indices
+            }
+        }
+    }
+
     pub(crate) fn current_grid_beats(&self) -> f64 {
         match self.current_grid.as_str() {
             "half" => 2.0,
@@ -614,7 +726,7 @@ impl MnxEditorApp {
             }
         }
         if let Some(doc) = &self.parsed_mnx {
-            let flattened = doc.get_flattened_event_paths();
+            let flattened = doc.get_flattened_event_paths_for_part(self.selected_part_idx);
             if !flattened.is_empty() {
                 let (min_ev, max_ev) = match (self.selected_event_idx, self.selection_anchor) {
                     (Some(curr), Some(anch)) => (curr.min(anch), curr.max(anch)),
@@ -642,69 +754,113 @@ impl MnxEditorApp {
 
     pub fn start_midi_playback(&mut self, start_from_selected: bool) {
         if let Some(doc) = &self.parsed_mnx {
-            if let Some(port_idx) = self.selected_midi_port {
+            let default_port_opt = self.selected_midi_port;
+            if default_port_opt.is_none() && self.part_midi_ports.is_empty() {
+                self.midi_status_msg = Some("No MIDI output device selected.".to_string());
+                return;
+            }
+
+            let mut part_configs = Vec::with_capacity(doc.parts.len());
+            let mut port_channel_cursor: std::collections::HashMap<usize, u8> =
+                std::collections::HashMap::new();
+
+            for (p_idx, part) in doc.parts.iter().enumerate() {
+                let Some(port_idx) = self
+                    .part_midi_ports
+                    .get(&p_idx)
+                    .copied()
+                    .or(default_port_opt)
+                else {
+                    continue;
+                };
+
+                let num_strings = part.num_strings() as u8;
+                let base_offset = *port_channel_cursor.entry(port_idx).or_insert(0);
                 let mut string_to_channel = std::collections::HashMap::new();
-                let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6) as u8;
+
+                let custom_map = if p_idx == self.selected_part_idx {
+                    Some(&self.string_channel_map)
+                } else {
+                    self.part_string_channel_maps.get(&p_idx)
+                };
+
                 for s in 1..=num_strings {
-                    let default_ch = if self.is_mpe_mode { s + 1 } else { s };
-                    let ch_1_based = self
-                        .string_channel_map
-                        .get(&s)
-                        .copied()
+                    let default_ch = if self.is_mpe_mode {
+                        ((base_offset + s - 1) % 15) + 2
+                    } else {
+                        ((base_offset + s - 1) % 16) + 1
+                    };
+                    let ch_1_based = custom_map
+                        .and_then(|m| m.get(&s).copied())
                         .unwrap_or(default_ch);
                     let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
                     string_to_channel.insert(s, midly::num::u4::from(ch_0_based));
                 }
 
-                let start_event = if start_from_selected {
-                    self.selected_event_idx
-                } else {
-                    Some(0)
-                };
+                if let Some(cursor) = port_channel_cursor.get_mut(&port_idx) {
+                    *cursor = cursor.saturating_add(num_strings);
+                }
 
-                let options = crate::midi::MidiOptions {
-                    pitch_bend_range: self.pitch_bend_range,
+                let pb_range = part.pitch_bend_range.unwrap_or(self.pitch_bend_range);
+                part_configs.push(crate::midi::PartMidiConfig {
+                    part_idx: p_idx,
+                    port_index: port_idx,
+                    pitch_bend_range: pb_range,
                     string_to_channel,
-                    default_bpm: 120.0,
-                    ppq: midly::num::u15::from(480),
-                    start_event_idx: start_event,
                     is_mpe: self.is_mpe_mode,
-                };
+                });
+            }
 
-                match self.midi_player.play(doc, options, port_idx) {
-                    Ok(_) => {
-                        let port_name = self
-                            .midi_ports
-                            .iter()
-                            .find(|p| p.id == port_idx)
-                            .map(|p| p.name.as_str())
-                            .unwrap_or("MIDI device");
-                        let mode_str = if self.is_mpe_mode { " (MPE)" } else { "" };
-                        if let Some(start_idx) = start_event {
-                            if start_idx > 0 {
-                                self.midi_status_msg = Some(format!(
-                                    "Playing from note {}{} on {}",
-                                    start_idx + 1,
-                                    mode_str,
-                                    port_name
-                                ));
-                            } else {
-                                self.midi_status_msg = Some(format!(
-                                    "Playing from start{} on {}",
-                                    mode_str, port_name
-                                ));
-                            }
+            if part_configs.is_empty() {
+                self.midi_status_msg = Some("No MIDI output device selected.".to_string());
+                return;
+            }
+
+            let start_event = if start_from_selected {
+                self.selected_event_idx
+            } else {
+                Some(0)
+            };
+
+            let primary_port = part_configs[0].port_index;
+            match self.midi_player.play_multi_part(
+                doc,
+                part_configs,
+                120.0,
+                midly::num::u15::from(480),
+                self.selected_part_idx,
+                start_event,
+            ) {
+                Ok(_) => {
+                    let port_name = self
+                        .midi_ports
+                        .iter()
+                        .find(|p| p.id == primary_port)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("MIDI device");
+                    let mode_str = if self.is_mpe_mode { " (MPE)" } else { "" };
+                    if let Some(start_idx) = start_event {
+                        if start_idx > 0 {
+                            self.midi_status_msg = Some(format!(
+                                "Playing from note {}{} on {}",
+                                start_idx + 1,
+                                mode_str,
+                                port_name
+                            ));
                         } else {
-                            self.midi_status_msg =
-                                Some(format!("Playing{} on {}", mode_str, port_name));
+                            self.midi_status_msg = Some(format!(
+                                "Playing from start{} on {}",
+                                mode_str, port_name
+                            ));
                         }
-                    }
-                    Err(e) => {
-                        self.midi_status_msg = Some(format!("Playback error: {}", e));
+                    } else {
+                        self.midi_status_msg =
+                            Some(format!("Playing{} on {}", mode_str, port_name));
                     }
                 }
-            } else {
-                self.midi_status_msg = Some("No MIDI output device selected.".to_string());
+                Err(e) => {
+                    self.midi_status_msg = Some(format!("Playback error: {}", e));
+                }
             }
         } else {
             self.midi_status_msg = Some("No valid document parsed to play.".to_string());
@@ -720,11 +876,20 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let part = match doc.parts.first() {
+        let part = match doc
+            .parts
+            .get(self.selected_part_idx)
+            .or_else(|| doc.parts.first())
+        {
             Some(p) => p,
             None => return,
         };
-        let port_idx = match self.selected_midi_port {
+        let port_idx = match self
+            .part_midi_ports
+            .get(&self.selected_part_idx)
+            .copied()
+            .or(self.selected_midi_port)
+        {
             Some(p) => p,
             None => return,
         };
@@ -829,7 +994,12 @@ impl MnxEditorApp {
         &mut self,
         events: Vec<crate::grid_input::GridLivePlayEvent>,
     ) {
-        let port_idx = match self.selected_midi_port {
+        let port_idx = match self
+            .part_midi_ports
+            .get(&self.selected_part_idx)
+            .copied()
+            .or(self.selected_midi_port)
+        {
             Some(p) => p,
             None => return,
         };
@@ -837,7 +1007,11 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let part = match doc.parts.first() {
+        let part = match doc
+            .parts
+            .get(self.selected_part_idx)
+            .or_else(|| doc.parts.first())
+        {
             Some(p) => p,
             None => return,
         };
@@ -900,6 +1074,28 @@ impl MnxEditorApp {
     }
 
     pub fn sync_from_parsed_doc(&mut self, doc: MnxDocument) {
+        let num_parts = doc.parts.len().max(1);
+        if self.selected_part_idx >= num_parts {
+            self.selected_part_idx = num_parts - 1;
+        }
+        if self.string_channel_dialog_part_idx >= num_parts {
+            self.string_channel_dialog_part_idx = num_parts - 1;
+        }
+        if let LayoutViewTab::Part(p_idx) = self.layout_view_tab {
+            if p_idx >= num_parts {
+                self.layout_view_tab = LayoutViewTab::Ensemble;
+            }
+        }
+        if self.ensemble_visible_parts.len() < num_parts {
+            self.ensemble_visible_parts.resize(num_parts, true);
+        } else if self.ensemble_visible_parts.len() > num_parts {
+            self.ensemble_visible_parts.truncate(num_parts);
+        }
+        if !self.ensemble_visible_parts.iter().any(|&v| v) && !self.ensemble_visible_parts.is_empty()
+        {
+            self.ensemble_visible_parts[0] = true;
+        }
+
         let errors = validate::validate_mnx(&doc);
 
         // Store formatted error strings for the bottom panel UI
@@ -938,10 +1134,11 @@ impl MnxEditorApp {
             }
         }
 
-        // Sync pitch bend range from YAML if stored on the part
+        // Sync pitch bend range from YAML if stored on the active part
         if let Some(pb) = doc
             .parts
-            .first()
+            .get(self.selected_part_idx)
+            .or_else(|| doc.parts.first())
             .and_then(|p| p.pitch_bend_range)
         {
             self.pitch_bend_range = pb.clamp(1, 48);
@@ -949,13 +1146,15 @@ impl MnxEditorApp {
 
         self.parsed_errors = errors;
         self.parsed_mnx = Some(doc);
+        self.cached_event_ranges =
+            find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
     }
 
     pub fn apply_mutated_doc(&mut self, mut doc: MnxDocument) {
+        doc.ensure_measure_parity();
         doc.clean_unneeded_fret_fields();
         if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
             self.update_yaml(new_yaml);
-            self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);
             self.sync_from_parsed_doc(doc);
         }
     }
@@ -1007,13 +1206,14 @@ impl MnxEditorApp {
     }
 
     pub fn process_and_render(&mut self) {
-        self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(mut doc) => {
                 doc.ensure_measure_parity();
                 self.sync_from_parsed_doc(doc);
             }
             Err(e) => {
+                self.cached_event_ranges =
+                    find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
                 self.parsed_mnx = None;
                 self.parsed_errors = Vec::new();
                 self.validation_errors = vec![format!("YAML PARSE ERROR:\n{}", e)];
@@ -1024,11 +1224,12 @@ impl MnxEditorApp {
     pub fn set_pitch_bend_range_in_yaml(&mut self, pb_range: u8) {
         let clamped = pb_range.clamp(1, 48);
         self.pitch_bend_range = clamped;
+        let part_idx = self.selected_part_idx;
         self.mutate_doc(|doc| {
-            let part = doc.parts.first_mut()?;
+            let part = doc.parts.get_mut(part_idx)?;
             part.pitch_bend_range = Some(clamped);
             if part.name.is_none() {
-                part.name = Some("Guitar".to_string());
+                part.name = Some(part.display_name(part_idx));
             }
             Some(())
         });
@@ -1039,13 +1240,18 @@ impl MnxEditorApp {
     }
 
     pub fn open_instrument_setup_dialog(&mut self, show_custom_fretboard: bool) {
+        self.is_adding_instrument_in_dialog = false;
+        let part_idx = self.selected_part_idx;
         let doc = self.parsed_mnx.as_ref();
-        let part = doc.and_then(|d| d.parts.first());
+        let part = doc.and_then(|d| d.parts.get(part_idx).or_else(|| d.parts.first()));
+        self.instrument_setup_name_buf = part
+            .map(|p| p.display_name(part_idx))
+            .unwrap_or_else(|| "Guitar".to_string());
         let num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
         let edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
         let step_multiplier = part.map(|p| p.step_multiplier()).unwrap_or(1) as u8;
         let fretboard_editor = doc
-            .map(crate::fretboard_editor::FretboardEditorState::from_doc)
+            .map(|d| crate::fretboard_editor::FretboardEditorState::from_doc_part(d, part_idx))
             .unwrap_or_else(|| {
                 crate::fretboard_editor::FretboardEditorState::new(
                     num_strings,
@@ -1142,7 +1348,184 @@ impl MnxEditorApp {
         };
     }
 
+    pub fn open_add_instrument_dialog(&mut self) {
+        self.is_adding_instrument_in_dialog = true;
+        let next_num = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| d.parts.len() + 1)
+            .unwrap_or(2);
+        self.instrument_setup_name_buf = format!("Guitar {}", next_num);
+
+        let mut tunings_text = Vec::new();
+        let mut tunings_name = Vec::new();
+        let mut tunings_octave = Vec::new();
+        for s in 1..=15 {
+            let (step, octave) = match s {
+                1 => ("E", 4),
+                2 => ("B", 3),
+                3 => ("G", 3),
+                4 => ("D", 3),
+                5 => ("A", 2),
+                6 => ("E", 2),
+                7 => ("B", 1),
+                8 => ("F#", 1),
+                9 => ("C#", 1),
+                10 => ("G#", 0),
+                11 => ("D#", 0),
+                12 => ("A#", 0),
+                13 => ("F", 0),
+                14 => ("C", 0),
+                _ => ("G", 0),
+            };
+            tunings_text.push(step.to_string());
+            tunings_name.push(step.to_string());
+            tunings_octave.push(octave);
+        }
+
+        let (ref_step, ref_oct, ref_freq) = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| {
+                let fe = crate::fretboard_editor::FretboardEditorState::from_doc(d);
+                (
+                    fe.reference_note_step,
+                    fe.reference_note_octave,
+                    fe.reference_frequency_hz,
+                )
+            })
+            .unwrap_or_else(|| ("D".to_string(), 4, 293.67));
+
+        self.active_dialog = ActiveDialog::InstrumentSetup {
+            num_strings: 6,
+            edo: 12,
+            step_multiplier: 1,
+            tuning_mode: InstrumentTuningMode::Edo,
+            tunings_text,
+            tunings_name,
+            tunings_octave,
+            show_custom_fretboard: false,
+            fretboard_editor: crate::fretboard_editor::FretboardEditorState::new(
+                6,
+                Vec::new(),
+                ref_step,
+                ref_oct,
+                ref_freq,
+            ),
+            is_new_tab: false,
+        };
+    }
+
+    pub fn add_new_instrument_part(
+        &mut self,
+        name: String,
+        _num_strings: u8,
+        edo: u8,
+        step_multiplier: u8,
+        tunings: Vec<crate::mnx::StringTuning>,
+        custom_frets: Option<Vec<crate::fretboard_editor::CustomFret>>,
+    ) {
+        let trimmed_name = name.trim();
+        let part_name = if trimmed_name.is_empty() {
+            let next_num = self
+                .parsed_mnx
+                .as_ref()
+                .map(|d| d.parts.len() + 1)
+                .unwrap_or(2);
+            format!("Guitar {}", next_num)
+        } else {
+            trimmed_name.to_string()
+        };
+
+        let mut new_part_idx = 0;
+        self.mutate_doc(|doc| {
+            if doc.global.measures.is_empty() {
+                doc.global.measures.push(crate::mnx::GlobalMeasure {
+                    time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                    ..Default::default()
+                });
+            }
+            let num_measures = doc.global.measures.len();
+            let mut measures = Vec::with_capacity(num_measures);
+            for m_idx in 0..num_measures {
+                let ts = crate::render::get_time_signature_for_measure(Some(&doc.global), m_idx);
+                let expected_beats = (ts.count as f64) * (4.0 / (ts.unit as f64));
+                let content = crate::yaml_editor::make_rest_items_for_beats(expected_beats);
+                measures.push(crate::mnx::Measure {
+                    comment: None,
+                    beams: None,
+                    arpeggios: None,
+                    sequences: vec![crate::mnx::Sequence {
+                        comment: None,
+                        content,
+                    }],
+                });
+            }
+
+            let new_part = crate::mnx::Part {
+                id: None,
+                name: Some(part_name),
+                short_name: None,
+                comment: None,
+                ext: crate::mnx::PartExt {
+                    micro_fret_divisions: Some(edo),
+                    fret_step_multiplier: Some(step_multiplier),
+                    pitch_bend_range: None,
+                    capo: None,
+                    tuning: Some(tunings),
+                    custom_frets,
+                },
+                measures,
+            };
+
+            doc.parts.push(new_part);
+            new_part_idx = doc.parts.len() - 1;
+            Some(())
+        });
+
+        self.is_adding_instrument_in_dialog = false;
+        self.select_part(new_part_idx);
+        self.selected_event_idx = Some(0);
+    }
+
+    pub fn remove_instrument_part(&mut self, part_idx: usize) {
+        let can_remove = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| d.parts.len() > 1 && part_idx < d.parts.len())
+            .unwrap_or(false);
+        if !can_remove {
+            return;
+        }
+
+        if part_idx < self.ensemble_visible_parts.len() {
+            self.ensemble_visible_parts.remove(part_idx);
+        }
+        self.part_midi_ports.remove(&part_idx);
+        self.part_string_channel_maps.remove(&part_idx);
+
+        self.mutate_doc(|doc| {
+            if doc.parts.len() > 1 && part_idx < doc.parts.len() {
+                doc.parts.remove(part_idx);
+                Some(())
+            } else {
+                None
+            }
+        });
+
+        let new_count = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| d.parts.len())
+            .unwrap_or(1)
+            .max(1);
+        let next_sel = self.selected_part_idx.min(new_count - 1);
+        self.select_part(next_sel);
+    }
+
     pub fn prompt_new_tab_instrument_setup(&mut self) {
+        self.is_adding_instrument_in_dialog = false;
+        self.instrument_setup_name_buf = "Guitar".to_string();
         let mut tunings_text = Vec::new();
         let mut tunings_name = Vec::new();
         let mut tunings_octave = Vec::new();
@@ -1195,6 +1578,11 @@ impl MnxEditorApp {
         step_multiplier: u8,
         tunings: Vec<crate::mnx::StringTuning>,
     ) {
+        let part_name = if self.instrument_setup_name_buf.trim().is_empty() {
+            "Guitar".to_string()
+        } else {
+            self.instrument_setup_name_buf.trim().to_string()
+        };
         let doc = MnxDocument {
             mnx: crate::mnx::MnxMeta { version: 1 },
             comment: None,
@@ -1208,7 +1596,7 @@ impl MnxEditorApp {
             },
             parts: vec![crate::mnx::Part {
                 id: None,
-                name: Some("Guitar".to_string()),
+                name: Some(part_name),
                 short_name: None,
                 comment: None,
                 ext: crate::mnx::PartExt {
@@ -1254,12 +1642,14 @@ impl MnxEditorApp {
         self.update_yaml(new_yaml.clone());
         self.saved_yaml = new_yaml;
         self.current_file_path = None;
+        self.selected_part_idx = 0;
+        self.layout_view_tab = LayoutViewTab::Ensemble;
+        self.ensemble_visible_parts = vec![true];
         self.selected_event_idx = Some(0);
         self.selected_note_idx_in_event = None;
         self.is_editing_fret = false;
         self.editing_fret_buf.clear();
         self.editing_string = None;
-        self.cached_event_ranges = find_all_event_ranges(&self.yaml_text);
         self.sync_from_parsed_doc(doc);
     }
 
@@ -1293,6 +1683,8 @@ impl MnxEditorApp {
                     self.update_yaml(content.clone());
                     self.saved_yaml = content;
                     self.current_file_path = Some(path);
+                    self.selected_part_idx = 0;
+                    self.layout_view_tab = LayoutViewTab::Ensemble;
                     self.selected_event_idx = None;
                     self.selected_note_idx_in_event = None;
                     self.is_editing_fret = false;
@@ -1363,9 +1755,12 @@ impl MnxEditorApp {
             if path.extension().and_then(|e| e.to_str()) != Some("pdf") {
                 path.set_extension("pdf");
             }
+            let active_parts = self.active_layout_part_indices();
             if let Some(doc) = &self.parsed_mnx {
-                let pages = crate::layout::compute_score_layout(doc, 0.0);
-                if let Err(e) = crate::pdf_export::export_score_to_pdf(doc, &pages, &path) {
+                let pages = crate::layout::compute_score_layout_for_parts(doc, 0.0, &active_parts);
+                if let Err(e) =
+                    crate::pdf_export::export_score_to_pdf_for_parts(doc, &pages, &path, &active_parts)
+                {
                     self.validation_errors = vec![format!("Failed to export PDF file: {}", e)];
                     false
                 } else {
@@ -1425,9 +1820,9 @@ impl MnxEditorApp {
         let mut has_existing = false;
 
         if let Some(doc) = &self.parsed_mnx {
-            let paths = doc.get_flattened_event_paths();
+            let paths = doc.get_flattened_event_paths_for_part(self.selected_part_idx);
             if let Some(&path) = paths.get(event_idx) {
-                if let Some(ev) = doc.get_event_at_path(path) {
+                if let Some(ev) = doc.get_event_at_part_path(self.selected_part_idx, path) {
                     if let Some(first_tm) = ev.text_markings.first() {
                         text_buf = first_tm.text.clone();
                         bold = first_tm.bold;
@@ -1500,9 +1895,7 @@ impl eframe::App for MnxEditorApp {
 
         // Poll Grid Controller MIDI Input
         let num_strings = self
-            .parsed_mnx
-            .as_ref()
-            .and_then(|d| d.parts.first())
+            .active_part()
             .map(|p| p.num_strings() as u8)
             .unwrap_or(6);
         let any_grid_connected = self.grid_input.active_controller_count() > 0;
@@ -1530,11 +1923,13 @@ impl eframe::App for MnxEditorApp {
         }
         if let Some(chord) = latest_chord {
             let e_idx = self.selected_event_idx.unwrap_or(0);
+            let p_idx = self.selected_part_idx;
             self.selected_event_idx = Some(e_idx);
             self.selected_note_idx_in_event = None;
             if self
                 .mutate_doc(|doc| {
-                    if crate::yaml_editor::set_chord_on_event_in_doc(doc, e_idx, &chord) {
+                    if crate::yaml_editor::set_chord_on_event_in_doc_part(doc, p_idx, e_idx, &chord)
+                    {
                         Some(())
                     } else {
                         None

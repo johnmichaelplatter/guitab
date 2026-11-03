@@ -720,7 +720,11 @@ pub struct FretboardEditorState {
 
 impl FretboardEditorState {
     pub fn from_doc(doc: &crate::mnx::MnxDocument) -> Self {
-        let part = doc.parts.first();
+        Self::from_doc_part(doc, 0)
+    }
+
+    pub fn from_doc_part(doc: &crate::mnx::MnxDocument, part_idx: usize) -> Self {
+        let part = doc.parts.get(part_idx);
         let num_strings = part.map(|p| p.num_strings() as u8).unwrap_or(6);
         let existing_frets = part
             .and_then(|p| p.ext.custom_frets.clone())

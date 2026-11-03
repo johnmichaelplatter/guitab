@@ -13,7 +13,16 @@ pub fn export_score_to_pdf<P: AsRef<Path>>(
     pages: &[PageLayout],
     output_path: P,
 ) -> Result<(), String> {
-    let pdf_bytes = generate_score_pdf_bytes(doc, pages)?;
+    export_score_to_pdf_for_parts(doc, pages, output_path, &[0])
+}
+
+pub fn export_score_to_pdf_for_parts<P: AsRef<Path>>(
+    doc: &MnxDocument,
+    pages: &[PageLayout],
+    output_path: P,
+    active_parts: &[usize],
+) -> Result<(), String> {
+    let pdf_bytes = generate_score_pdf_bytes_for_parts(doc, pages, active_parts)?;
     std::fs::write(output_path, pdf_bytes).map_err(|e| format!("Failed to write PDF: {}", e))?;
     Ok(())
 }
@@ -21,6 +30,14 @@ pub fn export_score_to_pdf<P: AsRef<Path>>(
 pub fn generate_score_pdf_bytes(
     doc: &MnxDocument,
     pages: &[PageLayout],
+) -> Result<Vec<u8>, String> {
+    generate_score_pdf_bytes_for_parts(doc, pages, &[0])
+}
+
+pub fn generate_score_pdf_bytes_for_parts(
+    doc: &MnxDocument,
+    pages: &[PageLayout],
+    active_parts: &[usize],
 ) -> Result<Vec<u8>, String> {
     if pages.is_empty() {
         return Err("No pages to export".to_string());
@@ -35,9 +52,11 @@ pub fn generate_score_pdf_bytes(
         (Mm(215.9), Mm(279.4))
     };
 
+    let first_part_idx = active_parts.first().copied().unwrap_or(0);
     let title = doc
         .parts
-        .first()
+        .get(first_part_idx)
+        .or_else(|| doc.parts.first())
         .and_then(|p| p.name.as_deref())
         .unwrap_or("Score");
 
@@ -88,7 +107,7 @@ pub fn generate_score_pdf_bytes(
 
         // Render page systems and content to a DisplayList
         let mut display_list = DisplayList::new();
-        populate_page_display_list(doc, page_layout, &mut display_list);
+        populate_page_display_list_for_parts(doc, page_layout, &mut display_list, active_parts);
 
         if let Some(layout_cfg) = &doc.layout {
             display_list.apply_offsets(&layout_cfg.offsets);
@@ -306,21 +325,41 @@ struct SystemLyric {
     ev_scale: f32,
 }
 
-/// Populates a DisplayList with the score graphics for a specific page layout.
+/// Populates a DisplayList with the score graphics for a specific page layout (first part by default).
 pub fn populate_page_display_list(
     doc: &MnxDocument,
     page: &PageLayout,
     dl: &mut DisplayList,
 ) {
+    populate_page_display_list_for_parts(doc, page, dl, &[0]);
+}
+
+/// Populates a DisplayList with the score graphics for a specific page layout and subset of parts.
+pub fn populate_page_display_list_for_parts(
+    doc: &MnxDocument,
+    page: &PageLayout,
+    dl: &mut DisplayList,
+    active_parts: &[usize],
+) {
     use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
 
-    let part = match doc.parts.first() {
-        Some(p) => p,
-        None => return,
+    if doc.parts.is_empty() {
+        return;
+    }
+
+    let valid_parts: Vec<usize> = active_parts
+        .iter()
+        .copied()
+        .filter(|&idx| idx < doc.parts.len())
+        .collect();
+    let effective_parts = if valid_parts.is_empty() {
+        vec![0]
+    } else {
+        valid_parts
     };
-    let num_strings = part.num_strings();
+
+    let first_part = &doc.parts[effective_parts[0]];
     let line_spacing = 11.0_f32;
-    let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
 
     let text_color = Color32::from_rgb(20, 20, 20);
     let staff_color = Color32::from_rgb(100, 100, 100);
@@ -349,10 +388,10 @@ pub fn populate_page_display_list(
             });
         }
 
-        let edo_sub = if part.has_custom_frets() {
+        let edo_sub = if first_part.has_custom_frets() {
             Some("Custom Fretboard".to_string())
         } else {
-            part.micro_fret_divisions
+            first_part.micro_fret_divisions
                 .map(|divs| format!("{} EDO", divs))
         };
         let subtitle_text = doc
@@ -399,22 +438,30 @@ pub fn populate_page_display_list(
             });
         }
 
-        if let Some(part_name) = part.name.as_deref() {
-            if !part_name.is_empty() {
-                dl.push(DrawItem {
-                    id: Some("header_instrument".to_string()),
-                    kind: DrawKind::Text {
-                        pos: Pos2::new(page.margins.left, page.margins.top + 42.0),
-                        align: Align2::LEFT_CENTER,
-                        text: part_name.to_string(),
-                        font_id: FontId::proportional(12.0),
-                        color: text_color,
-                        bold: false,
-                        italic: false,
-                    },
-                    z_index: 10,
-                });
-            }
+        let header_inst_str: Option<String> = if effective_parts.len() > 1 {
+            let names: Vec<String> = effective_parts
+                .iter()
+                .map(|&pi| doc.parts[pi].display_name(pi))
+                .collect();
+            Some(names.join(" / "))
+        } else {
+            first_part.name.clone().filter(|s| !s.is_empty())
+        };
+
+        if let Some(part_name) = header_inst_str {
+            dl.push(DrawItem {
+                id: Some("header_instrument".to_string()),
+                kind: DrawKind::Text {
+                    pos: Pos2::new(page.margins.left, page.margins.top + 42.0),
+                    align: Align2::LEFT_CENTER,
+                    text: part_name,
+                    font_id: FontId::proportional(12.0),
+                    color: text_color,
+                    bold: false,
+                    italic: false,
+                },
+                z_index: 10,
+            });
         }
     }
 
@@ -432,12 +479,39 @@ pub fn populate_page_display_list(
         let system_start_x = system.measure_x_positions[0];
         let total_system_w: f32 = system.measure_widths.iter().sum();
         let system_end_x = system_start_x + total_system_w;
-        let staff_top_y = system.y_offset;
-        let last_string_y = staff_top_y + staff_height;
-        let staff_mid_y = staff_top_y + staff_height * 0.5;
-        let string_spacing = if num_strings > 1 { line_spacing } else { 10.0 };
-        let mid_y1 = staff_mid_y - string_spacing * 0.5;
-        let mid_y2 = staff_mid_y + string_spacing * 0.5;
+        let first_staff_top_y = system.y_offset;
+        let mut last_staff_bottom_y = system.y_offset;
+        let mut current_staff_top_y = system.y_offset;
+
+        for (part_order, &p_idx) in effective_parts.iter().enumerate() {
+            let is_top_part = part_order == 0;
+            let part = &doc.parts[p_idx];
+            let num_strings = part.num_strings();
+            let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
+            let staff_top_y = current_staff_top_y;
+            let last_string_y = staff_top_y + staff_height;
+            last_staff_bottom_y = last_string_y;
+            let staff_mid_y = staff_top_y + staff_height * 0.5;
+            let string_spacing = if num_strings > 1 { line_spacing } else { 10.0 };
+            let mid_y1 = staff_mid_y - string_spacing * 0.5;
+            let mid_y2 = staff_mid_y + string_spacing * 0.5;
+
+            if effective_parts.len() > 1 {
+                let part_label = part.display_name(p_idx);
+                dl.push(DrawItem {
+                    id: Some(format!("part_label_{}_{}", system.measure_range.start, p_idx)),
+                    kind: DrawKind::Text {
+                        pos: Pos2::new(system_start_x - 6.0, staff_top_y - 4.0),
+                        align: Align2::RIGHT_BOTTOM,
+                        text: part_label,
+                        font_id: FontId::proportional(10.0),
+                        color: text_color,
+                        bold: true,
+                        italic: false,
+                    },
+                    z_index: 5,
+                });
+            }
 
         // Draw staff string lines
         for s in 0..num_strings {
@@ -476,8 +550,13 @@ pub fn populate_page_display_list(
                 };
 
                 if !tuning_str.is_empty() {
+                    let tuning_id = if p_idx == 0 {
+                        Some(format!("tuning_{}", s))
+                    } else {
+                        Some(format!("tuning_p{}_{}", p_idx, s))
+                    };
                     dl.push(DrawItem {
-                        id: Some(format!("tuning_{}", s)),
+                        id: tuning_id,
                         kind: DrawKind::Text {
                             pos: Pos2::new(system_start_x - 6.0, str_y),
                             align: Align2::RIGHT_CENTER,
@@ -553,7 +632,7 @@ pub fn populate_page_display_list(
         }
 
         // Measure numbers for system start
-        let show_first_mn = match measure_numbers_setting {
+        let show_first_mn = is_top_part && match measure_numbers_setting {
             "all" => true,
             "systemStart" => first_m_idx > 0, // omit bar 1 at start of piece
             _ => false,
@@ -612,7 +691,7 @@ pub fn populate_page_display_list(
             });
 
             // Measure number if "all"
-            if measure_numbers_setting == "all" && rel_i > 0 {
+            if is_top_part && measure_numbers_setting == "all" && rel_i > 0 {
                 let mn_str = format!("{}", m_idx + 1);
                 dl.push(DrawItem {
                     id: Some(format!("mn_{}", m_idx)),
@@ -736,6 +815,7 @@ pub fn populate_page_display_list(
             }
 
             // Draw voltas / ending if present
+            if is_top_part {
             if let Some(gm) = gm {
                 if let Some(ending) = &gm.ending {
                     let start_m = m_idx;
@@ -881,6 +961,7 @@ pub fn populate_page_display_list(
                     });
                 }
             }
+            }
 
             // Draw measure notes, rests, and lyrics
             if let Some(measure) = part.measures.get(m_idx) {
@@ -929,7 +1010,19 @@ pub fn populate_page_display_list(
                     }
 
                     let total_natural: f32 = event_spacings.iter().sum();
-                    let ev_scale = if total_natural > 0.0 { avail_w / total_natural } else { 1.0 };
+                    let ts = crate::validate::get_time_signature_for_measure(doc, m_idx);
+                    let expected_beats = (ts.count as f64) * (4.0 / (ts.unit as f64));
+                    let seq_beats = seq.total_beats();
+                    let beat_fraction = if expected_beats > 0.0 {
+                        (seq_beats / expected_beats).clamp(0.0, 1.0) as f32
+                    } else {
+                        1.0
+                    };
+                    let ev_scale = if total_natural > 0.0 {
+                        (avail_w * beat_fraction) / total_natural
+                    } else {
+                        1.0
+                    };
 
                     let mut ev_idx_in_m = 0;
                     let mut accum_x = 0.0_f32;
@@ -1724,24 +1817,43 @@ pub fn populate_page_display_list(
             }
         }
 
-        if let Some(layout_cfg) = &doc.layout {
-            for &[start_m, end_m] in &layout_cfg.locked_systems {
-                if start_m <= end_m && start_m == system.measure_range.start && end_m + 1 == system.measure_range.end {
-                    dl.push(DrawItem {
-                        id: Some(format!("sys_lock_{}_{}", start_m, end_m)),
-                        kind: DrawKind::Text {
-                            pos: Pos2::new(system_end_x - 2.0, staff_top_y - 12.0),
-                            align: Align2::RIGHT_BOTTOM,
-                            text: "[system]".to_string(),
-                            font_id: FontId::proportional(10.0),
-                            color: Color32::from_rgba_unmultiplied(100, 110, 150, 140),
-                            bold: false,
-                            italic: false,
-                        },
-                        z_index: 8,
-                    });
+        if is_top_part {
+            if let Some(layout_cfg) = &doc.layout {
+                for &[start_m, end_m] in &layout_cfg.locked_systems {
+                    if start_m <= end_m && start_m == system.measure_range.start && end_m + 1 == system.measure_range.end {
+                        dl.push(DrawItem {
+                            id: Some(format!("sys_lock_{}_{}", start_m, end_m)),
+                            kind: DrawKind::Text {
+                                pos: Pos2::new(system_end_x - 2.0, staff_top_y - 12.0),
+                                align: Align2::RIGHT_BOTTOM,
+                                text: "[system]".to_string(),
+                                font_id: FontId::proportional(10.0),
+                                color: Color32::from_rgba_unmultiplied(100, 110, 150, 140),
+                                bold: false,
+                                italic: false,
+                            },
+                            z_index: 8,
+                        });
+                    }
                 }
             }
+        }
+
+        current_staff_top_y +=
+            crate::layout::compute_part_staff_block_height(part) + crate::layout::INTER_PART_SYSTEM_GAP;
+        }
+
+        // Draw connected left system barline across all stacked staves when multiple parts are displayed
+        if effective_parts.len() > 1 && last_staff_bottom_y > first_staff_top_y {
+            dl.push(DrawItem {
+                id: Some(format!("sys_bracket_{}", system.measure_range.start)),
+                kind: DrawKind::Line {
+                    from: Pos2::new(system_start_x, first_staff_top_y),
+                    to: Pos2::new(system_start_x, last_staff_bottom_y),
+                    stroke: Stroke::new(1.5, barline_color),
+                },
+                z_index: 3,
+            });
         }
     }
 }

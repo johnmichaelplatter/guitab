@@ -18,13 +18,14 @@ impl MnxEditorApp {
         if let Some(tid) = existing_target_id {
             self.action_remove_tempo_change(&tid);
         }
+        let p_idx = self.selected_part_idx;
         self.mutate_doc(|doc| {
             let mut start_m_idx = 0;
             let mut start_offset = 0.0;
             let mut found = false;
             
             // Find start
-            if let Some(part) = doc.parts.first() {
+            if let Some(part) = doc.parts.get(p_idx).or_else(|| doc.parts.first()) {
                 let mut current_idx = 0;
                 for (m_idx, measure) in part.measures.iter().enumerate() {
                     if let Some(seq) = measure.sequences.first() {
@@ -46,7 +47,7 @@ impl MnxEditorApp {
                 }
             }
             if !found && event_idx > 0 {
-                start_m_idx = doc.parts.first().map(|p| p.measures.len().saturating_sub(1)).unwrap_or(0);
+                start_m_idx = doc.parts.get(p_idx).or_else(|| doc.parts.first()).map(|p| p.measures.len().saturating_sub(1)).unwrap_or(0);
                 start_offset = 0.0;
             }
 
@@ -73,7 +74,7 @@ impl MnxEditorApp {
             // We need to advance measures if end_offset > measure duration.
             // But we might not know measure duration unless we parse the time signature.
             // For simplicity, we can calculate the duration of the current measure by summing its events.
-            if let Some(part) = doc.parts.first() {
+            if let Some(part) = doc.parts.get(p_idx).or_else(|| doc.parts.first()) {
                 while end_m_idx < part.measures.len() {
                     let measure = &part.measures[end_m_idx];
                     let mut m_duration = 0.0;
@@ -141,12 +142,13 @@ impl MnxEditorApp {
     }
 
     pub(crate) fn insert_tempo(&mut self, bpm: f64, duration_value: &str, dots: u32, event_idx: usize) {
+        let p_idx = self.selected_part_idx;
         self.mutate_doc(|doc| {
             let mut target_m_idx = 0;
             let mut sum_quarter_beats = 0.0;
             let mut found = false;
             
-            if let Some(part) = doc.parts.first() {
+            if let Some(part) = doc.parts.get(p_idx).or_else(|| doc.parts.first()) {
                 let mut current_idx = 0;
                 for (m_idx, measure) in part.measures.iter().enumerate() {
                     if let Some(seq) = measure.sequences.first() {
@@ -171,7 +173,7 @@ impl MnxEditorApp {
             }
             
             if !found && event_idx > 0 {
-                target_m_idx = doc.parts.first().map(|p| p.measures.len().saturating_sub(1)).unwrap_or(0);
+                target_m_idx = doc.parts.get(p_idx).or_else(|| doc.parts.first()).map(|p| p.measures.len().saturating_sub(1)).unwrap_or(0);
                 sum_quarter_beats = 0.0;
             }
 
@@ -215,8 +217,7 @@ impl MnxEditorApp {
 
     pub fn get_selected_event_duration(&self) -> Option<crate::mnx::Duration> {
         let e_idx = self.selected_event_idx?;
-        let doc = self.parsed_mnx.as_ref()?;
-        let part = doc.parts.first()?;
+        let part = self.active_part()?;
         let mut cur_e = 0;
         for m in &part.measures {
             for seq in &m.sequences {
@@ -236,11 +237,7 @@ impl MnxEditorApp {
             Some(i) => i,
             None => return false,
         };
-        let doc = match &self.parsed_mnx {
-            Some(d) => d,
-            None => return false,
-        };
-        let part = match doc.parts.first() {
+        let part = match self.active_part() {
             Some(p) => p,
             None => return false,
         };
@@ -267,25 +264,24 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return false,
         };
-        doc.find_event_tuplet_info(e_idx).is_some()
+        doc.find_event_tuplet_info_for_part(self.selected_part_idx, e_idx)
+            .is_some()
     }
 
     pub fn is_selected_note_bent(&self) -> bool {
-        if let Some(doc) = &self.parsed_mnx {
-            if let Some(part) = doc.parts.first() {
-                if let Some(e_idx) = self.selected_event_idx {
-                    if let Some(n_idx) = self.selected_note_idx_in_event {
-                        let mut count = 0;
-                        for m in &part.measures {
-                            for seq in &m.sequences {
-                                for ev in seq.flattened_events() {
-                                    if count == e_idx {
-                                        if let Some(note) = ev.notes.get(n_idx) {
-                                            return note.bend.is_some();
-                                        }
+        if let Some(part) = self.active_part() {
+            if let Some(e_idx) = self.selected_event_idx {
+                if let Some(n_idx) = self.selected_note_idx_in_event {
+                    let mut count = 0;
+                    for m in &part.measures {
+                        for seq in &m.sequences {
+                            for ev in seq.flattened_events() {
+                                if count == e_idx {
+                                    if let Some(note) = ev.notes.get(n_idx) {
+                                        return note.bend.is_some();
                                     }
-                                    count += 1;
                                 }
+                                count += 1;
                             }
                         }
                     }
@@ -301,20 +297,18 @@ impl MnxEditorApp {
                 let mut existing_bend = None;
                 let mut target_str = 1;
 
-                if let Some(doc) = &self.parsed_mnx {
-                    if let Some(part) = doc.parts.first() {
-                        let mut count = 0;
-                        for m in &part.measures {
-                            for seq in &m.sequences {
-                                for ev in seq.flattened_events() {
-                                    if count == e_idx {
-                                        if let Some(note) = ev.notes.get(n_idx) {
-                                            existing_bend = note.bend.clone();
-                                            target_str = note.string.unwrap_or(1);
-                                        }
+                if let Some(part) = self.active_part() {
+                    let mut count = 0;
+                    for m in &part.measures {
+                        for seq in &m.sequences {
+                            for ev in seq.flattened_events() {
+                                if count == e_idx {
+                                    if let Some(note) = ev.notes.get(n_idx) {
+                                        existing_bend = note.bend.clone();
+                                        target_str = note.string.unwrap_or(1);
                                     }
-                                    count += 1;
                                 }
+                                count += 1;
                             }
                         }
                     }
@@ -344,11 +338,7 @@ impl MnxEditorApp {
             Some(i) => i,
             None => return false,
         };
-        let doc = match &self.parsed_mnx {
-            Some(d) => d,
-            None => return false,
-        };
-        let part = match doc.parts.first() {
+        let part = match self.active_part() {
             Some(p) => p,
             None => return false,
         };
@@ -384,11 +374,7 @@ impl MnxEditorApp {
             Some(i) => i,
             None => return false,
         };
-        let doc = match &self.parsed_mnx {
-            Some(d) => d,
-            None => return false,
-        };
-        let part = match doc.parts.first() {
+        let part = match self.active_part() {
             Some(p) => p,
             None => return false,
         };
@@ -423,11 +409,12 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return false,
         };
-        let flat = doc.get_flattened_event_paths();
+        let p_idx = self.selected_part_idx;
+        let flat = doc.get_flattened_event_paths_for_part(p_idx);
         if e_idx >= flat.len() {
             return false;
         }
-        let ev = match doc.get_event_at_path(flat[e_idx]) {
+        let ev = match doc.get_event_at_part_path(p_idx, flat[e_idx]) {
             Some(e) => e,
             None => return false,
         };
@@ -456,14 +443,15 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return,
         };
+        let p_idx = self.selected_part_idx;
 
-        let flattened_events = doc.get_flattened_event_paths();
+        let flattened_events = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened_events.len() {
             return;
         }
 
         let cur_path = flattened_events[event_idx];
-        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+        let ev_cur_clone = match doc.get_event_at_part_path(p_idx, cur_path) {
             Some(e) => e.clone(),
             None => return,
         };
@@ -518,7 +506,9 @@ impl MnxEditorApp {
             let mut slide_valid = false;
             if let Some(s) = ev_cur_clone.notes[note_idx].string {
                 if event_idx + 1 < flattened_events.len() {
-                    if let Some(next_ev) = doc.get_event_at_path(flattened_events[event_idx + 1]) {
+                    if let Some(next_ev) =
+                        doc.get_event_at_part_path(p_idx, flattened_events[event_idx + 1])
+                    {
                         if next_ev.notes.iter().any(|n| n.string == Some(s)) {
                             slide_valid = true;
                         }
@@ -530,7 +520,7 @@ impl MnxEditorApp {
             }
         }
 
-        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             if let Some(note) = ev.notes.get_mut(note_idx) {
                 if note.slide.is_some() {
                     note.slide = None;
@@ -553,11 +543,7 @@ impl MnxEditorApp {
             Some(i) => i,
             None => return false,
         };
-        let doc = match &self.parsed_mnx {
-            Some(d) => d,
-            None => return false,
-        };
-        let part = match doc.parts.first() {
+        let part = match self.active_part() {
             Some(p) => p,
             None => return false,
         };
@@ -590,11 +576,7 @@ impl MnxEditorApp {
             Some(i) => i,
             None => return false,
         };
-        let doc = match &self.parsed_mnx {
-            Some(d) => d,
-            None => return false,
-        };
-        let part = match doc.parts.first() {
+        let part = match self.active_part() {
             Some(p) => p,
             None => return false,
         };
@@ -638,9 +620,10 @@ impl MnxEditorApp {
     }
 
     pub fn convert_selected_to_rest(&mut self) {
+        let p_idx = self.selected_part_idx;
         if let Some(e_idx) = self.selected_event_idx {
             self.mutate_doc_and_clean_ties(|doc| {
-                if crate::yaml_editor::convert_event_to_rest_in_doc(doc, e_idx) {
+                if crate::yaml_editor::convert_event_to_rest_in_doc_part(doc, p_idx, e_idx) {
                     Some(())
                 } else {
                     None
@@ -654,6 +637,7 @@ impl MnxEditorApp {
     }
 
     pub fn handle_tuplet_button_click(&mut self) {
+        let p_idx = self.selected_part_idx;
         if let Some(e_idx) = self.selected_event_idx {
             let is_in_tuplet = self.is_selected_event_in_tuplet();
             if !is_in_tuplet {
@@ -672,7 +656,9 @@ impl MnxEditorApp {
             } else {
                 if self.is_editing_fret {
                     if let Some(new_idx) = self.mutate_doc(|doc| {
-                        crate::yaml_editor::fill_tuplet_rests_and_add_blank_in_doc(doc, e_idx)
+                        crate::yaml_editor::fill_tuplet_rests_and_add_blank_in_doc_part(
+                            doc, p_idx, e_idx,
+                        )
                     }) {
                         self.selected_event_idx = Some(new_idx);
                         self.is_editing_fret = true;
@@ -689,6 +675,7 @@ impl MnxEditorApp {
     }
 
     pub fn change_selected_duration_base(&mut self, new_base: &str) {
+        let p_idx = self.selected_part_idx;
         if let Some(e_idx) = self.selected_event_idx {
             let cur_dur =
                 self.get_selected_event_duration()
@@ -703,7 +690,7 @@ impl MnxEditorApp {
                 dots: cur_dur.dots,
             };
             self.mutate_doc(|doc| {
-                if update_event_duration_in_doc(doc, e_idx, &new_duration) {
+                if update_event_duration_in_doc_part(doc, p_idx, e_idx, &new_duration) {
                     Some(())
                 } else {
                     None
@@ -713,6 +700,7 @@ impl MnxEditorApp {
     }
 
     pub fn toggle_selected_duration_dot(&mut self) {
+        let p_idx = self.selected_part_idx;
         if let Some(e_idx) = self.selected_event_idx {
             let cur_dur =
                 self.get_selected_event_duration()
@@ -740,7 +728,7 @@ impl MnxEditorApp {
                 dots: if is_dotted { None } else { Some(1) },
             };
             self.mutate_doc(|doc| {
-                if update_event_duration_in_doc(doc, e_idx, &new_duration) {
+                if update_event_duration_in_doc_part(doc, p_idx, e_idx, &new_duration) {
                     Some(())
                 } else {
                     None
@@ -750,10 +738,9 @@ impl MnxEditorApp {
     }
 
     pub fn add_measure_to_end(&mut self) {
+        let p_idx = self.selected_part_idx;
         let last_duration = self
-            .parsed_mnx
-            .as_ref()
-            .and_then(|d| d.parts.first())
+            .active_part()
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
             .and_then(|s| s.flattened_events().last().copied())
@@ -766,7 +753,7 @@ impl MnxEditorApp {
 
         if self
             .mutate_doc(|doc| {
-                if add_measure_to_doc(doc, &last_duration) {
+                if add_measure_to_doc_part(doc, p_idx, &last_duration) {
                     Some(())
                 } else {
                     None
@@ -811,71 +798,74 @@ impl MnxEditorApp {
                 doc.global.measures[i].time = None;
             }
         } else if rebar_mode == 1 {
-            // Truncate content in this bar only
+            // Truncate content in this bar only across all parts
             let capacity = (count as f64) * 4.0 / (unit as f64);
-            let part = doc.parts.first_mut().unwrap();
-            if let Some(measure) = part.measures.get_mut(m_idx) {
-                let mut new_seq = Vec::new();
-                let mut current_beats = 0.0;
+            for part in &mut doc.parts {
+                if let Some(measure) = part.measures.get_mut(m_idx) {
+                    let mut new_seq = Vec::new();
+                    let mut current_beats = 0.0;
 
-                for seq in &measure.sequences {
-                    for item in &seq.content {
-                        let item_beats = match item {
-                            crate::mnx::SequenceItem::Event(ev) => {
-                                crate::validate::duration_to_quarter_beats(&ev.duration)
-                            }
-                            crate::mnx::SequenceItem::Tuplet(t) => {
-                                crate::validate::duration_to_quarter_beats(&t.outer.duration)
-                                    * (t.outer.multiple as f64)
-                            }
-                            crate::mnx::SequenceItem::Grace(_) => 0.0,
-                        };
-
-                        if current_beats + item_beats <= capacity + 0.001 {
-                            new_seq.push(item.clone());
-                            current_beats += item_beats;
-                        } else if current_beats < capacity - 0.001 {
-                            let excess = current_beats + item_beats - capacity;
-                            let keep_beats = item_beats - excess;
-                            match item {
+                    for seq in &measure.sequences {
+                        for item in &seq.content {
+                            let item_beats = match item {
                                 crate::mnx::SequenceItem::Event(ev) => {
-                                    let chunks = crate::rebar::greedy_split_event_duration(
-                                        ev.clone(),
-                                        keep_beats,
-                                    );
-                                    for c in chunks {
-                                        new_seq.push(crate::mnx::SequenceItem::Event(c));
+                                    crate::validate::duration_to_quarter_beats(&ev.duration)
+                                }
+                                crate::mnx::SequenceItem::Tuplet(t) => {
+                                    crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                                        * (t.outer.multiple as f64)
+                                }
+                                crate::mnx::SequenceItem::Grace(_) => 0.0,
+                            };
+
+                            if current_beats + item_beats <= capacity + 0.001 {
+                                new_seq.push(item.clone());
+                                current_beats += item_beats;
+                            } else if current_beats < capacity - 0.001 {
+                                let excess = current_beats + item_beats - capacity;
+                                let keep_beats = item_beats - excess;
+                                match item {
+                                    crate::mnx::SequenceItem::Event(ev) => {
+                                        let chunks = crate::rebar::greedy_split_event_duration(
+                                            ev.clone(),
+                                            keep_beats,
+                                        );
+                                        for c in chunks {
+                                            new_seq.push(crate::mnx::SequenceItem::Event(c));
+                                        }
+                                    }
+                                    crate::mnx::SequenceItem::Tuplet(_t) => {
+                                        new_seq.push(item.clone());
+                                    }
+                                    crate::mnx::SequenceItem::Grace(_) => {
+                                        new_seq.push(item.clone());
                                     }
                                 }
-                                crate::mnx::SequenceItem::Tuplet(_t) => {
-                                    new_seq.push(item.clone());
-                                }
-                                crate::mnx::SequenceItem::Grace(_) => {
-                                    new_seq.push(item.clone());
-                                }
+                                current_beats = capacity;
                             }
-                            current_beats = capacity;
                         }
                     }
-                }
-                if let Some(seq) = measure.sequences.first_mut() {
-                    seq.content = new_seq;
+                    if let Some(seq) = measure.sequences.first_mut() {
+                        seq.content = new_seq;
+                    }
                 }
             }
         }
 
-        let part = doc.parts.first_mut().unwrap();
-        crate::rebar::rebar_part(part, &mut doc.global.measures);
+        for part in &mut doc.parts {
+            crate::rebar::rebar_part(part, &mut doc.global.measures);
+        }
 
         self.apply_mutated_doc(doc);
     }
 
     pub fn is_selected_event_strummed(&self, dir: &str) -> bool {
+        let p_idx = self.selected_part_idx;
         if let Some(doc) = &self.parsed_mnx {
             if let Some(idx) = self.selected_event_idx {
-                let flattened = doc.get_flattened_event_paths();
+                let flattened = doc.get_flattened_event_paths_for_part(p_idx);
                 if idx < flattened.len() {
-                    if let Some(ev) = doc.get_event_at_path(flattened[idx]) {
+                    if let Some(ev) = doc.get_event_at_part_path(p_idx, flattened[idx]) {
                         if let Some(bow) = &ev.bow_direction {
                             return bow.direction == dir;
                         }
@@ -886,12 +876,13 @@ impl MnxEditorApp {
         false
     }
 
-    pub fn is_selected_event_accented(&self) -> bool {
+    pub fn is_selected_event_accented(&self, ) -> bool {
+        let p_idx = self.selected_part_idx;
         if let Some(doc) = &self.parsed_mnx {
             if let Some(idx) = self.selected_event_idx {
-                let flattened = doc.get_flattened_event_paths();
+                let flattened = doc.get_flattened_event_paths_for_part(p_idx);
                 if idx < flattened.len() {
-                    if let Some(ev) = doc.get_event_at_path(flattened[idx]) {
+                    if let Some(ev) = doc.get_event_at_part_path(p_idx, flattened[idx]) {
                         if let Some(markings) = &ev.markings {
                             return markings.accent.is_some();
                         }
@@ -903,6 +894,7 @@ impl MnxEditorApp {
     }
 
     pub fn action_toggle_strum(&mut self, dir: &str) {
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -911,11 +903,11 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let flattened = doc.get_flattened_event_paths();
+        let flattened = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened.len() {
             return;
         }
-        if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, flattened[event_idx]) {
             let cur_dir = ev.bow_direction.as_ref().map(|b| b.direction.clone());
             if cur_dir.as_deref() == Some(dir) {
                 ev.bow_direction = None;
@@ -929,6 +921,7 @@ impl MnxEditorApp {
     }
 
     pub fn action_toggle_accent(&mut self) {
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -937,11 +930,11 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let flattened = doc.get_flattened_event_paths();
+        let flattened = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened.len() {
             return;
         }
-        if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, flattened[event_idx]) {
             let has_accent = ev.markings.as_ref().map_or(false, |m| m.accent.is_some());
             if has_accent {
                 ev.markings = None;
@@ -954,6 +947,7 @@ impl MnxEditorApp {
         self.apply_mutated_doc(doc);
     }
     pub fn action_add_slur(&mut self) {
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -963,13 +957,13 @@ impl MnxEditorApp {
             None => return,
         };
 
-        let flattened_events = doc.get_flattened_event_paths();
+        let flattened_events = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened_events.len() {
             return;
         }
 
         let cur_path = flattened_events[event_idx];
-        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+        let ev_cur_clone = match doc.get_event_at_part_path(p_idx, cur_path) {
             Some(e) => e.clone(),
             None => return,
         };
@@ -997,7 +991,7 @@ impl MnxEditorApp {
         };
 
         let mut toggled_off = false;
-        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             if let Some(slurs) = &mut ev.slurs {
                 let note_cur_id = ev.notes[note_idx].id.clone();
                 let original_len = slurs.len();
@@ -1024,7 +1018,7 @@ impl MnxEditorApp {
         let mut next_target = None;
         for j in (event_idx + 1)..flattened_events.len() {
             let path_j = flattened_events[j];
-            let ev_j = doc.get_event_at_path(path_j).cloned().unwrap();
+            let ev_j = doc.get_event_at_part_path(p_idx, path_j).cloned().unwrap();
             if let Some(n_idx) = ev_j.notes.iter().position(|n| n.string == Some(cur_string)) {
                 next_target = Some((j, path_j, ev_j, n_idx));
                 break;
@@ -1035,23 +1029,23 @@ impl MnxEditorApp {
             let mut target_ev_id = None;
             let mut end_note_id = None;
 
-            if let Some(ev_next) = doc.get_event_mut_at_path(next_path) {
+            if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
                 if ev_next.id.is_none() {
-                    ev_next.id = Some(format!("ev_tgt_{}", event_idx));
+                    ev_next.id = Some(format!("ev_tgt_{}_{}", p_idx, event_idx));
                 }
                 target_ev_id = ev_next.id.clone();
 
                 let n_tgt = &mut ev_next.notes[next_n_idx];
                 if n_tgt.id.is_none() {
-                    n_tgt.id = Some(format!("note_tgt_{}_{}", event_idx, next_n_idx));
+                    n_tgt.id = Some(format!("note_tgt_{}_{}_{}", p_idx, event_idx, next_n_idx));
                 }
                 end_note_id = n_tgt.id.clone();
             }
 
-            if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
+            if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
                 let n_cur = &mut ev_cur.notes[note_idx];
                 if n_cur.id.is_none() {
-                    n_cur.id = Some(format!("note_src_{}_{}", event_idx, note_idx));
+                    n_cur.id = Some(format!("note_src_{}_{}_{}", p_idx, event_idx, note_idx));
                 }
                 let start_note_id = n_cur.id.clone();
 
@@ -1074,6 +1068,7 @@ impl MnxEditorApp {
         }
     }
     pub fn action_add_tie(&mut self) {
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -1083,13 +1078,13 @@ impl MnxEditorApp {
             None => return,
         };
 
-        let flattened_events = doc.get_flattened_event_paths();
+        let flattened_events = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened_events.len() {
             return;
         }
 
         let cur_path = flattened_events[event_idx];
-        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+        let ev_cur_clone = match doc.get_event_at_part_path(p_idx, cur_path) {
             Some(e) => e.clone(),
             None => return,
         };
@@ -1131,7 +1126,7 @@ impl MnxEditorApp {
         };
 
         let mut toggled_off = false;
-        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             let note_cur = &mut ev.notes[note_idx];
             if let Some(ties) = &note_cur.ties {
                 if !ties.is_empty() {
@@ -1162,13 +1157,16 @@ impl MnxEditorApp {
             let mut has_same_string = false;
             let mut diff_fret = false;
 
-            if let Some(ev_next) = doc.get_event_mut_at_path(next_path) {
+            if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
                 for (n_i, n) in ev_next.notes.iter_mut().enumerate() {
                     if n.string == Some(cur_string) {
                         has_same_string = true;
                         if n.fret == cur_fret {
                             if n.id.is_none() {
-                                n.id = Some(format!("note_tgt_{}_{}_{}", event_idx, note_idx, n_i));
+                                n.id = Some(format!(
+                                    "note_tgt_{}_{}_{}_{}",
+                                    p_idx, event_idx, note_idx, n_i
+                                ));
                             }
                             target_id = n.id.clone();
                         } else {
@@ -1180,7 +1178,7 @@ impl MnxEditorApp {
 
                 if !has_same_string {
                     if ev_next.id.is_none() {
-                        ev_next.id = Some(format!("ev_tgt_{}", event_idx));
+                        ev_next.id = Some(format!("ev_tgt_{}_{}", p_idx, event_idx));
                     }
                     target_id = ev_next.id.clone();
                 }
@@ -1191,7 +1189,7 @@ impl MnxEditorApp {
             }
 
             if let Some(tid) = target_id {
-                if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
+                if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
                     let note_cur = &mut ev_cur.notes[note_idx];
                     if note_cur.ties.is_none() {
                         note_cur.ties = Some(Vec::new());
@@ -1223,7 +1221,7 @@ impl MnxEditorApp {
 
         let mut used_beats = 0.0;
         for i in 0..=cur_i {
-            match &doc.parts[0].measures[cur_m].sequences[cur_s].content[i] {
+            match &doc.parts[p_idx].measures[cur_m].sequences[cur_s].content[i] {
                 crate::mnx::SequenceItem::Event(e) => {
                     used_beats += crate::validate::duration_to_quarter_beats(&e.duration);
                 }
@@ -1245,17 +1243,17 @@ impl MnxEditorApp {
         let available_beats = (measure_total_beats - used_beats).max(0.0);
         let eps = 0.001;
 
-        if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
+        if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             let note_cur = &mut ev_cur.notes[note_idx];
             if note_cur.id.is_none() {
-                note_cur.id = Some(format!("note_src_{}", event_idx));
+                note_cur.id = Some(format!("note_src_{}_{}", p_idx, event_idx));
             }
         }
 
         let next_target_id;
 
         if available_beats >= new_note_duration_beats - eps {
-            let id = format!("note_new_1_{}", event_idx);
+            let id = format!("note_new_1_{}_{}", p_idx, event_idx);
             let new_ev = crate::mnx::Event {
                 id: None,
                 duration: cur_dur,
@@ -1279,7 +1277,7 @@ impl MnxEditorApp {
                 ext: crate::mnx::EventExt::default(),
             };
             next_target_id = id;
-            doc.parts[0].measures[cur_m].sequences[cur_s]
+            doc.parts[p_idx].measures[cur_m].sequences[cur_s]
                 .content
                 .insert(cur_i + 1, crate::mnx::SequenceItem::Event(new_ev));
         } else if available_beats > eps {
@@ -1294,8 +1292,8 @@ impl MnxEditorApp {
                 None => return,
             };
 
-            let id1 = format!("note_new_split1_{}", event_idx);
-            let id2 = format!("note_new_split2_{}", event_idx);
+            let id1 = format!("note_new_split1_{}_{}", p_idx, event_idx);
+            let id2 = format!("note_new_split2_{}_{}", p_idx, event_idx);
 
             let ev1 = crate::mnx::Event {
                 id: None,
@@ -1347,12 +1345,12 @@ impl MnxEditorApp {
 
             next_target_id = id1;
 
-            doc.parts[0].measures[cur_m].sequences[cur_s]
+            doc.parts[p_idx].measures[cur_m].sequences[cur_s]
                 .content
                 .insert(cur_i + 1, crate::mnx::SequenceItem::Event(ev1));
 
             let next_m = cur_m + 1;
-            if next_m >= doc.parts[0].measures.len() {
+            if next_m >= doc.parts[p_idx].measures.len() {
                 let mut new_m = crate::mnx::Measure {
                     comment: None,
                     arpeggios: None,
@@ -1365,7 +1363,7 @@ impl MnxEditorApp {
                 new_m.sequences[0]
                     .content
                     .push(crate::mnx::SequenceItem::Event(ev2));
-                doc.parts[0].measures.push(new_m);
+                doc.parts[p_idx].measures.push(new_m);
 
                 if next_m >= doc.global.measures.len() {
                     let gm = if doc.global.measures.is_empty() {
@@ -1382,12 +1380,12 @@ impl MnxEditorApp {
                     doc.global.measures.push(gm);
                 }
             } else {
-                doc.parts[0].measures[next_m].sequences[0]
+                doc.parts[p_idx].measures[next_m].sequences[0]
                     .content
                     .insert(0, crate::mnx::SequenceItem::Event(ev2));
             }
         } else {
-            let id2 = format!("note_new_split2_{}", event_idx);
+            let id2 = format!("note_new_split2_{}_{}", p_idx, event_idx);
             let ev2 = crate::mnx::Event {
                 id: None,
                 duration: cur_dur,
@@ -1413,7 +1411,7 @@ impl MnxEditorApp {
 
             next_target_id = id2;
             let next_m = cur_m + 1;
-            if next_m >= doc.parts[0].measures.len() {
+            if next_m >= doc.parts[p_idx].measures.len() {
                 let mut new_m = crate::mnx::Measure {
                     comment: None,
                     arpeggios: None,
@@ -1426,7 +1424,7 @@ impl MnxEditorApp {
                 new_m.sequences[0]
                     .content
                     .push(crate::mnx::SequenceItem::Event(ev2));
-                doc.parts[0].measures.push(new_m);
+                doc.parts[p_idx].measures.push(new_m);
 
                 if next_m >= doc.global.measures.len() {
                     let gm = if doc.global.measures.is_empty() {
@@ -1443,13 +1441,13 @@ impl MnxEditorApp {
                     doc.global.measures.push(gm);
                 }
             } else {
-                doc.parts[0].measures[next_m].sequences[0]
+                doc.parts[p_idx].measures[next_m].sequences[0]
                     .content
                     .insert(0, crate::mnx::SequenceItem::Event(ev2));
             }
         }
 
-        if let Some(ev_cur) = doc.get_event_mut_at_path(cur_path) {
+        if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             let note_cur = &mut ev_cur.notes[note_idx];
             if note_cur.ties.is_none() {
                 note_cur.ties = Some(Vec::new());
@@ -1468,6 +1466,7 @@ impl MnxEditorApp {
             self.editing_fret_buf.clear();
         }
 
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -1477,13 +1476,13 @@ impl MnxEditorApp {
             None => return,
         };
 
-        let flattened_events = doc.get_flattened_event_paths();
+        let flattened_events = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened_events.len() {
             return;
         }
 
         let cur_path = flattened_events[event_idx];
-        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+        let ev_cur_clone = match doc.get_event_at_part_path(p_idx, cur_path) {
             Some(e) => e.clone(),
             None => return,
         };
@@ -1529,7 +1528,7 @@ impl MnxEditorApp {
             }
         };
 
-        if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             if let Some(note) = ev.notes.get_mut(note_idx) {
                 if note.tap.is_some() {
                     note.tap = None;
@@ -1552,6 +1551,7 @@ impl MnxEditorApp {
             self.commit_fret_edit();
         }
 
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -1560,12 +1560,12 @@ impl MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let flattened = doc.get_flattened_event_paths();
+        let flattened = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened.len() {
             return;
         }
         let cur_path = flattened[event_idx];
-        let ev_cur_clone = match doc.get_event_at_path(cur_path) {
+        let ev_cur_clone = match doc.get_event_at_part_path(p_idx, cur_path) {
             Some(e) => e.clone(),
             None => return,
         };
@@ -1612,7 +1612,7 @@ impl MnxEditorApp {
                 .tuning
                 .as_ref()
                 .and_then(|t| t.reference_note.as_ref());
-            let part = match doc.parts.first() {
+            let part = match doc.parts.get(p_idx) {
                 Some(p) => p,
                 None => return,
             };
@@ -1646,7 +1646,7 @@ impl MnxEditorApp {
                 ref_note,
             );
 
-            if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+            if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
                 if let Some(n) = ev.notes.get_mut(note_idx) {
                     n.harmonic = None;
                     if target_fret.fract().abs() > 1e-4 {
@@ -1670,7 +1670,7 @@ impl MnxEditorApp {
 
         // Otherwise: check if the note's current fret is a valid harmonic location
         let fret_val = note.decimal_fret.or_else(|| note.fret.map(|f| f as f64)).unwrap_or(0.0);
-        let part = match doc.parts.first() {
+        let part = match doc.parts.get(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -1679,7 +1679,7 @@ impl MnxEditorApp {
 
         if !matching_nodes.is_empty() {
             let node = matching_nodes[0];
-            if let Some(ev) = doc.get_event_mut_at_path(cur_path) {
+            if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
                 if let Some(n) = ev.notes.get_mut(note_idx) {
                     if node.touch_fret.fract().abs() > 1e-4 {
                         n.decimal_fret = Some(node.touch_fret);
@@ -1730,6 +1730,7 @@ impl MnxEditorApp {
 
 impl crate::gui::MnxEditorApp {
     pub fn action_toggle_mute(&mut self) {
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -1742,11 +1743,11 @@ impl crate::gui::MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let flattened = doc.get_flattened_event_paths();
+        let flattened = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened.len() {
             return;
         }
-        if let Some(ev) = doc.get_event_mut_at_path(flattened[event_idx]) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, flattened[event_idx]) {
             if note_idx < ev.notes.len() {
                 let note = &mut ev.notes[note_idx];
                 let is_muted = note.muted.unwrap_or(false);
@@ -1760,15 +1761,16 @@ impl crate::gui::MnxEditorApp {
 impl crate::gui::MnxEditorApp {
     #[allow(dead_code)]
     pub fn event_has_any_notes(&self, event_idx: usize) -> bool {
+        let p_idx = self.selected_part_idx;
         let doc = match self.parsed_mnx.as_ref() {
             Some(d) => d,
             None => return false,
         };
-        let flattened = doc.get_flattened_event_paths();
+        let flattened = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened.len() {
             return false;
         }
-        if let Some(ev) = doc.get_event_at_path(flattened[event_idx]) {
+        if let Some(ev) = doc.get_event_at_part_path(p_idx, flattened[event_idx]) {
             return !ev.notes.is_empty();
         }
         false
@@ -1777,15 +1779,16 @@ impl crate::gui::MnxEditorApp {
 
 impl crate::gui::MnxEditorApp {
     pub fn is_selected_event_arpeggiated(&self, dir: &str) -> bool {
+        let p_idx = self.selected_part_idx;
         if let Some(doc) = &self.parsed_mnx {
             if let Some(idx) = self.selected_event_idx {
-                let flattened = doc.get_flattened_event_paths();
+                let flattened = doc.get_flattened_event_paths_for_part(p_idx);
                 if idx < flattened.len() {
                     let path = flattened[idx];
                     let m_idx = path.m_idx();
-                    if let Some(part) = doc.parts.first() {
+                    if let Some(part) = doc.parts.get(p_idx) {
                         if let Some(m) = part.measures.get(m_idx) {
-                            if let Some(ev) = doc.get_event_at_path(path) {
+                            if let Some(ev) = doc.get_event_at_part_path(p_idx, path) {
                                 let first_id =
                                     ev.notes.first().and_then(|n| n.id.as_deref()).unwrap_or("");
                                 let last_id =
@@ -1807,6 +1810,7 @@ impl crate::gui::MnxEditorApp {
     }
 
     pub fn action_toggle_arpeggio(&mut self, dir: &str) {
+        let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
             None => return,
@@ -1815,7 +1819,7 @@ impl crate::gui::MnxEditorApp {
             Some(d) => d,
             None => return,
         };
-        let flattened = doc.get_flattened_event_paths();
+        let flattened = doc.get_flattened_event_paths_for_part(p_idx);
         if event_idx >= flattened.len() {
             return;
         }
@@ -1824,7 +1828,7 @@ impl crate::gui::MnxEditorApp {
 
         // Compute beat offset in measure for Arpeggio.position
         let mut beat_offset_in_measure = 0.0;
-        if let Some(part) = doc.parts.first() {
+        if let Some(part) = doc.parts.get(p_idx) {
             if let Some(m) = part.measures.get(m_idx) {
                 if let Some(seq) = m.sequences.first() {
                     let mut events_scaled = Vec::new();
@@ -1858,24 +1862,24 @@ impl crate::gui::MnxEditorApp {
 
         let mut first_id = String::new();
         let mut last_id = String::new();
-        if let Some(ev) = doc.get_event_mut_at_path(path) {
+        if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) {
             if ev.notes.len() < 2 {
                 return;
             }
             let f_note = ev.notes.first_mut().unwrap();
             if f_note.id.is_none() {
-                f_note.id = Some(format!("arp_{}_start", event_idx));
+                f_note.id = Some(format!("arp_{}_{}_start", p_idx, event_idx));
             }
             first_id = f_note.id.clone().unwrap();
 
             let l_note = ev.notes.last_mut().unwrap();
             if l_note.id.is_none() {
-                l_note.id = Some(format!("arp_{}_end", event_idx));
+                l_note.id = Some(format!("arp_{}_{}_end", p_idx, event_idx));
             }
             last_id = l_note.id.clone().unwrap();
         }
 
-        let part = doc.parts.first_mut().unwrap();
+        let part = doc.parts.get_mut(p_idx).unwrap();
         let measure = part.measures.get_mut(m_idx).unwrap();
         let mut existing_idx = None;
         if let Some(arps) = &mut measure.arpeggios {
@@ -1923,8 +1927,9 @@ impl crate::gui::MnxEditorApp {
 
 impl crate::gui::MnxEditorApp {
     pub fn action_toggle_grace(&mut self) {
+        let p_idx = self.selected_part_idx;
         if let (Some(e_idx), Some(doc)) = (self.selected_event_idx, &self.parsed_mnx) {
-            if let Some(info) = doc.find_event_grace_info(e_idx) {
+            if let Some(info) = doc.find_event_grace_info_for_part(p_idx, e_idx) {
                 // We are in a grace block. Pop out.
                 // Move selection to the event after the grace block.
                 self.selected_event_idx = Some(info.event_range.end);
@@ -1933,7 +1938,7 @@ impl crate::gui::MnxEditorApp {
                 // If the immediately preceding event is a grace block leading into this note,
                 // toggle back into that grace block instead of inserting a duplicate!
                 if e_idx > 0 {
-                    if let Some(prev_info) = doc.find_event_grace_info(e_idx - 1) {
+                    if let Some(prev_info) = doc.find_event_grace_info_for_part(p_idx, e_idx - 1) {
                         if prev_info.event_range.end == e_idx {
                             self.selected_event_idx = Some(prev_info.event_range.end - 1);
                             return;
@@ -1941,7 +1946,7 @@ impl crate::gui::MnxEditorApp {
                     }
                 }
                 self.mutate_doc(|doc| {
-                    if crate::yaml_editor::insert_grace_before_in_doc(doc, e_idx) {
+                    if crate::yaml_editor::insert_grace_before_in_doc_part(doc, p_idx, e_idx) {
                         Some(())
                     } else {
                         None
@@ -1952,11 +1957,12 @@ impl crate::gui::MnxEditorApp {
     }
 
     pub fn action_delete_grace_event(&mut self, e_idx: usize) {
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.clone() {
             Some(d) => d,
             None => return,
         };
-        let info = match doc.find_event_grace_info(e_idx) {
+        let info = match doc.find_event_grace_info_for_part(p_idx, e_idx) {
             Some(i) => i,
             None => return,
         };
@@ -1965,7 +1971,7 @@ impl crate::gui::MnxEditorApp {
         let inner_idx = info.inner_event_idx;
         let count = info.event_range.end - target_start;
 
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -2026,12 +2032,13 @@ impl crate::gui::MnxEditorApp {
     }
 
     pub(crate) fn load_lyric_buf_for_selected(&mut self) {
+        let p_idx = self.selected_part_idx;
         self.editing_lyric_buf.clear();
         if let Some(e_idx) = self.selected_event_idx {
             if let Some(doc) = &self.parsed_mnx {
-                let paths = doc.get_flattened_event_paths();
+                let paths = doc.get_flattened_event_paths_for_part(p_idx);
                 if let Some(path) = paths.get(e_idx) {
-                    if let Some(ev) = doc.get_event_at_path(*path) {
+                    if let Some(ev) = doc.get_event_at_part_path(p_idx, *path) {
                         if let Some(lyrics) = &ev.lyrics {
                             if let Some((_key, l)) = lyrics.lines.iter().next() {
                                 let hyphen_suffix = if matches!(l.line_type.as_deref(), Some("start") | Some("middle")) && !l.text.ends_with('-') { "-" } else { "" };
@@ -2046,10 +2053,11 @@ impl crate::gui::MnxEditorApp {
     }
 
     pub(crate) fn get_event_lyric_line(&self, event_idx: usize, line_idx: usize) -> Option<crate::mnx::LyricLine> {
+        let p_idx = self.selected_part_idx;
         if let Some(doc) = &self.parsed_mnx {
-            let paths = doc.get_flattened_event_paths();
+            let paths = doc.get_flattened_event_paths_for_part(p_idx);
             if let Some(path) = paths.get(event_idx) {
-                if let Some(ev) = doc.get_event_at_path(*path) {
+                if let Some(ev) = doc.get_event_at_part_path(p_idx, *path) {
                     if let Some(lyrics) = &ev.lyrics {
                         return lyrics.lines.get(&line_idx.to_string()).cloned();
                     }
@@ -2087,10 +2095,11 @@ impl crate::gui::MnxEditorApp {
         line_type: Option<String>,
         extender: Option<bool>,
     ) {
+        let p_idx = self.selected_part_idx;
         self.mutate_doc(|doc| {
-            let paths = doc.get_flattened_event_paths();
+            let paths = doc.get_flattened_event_paths_for_part(p_idx);
             if let Some(path) = paths.get(event_idx) {
-                if let Some(ev) = doc.get_event_mut_at_path(*path) {
+                if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, *path) {
                     let clean_text = text.trim().to_string();
                     let line_key = line_idx.max(1).to_string();
                     if clean_text.is_empty() && extender != Some(true) {
@@ -2274,6 +2283,7 @@ impl crate::gui::MnxEditorApp {
     }
 
     pub fn action_shift_selected_frets(&mut self, delta_fret: i32) {
+        let p_idx = self.selected_part_idx;
         let cursor = match self.selected_event_idx {
             Some(c) => c,
             None => return,
@@ -2292,7 +2302,7 @@ impl crate::gui::MnxEditorApp {
             Some(d) => d.clone(),
             None => return,
         };
-        let part_meta = match doc.parts.first() {
+        let part_meta = match doc.parts.get(p_idx) {
             Some(p) => p.clone(),
             None => return,
         };
@@ -2306,14 +2316,14 @@ impl crate::gui::MnxEditorApp {
             .cloned();
         let table = crate::harmonic::HarmonicLookupTable::from_doc_part(&doc, &part_meta);
 
-        let paths = doc.get_flattened_event_paths();
+        let paths = doc.get_flattened_event_paths_for_part(p_idx);
         let mut changed = false;
 
         for e_idx in min_idx..=max_idx {
             let Some(&path) = paths.get(e_idx) else {
                 continue;
             };
-            let Some(ev) = doc.get_event_mut_at_path(path) else {
+            let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) else {
                 continue;
             };
 
@@ -2534,6 +2544,7 @@ fn shift_note_to_string(
 impl MnxEditorApp {
 
     pub fn action_shift_selected_strings(&mut self, delta_string: i8) {
+        let p_idx = self.selected_part_idx;
         let cursor = match self.selected_event_idx {
             Some(c) => c,
             None => return,
@@ -2552,7 +2563,7 @@ impl MnxEditorApp {
             Some(d) => d.clone(),
             None => return,
         };
-        let part_meta = match doc.parts.first() {
+        let part_meta = match doc.parts.get(p_idx) {
             Some(p) => p.clone(),
             None => return,
         };
@@ -2566,7 +2577,7 @@ impl MnxEditorApp {
             .cloned();
         let table = crate::harmonic::HarmonicLookupTable::from_doc_part(&doc, &part_meta);
 
-        let paths = doc.get_flattened_event_paths();
+        let paths = doc.get_flattened_event_paths_for_part(p_idx);
         let mut changed = false;
         let mut single_new_string: Option<u8> = None;
 
@@ -2574,7 +2585,7 @@ impl MnxEditorApp {
             let Some(&path) = paths.get(e_idx) else {
                 continue;
             };
-            let Some(ev) = doc.get_event_mut_at_path(path) else {
+            let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) else {
                 continue;
             };
 
@@ -2643,6 +2654,7 @@ impl MnxEditorApp {
     }
 
     pub fn action_move_selected_by_grid(&mut self, direction: i8) {
+        let p_idx = self.selected_part_idx;
         let cursor = match self.selected_event_idx {
             Some(c) => c,
             None => return,
@@ -2660,7 +2672,7 @@ impl MnxEditorApp {
             Some(d) => d.clone(),
             None => return,
         };
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -3026,7 +3038,7 @@ impl MnxEditorApp {
 
         // Update selection to track the moved note(s) at [new_start_beat, new_end_beat]
         if let Some(updated_doc) = &self.parsed_mnx {
-            if let Some(updated_part) = updated_doc.parts.first() {
+            if let Some(updated_part) = updated_doc.parts.get(p_idx) {
                 let mut ev_idx = 0usize;
                 let mut beat = 0.0f64;
                 let mut new_min_ev: Option<usize> = None;

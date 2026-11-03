@@ -25,17 +25,6 @@ fn paint_status_dot(ui: &mut egui::Ui, color: egui::Color32) {
     ui.painter().circle_filled(rect.center(), 3.5, color);
 }
 
-/// Helper to render a menu button with a procedurally painted bottom-right corner triangle "◢".
-fn menu_button_with_corner_triangle<R>(
-    ui: &mut egui::Ui,
-    title: &str,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<Option<R>> {
-    let resp = ui.menu_button(format!("{}  ", title), add_contents);
-    paint_corner_triangle(ui, &resp.response);
-    resp
-}
-
 impl MnxEditorApp {
     pub(crate) fn render_top_panel(
         &mut self,
@@ -546,7 +535,7 @@ impl MnxEditorApp {
 
                     // Grace Notes button
                     let is_grace = if let (Some(e), Some(doc)) = (self.selected_event_idx, &self.parsed_mnx) {
-                        doc.find_event_grace_info(e).is_some()
+                        doc.find_event_grace_info_for_part(self.selected_part_idx, e).is_some()
                     } else {
                         false
                     };
@@ -688,7 +677,7 @@ impl MnxEditorApp {
                 if ts_btn.clicked() {
                     let mut m_idx = 0;
                     if let Some(doc) = &self.parsed_mnx {
-                        if let Some(part) = doc.parts.first() {
+                        if let Some(part) = doc.parts.get(self.selected_part_idx).or_else(|| doc.parts.first()) {
                             if let Some(e_idx) = self.selected_event_idx {
                                 let mut count = 0;
                                 'find_m: for (i, m) in part.measures.iter().enumerate() {
@@ -757,7 +746,7 @@ impl MnxEditorApp {
                     if let Some(doc) = &self.parsed_mnx {
                         let mut event_beats = Vec::new();
                         let mut cur_beat = 0.0;
-                        if let Some(part) = doc.parts.first() {
+                        if let Some(part) = doc.parts.get(self.selected_part_idx).or_else(|| doc.parts.first()) {
                             for m in &part.measures {
                                 let mut measure_beats: f64 = 0.0;
                                 for seq in &m.sequences {
@@ -786,7 +775,7 @@ impl MnxEditorApp {
 
                         let mut measure_start_beats = Vec::new();
                         let mut cb = 0.0;
-                        if let Some(part) = doc.parts.first() {
+                        if let Some(part) = doc.parts.get(self.selected_part_idx).or_else(|| doc.parts.first()) {
                             for m in &part.measures {
                                 measure_start_beats.push(cb);
                                 let mut mb = 0.0;
@@ -1278,8 +1267,7 @@ impl MnxEditorApp {
                     .clicked()
                 {
                     self.is_mpe_mode = !self.is_mpe_mode;
-                    let num_strings = self.parsed_mnx.as_ref()
-                        .and_then(|d| d.parts.first())
+                    let num_strings = self.active_part()
                         .map(|p| p.num_strings())
                         .unwrap_or(6) as u8;
                     if self.is_mpe_mode {
@@ -1295,47 +1283,349 @@ impl MnxEditorApp {
                             self.string_channel_map.insert(s, s);
                         }
                     }
+                    self.part_string_channel_maps.clear();
                 }
 
-                if ui.button("Instrument Setup").clicked() {
+                // Active Instrument Selector & Multi-Instrument Controls (#2a)
+                let part_names: Vec<String> = self
+                    .parsed_mnx
+                    .as_ref()
+                    .map(|d| {
+                        d.parts
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| p.display_name(i))
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec!["Instrument 1".to_string()]);
+                let num_parts = part_names.len();
+                let current_part_name = part_names
+                    .get(self.selected_part_idx)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Instrument {}", self.selected_part_idx + 1));
+
+                let mut newly_selected_part = None;
+                egui::ComboBox::from_id_salt("active_instrument_selector")
+                    .selected_text(format!("🎸 {}", current_part_name))
+                    .show_ui(ui, |ui| {
+                        for (idx, name) in part_names.iter().enumerate() {
+                            if ui
+                                .selectable_label(self.selected_part_idx == idx, name)
+                                .clicked()
+                            {
+                                newly_selected_part = Some(idx);
+                            }
+                        }
+                    });
+                if let Some(new_idx) = newly_selected_part {
+                    self.select_part(new_idx);
+                }
+
+                if ui.button("Instrument Setup").on_hover_text("Configure active instrument tuning, EDO, and strings").clicked() {
                     self.open_instrument_setup_dialog(false);
+                }
+
+                if ui.button("+ Add Instrument").on_hover_text("Add a new instrument part to the score").clicked() {
+                    self.open_add_instrument_dialog();
+                }
+
+                if num_parts > 1 {
+                    if ui.button("Remove Instrument").on_hover_text("Remove the currently selected instrument part").clicked() {
+                        self.remove_instrument_part(self.selected_part_idx);
+                    }
                 }
 
                 ui.separator();
 
-                // 5. String-to-Channel Mappings button with Popup
-                let num_strings = self.parsed_mnx.as_ref()
-                    .and_then(|d| d.parts.first())
-                    .map(|p| p.num_strings())
-                    .unwrap_or(6) as u8;
-
-                menu_button_with_corner_triangle(ui, "String Channels", |ui| {
-                    ui.label(egui::RichText::new(if self.is_mpe_mode {
-                        "String to MPE Member Channel Mapping (Ch 2-16, Ch 1 is Master)"
-                    } else {
-                        "String to MIDI Channel Mapping (Ch 1-16)"
-                    }).strong());
-                    ui.separator();
-                    for s in 1..=num_strings {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("String {}:", s));
-                            let default_ch = if self.is_mpe_mode { s + 1 } else { s };
-                            let current_ch = self.string_channel_map.entry(s).or_insert(default_ch);
-                            let mut ch_val = *current_ch as i32;
-                            let (min_ch, max_ch) = if self.is_mpe_mode { (2, 16) } else { (1, 16) };
-                            if ui.add(egui::DragValue::new(&mut ch_val).range(min_ch..=max_ch).speed(0.1)).changed() {
-                                *current_ch = ch_val.clamp(min_ch, max_ch) as u8;
-                            }
-                            ui.label(format!("(Ch {})", ch_val));
-                        });
+                // 5. String-to-Channel Mappings button with Popup (#2b Multi-Port & Per-Instrument)
+                let sc_btn = egui::Button::new("String Channels  ")
+                    .selected(self.show_string_channels_popup);
+                let sc_btn_resp = ui.add(sc_btn);
+                paint_corner_triangle(ui, &sc_btn_resp);
+                if sc_btn_resp.clicked() {
+                    self.show_string_channels_popup = !self.show_string_channels_popup;
+                    if self.show_string_channels_popup {
+                        self.show_grid_controllers_popup = false;
                     }
-                    if ui.button(if self.is_mpe_mode { "Reset to MPE Default (2..n+1)" } else { "Reset to Default (1..n)" }).clicked() {
-                        for s in 1..=num_strings {
-                            let def_ch = if self.is_mpe_mode { s + 1 } else { s };
-                            self.string_channel_map.insert(s, def_ch);
+                }
+
+                if self.show_string_channels_popup {
+                    let sc_area_id = ui.make_persistent_id("string_channels_dropdown_area");
+                    let sc_popup_pos = sc_btn_resp.rect.left_bottom() + egui::vec2(0.0, 3.0);
+                    let mut close_sc_dropdown = false;
+
+                    let sc_area_resp = egui::Area::new(sc_area_id)
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(sc_popup_pos)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.set_min_width(300.0);
+                                let part_combo_id =
+                                    ui.make_persistent_id("string_channels_part_combo");
+                                let port_combo_id =
+                                    ui.make_persistent_id("string_channels_port_combo");
+                                let was_any_sc_combo_open =
+                                    egui::ComboBox::is_open(ui.ctx(), part_combo_id)
+                                        || egui::ComboBox::is_open(ui.ctx(), port_combo_id);
+
+                                let dialog_p_idx = self
+                                    .string_channel_dialog_part_idx
+                                    .min(num_parts.saturating_sub(1));
+                                self.string_channel_dialog_part_idx = dialog_p_idx;
+
+                                if num_parts > 1 {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("Instrument:").strong());
+                                        let sel_name = part_names
+                                            .get(dialog_p_idx)
+                                            .cloned()
+                                            .unwrap_or_else(|| {
+                                                format!("Instrument {}", dialog_p_idx + 1)
+                                            });
+                                        egui::ComboBox::from_id_salt("string_channels_part_combo")
+                                            .selected_text(sel_name)
+                                            .show_ui(ui, |ui| {
+                                                for (idx, name) in part_names.iter().enumerate() {
+                                                    ui.selectable_value(
+                                                        &mut self.string_channel_dialog_part_idx,
+                                                        idx,
+                                                        name,
+                                                    );
+                                                }
+                                            });
+                                    });
+
+                                    let dialog_p_idx = self.string_channel_dialog_part_idx;
+                                    let default_global_port = self.selected_midi_port.unwrap_or(0);
+                                    ui.horizontal(|ui| {
+                                        ui.label("MIDI Port:");
+                                        let port_override =
+                                            self.part_midi_ports.get(&dialog_p_idx).copied();
+                                        let selected_port_label = match port_override {
+                                            None => format!(
+                                                "Default ({})",
+                                                self.selected_midi_port
+                                                    .and_then(|pi| self.midi_ports.get(pi))
+                                                    .map(|p| p.name.as_str())
+                                                    .unwrap_or("None")
+                                            ),
+                                            Some(pi) => self
+                                                .midi_ports
+                                                .get(pi)
+                                                .map(|p| p.name.clone())
+                                                .unwrap_or_else(|| format!("Port {}", pi)),
+                                        };
+                                        egui::ComboBox::from_id_salt("string_channels_port_combo")
+                                            .selected_text(selected_port_label)
+                                            .show_ui(ui, |ui| {
+                                                if ui
+                                                    .selectable_label(
+                                                        port_override.is_none(),
+                                                        "Use Global Output Port",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.part_midi_ports.remove(&dialog_p_idx);
+                                                }
+                                                for (pi, p_info) in
+                                                    self.midi_ports.iter().enumerate()
+                                                {
+                                                    if ui
+                                                        .selectable_label(
+                                                            port_override == Some(pi),
+                                                            &p_info.name,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.part_midi_ports
+                                                            .insert(dialog_p_idx, pi);
+                                                    }
+                                                }
+                                            });
+                                    });
+
+                                    // Check if total strings sharing this port exceed 15 in MPE mode
+                                    if self.is_mpe_mode {
+                                        let target_port = self
+                                            .part_midi_ports
+                                            .get(&dialog_p_idx)
+                                            .copied()
+                                            .unwrap_or(default_global_port);
+                                        let total_strings_on_port: usize = self
+                                            .parsed_mnx
+                                            .as_ref()
+                                            .map(|d| {
+                                                d.parts
+                                                    .iter()
+                                                    .enumerate()
+                                                    .filter(|(pi, _)| {
+                                                        let p_port = self
+                                                            .part_midi_ports
+                                                            .get(pi)
+                                                            .copied()
+                                                            .unwrap_or(default_global_port);
+                                                        p_port == target_port
+                                                    })
+                                                    .map(|(_, p)| p.num_strings())
+                                                    .sum()
+                                            })
+                                            .unwrap_or(0);
+                                        if total_strings_on_port > 15 {
+                                            ui.colored_label(
+                                                Color32::from_rgb(230, 160, 40),
+                                                format!(
+                                                    "⚠ {} strings share this port (MPE supports max 15 member channels per port). Assign a second MIDI port above to avoid channel sharing.",
+                                                    total_strings_on_port
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    ui.separator();
+                                }
+
+                                let dialog_p_idx = self.string_channel_dialog_part_idx;
+                                let default_global_port = self.selected_midi_port.unwrap_or(0);
+                                let num_strings = self
+                                    .parsed_mnx
+                                    .as_ref()
+                                    .and_then(|d| d.parts.get(dialog_p_idx))
+                                    .map(|p| p.num_strings())
+                                    .unwrap_or(6) as u8;
+
+                                // Compute default starting channel offset for this instrument on its port
+                                let target_port = self
+                                    .part_midi_ports
+                                    .get(&dialog_p_idx)
+                                    .copied()
+                                    .unwrap_or(default_global_port);
+                                let prior_strings_on_port: u8 = self
+                                    .parsed_mnx
+                                    .as_ref()
+                                    .map(|d| {
+                                        d.parts
+                                            .iter()
+                                            .enumerate()
+                                            .take(dialog_p_idx)
+                                            .filter(|(pi, _)| {
+                                                let p_port = self
+                                                    .part_midi_ports
+                                                    .get(pi)
+                                                    .copied()
+                                                    .unwrap_or(default_global_port);
+                                                p_port == target_port
+                                            })
+                                            .map(|(_, p)| p.num_strings() as u8)
+                                            .sum()
+                                    })
+                                    .unwrap_or(0);
+
+                                if dialog_p_idx == self.selected_part_idx
+                                    && self
+                                        .part_string_channel_maps
+                                        .get(&dialog_p_idx)
+                                        .map(|m| m.is_empty())
+                                        .unwrap_or(true)
+                                    && !self.string_channel_map.is_empty()
+                                {
+                                    self.part_string_channel_maps
+                                        .insert(dialog_p_idx, self.string_channel_map.clone());
+                                }
+
+                                ui.label(
+                                    egui::RichText::new(if self.is_mpe_mode {
+                                        "String to MPE Member Channel Mapping (Ch 2-16, Ch 1 is Master)"
+                                    } else {
+                                        "String to MIDI Channel Mapping (Ch 1-16)"
+                                    })
+                                    .strong(),
+                                );
+                                ui.separator();
+                                let mut map_changed = false;
+                                let part_map = self
+                                    .part_string_channel_maps
+                                    .entry(dialog_p_idx)
+                                    .or_default();
+                                for s in 1..=num_strings {
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("String {}:", s));
+                                        let default_ch = if self.is_mpe_mode {
+                                            2 + ((prior_strings_on_port + s - 1) % 15)
+                                        } else {
+                                            1 + ((prior_strings_on_port + s - 1) % 16)
+                                        };
+                                        let current_ch = part_map.entry(s).or_insert(default_ch);
+                                        let mut ch_val = *current_ch as i32;
+                                        let (min_ch, max_ch) =
+                                            if self.is_mpe_mode { (2, 16) } else { (1, 16) };
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(&mut ch_val)
+                                                    .range(min_ch..=max_ch)
+                                                    .speed(0.1),
+                                            )
+                                            .changed()
+                                        {
+                                            *current_ch = ch_val.clamp(min_ch, max_ch) as u8;
+                                            map_changed = true;
+                                        }
+                                        ui.label(format!("(Ch {})", ch_val));
+                                    });
+                                }
+                                if ui
+                                    .button(if self.is_mpe_mode {
+                                        "Reset to MPE Default"
+                                    } else {
+                                        "Reset to Default"
+                                    })
+                                    .clicked()
+                                {
+                                    if let Some(m) =
+                                        self.part_string_channel_maps.get_mut(&dialog_p_idx)
+                                    {
+                                        for s in 1..=num_strings {
+                                            let def_ch = if self.is_mpe_mode {
+                                                2 + ((prior_strings_on_port + s - 1) % 15)
+                                            } else {
+                                                1 + ((prior_strings_on_port + s - 1) % 16)
+                                            };
+                                            m.insert(s, def_ch);
+                                        }
+                                    }
+                                    map_changed = true;
+                                }
+                                if (map_changed || dialog_p_idx == self.selected_part_idx)
+                                    && dialog_p_idx == self.selected_part_idx
+                                {
+                                    if let Some(m) =
+                                        self.part_string_channel_maps.get(&dialog_p_idx)
+                                    {
+                                        self.string_channel_map = m.clone();
+                                    }
+                                }
+
+                                let is_any_sc_combo_open =
+                                    egui::ComboBox::is_open(ui.ctx(), part_combo_id)
+                                        || egui::ComboBox::is_open(ui.ctx(), port_combo_id);
+                                was_any_sc_combo_open || is_any_sc_combo_open
+                            })
+                            .inner
+                        });
+
+                    if ui.input(|i| i.pointer.any_click()) {
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            let in_btn = sc_btn_resp.rect.contains(pos);
+                            let in_dropdown = sc_area_resp.response.rect.contains(pos);
+                            let any_combo_open = sc_area_resp.inner;
+                            if !in_btn && !in_dropdown && !any_combo_open {
+                                close_sc_dropdown = true;
+                            }
                         }
                     }
-                });
+
+                    if close_sc_dropdown {
+                        self.show_string_channels_popup = false;
+                    }
+                }
 
                 ui.separator();
 
@@ -1346,6 +1636,9 @@ impl MnxEditorApp {
                 paint_corner_triangle(ui, &btn_resp);
                 if btn_resp.clicked() {
                     self.show_grid_controllers_popup = !self.show_grid_controllers_popup;
+                    if self.show_grid_controllers_popup {
+                        self.show_string_channels_popup = false;
+                    }
                 }
 
                 if self.show_grid_controllers_popup {
@@ -1358,6 +1651,12 @@ impl MnxEditorApp {
                         .fixed_pos(popup_pos)
                         .show(ui.ctx(), |ui| {
                             egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                let was_any_grid_combo_open =
+                                    (0..crate::grid_input::MAX_GRID_CONTROLLERS).any(|s| {
+                                        let cid =
+                                            ui.make_persistent_id(format!("toolbar_grid_port_{}", s));
+                                        egui::ComboBox::is_open(ui.ctx(), cid)
+                                    });
                                 ui.horizontal(|ui| {
                                     ui.label(
                                         egui::RichText::new("Grid Controller MIDI Inputs (up to 4)")
@@ -1513,7 +1812,16 @@ impl MnxEditorApp {
                                         .size(11.5),
                                     );
                                 }
-                            });
+
+                                let is_any_grid_combo_open =
+                                    (0..crate::grid_input::MAX_GRID_CONTROLLERS).any(|s| {
+                                        let cid =
+                                            ui.make_persistent_id(format!("toolbar_grid_port_{}", s));
+                                        egui::ComboBox::is_open(ui.ctx(), cid)
+                                    });
+                                was_any_grid_combo_open || is_any_grid_combo_open
+                            })
+                            .inner
                         });
 
                     // Check for click outside to close the dropdown cleanly
@@ -1521,10 +1829,7 @@ impl MnxEditorApp {
                         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                             let in_btn = btn_resp.rect.contains(pos);
                             let in_dropdown = area_resp.response.rect.contains(pos);
-                            let any_combo_open = (0..crate::grid_input::MAX_GRID_CONTROLLERS).any(|s| {
-                                let cid = ui.make_persistent_id(format!("toolbar_grid_port_{}", s));
-                                egui::ComboBox::is_open(ui.ctx(), cid)
-                            });
+                            let any_combo_open = area_resp.inner;
 
                             if !in_btn
                                 && !in_dropdown
@@ -1786,84 +2091,228 @@ impl MnxEditorApp {
             match self.view_mode {
                 ViewMode::Continuous => {
                     egui::ScrollArea::both().show(ui, |ui| {
+                        let num_parts = self
+                            .parsed_mnx
+                            .as_ref()
+                            .map(|d| d.parts.len())
+                            .unwrap_or(0);
+                        if num_parts == 0 {
+                            if self.parsed_mnx.is_some() {
+                                ui.label("No parts found in document.");
+                            } else {
+                                ui.label("Could not parse document.");
+                            }
+                            return;
+                        }
+
+                        // Precompute synchronized prefix width and measure content widths across all stacked parts (#2b)
+                        let (min_prefix_width, shared_measure_widths) = if let Some(doc) = &self.parsed_mnx {
+                            let mut max_prefix = 0.0_f32;
+                            let mut max_measures = 0usize;
+                            let mut per_part_widths = Vec::with_capacity(doc.parts.len());
+
+                            for (p_idx, part) in doc.parts.iter().enumerate() {
+                                let pw = crate::render::compute_part_max_prefix_width(ui, part);
+                                if pw > max_prefix {
+                                    max_prefix = pw;
+                                }
+                                let is_active_part = p_idx == self.selected_part_idx;
+                                let is_editing_this_part = is_active_part && self.is_editing_fret;
+                                let active_ev = if is_editing_this_part {
+                                    self.selected_event_idx
+                                } else {
+                                    None
+                                };
+                                let editing_text = if is_editing_this_part {
+                                    self.editing_fret_buf.as_str()
+                                } else {
+                                    ""
+                                };
+                                let mw = crate::render::compute_part_measure_content_widths(
+                                    part,
+                                    is_editing_this_part,
+                                    active_ev,
+                                    editing_text,
+                                );
+                                if mw.len() > max_measures {
+                                    max_measures = mw.len();
+                                }
+                                per_part_widths.push(mw);
+                            }
+
+                            let mut shared = vec![0.0_f32; max_measures];
+                            for mw in &per_part_widths {
+                                for (m_i, &w) in mw.iter().enumerate() {
+                                    if w > shared[m_i] {
+                                        shared[m_i] = w;
+                                    }
+                                }
+                            }
+                            (max_prefix, shared)
+                        } else {
+                            (0.0, Vec::new())
+                        };
+
+                        let is_playing = self.midi_player.is_playing();
+                        let mut pending_lyric_click: Option<(usize, usize, usize)> = None;
+                        let mut pending_add_bar = false;
+                        let mut pending_event_click: Option<(usize, usize, Option<usize>)> = None;
+
                         if let Some(doc) = &self.parsed_mnx {
-                            if let Some(part) = doc.parts.first() {
+                            for (p_idx, part) in doc.parts.iter().enumerate() {
+                                let is_active_part = p_idx == self.selected_part_idx;
+                                if num_parts > 1 {
+                                    ui.horizontal(|ui| {
+                                        let label_text = part.display_name(p_idx);
+                                        let rich = if is_active_part {
+                                            egui::RichText::new(format!("▶ {}", label_text))
+                                                .strong()
+                                                .color(Color32::from_rgb(80, 170, 255))
+                                        } else {
+                                            egui::RichText::new(format!("   {}", label_text))
+                                                .color(Color32::from_gray(160))
+                                        };
+                                        if ui.selectable_label(is_active_part, rich).clicked() && !is_active_part {
+                                            pending_event_click = Some((p_idx, 0, None));
+                                        }
+                                    });
+                                }
+
+                                let part_selected_event = if is_playing {
+                                    self.midi_player.current_event_idx_for_part(p_idx)
+                                } else if is_active_part {
+                                    self.selected_event_idx
+                                } else {
+                                    None
+                                };
+                                let part_pb = part.pitch_bend_range.unwrap_or(self.pitch_bend_range);
+
                                 let (_resp, clicked, add_bar_clicked, double_clicked_lyric) = render::draw_tablature(
                                     ui,
                                     crate::render::TablatureOptions {
                                         part,
+                                        part_idx: p_idx,
                                         global: Some(&doc.global),
                                         errors: &self.parsed_errors,
-                                        selected_event: self.selected_event_idx,
-                                        selection_anchor: self.selection_anchor,
-                                        selected_note_in_event: self.selected_note_idx_in_event,
-                                        is_editing_fret: self.is_editing_fret,
-                                        is_grid_input_mode: self.grid_input.is_grid_input_mode,
-                                        editing_fret_text: &self.editing_fret_buf,
-                                        editing_string: self.editing_string,
-                                        is_editing_lyric: self.is_editing_lyric,
-                                        editing_lyric_text: &self.editing_lyric_buf,
-                                        scroll_to_selected: self.needs_scroll,
-                                        pitch_bend_range: self.pitch_bend_range,
+                                        selected_event: part_selected_event,
+                                        selection_anchor: if is_active_part && !is_playing {
+                                            self.selection_anchor
+                                        } else {
+                                            None
+                                        },
+                                        selected_note_in_event: if is_active_part && !is_playing {
+                                            self.selected_note_idx_in_event
+                                        } else {
+                                            None
+                                        },
+                                        is_editing_fret: is_active_part && self.is_editing_fret,
+                                        is_grid_input_mode: is_active_part && self.grid_input.is_grid_input_mode,
+                                        editing_fret_text: if is_active_part {
+                                            &self.editing_fret_buf
+                                        } else {
+                                            ""
+                                        },
+                                        editing_string: if is_active_part {
+                                            self.editing_string
+                                        } else {
+                                            None
+                                        },
+                                        is_editing_lyric: is_active_part && self.is_editing_lyric,
+                                        editing_lyric_text: if is_active_part {
+                                            &self.editing_lyric_buf
+                                        } else {
+                                            ""
+                                        },
+                                        scroll_to_selected: is_active_part && self.needs_scroll,
+                                        pitch_bend_range: part_pb,
+                                        min_prefix_width: Some(min_prefix_width),
+                                        target_measure_widths: Some(&shared_measure_widths),
+                                        show_global_headers: p_idx == 0,
                                     },
                                 );
-                                self.needs_scroll = false;
+
                                 if let Some((ev_idx, line_idx)) = double_clicked_lyric {
-                                    self.selected_event_idx = Some(ev_idx);
-                                    self.selected_note_idx_in_event = None;
-                                    self.open_lyric_dialog(ev_idx, line_idx);
+                                    pending_lyric_click = Some((p_idx, ev_idx, line_idx));
                                 } else if add_bar_clicked {
-                                    self.add_measure_to_end();
+                                    pending_add_bar = true;
                                 } else if let Some((clicked_event, clicked_note)) = clicked {
-                                    self.needs_scroll = false;
-                                    let total_events = find_all_event_ranges(&self.yaml_text).len();
-                                    let was_at_final =
-                                        self.selected_event_idx == Some(total_events.saturating_sub(1));
-                                    let is_final_blank = was_at_final
-                                        && self
-                                            .parsed_mnx
-                                            .as_ref()
-                                            .and_then(|d| d.parts.first())
-                                            .and_then(|p| p.measures.last())
-                                            .and_then(|m| m.sequences.first())
-                                            .and_then(|s| s.flattened_events().last().copied())
-                                            .map(|e| e.notes.is_empty() && e.rest.is_none())
-                                            .unwrap_or(false);
+                                    pending_event_click = Some((p_idx, clicked_event, clicked_note));
+                                }
+                            }
+                        }
 
-                                    if is_final_blank && clicked_event < total_events.saturating_sub(1) {
-                                        if let Some(new_yaml) = remove_last_blank_event(&self.yaml_text) {
-                                            self.update_yaml(new_yaml);
-                                            self.process_and_render();
+                        self.needs_scroll = false;
+
+                        if let Some((p_idx, ev_idx, line_idx)) = pending_lyric_click {
+                            if p_idx != self.selected_part_idx {
+                                self.select_part(p_idx);
+                            }
+                            self.selected_event_idx = Some(ev_idx);
+                            self.selected_note_idx_in_event = None;
+                            self.open_lyric_dialog(ev_idx, line_idx);
+                        } else if pending_add_bar {
+                            self.add_measure_to_end();
+                        } else if let Some((p_idx, mut clicked_event, clicked_note)) = pending_event_click {
+                            self.needs_scroll = false;
+                            let old_part_idx = self.selected_part_idx;
+                            let old_event_idx = self.selected_event_idx;
+                            let switching_part = p_idx != old_part_idx;
+
+                            if let Some(old_e_idx) = old_event_idx {
+                                if switching_part || clicked_event != old_e_idx {
+                                    if let Some(info) = self.find_event_measure_end_info(old_e_idx) {
+                                        if info.is_last_in_measure && info.is_blank {
+                                            let m_idx = info.measure_idx;
+                                            let old_total = self.cached_event_ranges.len();
+                                            let removed = self.mutate_doc(|doc| {
+                                                if remove_blank_event_at_end_of_measure_in_doc_part(
+                                                    doc,
+                                                    old_part_idx,
+                                                    m_idx,
+                                                ) {
+                                                    Some(())
+                                                } else {
+                                                    None
+                                                }
+                                            });
+                                            let new_total = self.cached_event_ranges.len();
+                                            if removed.is_some()
+                                                && !switching_part
+                                                && new_total < old_total
+                                                && clicked_event > old_e_idx
+                                            {
+                                                clicked_event = clicked_event.saturating_sub(1);
+                                            }
                                         }
-                                    }
-
-                                    let shift_down = ui.input(|i| i.modifiers.shift);
-                                    if shift_down {
-                                        if self.selection_anchor.is_none() {
-                                            self.selection_anchor = self.selected_event_idx;
-                                        }
-                                    } else {
-                                        self.selection_anchor = None;
-                                    }
-                                    if self.grid_input.is_grid_input_mode {
-                                        self.grid_input.release_latch_start = None;
-                                        self.grid_input.buffered_chord.clear();
-                                    }
-                                    self.selected_event_idx = Some(clicked_event);
-                                    self.selected_note_idx_in_event = clicked_note;
-                                    self.is_editing_fret = false;
-                                    self.editing_fret_buf.clear();
-                                    self.editing_string = None;
-
-                                    if clicked_note.is_some() {
-                                        self.preview_selected_sound();
                                     }
                                 }
-                            } else {
-                                ui.label("No parts found in document.");
                             }
-                        } else {
-                            ui.label("Could not parse document.");
+
+                            if switching_part {
+                                self.select_part(p_idx);
+                            }
+
+                            let shift_down = ui.input(|i| i.modifiers.shift);
+                            if shift_down && !switching_part {
+                                if self.selection_anchor.is_none() {
+                                    self.selection_anchor = self.selected_event_idx;
+                                }
+                            } else {
+                                self.selection_anchor = None;
+                            }
+                            if self.grid_input.is_grid_input_mode {
+                                self.grid_input.release_latch_start = None;
+                                self.grid_input.buffered_chord.clear();
+                            }
+                            self.selected_event_idx = Some(clicked_event);
+                            self.selected_note_idx_in_event = clicked_note;
+                            self.is_editing_fret = false;
+                            self.editing_fret_buf.clear();
+                            self.editing_string = None;
+
+                            if clicked_note.is_some() {
+                                self.preview_selected_sound();
+                            }
                         }
                     });
                 }
@@ -1875,10 +2324,17 @@ impl MnxEditorApp {
     }
 
     pub(crate) fn render_layout_panel(&mut self, ui: &mut egui::Ui) {
-        let (pages, offsets) = if let Some(doc) = &self.parsed_mnx {
-            let p = crate::layout::compute_score_layout(doc, 0.0);
+        let active_parts = self.active_layout_part_indices();
+        let (pages, offsets, part_names) = if let Some(doc) = &self.parsed_mnx {
+            let p = crate::layout::compute_score_layout_for_parts(doc, 0.0, &active_parts);
             let offs = doc.layout.as_ref().map(|l| l.offsets.clone()).unwrap_or_default();
-            (p, offs)
+            let names: Vec<String> = doc
+                .parts
+                .iter()
+                .enumerate()
+                .map(|(i, pt)| pt.display_name(i))
+                .collect();
+            (p, offs, names)
         } else {
             ui.label("No document loaded.");
             return;
@@ -1923,12 +2379,63 @@ impl MnxEditorApp {
             }
         }
 
-        // Layout Mode Toolbar
-        ui.horizontal(|ui| {
+        // Layout Mode Toolbar & Ensemble / Part Tabs (#2c)
+        ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Layout Mode").strong());
             ui.separator();
 
+            // View Tabs: Ensemble Score vs Individual Part Tabs
+            if ui
+                .selectable_label(
+                    self.layout_view_tab == LayoutViewTab::Ensemble,
+                    "🎼 Ensemble Score",
+                )
+                .clicked()
+            {
+                self.layout_view_tab = LayoutViewTab::Ensemble;
+            }
+            for (idx, name) in part_names.iter().enumerate() {
+                if ui
+                    .selectable_label(
+                        self.layout_view_tab == LayoutViewTab::Part(idx),
+                        format!("🎸 {}", name),
+                    )
+                    .clicked()
+                {
+                    self.layout_view_tab = LayoutViewTab::Part(idx);
+                    self.select_part(idx);
+                }
+            }
+
+            if self.layout_view_tab == LayoutViewTab::Ensemble && part_names.len() > 1 {
+                ui.separator();
+                ui.label("Include:");
+                while self.ensemble_visible_parts.len() < part_names.len() {
+                    self.ensemble_visible_parts.push(true);
+                }
+                for (idx, name) in part_names.iter().enumerate() {
+                    let mut vis = self.ensemble_visible_parts[idx];
+                    if ui.checkbox(&mut vis, name).changed() {
+                        self.ensemble_visible_parts[idx] = vis;
+                        // Ensure at least one instrument remains visible
+                        if !self.ensemble_visible_parts.iter().any(|&v| v) {
+                            self.ensemble_visible_parts[idx] = true;
+                        }
+                    }
+                }
+            }
+
+            ui.separator();
+            if ui
+                .button("Export PDF...")
+                .on_hover_text("Export the currently displayed Layout Mode tab (Ensemble or Part) to PDF")
+                .clicked()
+            {
+                self.export_pdf_file();
+            }
+
             if self.selected_layout_measures.len() >= 2 {
+                ui.separator();
                 let start_m = *self.selected_layout_measures.iter().next().unwrap();
                 let end_m = *self.selected_layout_measures.iter().last().unwrap();
                 let btn_text = format!("Make into System (Bars {}..{})", start_m + 1, end_m + 1);
@@ -1936,6 +2443,7 @@ impl MnxEditorApp {
                     self.action_make_into_system(start_m, end_m);
                 }
             } else if !self.selected_layout_measures.is_empty() {
+                ui.separator();
                 let m = *self.selected_layout_measures.iter().next().unwrap();
                 ui.label(format!("Bar {} selected (Shift+click another bar to make a system)", m + 1));
             }
@@ -1963,6 +2471,7 @@ impl MnxEditorApp {
         ui.separator();
 
         let mut offsets_to_apply: Vec<(String, f32, f32)> = Vec::new();
+        let active_parts = self.active_layout_part_indices();
 
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             ui.vertical_centered(|ui| {
@@ -2003,7 +2512,7 @@ impl MnxEditorApp {
                     // Build page display list
                     let mut dl = crate::layout::display_list::DisplayList::new();
                     if let Some(doc) = &self.parsed_mnx {
-                        crate::pdf_export::populate_page_display_list(doc, page, &mut dl);
+                        crate::pdf_export::populate_page_display_list_for_parts(doc, page, &mut dl, &active_parts);
                         if let Some(layout_cfg) = &doc.layout {
                             dl.apply_offsets(&layout_cfg.offsets);
                         }

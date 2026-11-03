@@ -4,7 +4,7 @@ pub mod breaking;
 pub mod justification;
 
 pub use display_list::{DisplayList, DrawItem, DrawKind};
-pub use sizing::{compute_measure_metrics, MeasureMetrics};
+pub use sizing::{compute_measure_metrics, compute_measure_metrics_for_parts, MeasureMetrics};
 pub use breaking::{break_measures_into_systems, pack_systems_into_pages, PageLayout, SystemLayout};
 pub use justification::justify_systems;
 
@@ -12,8 +12,64 @@ use crate::mnx::{MnxDocument, PageMargins};
 
 pub const DEFAULT_LAYOUT_BASE_SPACING: f32 = 16.0;
 
-/// Computes the complete paginated and justified layout for a document.
+/// Computes the vertical height allocated to a single part staff inside a system (including stems and lyrics).
+pub fn compute_part_staff_block_height(part: &crate::mnx::Part) -> f32 {
+    let num_strings = part.num_strings();
+    let line_spacing = 11.0_f32;
+    let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
+
+    let max_lyric_lines = part
+        .measures
+        .iter()
+        .map(|m| {
+            m.sequences
+                .iter()
+                .map(|s| {
+                    s.flattened_events()
+                        .iter()
+                        .map(|e| {
+                            e.lyrics
+                                .as_ref()
+                                .map(|l| {
+                                    l.lines
+                                        .keys()
+                                        .filter_map(|k| k.parse::<usize>().ok())
+                                        .max()
+                                        .unwrap_or(l.lines.len())
+                                })
+                                .unwrap_or(0)
+                        })
+                        .max()
+                        .unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0);
+
+    let lyrics_extra = if max_lyric_lines > 0 {
+        (max_lyric_lines as f32) * 14.0_f32
+    } else {
+        0.0_f32
+    };
+    staff_height + 56.0 + lyrics_extra
+}
+
+/// Vertical spacing between stacked instrument blocks within a single system.
+pub const INTER_PART_SYSTEM_GAP: f32 = 16.0;
+
+/// Computes the complete paginated and justified layout for a document (first part by default).
 pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLayout> {
+    compute_score_layout_for_parts(doc, base_spacing, &[0])
+}
+
+/// Computes the complete paginated and justified layout for a specific subset of parts.
+pub fn compute_score_layout_for_parts(
+    doc: &MnxDocument,
+    base_spacing: f32,
+    active_parts: &[usize],
+) -> Vec<PageLayout> {
     let layout_cfg = doc.layout.as_ref();
     let page_size_str = layout_cfg.map(|l| l.page_size.as_str()).unwrap_or("letter");
     let (page_w, page_h) = match page_size_str.to_lowercase().as_str() {
@@ -26,29 +82,35 @@ pub fn compute_score_layout(doc: &MnxDocument, base_spacing: f32) -> Vec<PageLay
         .unwrap_or_else(PageMargins::default);
     let justify_last = layout_cfg.map(|l| l.justify_last_system).unwrap_or(false);
 
-    let num_strings = doc.parts.first().map(|p| p.num_strings()).unwrap_or(6);
-    let line_spacing = 11.0_f32;
-    let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
+    let valid_parts: Vec<usize> = active_parts
+        .iter()
+        .copied()
+        .filter(|&idx| idx < doc.parts.len())
+        .collect();
+    let effective_parts = if valid_parts.is_empty() && !doc.parts.is_empty() {
+        vec![0]
+    } else {
+        valid_parts
+    };
 
-    let max_lyric_lines = doc.parts.first().map(|p| {
-        p.measures.iter().map(|m| {
-            m.sequences.iter().map(|s| {
-                s.flattened_events().iter().map(|e| {
-                    e.lyrics.as_ref().map(|l| {
-                        l.lines.keys().filter_map(|k| k.parse::<usize>().ok()).max().unwrap_or(l.lines.len())
-                    }).unwrap_or(0)
-                }).max().unwrap_or(0)
-            }).max().unwrap_or(0)
-        }).max().unwrap_or(0)
-    }).unwrap_or(0);
+    let mut system_height = 0.0_f32;
+    for (i, &p_idx) in effective_parts.iter().enumerate() {
+        if let Some(part) = doc.parts.get(p_idx) {
+            if i > 0 {
+                system_height += INTER_PART_SYSTEM_GAP;
+            }
+            system_height += compute_part_staff_block_height(part);
+        }
+    }
+    if system_height <= 0.0 {
+        system_height = 111.0;
+    }
 
-    let lyrics_extra = if max_lyric_lines > 0 { (max_lyric_lines as f32) * 14.0_f32 } else { 0.0_f32 };
-    let system_height = staff_height + 56.0 + lyrics_extra;
     let system_gap = 14.0_f32;
     let first_page_header_height = 75.0_f32;
 
     let effective_base_spacing = if base_spacing > 0.0 { base_spacing } else { DEFAULT_LAYOUT_BASE_SPACING };
-    let metrics = compute_measure_metrics(doc, effective_base_spacing);
+    let metrics = compute_measure_metrics_for_parts(doc, effective_base_spacing, &effective_parts);
     let content_w = (page_w - margins.left - margins.right).max(200.0);
     let locked_systems = doc.layout.as_ref().map(|l| l.locked_systems.as_slice()).unwrap_or(&[]);
     let system_breaks = break_measures_into_systems(&metrics, content_w, locked_systems);

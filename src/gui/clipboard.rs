@@ -17,7 +17,10 @@ impl MnxEditorApp {
         let max_idx = cursor.max(anchor);
 
         let doc = self.parsed_mnx.as_ref()?;
-        let part = doc.parts.first()?;
+        let part = doc
+            .parts
+            .get(self.selected_part_idx)
+            .or_else(|| doc.parts.first())?;
 
         let mut items = Vec::new();
         let mut cur_e = 0;
@@ -233,11 +236,12 @@ impl MnxEditorApp {
         let min_idx = cursor.min(anchor);
         let max_idx = cursor.max(anchor);
 
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.as_ref() {
             Some(d) => d.clone(),
             None => return,
         };
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -494,11 +498,12 @@ impl MnxEditorApp {
         let min_idx = cursor.min(anchor);
         let max_idx = cursor.max(anchor);
 
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.as_ref() {
             Some(d) => d.clone(),
             None => return,
         };
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -577,11 +582,12 @@ impl MnxEditorApp {
         let min_idx = cursor.min(anchor);
         let max_idx = cursor.max(anchor);
 
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.as_ref() {
             Some(d) => d.clone(),
             None => return,
         };
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -866,11 +872,12 @@ impl MnxEditorApp {
             Some(c) => c,
             None => return,
         };
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.as_ref() {
             Some(d) => d.clone(),
             None => return,
         };
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -989,11 +996,12 @@ impl MnxEditorApp {
             Some(c) => c,
             None => return,
         };
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.as_ref() {
             Some(d) => d.clone(),
             None => return,
         };
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };
@@ -1148,11 +1156,12 @@ impl MnxEditorApp {
             Some(c) => c,
             None => return,
         };
+        let p_idx = self.selected_part_idx;
         let mut doc = match self.parsed_mnx.as_ref() {
             Some(d) => d.clone(),
             None => return,
         };
-        let part = match doc.parts.first_mut() {
+        let part = match doc.parts.get_mut(p_idx) {
             Some(p) => p,
             None => return,
         };

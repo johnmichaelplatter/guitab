@@ -4295,5 +4295,647 @@ parts:
         app.grid_input.set_just_play_mode(true);
         assert!(app.grid_input.just_play_mode);
     }
+
+    #[test]
+    fn test_phase_3a_multi_instrument_add_edit_switch_and_remove() {
+        let mut app = MnxEditorApp::default();
+        let gtr1_tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.instrument_setup_name_buf = "Lead Guitar (12 EDO)".to_string();
+        app.start_new_tab(6, 12, 1, gtr1_tunings);
+
+        // Add a second measure on part 0 so we have 2 measures
+        app.add_measure_to_end();
+        assert_eq!(app.parsed_mnx.as_ref().unwrap().parts.len(), 1);
+        assert_eq!(app.parsed_mnx.as_ref().unwrap().global.measures.len(), 2);
+
+        // Add a second instrument (4-string Bass in 31 EDO)
+        let bass_tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 1, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 1, ext: Default::default() } },
+        ];
+        app.add_new_instrument_part(
+            "Microtonal Bass (31 EDO)".to_string(),
+            4,
+            31,
+            1,
+            bass_tunings,
+            None,
+        );
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.parts.len(), 2);
+        assert_eq!(doc.parts[0].display_name(0), "Lead Guitar (12 EDO)");
+        assert_eq!(doc.parts[1].display_name(1), "Microtonal Bass (31 EDO)");
+        assert_eq!(doc.parts[0].edo(), 12);
+        assert_eq!(doc.parts[1].edo(), 31);
+        assert_eq!(doc.parts[0].num_strings(), 6);
+        assert_eq!(doc.parts[1].num_strings(), 4);
+        assert_eq!(doc.parts[0].measures.len(), 2);
+        assert_eq!(doc.parts[1].measures.len(), 2);
+        // Active part automatically switches to newly added instrument
+        assert_eq!(app.selected_part_idx, 1);
+
+        // Enter a note on Instrument 2 (Bass) at event 0, string 4, fret 5
+        let sel_p = app.selected_part_idx;
+        app.mutate_doc(|doc| {
+            if crate::yaml_editor::set_or_add_note_on_string_in_doc_part(doc, sel_p, 0, 4, 5, None) {
+                Some(())
+            } else {
+                None
+            }
+        });
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert!(
+            doc.parts[0].measures[0].sequences[0].flattened_events()[0]
+                .notes
+                .is_empty(),
+            "Part 0 must remain untouched when editing Part 1"
+        );
+        assert_eq!(
+            doc.parts[1].measures[0].sequences[0].flattened_events()[0].notes[0].fret,
+            Some(5)
+        );
+
+        // Switch back to Part 0 and enter a note on String 1, Fret 7
+        app.select_part(0);
+        assert_eq!(app.selected_part_idx, 0);
+        let sel_p = app.selected_part_idx;
+        app.mutate_doc(|doc| {
+            if crate::yaml_editor::set_or_add_note_on_string_in_doc_part(doc, sel_p, 0, 1, 7, None) {
+                Some(())
+            } else {
+                None
+            }
+        });
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(
+            doc.parts[0].measures[0].sequences[0].flattened_events()[0].notes[0].fret,
+            Some(7)
+        );
+        assert_eq!(
+            doc.parts[1].measures[0].sequences[0].flattened_events()[0].notes[0].fret,
+            Some(5)
+        );
+
+        // Remove Part 1 and verify Part 0 remains intact
+        app.remove_instrument_part(1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.parts.len(), 1);
+        assert_eq!(doc.parts[0].display_name(0), "Lead Guitar (12 EDO)");
+        assert_eq!(app.selected_part_idx, 0);
+    }
+
+    #[test]
+    fn test_phase_3a_continuous_sync_and_multi_part_midi_playback() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - {}
+parts:
+  - name: "Guitar 1"
+    _x:
+      microFretDivisions: 12
+      tuning:
+        - { string: 1, pitch: { step: E, octave: 4 } }
+        - { string: 2, pitch: { step: B, octave: 3 } }
+        - { string: 3, pitch: { step: G, octave: 3 } }
+        - { string: 4, pitch: { step: D, octave: 3 } }
+        - { string: 5, pitch: { step: A, octave: 2 } }
+        - { string: 6, pitch: { step: E, octave: 2 } }
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    _x: { string: 1, fret: 0 }
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: F, octave: 4 }
+                    _x: { string: 1, fret: 1 }
+              - duration: { base: half }
+                rest: {}
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes:
+                  - pitch: { step: G, octave: 4 }
+                    _x: { string: 1, fret: 3 }
+  - name: "10-String Harp Guitar"
+    _x:
+      microFretDivisions: 24
+      tuning:
+        - { string: 1, pitch: { step: E, octave: 4 } }
+        - { string: 2, pitch: { step: B, octave: 3 } }
+        - { string: 3, pitch: { step: G, octave: 3 } }
+        - { string: 4, pitch: { step: D, octave: 3 } }
+        - { string: 5, pitch: { step: A, octave: 2 } }
+        - { string: 6, pitch: { step: E, octave: 2 } }
+        - { string: 7, pitch: { step: D, octave: 2 } }
+        - { string: 8, pitch: { step: C, octave: 2 } }
+        - { string: 9, pitch: { step: B, octave: 1 } }
+        - { string: 10, pitch: { step: A, octave: 1 } }
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes:
+                  - pitch: { step: A, octave: 1 }
+                    _x: { string: 10, fret: 0 }
+      - sequences:
+          - content:
+              - duration: { base: half }
+                notes:
+                  - pitch: { step: B, octave: 1 }
+                    _x: { string: 9, fret: 2 }
+              - duration: { base: half }
+                notes:
+                  - pitch: { step: C, octave: 2 }
+                    _x: { string: 8, fret: 4 }
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.to_string());
+        app.process_and_render();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.parts.len(), 2);
+
+        // Verify Continuous Mode measure width computation and synchronized rendering
+        let w0 = crate::render::compute_part_measure_content_widths(&doc.parts[0], false, None, "");
+        let w1 = crate::render::compute_part_measure_content_widths(&doc.parts[1], false, None, "");
+        assert_eq!(w0.len(), 2);
+        assert_eq!(w1.len(), 2);
+        // Measure 0 has 3 events in part 0 vs 1 event in part 1 -> w0[0] > w1[0]
+        assert!(w0[0] > w1[0]);
+        // Measure 1 has 1 event in part 0 vs 2 events in part 1 -> w1[1] > w0[1]
+        assert!(w1[1] > w0[1]);
+
+        // Render Continuous Mode UI frame with both stacked instruments
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            app.render_central_panel(ctx);
+        });
+        out.textures_delta.clear();
+        let doc = app.parsed_mnx.as_ref().unwrap();
+
+        // Verify Multi-Part & Multi-Port MIDI playback track generation (6 + 10 = 16 strings across 2 ports)
+        let mut map0 = std::collections::HashMap::new();
+        for s in 1..=6u8 {
+            map0.insert(s, midly::num::u4::from(s));
+        }
+        let mut map1 = std::collections::HashMap::new();
+        for s in 1..=10u8 {
+            map1.insert(s, midly::num::u4::from(s));
+        }
+        let configs = vec![
+            crate::midi::PartMidiConfig {
+                part_idx: 0,
+                port_index: 0,
+                pitch_bend_range: 48,
+                string_to_channel: map0,
+                is_mpe: true,
+            },
+            crate::midi::PartMidiConfig {
+                part_idx: 1,
+                port_index: 1,
+                pitch_bend_range: 48,
+                string_to_channel: map1,
+                is_mpe: true,
+            },
+        ];
+
+        let (track, ppq) = crate::midi::generate_multi_part_playback_track(
+            doc,
+            &configs,
+            120.0,
+            midly::num::u15::from(480),
+            0,
+            None,
+        );
+        assert_eq!(ppq, 480.0);
+
+        let mut saw_part0_event_start = false;
+        let mut saw_part1_event_start = false;
+        let mut saw_port0_midi = false;
+        let mut saw_port1_midi = false;
+
+        for ev in &track {
+            match &ev.kind {
+                crate::midi::MultiPartPlaybackEventKind::PartEventMarker { part_idx, .. } => {
+                    if *part_idx == 0 {
+                        saw_part0_event_start = true;
+                    } else if *part_idx == 1 {
+                        saw_part1_event_start = true;
+                    }
+                }
+                crate::midi::MultiPartPlaybackEventKind::Midi { port_index, .. } => {
+                    if *port_index == 0 {
+                        saw_port0_midi = true;
+                    } else if *port_index == 1 {
+                        saw_port1_midi = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_part0_event_start, "Track must include EventStart markers for Part 0");
+        assert!(saw_part1_event_start, "Track must include EventStart markers for Part 1");
+        assert!(saw_port0_midi, "Track must route Part 0 MIDI messages to Port 0");
+        assert!(saw_port1_midi, "Track must route Part 1 MIDI messages to Port 1");
+    }
+
+    #[test]
+    fn test_phase_3a_layout_mode_ensemble_and_part_tabs_and_pdf_export() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - {}
+parts:
+  - name: "Lead Guitar"
+    _x:
+      microFretDivisions: 12
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    _x: { string: 1, fret: 0 }
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes:
+                  - pitch: { step: G, octave: 4 }
+                    _x: { string: 1, fret: 3 }
+  - name: "Rhythm Guitar"
+    _x:
+      microFretDivisions: 12
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes:
+                  - pitch: { step: A, octave: 2 }
+                    _x: { string: 5, fret: 0 }
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                notes:
+                  - pitch: { step: E, octave: 2 }
+                    _x: { string: 6, fret: 0 }
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.to_string());
+        app.process_and_render();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+
+        // 1. Default LayoutViewTab is Ensemble with both parts visible
+        assert_eq!(app.layout_view_tab, LayoutViewTab::Ensemble);
+        assert_eq!(app.active_layout_part_indices(), vec![0, 1]);
+
+        let pages_ensemble = crate::layout::compute_score_layout_for_parts(doc, 0.0, &[0, 1]);
+        let pages_part0 = crate::layout::compute_score_layout_for_parts(doc, 0.0, &[0]);
+        assert!(!pages_ensemble.is_empty());
+        assert!(!pages_part0.is_empty());
+
+        // Populate display list for Ensemble Score and verify both part labels & system bracket exist
+        let mut dl_ens = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list_for_parts(doc, &pages_ensemble[0], &mut dl_ens, &[0, 1]);
+        assert!(
+            dl_ens.items.iter().any(|i| i.id.as_deref() == Some("part_label_0_0")),
+            "Ensemble display list must include part label for part 0"
+        );
+        assert!(
+            dl_ens.items.iter().any(|i| i.id.as_deref() == Some("part_label_0_1")),
+            "Ensemble display list must include part label for part 1"
+        );
+        assert!(
+            dl_ens.items.iter().any(|i| i.id.as_deref() == Some("sys_bracket_0")),
+            "Ensemble display list must include connected left system barline across staves"
+        );
+
+        // Switch to Individual Part 1 tab ("Rhythm Guitar")
+        app.layout_view_tab = LayoutViewTab::Part(1);
+        assert_eq!(app.active_layout_part_indices(), vec![1]);
+
+        let pages_part1 = crate::layout::compute_score_layout_for_parts(doc, 0.0, &[1]);
+        let mut dl_p1 = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list_for_parts(doc, &pages_part1[0], &mut dl_p1, &[1]);
+        assert!(
+            !dl_p1.items.iter().any(|i| i.id.as_deref() == Some("sys_bracket_0")),
+            "Single-part display list should not draw a multi-staff system bracket"
+        );
+
+        // Verify PDF bytes generation succeeds for both Ensemble and Single-Part views
+        let pdf_ens = crate::pdf_export::generate_score_pdf_bytes_for_parts(doc, &pages_ensemble, &[0, 1]).unwrap();
+        assert!(pdf_ens.starts_with(b"%PDF-"));
+        let pdf_p1 = crate::pdf_export::generate_score_pdf_bytes_for_parts(doc, &pages_part1, &[1]).unwrap();
+        assert!(pdf_p1.starts_with(b"%PDF-"));
+    }
+
+    #[test]
+    fn test_second_part_measure_1_quarter_note_right_arrow_creates_beats_2_to_4() {
+        let example_yaml = std::fs::read_to_string("examples/example.yaml")
+            .expect("examples/example.yaml must exist");
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(example_yaml);
+        app.process_and_render();
+
+        // Add a 2nd instrument (which switches active selection to Part 1, event 0)
+        app.add_new_instrument_part(
+            "Second Guitar".to_string(),
+            6,
+            12,
+            1,
+            Vec::new(),
+            None,
+        );
+        assert_eq!(app.selected_part_idx, 1);
+        assert_eq!(app.selected_event_idx, Some(0));
+
+        // Part 1 starts with 3 measures, each containing 1 whole rest (3 events total)
+        let part1 = &app.parsed_mnx.as_ref().unwrap().parts[1];
+        assert_eq!(part1.measures.len(), 3);
+        assert_eq!(part1.measures[0].sequences[0].flattened_events().len(), 1);
+
+        // Adjust 1st event in Measure 1 of Part 1 to quarter-note duration (1/4)
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::update_event_duration_in_doc_part(
+                doc,
+                1,
+                0,
+                &crate::mnx::Duration {
+                    base: "quarter".to_string(),
+                    ..Default::default()
+                },
+            )
+            .then_some(())
+        });
+
+        // Enter edit mode on string 1, type fret "5", and hit Right arrow
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "5".to_string();
+        assert!(app.commit_fret_edit());
+        app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+
+        // Expected: Beat 2 created in Measure 1 of Part 1 (measure 0 now has 2 events, cursor is at event 1)
+        let part1 = &app.parsed_mnx.as_ref().unwrap().parts[1];
+        assert_eq!(
+            part1.measures[0].sequences[0].flattened_events().len(),
+            2,
+            "Measure 1 of Part 2 must have 2 events after hitting Right on beat 1"
+        );
+        assert_eq!(app.selected_event_idx, Some(1));
+        assert!(app.is_editing_fret);
+
+        // Type fret "7" on Beat 2, hit Right arrow -> creates Beat 3 in Measure 1
+        app.editing_fret_buf = "7".to_string();
+        assert!(app.commit_fret_edit());
+        app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+        let part1 = &app.parsed_mnx.as_ref().unwrap().parts[1];
+        assert_eq!(
+            part1.measures[0].sequences[0].flattened_events().len(),
+            3,
+            "Measure 1 of Part 2 must have 3 events after hitting Right on beat 2"
+        );
+        assert_eq!(app.selected_event_idx, Some(2));
+
+        // Type fret "8" on Beat 3, hit Right arrow -> creates Beat 4 in Measure 1
+        app.editing_fret_buf = "8".to_string();
+        assert!(app.commit_fret_edit());
+        app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+        let part1 = &app.parsed_mnx.as_ref().unwrap().parts[1];
+        assert_eq!(
+            part1.measures[0].sequences[0].flattened_events().len(),
+            4,
+            "Measure 1 of Part 2 must have 4 events after hitting Right on beat 3"
+        );
+        assert_eq!(app.selected_event_idx, Some(3));
+
+        // Type fret "10" on Beat 4 (Measure 1 is now full: 4/4), hit Right arrow -> advances to Measure 2's 1st event (event 4)
+        app.editing_fret_buf = "10".to_string();
+        assert!(app.commit_fret_edit());
+        app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+        let part1 = &app.parsed_mnx.as_ref().unwrap().parts[1];
+        assert_eq!(
+            part1.measures[0].sequences[0].flattened_events().len(),
+            4,
+            "Measure 1 of Part 2 is now full (4 quarter notes) and should not add a 5th event"
+        );
+        assert_eq!(
+            app.selected_event_idx,
+            Some(4),
+            "After filling Measure 1, Right arrow should advance to event 4 (first event of Measure 2)"
+        );
+    }
+
+    #[test]
+    fn test_adding_music_at_end_of_one_part_creates_single_full_measure_rest_in_other_part() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Add a 2nd instrument
+        app.add_new_instrument_part(
+            "Second Guitar".to_string(),
+            6,
+            12,
+            1,
+            Vec::new(),
+            None,
+        );
+
+        // Switch back to Part 0, set first event to eighth note (0.5 beats), and fill Measure 1 + advance into Measure 2 and Measure 3
+        app.select_part(0);
+        app.selected_event_idx = Some(0);
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::update_event_duration_in_doc_part(
+                doc,
+                0,
+                0,
+                &crate::mnx::Duration {
+                    base: "eighth".to_string(),
+                    ..Default::default()
+                },
+            )
+            .then_some(())
+        });
+
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+
+        // Enter 8 eighth notes in Measure 1 (4/4) and 8 eighth notes in Measure 2, advancing into Measure 3
+        for i in 0..16 {
+            app.editing_fret_buf = format!("{}", i % 12);
+            assert!(app.commit_fret_edit());
+            app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+        }
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.parts[0].measures.len(), 3);
+        assert_eq!(doc.parts[1].measures.len(), 3);
+
+        // Every measure in Part 1 (which has no music in it) must have a single whole rest spanning the full 4/4 measure
+        for (m_idx, m) in doc.parts[1].measures.iter().enumerate() {
+            let events = m.sequences[0].flattened_events();
+            assert_eq!(
+                events.len(),
+                1,
+                "Measure {} in Part 1 must contain a single full-measure rest, got {:?}",
+                m_idx + 1,
+                events
+            );
+            assert_eq!(events[0].duration.base, "whole");
+            assert!(events[0].rest.is_some());
+            assert!(events[0].notes.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_frontier_measure_validation_parity_in_second_part() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+        assert!(
+            app.validation_errors.is_empty(),
+            "examples/example.yaml should start with no validation errors"
+        );
+
+        // Add Part 1 (which gets 3 silent whole-rest measures matching Part 0)
+        app.add_new_instrument_part(
+            "Second Guitar".to_string(),
+            6,
+            12,
+            1,
+            Vec::new(),
+            None,
+        );
+        app.select_part(1);
+        app.selected_event_idx = Some(0);
+
+        // Adjust duration of Note 1 in Measure 1 of Part 1 to a quarter note (1 beat in a 4/4 bar)
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::update_event_duration_in_doc_part(
+                doc,
+                1,
+                0,
+                &crate::mnx::Duration {
+                    base: "quarter".to_string(),
+                    ..Default::default()
+                },
+            )
+            .then_some(())
+        });
+
+        // Because Measures 2 and 3 of Part 1 are still untouched silent whole-rest placeholders,
+        // Measure 1 of Part 1 is the active frontier measure and must NOT report an "is incomplete" error!
+        assert!(
+            app.validation_errors.is_empty(),
+            "Active frontier measure in Part 1 should not trigger an incomplete bar validation error while adding quarter notes, got: {:?}",
+            app.validation_errors
+        );
+
+        // Enter a fret on Note 1 and advance right to create Note 2 (2 quarter notes = 2 beats in 4/4)
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "5".to_string();
+        assert!(app.commit_fret_edit());
+        app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+
+        assert!(
+            app.validation_errors.is_empty(),
+            "Active frontier measure in Part 1 with 2 quarter notes should also have 0 validation errors, got: {:?}",
+            app.validation_errors
+        );
+    }
+
+    #[test]
+    fn test_moving_into_default_rest_measure_creates_blank_note_with_previous_duration() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Add Part 1 (which gets 3 silent whole-rest measures matching Part 0)
+        app.add_new_instrument_part(
+            "Second Guitar".to_string(),
+            6,
+            12,
+            1,
+            Vec::new(),
+            None,
+        );
+        app.select_part(1);
+        app.selected_event_idx = Some(0);
+
+        // Set first note in Measure 1 of Part 1 to quarter note
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::update_event_duration_in_doc_part(
+                doc,
+                1,
+                0,
+                &crate::mnx::Duration {
+                    base: "quarter".to_string(),
+                    ..Default::default()
+                },
+            )
+            .then_some(())
+        });
+
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+
+        // Enter 4 quarter notes in Measure 1 and advance right after each one
+        for fret in [0, 2, 4, 5] {
+            app.editing_fret_buf = fret.to_string();
+            assert!(app.commit_fret_edit());
+            app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+        }
+
+        // Cursor should now be on Event 4 (first event of Measure 2), and Measure 2's default whole rest
+        // should have been replaced with a blank quarter note!
+        assert_eq!(app.selected_event_idx, Some(4));
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let m2_evs = doc.parts[1].measures[1].sequences[0].flattened_events();
+            assert_eq!(m2_evs.len(), 1);
+            assert_eq!(
+                m2_evs[0].duration.base, "quarter",
+                "Moving into a bar with a default rest from a quarter note should create a quarter-note blank note"
+            );
+            assert!(m2_evs[0].rest.is_none());
+            assert!(m2_evs[0].notes.is_empty());
+        }
+        assert!(app.validation_errors.is_empty());
+
+        // Retreating left from that untouched blank quarter note in Measure 2 should restore Measure 2's whole rest
+        app.retreat_to_prev_note_in_edit_mode(Some(1));
+        assert_eq!(app.selected_event_idx, Some(3));
+        {
+            let doc = app.parsed_mnx.as_ref().unwrap();
+            let m2_evs = doc.parts[1].measures[1].sequences[0].flattened_events();
+            assert_eq!(m2_evs.len(), 1);
+            assert_eq!(m2_evs[0].duration.base, "whole");
+            assert!(m2_evs[0].rest.is_some());
+            assert!(m2_evs[0].notes.is_empty());
+        }
+    }
 }
 

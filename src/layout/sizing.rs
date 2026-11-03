@@ -17,16 +17,42 @@ pub struct MeasureMetrics {
 
 /// Computes the spring and rod sizing metrics for each measure in a score.
 pub fn compute_measure_metrics(doc: &MnxDocument, base_spacing: f32) -> Vec<MeasureMetrics> {
+    compute_measure_metrics_for_parts(doc, base_spacing, &[0])
+}
+
+/// Computes the spring and rod sizing metrics for each measure across a subset of parts.
+pub fn compute_measure_metrics_for_parts(
+    doc: &MnxDocument,
+    base_spacing: f32,
+    active_parts: &[usize],
+) -> Vec<MeasureMetrics> {
     let mut metrics = Vec::new();
-    let part = match doc.parts.first() {
-        Some(p) => p,
-        None => return metrics,
+    if doc.parts.is_empty() {
+        return metrics;
+    }
+
+    let valid_parts: Vec<usize> = active_parts
+        .iter()
+        .copied()
+        .filter(|&idx| idx < doc.parts.len())
+        .collect();
+    let effective_parts = if valid_parts.is_empty() {
+        vec![0]
+    } else {
+        valid_parts
     };
+
+    let num_measures = effective_parts
+        .iter()
+        .filter_map(|&idx| doc.parts.get(idx))
+        .map(|p| p.measures.len())
+        .max()
+        .unwrap_or(0);
 
     let mut current_measure_num = 1;
     let mut current_ts: Option<crate::mnx::TimeSignature> = None;
 
-    for (m_idx, measure) in part.measures.iter().enumerate() {
+    for m_idx in 0..num_measures {
         let gm = doc.global.measures.get(m_idx);
         let m_num = gm.and_then(|g| g.number).unwrap_or(current_measure_num);
         current_measure_num = m_num + 1;
@@ -57,51 +83,67 @@ pub fn compute_measure_metrics(doc: &MnxDocument, base_spacing: f32) -> Vec<Meas
             min_width += 12.0;
         }
 
-        let mut measure_beats = 0.0;
-        if let Some(seq) = measure.sequences.first() {
-            let mut layout_items = Vec::new();
-            for item in &seq.content {
-                item.to_layout_items(&mut layout_items);
-            }
+        let mut max_ev_width = 0.0_f32;
+        let mut max_measure_beats = 0.0_f64;
 
-            let mut in_grace = false;
-            for (item_idx, l_item) in layout_items.iter().enumerate() {
-                match l_item {
-                    LayoutItem::GraceStart => in_grace = true,
-                    LayoutItem::GraceEnd => in_grace = false,
-                    LayoutItem::Event(ev) => {
-                        let mut next_ev_info = None;
-                        let mut look_grace = in_grace;
-                        for next_item in &layout_items[item_idx + 1..] {
-                            match next_item {
-                                LayoutItem::GraceStart => look_grace = true,
-                                LayoutItem::GraceEnd => look_grace = false,
-                                LayoutItem::Event(ne) => {
-                                    next_ev_info = Some((*ne, look_grace));
-                                    break;
+        for &p_idx in &effective_parts {
+            if let Some(measure) = doc.parts.get(p_idx).and_then(|p| p.measures.get(m_idx)) {
+                let mut part_ev_width = 0.0_f32;
+                let mut part_beats = 0.0_f64;
+                if let Some(seq) = measure.sequences.first() {
+                    let mut layout_items = Vec::new();
+                    for item in &seq.content {
+                        item.to_layout_items(&mut layout_items);
+                    }
+
+                    let mut in_grace = false;
+                    for (item_idx, l_item) in layout_items.iter().enumerate() {
+                        match l_item {
+                            LayoutItem::GraceStart => in_grace = true,
+                            LayoutItem::GraceEnd => in_grace = false,
+                            LayoutItem::Event(ev) => {
+                                let mut next_ev_info = None;
+                                let mut look_grace = in_grace;
+                                for next_item in &layout_items[item_idx + 1..] {
+                                    match next_item {
+                                        LayoutItem::GraceStart => look_grace = true,
+                                        LayoutItem::GraceEnd => look_grace = false,
+                                        LayoutItem::Event(ne) => {
+                                            next_ev_info = Some((*ne, look_grace));
+                                            break;
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                                _ => {}
+
+                                let ev_w = calculate_event_spacing(
+                                    ev,
+                                    in_grace,
+                                    base_spacing,
+                                    next_ev_info,
+                                    None,
+                                    None,
+                                );
+                                part_ev_width += ev_w;
+
+                                if !in_grace {
+                                    part_beats += crate::validate::duration_to_quarter_beats(&ev.duration);
+                                }
                             }
-                        }
-
-                        let ev_w = calculate_event_spacing(
-                            ev,
-                            in_grace,
-                            base_spacing,
-                            next_ev_info,
-                            None,
-                            None,
-                        );
-                        min_width += ev_w;
-
-                        if !in_grace {
-                            measure_beats += crate::validate::duration_to_quarter_beats(&ev.duration);
+                            _ => {}
                         }
                     }
-                    _ => {}
+                }
+                if part_ev_width > max_ev_width {
+                    max_ev_width = part_ev_width;
+                }
+                if part_beats > max_measure_beats {
+                    max_measure_beats = part_beats;
                 }
             }
         }
+
+        min_width += max_ev_width;
 
         if has_repeat_end {
             min_width += 12.0;
@@ -117,8 +159,8 @@ pub fn compute_measure_metrics(doc: &MnxDocument, base_spacing: f32) -> Vec<Meas
 
         // Clamp minimum measure width
         min_width = min_width.max(50.0);
-        let spring_stiffness = if measure_beats > 0.0 {
-            measure_beats
+        let spring_stiffness = if max_measure_beats > 0.0 {
+            max_measure_beats
         } else {
             current_ts.map(|ts| (ts.count as f64) * 4.0 / (ts.unit as f64)).unwrap_or(4.0)
         };
