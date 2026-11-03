@@ -515,6 +515,10 @@ impl MnxEditorApp {
         }
 
         if cmd {
+            let p_pressed = ui.input(|i| i.key_pressed(egui::Key::P));
+            let up_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+            let down_pressed = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+
             if n_pressed {
                 self.new_file();
                 ui.input_mut(|i| i.events.clear());
@@ -552,6 +556,26 @@ impl MnxEditorApp {
                     self.action_duplicate_insert();
                 } else {
                     self.action_duplicate_overwrite();
+                }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if !editor_focused && !self.is_editing_lyric && p_pressed {
+                if shift_down {
+                    self.start_midi_playback_with_options(false, true);
+                } else {
+                    self.start_midi_playback_with_options(true, true);
+                }
+                ui.input_mut(|i| i.events.clear());
+                return;
+            } else if !editor_focused
+                && !self.is_editing_lyric
+                && self.view_mode == ViewMode::Continuous
+                && (up_pressed || down_pressed)
+            {
+                if up_pressed {
+                    self.jump_to_adjacent_part(-1);
+                } else if down_pressed {
+                    self.jump_to_adjacent_part(1);
                 }
                 ui.input_mut(|i| i.events.clear());
                 return;

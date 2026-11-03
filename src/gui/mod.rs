@@ -753,6 +753,14 @@ impl MnxEditorApp {
     }
 
     pub fn start_midi_playback(&mut self, start_from_selected: bool) {
+        self.start_midi_playback_with_options(start_from_selected, false);
+    }
+
+    pub fn start_midi_playback_with_options(
+        &mut self,
+        start_from_selected: bool,
+        current_part_only: bool,
+    ) {
         if let Some(doc) = &self.parsed_mnx {
             let default_port_opt = self.selected_midi_port;
             if default_port_opt.is_none() && self.part_midi_ports.is_empty() {
@@ -801,6 +809,10 @@ impl MnxEditorApp {
                     *cursor = cursor.saturating_add(num_strings);
                 }
 
+                if current_part_only && p_idx != self.selected_part_idx {
+                    continue;
+                }
+
                 let pb_range = part.pitch_bend_range.unwrap_or(self.pitch_bend_range);
                 part_configs.push(crate::midi::PartMidiConfig {
                     part_idx: p_idx,
@@ -823,6 +835,16 @@ impl MnxEditorApp {
             };
 
             let primary_port = part_configs[0].port_index;
+            let solo_prefix = if current_part_only {
+                let pname = doc
+                    .parts
+                    .get(self.selected_part_idx)
+                    .map(|p| p.display_name(self.selected_part_idx))
+                    .unwrap_or_else(|| format!("Part {}", self.selected_part_idx + 1));
+                format!(" ({} only)", pname)
+            } else {
+                String::new()
+            };
             match self.midi_player.play_multi_part(
                 doc,
                 part_configs,
@@ -842,20 +864,21 @@ impl MnxEditorApp {
                     if let Some(start_idx) = start_event {
                         if start_idx > 0 {
                             self.midi_status_msg = Some(format!(
-                                "Playing from note {}{} on {}",
+                                "Playing{} from note {}{} on {}",
+                                solo_prefix,
                                 start_idx + 1,
                                 mode_str,
                                 port_name
                             ));
                         } else {
                             self.midi_status_msg = Some(format!(
-                                "Playing from start{} on {}",
-                                mode_str, port_name
+                                "Playing{} from start{} on {}",
+                                solo_prefix, mode_str, port_name
                             ));
                         }
                     } else {
                         self.midi_status_msg =
-                            Some(format!("Playing{} on {}", mode_str, port_name));
+                            Some(format!("Playing{}{} on {}", solo_prefix, mode_str, port_name));
                     }
                 }
                 Err(e) => {
@@ -865,6 +888,190 @@ impl MnxEditorApp {
         } else {
             self.midi_status_msg = Some("No valid document parsed to play.".to_string());
         }
+    }
+
+    fn part_event_measure_and_beats(part: &crate::mnx::Part) -> Vec<(usize, f64, f64)> {
+        fn collect_seq_item_beats(
+            items: &[crate::mnx::SequenceItem],
+            m_idx: usize,
+            scale: f64,
+            in_grace: bool,
+            cur_beat: &mut f64,
+            out: &mut Vec<(usize, f64, f64)>,
+        ) {
+            for item in items {
+                match item {
+                    crate::mnx::SequenceItem::Event(ev) => {
+                        let dur_beats = if in_grace {
+                            0.0
+                        } else {
+                            crate::validate::duration_to_quarter_beats(&ev.duration) * scale
+                        };
+                        let start = *cur_beat;
+                        let end = start + dur_beats;
+                        *cur_beat = end;
+                        out.push((m_idx, start, end));
+                    }
+                    crate::mnx::SequenceItem::Grace(g) => {
+                        collect_seq_item_beats(&g.content, m_idx, scale, true, cur_beat, out);
+                    }
+                    crate::mnx::SequenceItem::Tuplet(t) => {
+                        let inner_beats =
+                            crate::validate::duration_to_quarter_beats(&t.inner.duration)
+                                * (t.inner.multiple as f64);
+                        let outer_beats =
+                            crate::validate::duration_to_quarter_beats(&t.outer.duration)
+                                * (t.outer.multiple as f64);
+                        let new_scale = if inner_beats > 0.0 {
+                            scale * (outer_beats / inner_beats)
+                        } else {
+                            scale
+                        };
+                        collect_seq_item_beats(&t.content, m_idx, new_scale, in_grace, cur_beat, out);
+                    }
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for (m_idx, measure) in part.measures.iter().enumerate() {
+            if let Some(seq) = measure.sequences.first() {
+                let mut cur_beat = 0.0;
+                collect_seq_item_beats(&seq.content, m_idx, 1.0, false, &mut cur_beat, &mut out);
+            }
+        }
+        out
+    }
+
+    pub fn find_matching_event_in_part(
+        doc: &crate::mnx::MnxDocument,
+        from_part_idx: usize,
+        from_event_idx: usize,
+        to_part_idx: usize,
+    ) -> usize {
+        let Some(from_part) = doc.parts.get(from_part_idx) else {
+            return 0;
+        };
+        let Some(to_part) = doc.parts.get(to_part_idx) else {
+            return 0;
+        };
+        let from_beats = Self::part_event_measure_and_beats(from_part);
+        let to_beats = Self::part_event_measure_and_beats(to_part);
+        if to_beats.is_empty() {
+            return 0;
+        }
+
+        let (from_m_idx, target_beat, _) = from_beats
+            .get(from_event_idx)
+            .copied()
+            .or_else(|| from_beats.last().copied())
+            .unwrap_or((0, 0.0, 0.0));
+        let target_m_idx = from_m_idx.min(to_part.measures.len().saturating_sub(1));
+
+        // 1. Prefer an event in target_m_idx whose [start_beat, end_beat) span contains target_beat
+        let mut best_spanning: Option<(usize, f64)> = None;
+        let mut best_closest: Option<(usize, f64)> = None;
+
+        for (ev_idx, &(m_idx, start_beat, end_beat)) in to_beats.iter().enumerate() {
+            if m_idx != target_m_idx {
+                continue;
+            }
+            let dist = (start_beat - target_beat).abs();
+            if best_closest.map(|(_, d)| dist < d - 1e-6).unwrap_or(true) {
+                best_closest = Some((ev_idx, dist));
+            }
+            if end_beat > start_beat + 1e-6
+                && start_beat <= target_beat + 1e-4
+                && target_beat < end_beat - 1e-4
+            {
+                if best_spanning.map(|(_, d)| dist < d - 1e-6).unwrap_or(true) {
+                    best_spanning = Some((ev_idx, dist));
+                }
+            }
+        }
+
+        best_spanning
+            .or(best_closest)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
+    }
+
+    pub fn jump_to_adjacent_part(&mut self, delta: isize) {
+        let num_parts = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| d.parts.len())
+            .unwrap_or(0);
+        if num_parts <= 1 {
+            return;
+        }
+        let target_part_isize = (self.selected_part_idx as isize) + delta;
+        if target_part_isize < 0 || (target_part_isize as usize) >= num_parts {
+            return;
+        }
+        let target_part_idx = target_part_isize as usize;
+
+        let was_editing_fret = self.is_editing_fret;
+        let old_editing_string = self.editing_string;
+        if was_editing_fret && !self.editing_fret_buf.trim().is_empty() {
+            self.commit_fret_edit();
+            self.editing_fret_buf.clear();
+        }
+
+        let old_part_idx = self.selected_part_idx;
+        let mut ref_event_idx = self.selected_event_idx.unwrap_or(0);
+        if let Some(old_e_idx) = self.selected_event_idx {
+            if let Some(info) = self.find_event_measure_end_info(old_e_idx) {
+                if info.is_last_in_measure && info.is_blank {
+                    let m_idx = info.measure_idx;
+                    let old_total = self.cached_event_ranges.len();
+                    let removed = self.mutate_doc(|doc| {
+                        if crate::yaml_editor::remove_blank_event_at_end_of_measure_in_doc_part(
+                            doc,
+                            old_part_idx,
+                            m_idx,
+                        ) {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    });
+                    let new_total = self.cached_event_ranges.len();
+                    if removed.is_some() && new_total < old_total {
+                        ref_event_idx = old_e_idx.saturating_sub(1);
+                    }
+                }
+            }
+        }
+
+        let target_event_idx = self
+            .parsed_mnx
+            .as_ref()
+            .map(|doc| {
+                Self::find_matching_event_in_part(doc, old_part_idx, ref_event_idx, target_part_idx)
+            })
+            .unwrap_or(0);
+
+        self.select_part(target_part_idx);
+        let new_total = self.cached_event_ranges.len();
+        if new_total > 0 {
+            let clamped_ev = target_event_idx.min(new_total - 1);
+            self.selected_event_idx = Some(clamped_ev);
+            if was_editing_fret {
+                let new_num_strings = self
+                    .active_part()
+                    .map(|p| p.num_strings() as u8)
+                    .unwrap_or(6)
+                    .max(1);
+                let target_str = old_editing_string.unwrap_or(1).clamp(1, new_num_strings);
+                self.is_editing_fret = true;
+                self.editing_string = Some(target_str);
+                self.editing_fret_buf.clear();
+                self.select_note_on_string(clamped_ev, target_str);
+            }
+            self.preview_selected_sound();
+        }
+        self.needs_scroll = true;
     }
 
     pub fn preview_selected_sound(&mut self) {

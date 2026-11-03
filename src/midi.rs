@@ -1552,8 +1552,8 @@ impl MidiPlayer {
             return None;
         }
         if let Ok(guard) = self.current_part_events.lock() {
-            if let Some(val) = guard.get(part_idx).copied().flatten() {
-                return Some(val);
+            if guard.iter().any(|v| v.is_some()) {
+                return guard.get(part_idx).copied().flatten();
             }
         }
         if part_idx == 0 {

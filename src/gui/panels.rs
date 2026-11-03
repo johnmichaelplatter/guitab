@@ -1209,7 +1209,7 @@ impl MnxEditorApp {
                     let play_btn = egui::Button::new(
                         egui::RichText::new(play_label).color(Color32::from_rgb(100, 255, 130)).strong()
                     );
-                    if ui.add(play_btn).on_hover_text("Play tablature via MIDI (Hotkey 'P' to play from selected note, 'Shift+P' from start)").clicked() {
+                    if ui.add(play_btn).on_hover_text("Play tablature via MIDI (Hotkey 'P' to play from selected note, 'Shift+P' from start, 'Ctrl+P' / 'Shift+Ctrl+P' for current part only)").clicked() {
                         self.start_midi_playback(self.selected_event_idx.is_some());
                     }
                 }

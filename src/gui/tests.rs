@@ -4937,5 +4937,70 @@ parts:
             assert!(m2_evs[0].notes.is_empty());
         }
     }
+
+    #[test]
+    fn test_ctrl_up_down_jumps_between_parts_at_same_duration_position() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Part 0 in examples/example.yaml has 8 eighth notes in Measure 1 (beats 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5)
+        app.add_new_instrument_part(
+            "Second Guitar".to_string(),
+            6,
+            12,
+            1,
+            Vec::new(),
+            None,
+        );
+        app.select_part(1);
+        app.selected_event_idx = Some(0);
+
+        // Fill Measure 1 of Part 1 with 4 quarter notes (beats 0.0, 1.0, 2.0, 3.0)
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::update_event_duration_in_doc_part(
+                doc,
+                1,
+                0,
+                &crate::mnx::Duration {
+                    base: "quarter".to_string(),
+                    ..Default::default()
+                },
+            )
+            .then_some(())
+        });
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+        for (idx, fret) in [0, 2, 4, 5].iter().enumerate() {
+            app.editing_fret_buf = fret.to_string();
+            assert!(app.commit_fret_edit());
+            if idx < 3 {
+                app.advance_to_next_note_in_edit_mode(Some(1), app.cached_event_ranges.len());
+            }
+        }
+        app.is_editing_fret = false;
+
+        // Select 3rd quarter note in Part 1 (index 2, beat 2.0 = Beat 3)
+        app.selected_event_idx = Some(2);
+
+        // Jump UP to Part 0 (Ctrl+Up): should land on the 5th eighth note of Measure 1 (index 4, beat 2.0)
+        app.jump_to_adjacent_part(-1);
+        assert_eq!(app.selected_part_idx, 0);
+        assert_eq!(
+            app.selected_event_idx,
+            Some(4),
+            "Jumping up from beat 2.0 in Part 1 should land on event 4 (beat 2.0) in Part 0"
+        );
+
+        // Move to 4th eighth note in Part 0 (index 3, beat 1.5 = '2-and') and jump DOWN to Part 1 (Ctrl+Down):
+        // should land on the 2nd quarter note in Part 1 (index 1, spanning [1.0, 2.0))
+        app.selected_event_idx = Some(3);
+        app.jump_to_adjacent_part(1);
+        assert_eq!(app.selected_part_idx, 1);
+        assert_eq!(
+            app.selected_event_idx,
+            Some(1),
+            "Jumping down from beat 1.5 in Part 0 should land on event 1 (spanning [1.0, 2.0)) in Part 1"
+        );
+    }
 }
 
