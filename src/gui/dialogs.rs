@@ -63,6 +63,9 @@ impl MnxEditorApp {
             RemoveTuplet {
                 event_idx: usize,
             },
+            RemoveInstrument {
+                part_idx: usize,
+            },
             ApplyInstrumentSetup {
                 num_strings: u8,
                 edo: u8,
@@ -711,6 +714,35 @@ impl MnxEditorApp {
                         ui.horizontal(|ui| {
                             if ui.button("OK").clicked() || ok_pressed {
                                 apply_action = Some(DialogAction::RemoveTuplet { event_idx: ev_i });
+                                close_dialog = true;
+                            }
+                            if ui.button("Cancel").clicked() || esc_pressed {
+                                close_dialog = true;
+                            }
+                        });
+                    });
+            }
+            ActiveDialog::ConfirmRemoveInstrument { part_idx } => {
+                let p_idx = *part_idx;
+                egui::Window::new("Remove Instrument")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.label(
+                            "Are you sure you want to delete the selected instrument and all its music data?",
+                        );
+
+                        ui.separator();
+
+                        let ok_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Ok").clicked() || ok_pressed {
+                                apply_action =
+                                    Some(DialogAction::RemoveInstrument { part_idx: p_idx });
                                 close_dialog = true;
                             }
                             if ui.button("Cancel").clicked() || esc_pressed {
@@ -1895,6 +1927,9 @@ impl MnxEditorApp {
                     {
                         self.selected_event_idx = Some(event_idx);
                     }
+                }
+                DialogAction::RemoveInstrument { part_idx } => {
+                    self.remove_instrument_part(part_idx);
                 }
                 DialogAction::ApplyInstrumentSetup {
                     num_strings,

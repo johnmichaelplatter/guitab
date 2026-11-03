@@ -5002,5 +5002,72 @@ parts:
             "Jumping down from beat 1.5 in Part 0 should land on event 1 (spanning [1.0, 2.0)) in Part 1"
         );
     }
+
+    #[test]
+    fn test_remove_instrument_warning_dialog() {
+        let mut app = MnxEditorApp::default();
+        app.process_and_render();
+
+        // Add a second instrument
+        app.add_new_instrument_part(
+            "Second Guitar".to_string(),
+            6,
+            12,
+            1,
+            Vec::new(),
+            None,
+        );
+        assert_eq!(app.parsed_mnx.as_ref().unwrap().parts.len(), 2);
+
+        // Select the second instrument and trigger removal
+        app.select_part(1);
+        app.active_dialog = ActiveDialog::ConfirmRemoveInstrument { part_idx: 1 };
+
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        // 1. Cancel via Escape -> instrument is NOT removed
+        let mut raw_input_cancel = egui::RawInput::default();
+        raw_input_cancel.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out = ctx.run_ui(raw_input_cancel, |ctx| {
+            app.render_dialogs(ctx);
+        });
+        out.textures_delta.clear();
+
+        assert_eq!(app.active_dialog, ActiveDialog::None);
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts.len(),
+            2,
+            "Canceling the warning dialog should retain both instruments"
+        );
+
+        // 2. Open dialog again and confirm with Enter ("Ok") -> instrument IS removed
+        app.active_dialog = ActiveDialog::ConfirmRemoveInstrument { part_idx: 1 };
+        let mut raw_input_ok = egui::RawInput::default();
+        raw_input_ok.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut out2 = ctx.run_ui(raw_input_ok, |ctx| {
+            app.render_dialogs(ctx);
+        });
+        out2.textures_delta.clear();
+
+        assert_eq!(app.active_dialog, ActiveDialog::None);
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts.len(),
+            1,
+            "Confirming removal via warning dialog should remove the instrument"
+        );
+    }
 }
 

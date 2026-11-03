@@ -1331,7 +1331,9 @@ impl MnxEditorApp {
 
                 if num_parts > 1 {
                     if ui.button("Remove Instrument").on_hover_text("Remove the currently selected instrument part").clicked() {
-                        self.remove_instrument_part(self.selected_part_idx);
+                        self.active_dialog = ActiveDialog::ConfirmRemoveInstrument {
+                            part_idx: self.selected_part_idx,
+                        };
                     }
                 }
 

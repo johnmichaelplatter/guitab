@@ -190,6 +190,9 @@ pub enum ActiveDialog {
     ConfirmDiscardChanges {
         target: DiscardTarget,
     },
+    ConfirmRemoveInstrument {
+        part_idx: usize,
+    },
     ScoreInfo {
         title: String,
         subtitle: String,
