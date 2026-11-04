@@ -1,12 +1,37 @@
 use crate::mnx::{Duration, Event, Measure, Part, Sequence, SequenceItem, Tie, TimeSignature};
 use crate::validate::{duration_to_quarter_beats, quarter_beats_to_duration};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub fn generate_uuid() -> String {
-    let random_number: u32 = std::time::SystemTime::now()
+static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Generates a globally unique Event ID with "ev_" prefix
+pub fn generate_event_id() -> String {
+    let count = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    format!("id-{:x}", random_number)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("ev_{:x}_{}", ts, count)
+}
+
+/// Generates a globally unique Note ID with "n_" prefix
+pub fn generate_note_id() -> String {
+    let count = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("n_{:x}_{}", ts, count)
+}
+
+/// Backward-compatible UUID generator guaranteed never to collide
+pub fn generate_uuid() -> String {
+    let count = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("id_{:x}_{}", ts, count)
 }
 
 pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalMeasure>) {
@@ -148,7 +173,7 @@ pub fn split_event_for_capacity(ev: Event, capacity: f64) -> (Vec<Event>, Vec<Ev
             .iter_mut()
             .zip(template_for_2.notes.iter_mut())
         {
-            let new_id = generate_uuid();
+            let new_id = generate_note_id();
             if n_c1.ties.is_none() {
                 n_c1.ties = Some(Vec::new());
             }
@@ -176,7 +201,7 @@ pub fn greedy_split_event_duration(mut ev: Event, mut total_beats: f64) -> Vec<E
             if total_beats > eps {
                 // Generate tie to next chunk
                 for n in chunk.notes.iter_mut() {
-                    let new_id = generate_uuid();
+                    let new_id = generate_note_id();
                     if n.ties.is_none() {
                         n.ties = Some(Vec::new());
                     }

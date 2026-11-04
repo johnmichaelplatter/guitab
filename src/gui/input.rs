@@ -1418,13 +1418,13 @@ impl MnxEditorApp {
             // Give the target event and note IDs
             if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
                 if ev_cur.id.is_none() {
-                    ev_cur.id = Some(format!("ev_tgt_{}_{}", p_idx, start_idx));
+                    ev_cur.id = Some(crate::rebar::generate_event_id());
                 }
                 target_ev_id = ev_cur.id.clone();
 
                 if let Some(n) = ev_cur.notes.iter_mut().find(|n| n.string == Some(cur_str)) {
                     if n.id.is_none() {
-                        n.id = Some(format!("note_tgt_{}_{}_{}", p_idx, start_idx, cur_idx));
+                        n.id = Some(crate::rebar::generate_note_id());
                     }
                     target_note_id = n.id.clone();
                 }
@@ -1442,7 +1442,7 @@ impl MnxEditorApp {
                     .find(|n| n.string == Some(slur_str))
                 {
                     if n.id.is_none() {
-                        n.id = Some(format!("note_src_{}_{}_{}", p_idx, start_idx, cur_idx));
+                        n.id = Some(crate::rebar::generate_note_id());
                     }
                     start_note_id = n.id.clone();
                 }

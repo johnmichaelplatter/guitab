@@ -224,11 +224,15 @@ impl MnxDocument {
 
     pub fn clean_dangling_ties(&mut self) {
         let mut all_note_ids = std::collections::HashSet::new();
+        let mut all_event_ids = std::collections::HashSet::new();
 
         for part in &self.parts {
             for measure in &part.measures {
                 for seq in &measure.sequences {
                     for ev in seq.flattened_events() {
+                        if let Some(eid) = &ev.id {
+                            all_event_ids.insert(eid.clone());
+                        }
                         for note in &ev.notes {
                             if let Some(id) = &note.id {
                                 all_note_ids.insert(id.clone());
@@ -244,13 +248,14 @@ impl MnxDocument {
                 fn walk(
                     content: &mut Vec<SequenceItem>,
                     all_note_ids: &std::collections::HashSet<String>,
+                    all_event_ids: &std::collections::HashSet<String>,
                 ) {
                     for item in content {
                         match item {
                             SequenceItem::Event(ev) => {
                                 for note in &mut ev.notes {
                                     if let Some(ties) = &mut note.ties {
-                                        ties.retain(|tie| all_note_ids.contains(&tie.target));
+                                        ties.retain(|tie| all_note_ids.contains(&tie.target) || all_event_ids.contains(&tie.target));
                                         if ties.is_empty() {
                                             note.ties = None;
                                         }
@@ -258,15 +263,15 @@ impl MnxDocument {
                                 }
                             }
                             SequenceItem::Tuplet(t) => {
-                                walk(&mut t.content, all_note_ids);
+                                walk(&mut t.content, all_note_ids, all_event_ids);
                             }
                             SequenceItem::Grace(g) => {
-                                walk(&mut g.content, all_note_ids);
+                                walk(&mut g.content, all_note_ids, all_event_ids);
                             }
                         }
                     }
                 }
-                walk($content, &all_note_ids);
+                walk($content, &all_note_ids, &all_event_ids);
             };
         }
 
@@ -290,6 +295,226 @@ impl MnxDocument {
                 }
             }
         }
+    }
+
+    pub fn ensure_unique_ids(&mut self) -> bool {
+        let mut changed = false;
+        let mut seen_event_ids = std::collections::HashSet::new();
+        let mut seen_note_ids = std::collections::HashSet::new();
+
+        let mut event_remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut note_remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut string_aware_note_remap: std::collections::HashMap<(String, u8), String> = std::collections::HashMap::new();
+
+        // Pass 1: Detect duplicate IDs and collisions between notes and events
+        fn inspect_and_fix_ids(
+            items: &mut [SequenceItem],
+            seen_event_ids: &mut std::collections::HashSet<String>,
+            seen_note_ids: &mut std::collections::HashSet<String>,
+            event_remap: &mut std::collections::HashMap<String, String>,
+            note_remap: &mut std::collections::HashMap<String, String>,
+            string_aware_note_remap: &mut std::collections::HashMap<(String, u8), String>,
+            changed: &mut bool,
+        ) {
+            for item in items.iter_mut() {
+                match item {
+                    SequenceItem::Event(ev) => {
+                        if let Some(old_eid) = &ev.id {
+                            if seen_event_ids.contains(old_eid) || seen_note_ids.contains(old_eid) {
+                                let new_eid = crate::rebar::generate_event_id();
+                                event_remap.insert(old_eid.clone(), new_eid.clone());
+                                ev.id = Some(new_eid.clone());
+                                seen_event_ids.insert(new_eid);
+                                *changed = true;
+                            } else {
+                                seen_event_ids.insert(old_eid.clone());
+                            }
+                        }
+
+                        for note in &mut ev.notes {
+                            if let Some(old_nid) = &note.id {
+                                let note_str = note.string.unwrap_or(0);
+                                if seen_note_ids.contains(old_nid) || seen_event_ids.contains(old_nid) {
+                                    let new_nid = crate::rebar::generate_note_id();
+                                    string_aware_note_remap.insert((old_nid.clone(), note_str), new_nid.clone());
+                                    if !seen_note_ids.contains(old_nid) {
+                                        note_remap.entry(old_nid.clone()).or_insert_with(|| new_nid.clone());
+                                    }
+                                    note.id = Some(new_nid.clone());
+                                    seen_note_ids.insert(new_nid);
+                                    *changed = true;
+                                } else {
+                                    seen_note_ids.insert(old_nid.clone());
+                                    string_aware_note_remap.insert((old_nid.clone(), note_str), old_nid.clone());
+                                }
+                            }
+                        }
+                    }
+                    SequenceItem::Tuplet(t) => {
+                        inspect_and_fix_ids(
+                            &mut t.content,
+                            seen_event_ids,
+                            seen_note_ids,
+                            event_remap,
+                            note_remap,
+                            string_aware_note_remap,
+                            changed,
+                        );
+                    }
+                    SequenceItem::Grace(g) => {
+                        inspect_and_fix_ids(
+                            &mut g.content,
+                            seen_event_ids,
+                            seen_note_ids,
+                            event_remap,
+                            note_remap,
+                            string_aware_note_remap,
+                            changed,
+                        );
+                    }
+                }
+            }
+        }
+
+        for part in &mut self.parts {
+            for measure in &mut part.measures {
+                for seq in &mut measure.sequences {
+                    inspect_and_fix_ids(
+                        &mut seq.content,
+                        &mut seen_event_ids,
+                        &mut seen_note_ids,
+                        &mut event_remap,
+                        &mut note_remap,
+                        &mut string_aware_note_remap,
+                        &mut changed,
+                    );
+                }
+            }
+        }
+
+        if !changed && event_remap.is_empty() && note_remap.is_empty() {
+            return false;
+        }
+
+        // Pass 2: Remap ties, slurs, arpeggios
+        fn remap_refs(
+            items: &mut [SequenceItem],
+            event_remap: &std::collections::HashMap<String, String>,
+            note_remap: &std::collections::HashMap<String, String>,
+            string_aware_note_remap: &std::collections::HashMap<(String, u8), String>,
+            changed: &mut bool,
+        ) {
+            for item in items.iter_mut() {
+                match item {
+                    SequenceItem::Event(ev) => {
+                        if let Some(slurs) = &mut ev.slurs {
+                            for slur in slurs.iter_mut() {
+                                if let Some(new_t) = event_remap.get(&slur.target) {
+                                    slur.target = new_t.clone();
+                                    *changed = true;
+                                }
+
+                                let slur_str = slur.start_note.as_ref().and_then(|sn| {
+                                    ev.notes.iter().find(|n| {
+                                        n.id.as_ref() == Some(sn)
+                                            || string_aware_note_remap
+                                                .get(&(sn.clone(), n.string.unwrap_or(0)))
+                                                .map(|mapped| mapped == n.id.as_ref().unwrap_or(&String::new()))
+                                                .unwrap_or(false)
+                                    }).and_then(|n| n.string)
+                                });
+
+                                if let Some(sn) = &slur.start_note {
+                                    let mapped_sn = slur_str
+                                        .and_then(|st| string_aware_note_remap.get(&(sn.clone(), st)))
+                                        .or_else(|| note_remap.get(sn));
+                                    if let Some(new_sn) = mapped_sn {
+                                        if new_sn != sn {
+                                            slur.start_note = Some(new_sn.clone());
+                                            *changed = true;
+                                        }
+                                    }
+                                }
+                                if let Some(en) = &slur.end_note {
+                                    let mapped_en = slur_str
+                                        .and_then(|st| string_aware_note_remap.get(&(en.clone(), st)))
+                                        .or_else(|| note_remap.get(en));
+                                    if let Some(new_en) = mapped_en {
+                                        if new_en != en {
+                                            slur.end_note = Some(new_en.clone());
+                                            *changed = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for note in &mut ev.notes {
+                            let note_str = note.string.unwrap_or(0);
+                            if let Some(ties) = &mut note.ties {
+                                for tie in ties.iter_mut() {
+                                    if let Some(new_t) = string_aware_note_remap
+                                        .get(&(tie.target.clone(), note_str))
+                                        .or_else(|| note_remap.get(&tie.target))
+                                        .or_else(|| event_remap.get(&tie.target))
+                                    {
+                                        if new_t != &tie.target {
+                                            tie.target = new_t.clone();
+                                            *changed = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SequenceItem::Tuplet(t) => {
+                        remap_refs(
+                            &mut t.content,
+                            event_remap,
+                            note_remap,
+                            string_aware_note_remap,
+                            changed,
+                        );
+                    }
+                    SequenceItem::Grace(g) => {
+                        remap_refs(
+                            &mut g.content,
+                            event_remap,
+                            note_remap,
+                            string_aware_note_remap,
+                            changed,
+                        );
+                    }
+                }
+            }
+        }
+
+        for part in &mut self.parts {
+            for measure in &mut part.measures {
+                for seq in &mut measure.sequences {
+                    remap_refs(
+                        &mut seq.content,
+                        &event_remap,
+                        &note_remap,
+                        &string_aware_note_remap,
+                        &mut changed,
+                    );
+                }
+                if let Some(arps) = &mut measure.arpeggios {
+                    for arp in arps.iter_mut() {
+                        if let Some(new_s) = note_remap.get(&arp.span.start) {
+                            arp.span.start = new_s.clone();
+                            changed = true;
+                        }
+                        if let Some(new_e) = note_remap.get(&arp.span.end) {
+                            arp.span.end = new_e.clone();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        changed
     }
 
     pub fn clean_dangling_slides(&mut self) {
@@ -961,6 +1186,22 @@ pub enum SequenceItem {
     Tuplet(Tuplet),
     Grace(Grace),
     Event(Event),
+}
+
+impl SequenceItem {
+    pub fn as_event(&self) -> Option<&Event> {
+        match self {
+            SequenceItem::Event(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    pub fn as_event_mut(&mut self) -> Option<&mut Event> {
+        match self {
+            SequenceItem::Event(e) => Some(e),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

@@ -1437,7 +1437,8 @@ impl MnxEditorApp {
                     p.ext.micro_fret_divisions.is_none() && p.detect_tuning_edo().is_some()
                 });
                 doc.clean_unneeded_fret_fields();
-                if had_missing_edo {
+                let ids_fixed = doc.ensure_unique_ids();
+                if had_missing_edo || ids_fixed {
                     if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
                         self.update_yaml(new_yaml);
                     }

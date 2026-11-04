@@ -5720,5 +5720,382 @@ parts:
         assert_eq!(note_64_offs.len(), 1, "Note 64 should have exactly 1 NoteOff");
         assert_eq!(note_64_offs[0], 1920, "Note 64 NoteOff must occur at tick 1920 (when next note on string 1 is struck), not before");
     }
+
+    #[test]
+    fn test_unique_id_generation_no_collisions() {
+        let iterations = 100_000;
+        let mut ev_ids = std::collections::HashSet::with_capacity(iterations);
+        let mut note_ids = std::collections::HashSet::with_capacity(iterations);
+        let mut uuids = std::collections::HashSet::with_capacity(iterations);
+
+        for _ in 0..iterations {
+            let eid = crate::rebar::generate_event_id();
+            assert!(eid.starts_with("ev_"));
+            assert!(ev_ids.insert(eid));
+
+            let nid = crate::rebar::generate_note_id();
+            assert!(nid.starts_with("n_"));
+            assert!(note_ids.insert(nid));
+
+            let uid = crate::rebar::generate_uuid();
+            assert!(uid.starts_with("id_"));
+            assert!(uuids.insert(uid));
+        }
+
+        assert_eq!(ev_ids.len(), iterations);
+        assert_eq!(note_ids.len(), iterations);
+        assert_eq!(uuids.len(), iterations);
+
+        // Ensure completely disjoint sets
+        assert!(ev_ids.is_disjoint(&note_ids));
+        assert!(ev_ids.is_disjoint(&uuids));
+        assert!(note_ids.is_disjoint(&uuids));
+    }
+
+    #[test]
+    fn test_ensure_unique_ids_sanitizes_duplicates_and_remaps_ties_slurs() {
+        let yaml = r#"
+mnx: { version: 1 }
+global:
+  measures:
+  - time: { count: 4, unit: 4 }
+parts:
+- name: Guitar
+  measures:
+  - sequences:
+    - content:
+      - type: event
+        id: shared_id
+        duration: { base: quarter }
+        notes:
+        - id: shared_id
+          pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+          ties: [{ target: target_shared }]
+        - id: shared_id
+          pitch: { step: B, octave: 3 }
+          _x: { string: 2, fret: 0 }
+          ties: [{ target: target_shared }]
+        slurs:
+        - target: shared_id_2
+          side: up
+          startNote: shared_id
+          endNote: target_shared
+      - type: event
+        id: shared_id_2
+        duration: { base: quarter }
+        notes:
+        - id: target_shared
+          pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+        - id: target_shared
+          pitch: { step: B, octave: 3 }
+          _x: { string: 2, fret: 0 }
+"#;
+        let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).unwrap();
+        let changed = doc.ensure_unique_ids();
+        assert!(changed, "ensure_unique_ids should detect and repair duplicated IDs");
+
+        // Collect all IDs
+        let mut all_ids = std::collections::HashSet::new();
+        let ev1 = &doc.parts[0].measures[0].sequences[0].content[0];
+        let ev2 = &doc.parts[0].measures[0].sequences[0].content[1];
+
+        if let (crate::mnx::SequenceItem::Event(e1), crate::mnx::SequenceItem::Event(e2)) = (ev1, ev2) {
+            let e1_id = e1.id.as_ref().unwrap();
+            let e2_id = e2.id.as_ref().unwrap();
+            let n1_1_id = e1.notes[0].id.as_ref().unwrap();
+            let n1_2_id = e1.notes[1].id.as_ref().unwrap();
+            let n2_1_id = e2.notes[0].id.as_ref().unwrap();
+            let n2_2_id = e2.notes[1].id.as_ref().unwrap();
+
+            assert!(all_ids.insert(e1_id.clone()));
+            assert!(all_ids.insert(e2_id.clone()));
+            assert!(all_ids.insert(n1_1_id.clone()));
+            assert!(all_ids.insert(n1_2_id.clone()));
+            assert!(all_ids.insert(n2_1_id.clone()));
+            assert!(all_ids.insert(n2_2_id.clone()));
+            assert_eq!(all_ids.len(), 6, "All 6 IDs must be completely unique");
+
+            // Check tie remapping: string 1 note should tie to string 1 target
+            assert_eq!(e1.notes[0].ties.as_ref().unwrap()[0].target, *n2_1_id);
+            // Check tie remapping: string 2 note should tie to string 2 target
+            assert_eq!(e1.notes[1].ties.as_ref().unwrap()[0].target, *n2_2_id);
+
+            // Check slur remapping
+            let slur = &e1.slurs.as_ref().unwrap()[0];
+            assert_eq!(slur.target, *e2_id);
+            assert_eq!(slur.start_note.as_ref().unwrap(), n1_1_id);
+            assert_eq!(slur.end_note.as_ref().unwrap(), n2_1_id);
+        } else {
+            panic!("Expected events");
+        }
+    }
+
+    #[test]
+    fn test_tie_toggle_blue_mode_single_and_chord() {
+        let yaml = r#"
+mnx: { version: 1 }
+global:
+  measures:
+  - time: { count: 4, unit: 4 }
+parts:
+- name: Guitar
+  measures:
+  - sequences:
+    - content:
+      - type: event
+        duration: { base: quarter }
+        notes:
+        - pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+        - pitch: { step: B, octave: 3 }
+          _x: { string: 2, fret: 0 }
+        - pitch: { step: G, octave: 3 }
+          _x: { string: 3, fret: 0 }
+      - type: event
+        duration: { base: quarter }
+        notes:
+        - pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+        - pitch: { step: B, octave: 3 }
+          _x: { string: 2, fret: 0 }
+        - pitch: { step: G, octave: 3 }
+          _x: { string: 3, fret: 0 }
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        // Blue Select Mode on event 0 (no editing_string, no note_idx)
+        app.selected_event_idx = Some(0);
+        app.editing_string = None;
+        app.selected_note_idx_in_event = None;
+
+        assert!(!app.is_selected_event_tied());
+
+        // Toggle ON
+        app.action_add_tie();
+        assert!(app.is_selected_event_tied(), "Chord should now be tied");
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert_eq!(ev0.notes[0].ties.as_ref().unwrap().len(), 1);
+        assert_eq!(ev0.notes[1].ties.as_ref().unwrap().len(), 1);
+        assert_eq!(ev0.notes[2].ties.as_ref().unwrap().len(), 1);
+
+        // Toggle OFF
+        app.action_add_tie();
+        assert!(!app.is_selected_event_tied(), "Chord should now be untied");
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_again = doc2.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0_again.notes[0].ties.is_none());
+        assert!(ev0_again.notes[1].ties.is_none());
+        assert!(ev0_again.notes[2].ties.is_none());
+    }
+
+    #[test]
+    fn test_tie_toggle_incoming_note() {
+        let yaml = r#"
+mnx: { version: 1 }
+global:
+  measures:
+  - time: { count: 4, unit: 4 }
+parts:
+- name: Guitar
+  measures:
+  - sequences:
+    - content:
+      - type: event
+        duration: { base: quarter }
+        notes:
+        - id: note_a
+          pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+          ties: [{ target: note_b }]
+      - type: event
+        id: ev_b
+        duration: { base: quarter }
+        notes:
+        - id: note_b
+          pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        // Select target note (event 1, string 1) in Orange Mode
+        app.selected_event_idx = Some(1);
+        app.editing_string = Some(1);
+        app.selected_note_idx_in_event = Some(0);
+
+        // Target note has incoming tie from event 0
+        app.action_add_tie();
+
+        // Incoming tie on event 0 must now be removed!
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0.notes[0].ties.is_none(), "Incoming tie should have been toggled off");
+    }
+
+    #[test]
+    fn test_slur_toggle_blue_mode_single_and_chord() {
+        let yaml = r#"
+mnx: { version: 1 }
+global:
+  measures:
+  - time: { count: 4, unit: 4 }
+parts:
+- name: Guitar
+  measures:
+  - sequences:
+    - content:
+      - type: event
+        duration: { base: quarter }
+        notes:
+        - pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+      - type: event
+        duration: { base: quarter }
+        notes:
+        - pitch: { step: F, octave: 4 }
+          _x: { string: 1, fret: 1 }
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        // Blue Select Mode on event 0
+        app.selected_event_idx = Some(0);
+        app.editing_string = None;
+        app.selected_note_idx_in_event = None;
+
+        assert!(!app.is_selected_note_slurred());
+
+        // Toggle ON
+        app.action_add_slur();
+        assert!(app.is_selected_note_slurred(), "Event 0 should now be slurred");
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0.slurs.is_some());
+        assert_eq!(ev0.slurs.as_ref().unwrap().len(), 1);
+
+        // Toggle OFF
+        app.action_add_slur();
+        assert!(!app.is_selected_note_slurred(), "Event 0 slur should now be toggled off");
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_again = doc2.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0_again.slurs.is_none());
+    }
+
+    #[test]
+    fn test_slur_toggle_incoming_note() {
+        let yaml = r#"
+mnx: { version: 1 }
+global:
+  measures:
+  - time: { count: 4, unit: 4 }
+parts:
+- name: Guitar
+  measures:
+  - sequences:
+    - content:
+      - type: event
+        id: ev_0
+        duration: { base: quarter }
+        notes:
+        - id: note_0
+          pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+        slurs:
+        - target: ev_1
+          side: up
+          startNote: note_0
+          endNote: note_1
+      - type: event
+        id: ev_1
+        duration: { base: quarter }
+        notes:
+        - id: note_1
+          pitch: { step: F, octave: 4 }
+          _x: { string: 1, fret: 1 }
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        // Select event 1 (target of slur) in Blue mode
+        app.selected_event_idx = Some(1);
+        app.editing_string = None;
+        app.selected_note_idx_in_event = None;
+
+        app.action_add_slur();
+
+        // Slur on event 0 should be removed!
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0.slurs.is_none(), "Incoming slur on preceding event must be toggled off");
+    }
+
+    #[test]
+    fn test_tie_and_slur_orange_mode_specific_string() {
+        let yaml = r#"
+mnx: { version: 1 }
+global:
+  measures:
+  - time: { count: 4, unit: 4 }
+parts:
+- name: Guitar
+  measures:
+  - sequences:
+    - content:
+      - type: event
+        duration: { base: quarter }
+        notes:
+        - pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+        - pitch: { step: B, octave: 3 }
+          _x: { string: 2, fret: 0 }
+      - type: event
+        duration: { base: quarter }
+        notes:
+        - pitch: { step: E, octave: 4 }
+          _x: { string: 1, fret: 0 }
+        - pitch: { step: C, octave: 4 }
+          _x: { string: 2, fret: 1 }
+"#;
+        let mut app = MnxEditorApp::default();
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+        // Orange Edit Mode on string 1 of event 0
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.selected_note_idx_in_event = Some(0);
+
+        // Add tie on string 1
+        app.action_add_tie();
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0.notes[0].ties.is_some(), "String 1 must have tie");
+        assert!(ev0.notes[1].ties.is_none(), "String 2 must NOT have tie");
+
+        // Toggle tie off on string 1
+        app.action_add_tie();
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_again = doc2.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0_again.notes[0].ties.is_none(), "String 1 tie must be removed");
+
+        // Now move to string 2 in Orange Edit Mode
+        app.editing_string = Some(2);
+        app.selected_note_idx_in_event = Some(1);
+
+        // Add slur on string 2 (hammer-on from fret 0 to fret 1)
+        app.action_add_slur();
+        let doc3 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_slur = doc3.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0_slur.slurs.is_some(), "Event must have slur on string 2");
+
+        // Toggle slur off on string 2
+        app.action_add_slur();
+        let doc4 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_noslur = doc4.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert!(ev0_noslur.slurs.is_none(), "String 2 slur must be toggled off");
+    }
 }
 

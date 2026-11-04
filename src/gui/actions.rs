@@ -1019,19 +1019,207 @@ impl MnxEditorApp {
             None => return,
         };
 
-        // Determine current string (fallback to only note if blue mode)
+        let is_blue_mode = self.editing_string.is_none() && self.selected_note_idx_in_event.is_none();
+
+        if is_blue_mode {
+            // ── Blue Select Mode: Event / Chord level ────────────────────────
+            // 1. Check if this event has outgoing slurs:
+            let has_outgoing = ev_cur_clone.slurs.as_ref().map_or(false, |s| !s.is_empty());
+            if has_outgoing {
+                if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
+                    ev.slurs = None;
+                }
+                self.apply_mutated_doc(doc);
+                return;
+            }
+
+            // 2. Check if this event has incoming slurs from preceding events:
+            let cur_eid = ev_cur_clone.id.clone();
+            let cur_note_ids: std::collections::HashSet<String> = ev_cur_clone
+                .notes
+                .iter()
+                .filter_map(|n| n.id.clone())
+                .collect();
+
+            let mut removed_incoming = false;
+            if event_idx > 0 {
+                for prev_i in (0..event_idx).rev() {
+                    let prev_path = flattened_events[prev_i];
+                    if let Some(ev_prev) = doc.get_event_mut_at_part_path(p_idx, prev_path) {
+                        if let Some(slurs) = &mut ev_prev.slurs {
+                            let orig_len = slurs.len();
+                            slurs.retain(|s| {
+                                let matches_target = cur_eid.as_ref().map_or(false, |eid| &s.target == eid);
+                                let matches_end_note = s.end_note.as_ref().map_or(false, |nid| cur_note_ids.contains(nid));
+                                !(matches_target || matches_end_note)
+                            });
+                            if slurs.len() < orig_len {
+                                removed_incoming = true;
+                            }
+                        }
+                        if ev_prev.slurs.as_ref().map_or(false, |s| s.is_empty()) {
+                            ev_prev.slurs = None;
+                        }
+                    }
+                    if removed_incoming {
+                        break;
+                    }
+                }
+            }
+
+            if removed_incoming {
+                self.apply_mutated_doc(doc);
+                return;
+            }
+
+            // 3. Neither outgoing nor incoming slur: Add slur(s) forward
+            if event_idx + 1 >= flattened_events.len() {
+                if ev_cur_clone.notes.len() == 1 {
+                    let cur_str = ev_cur_clone.notes[0].string.unwrap_or(1);
+                    self.pending_slur = Some((event_idx, cur_str));
+                    self.advance_to_next_note_in_edit_mode(Some(cur_str), flattened_events.len());
+                }
+                return;
+            }
+
+            let next_path = flattened_events[event_idx + 1];
+            let next_ev_clone = match doc.get_event_at_part_path(p_idx, next_path) {
+                Some(e) => e.clone(),
+                None => return,
+            };
+
+            let target_ev_id = if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
+                if ev_next.id.is_none() {
+                    ev_next.id = Some(crate::rebar::generate_event_id());
+                }
+                ev_next.id.clone().unwrap()
+            } else {
+                return;
+            };
+
+            if ev_cur_clone.notes.len() == 1 {
+                let cur_string = ev_cur_clone.notes[0].string.unwrap_or(1);
+                let mut next_target = None;
+                for j in (event_idx + 1)..flattened_events.len() {
+                    let path_j = flattened_events[j];
+                    let ev_j = doc.get_event_at_part_path(p_idx, path_j).cloned().unwrap();
+                    if let Some(n_idx) = ev_j.notes.iter().position(|n| n.string == Some(cur_string)) {
+                        next_target = Some((path_j, n_idx));
+                        break;
+                    }
+                }
+
+                if let Some((target_path, next_n_idx)) = next_target {
+                    let end_note_id = if let Some(ev_target) = doc.get_event_mut_at_part_path(p_idx, target_path) {
+                        let n_tgt = &mut ev_target.notes[next_n_idx];
+                        if n_tgt.id.is_none() {
+                            n_tgt.id = Some(crate::rebar::generate_note_id());
+                        }
+                        n_tgt.id.clone()
+                    } else {
+                        None
+                    };
+
+                    let target_id = if let Some(ev_target) = doc.get_event_mut_at_part_path(p_idx, target_path) {
+                        if ev_target.id.is_none() {
+                            ev_target.id = Some(crate::rebar::generate_event_id());
+                        }
+                        ev_target.id.clone().unwrap()
+                    } else {
+                        target_ev_id
+                    };
+
+                    if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
+                        let n_cur = &mut ev_cur.notes[0];
+                        if n_cur.id.is_none() {
+                            n_cur.id = Some(crate::rebar::generate_note_id());
+                        }
+                        let start_note_id = n_cur.id.clone();
+                        if ev_cur.slurs.is_none() {
+                            ev_cur.slurs = Some(Vec::new());
+                        }
+                        ev_cur.slurs.as_mut().unwrap().push(crate::mnx::Slur {
+                            target: target_id,
+                            side: Some("up".to_string()),
+                            start_note: start_note_id,
+                            end_note: end_note_id,
+                        });
+                    }
+                    self.apply_mutated_doc(doc);
+                } else {
+                    self.pending_slur = Some((event_idx, cur_string));
+                    self.advance_to_next_note_in_edit_mode(Some(cur_string), flattened_events.len());
+                }
+                return;
+            }
+
+            // Chord case in Blue Mode:
+            let mut slurs_to_add = Vec::new();
+            for n_cur in &ev_cur_clone.notes {
+                let s_str = n_cur.string.unwrap_or(0);
+                if let Some(n_next_idx) = next_ev_clone.notes.iter().position(|n| n.string == Some(s_str)) {
+                    let start_nid = n_cur.id.clone().unwrap_or_else(crate::rebar::generate_note_id);
+                    let end_nid = next_ev_clone.notes[n_next_idx].id.clone().unwrap_or_else(crate::rebar::generate_note_id);
+                    slurs_to_add.push((s_str, start_nid, end_nid));
+                }
+            }
+
+            if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
+                for (s_str, _, end_nid) in &slurs_to_add {
+                    if let Some(n) = ev_next.notes.iter_mut().find(|n| n.string == Some(*s_str)) {
+                        if n.id.is_none() {
+                            n.id = Some(end_nid.clone());
+                        }
+                    }
+                }
+            }
+
+            if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
+                for (s_str, start_nid, _) in &slurs_to_add {
+                    if let Some(n) = ev_cur.notes.iter_mut().find(|n| n.string == Some(*s_str)) {
+                        if n.id.is_none() {
+                            n.id = Some(start_nid.clone());
+                        }
+                    }
+                }
+                if ev_cur.slurs.is_none() {
+                    ev_cur.slurs = Some(Vec::new());
+                }
+                if slurs_to_add.is_empty() {
+                    ev_cur.slurs.as_mut().unwrap().push(crate::mnx::Slur {
+                        target: target_ev_id,
+                        side: Some("up".to_string()),
+                        start_note: None,
+                        end_note: None,
+                    });
+                } else {
+                    for (_, start_nid, end_nid) in slurs_to_add {
+                        ev_cur.slurs.as_mut().unwrap().push(crate::mnx::Slur {
+                            target: target_ev_id.clone(),
+                            side: Some("up".to_string()),
+                            start_note: Some(start_nid),
+                            end_note: Some(end_nid),
+                        });
+                    }
+                }
+            }
+
+            self.apply_mutated_doc(doc);
+            return;
+        }
+
+        // ── Orange Edit Mode: Specific string selected ───────────────────────
         let cur_string = match self.editing_string {
             Some(s) => s,
             None => {
-                if ev_cur_clone.notes.len() == 1 {
-                    ev_cur_clone.notes[0].string.unwrap_or(1)
+                if let Some(n_idx) = self.selected_note_idx_in_event {
+                    ev_cur_clone.notes.get(n_idx).and_then(|n| n.string).unwrap_or(1)
                 } else {
                     return;
                 }
             }
         };
 
-        // Find the note on cur_string
         let note_idx = match ev_cur_clone
             .notes
             .iter()
@@ -1041,16 +1229,22 @@ impl MnxEditorApp {
             None => return,
         };
 
+        let note_cur_id = ev_cur_clone.notes[note_idx].id.clone();
+
+        // 1. Check outgoing slur on this string
         let mut toggled_off = false;
         if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             if let Some(slurs) = &mut ev.slurs {
-                let note_cur_id = ev.notes[note_idx].id.clone();
                 let original_len = slurs.len();
-                if let Some(id) = &note_cur_id {
-                    slurs.retain(|s| s.start_note.as_ref() != Some(id));
-                } else {
-                    // if it has no ID, it couldn't have had a slur
-                }
+                slurs.retain(|s| {
+                    if let Some(id) = &note_cur_id {
+                        s.start_note.as_ref() != Some(id)
+                    } else if ev_cur_clone.notes.len() == 1 {
+                        false
+                    } else {
+                        true
+                    }
+                });
                 if slurs.len() < original_len {
                     toggled_off = true;
                 }
@@ -1065,7 +1259,41 @@ impl MnxEditorApp {
             return;
         }
 
-        // Search forward for the next note on the same string
+        // 2. Check incoming slur on this string from previous events
+        let mut removed_incoming = false;
+        if event_idx > 0 {
+            for prev_i in (0..event_idx).rev() {
+                let prev_path = flattened_events[prev_i];
+                if let Some(ev_prev) = doc.get_event_mut_at_part_path(p_idx, prev_path) {
+                    if let Some(slurs) = &mut ev_prev.slurs {
+                        let orig_len = slurs.len();
+                        slurs.retain(|s| {
+                            if let Some(id) = &note_cur_id {
+                                s.end_note.as_ref() != Some(id)
+                            } else {
+                                true
+                            }
+                        });
+                        if slurs.len() < orig_len {
+                            removed_incoming = true;
+                        }
+                    }
+                    if ev_prev.slurs.as_ref().map_or(false, |s| s.is_empty()) {
+                        ev_prev.slurs = None;
+                    }
+                }
+                if removed_incoming {
+                    break;
+                }
+            }
+        }
+
+        if removed_incoming {
+            self.apply_mutated_doc(doc);
+            return;
+        }
+
+        // 3. Search forward for the next note on the same string
         let mut next_target = None;
         for j in (event_idx + 1)..flattened_events.len() {
             let path_j = flattened_events[j];
@@ -1082,13 +1310,13 @@ impl MnxEditorApp {
 
             if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
                 if ev_next.id.is_none() {
-                    ev_next.id = Some(format!("ev_tgt_{}_{}", p_idx, event_idx));
+                    ev_next.id = Some(crate::rebar::generate_event_id());
                 }
                 target_ev_id = ev_next.id.clone();
 
                 let n_tgt = &mut ev_next.notes[next_n_idx];
                 if n_tgt.id.is_none() {
-                    n_tgt.id = Some(format!("note_tgt_{}_{}_{}", p_idx, event_idx, next_n_idx));
+                    n_tgt.id = Some(crate::rebar::generate_note_id());
                 }
                 end_note_id = n_tgt.id.clone();
             }
@@ -1096,7 +1324,7 @@ impl MnxEditorApp {
             if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
                 let n_cur = &mut ev_cur.notes[note_idx];
                 if n_cur.id.is_none() {
-                    n_cur.id = Some(format!("note_src_{}_{}_{}", p_idx, event_idx, note_idx));
+                    n_cur.id = Some(crate::rebar::generate_note_id());
                 }
                 let start_note_id = n_cur.id.clone();
 
@@ -1145,6 +1373,130 @@ impl MnxEditorApp {
             crate::mnx::AstPath::InTuplet(m, s, i, _) => (m, s, i),
         };
 
+        let is_blue_mode = self.editing_string.is_none() && self.selected_note_idx_in_event.is_none();
+
+        if is_blue_mode {
+            // ── Blue Select Mode: Event / Chord level ────────────────────────
+            // 1. Check if any note in the current event has outgoing ties:
+            let has_outgoing_ties = ev_cur_clone.notes.iter().any(|n| n.ties.as_ref().map_or(false, |t| !t.is_empty()));
+            if has_outgoing_ties {
+                if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
+                    for n in &mut ev.notes {
+                        n.ties = None;
+                    }
+                }
+                self.apply_mutated_doc(doc);
+                return;
+            }
+
+            // 2. Check if there are incoming ties from the preceding event:
+            let cur_eid = ev_cur_clone.id.clone();
+            let cur_note_ids: std::collections::HashSet<String> = ev_cur_clone
+                .notes
+                .iter()
+                .filter_map(|n| n.id.clone())
+                .collect();
+
+            let mut removed_incoming = false;
+            if event_idx > 0 {
+                let prev_path = flattened_events[event_idx - 1];
+                if let Some(ev_prev) = doc.get_event_mut_at_part_path(p_idx, prev_path) {
+                    for n_prev in &mut ev_prev.notes {
+                        if let Some(ties) = &mut n_prev.ties {
+                            let orig_len = ties.len();
+                            ties.retain(|t| {
+                                let matches_note = cur_note_ids.contains(&t.target);
+                                let matches_ev = cur_eid.as_ref().map_or(false, |eid| &t.target == eid);
+                                !(matches_note || matches_ev)
+                            });
+                            if ties.len() < orig_len {
+                                removed_incoming = true;
+                            }
+                        }
+                        if n_prev.ties.as_ref().map_or(false, |t| t.is_empty()) {
+                            n_prev.ties = None;
+                        }
+                    }
+                }
+            }
+
+            if removed_incoming {
+                self.apply_mutated_doc(doc);
+                return;
+            }
+
+            // 3. Neither outgoing nor incoming ties: Toggle ON (add ties to next event/notes)
+            let next_event_info = flattened_events.get(event_idx + 1).copied();
+            if let Some(next_path) = next_event_info {
+                let next_ev_clone = match doc.get_event_at_part_path(p_idx, next_path) {
+                    Some(e) => e.clone(),
+                    None => return,
+                };
+
+                let target_ev_id = if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
+                    if ev_next.id.is_none() {
+                        ev_next.id = Some(crate::rebar::generate_event_id());
+                    }
+                    ev_next.id.clone().unwrap()
+                } else {
+                    return;
+                };
+
+                let mut note_targets = Vec::new();
+                for (cur_n_idx, n_cur) in ev_cur_clone.notes.iter().enumerate() {
+                    let s_str = n_cur.string.unwrap_or(0);
+                    let mut matched = false;
+                    for (next_n_idx, n_next) in next_ev_clone.notes.iter().enumerate() {
+                        if n_next.string == Some(s_str) {
+                            if n_next.fret == n_cur.fret {
+                                let tgt_nid = n_next.id.clone().unwrap_or_else(crate::rebar::generate_note_id);
+                                note_targets.push((cur_n_idx, s_str, Some((next_n_idx, tgt_nid))));
+                            }
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        note_targets.push((cur_n_idx, s_str, None));
+                    }
+                }
+
+                if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
+                    for (_, _, opt_tgt) in &note_targets {
+                        if let Some((next_n_idx, tgt_nid)) = opt_tgt {
+                            if ev_next.notes[*next_n_idx].id.is_none() {
+                                ev_next.notes[*next_n_idx].id = Some(tgt_nid.clone());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
+                    for (cur_n_idx, _, opt_tgt) in note_targets {
+                        let target_id = match opt_tgt {
+                            Some((_, tgt_nid)) => tgt_nid,
+                            None => target_ev_id.clone(),
+                        };
+                        let n_cur = &mut ev_cur.notes[cur_n_idx];
+                        if n_cur.ties.is_none() {
+                            n_cur.ties = Some(Vec::new());
+                        }
+                        if !n_cur.ties.as_ref().unwrap().iter().any(|t| t.target == target_id) {
+                            n_cur.ties.as_mut().unwrap().push(crate::mnx::Tie { target: target_id });
+                        }
+                    }
+                }
+
+                self.apply_mutated_doc(doc);
+                return;
+            }
+
+            if ev_cur_clone.notes.is_empty() {
+                return;
+            }
+        }
+
+        // ── Orange Edit Mode (or Blue Mode with 1 note at end of tab) ────────
         let note_idx = match self.selected_note_idx_in_event {
             Some(idx) => idx,
             None => {
@@ -1166,16 +1518,25 @@ impl MnxEditorApp {
                             }
                         }
                     }
+                } else if ev_cur_clone.notes.len() == 1 {
+                    0
                 } else {
-                    if ev_cur_clone.notes.len() == 1 {
-                        0
-                    } else {
-                        return;
-                    }
+                    return;
                 }
             }
         };
 
+        let cur_string = match ev_cur_clone.notes.get(note_idx) {
+            Some(n) => match n.string {
+                Some(s) => s,
+                None => return,
+            },
+            None => return,
+        };
+        let cur_fret = ev_cur_clone.notes[note_idx].fret;
+        let note_cur_id = ev_cur_clone.notes[note_idx].id.clone();
+
+        // 1. Check outgoing tie on this note
         let mut toggled_off = false;
         if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             let note_cur = &mut ev.notes[note_idx];
@@ -1192,15 +1553,38 @@ impl MnxEditorApp {
             return;
         }
 
-        let cur_string = match ev_cur_clone.notes.get(note_idx) {
-            Some(n) => match n.string {
-                Some(s) => s,
-                None => return,
-            },
-            None => return,
-        };
-        let cur_fret = ev_cur_clone.notes[note_idx].fret;
+        // 2. Check incoming tie on this string from previous event
+        let mut removed_incoming = false;
+        if event_idx > 0 {
+            let prev_path = flattened_events[event_idx - 1];
+            if let Some(ev_prev) = doc.get_event_mut_at_part_path(p_idx, prev_path) {
+                for n_prev in &mut ev_prev.notes {
+                    if n_prev.string == Some(cur_string) {
+                        if let Some(ties) = &mut n_prev.ties {
+                            let orig_len = ties.len();
+                            ties.retain(|t| {
+                                let matches_note = note_cur_id.as_ref().map_or(false, |nid| &t.target == nid);
+                                let matches_ev = ev_cur_clone.id.as_ref().map_or(false, |eid| &t.target == eid);
+                                !(matches_note || matches_ev)
+                            });
+                            if ties.len() < orig_len {
+                                removed_incoming = true;
+                            }
+                        }
+                        if n_prev.ties.as_ref().map_or(false, |t| t.is_empty()) {
+                            n_prev.ties = None;
+                        }
+                    }
+                }
+            }
+        }
 
+        if removed_incoming {
+            self.apply_mutated_doc(doc);
+            return;
+        }
+
+        // 3. Search forward to next event
         let next_event_info = flattened_events.get(event_idx + 1).copied();
 
         if let Some(next_path) = next_event_info {
@@ -1209,15 +1593,12 @@ impl MnxEditorApp {
             let mut diff_fret = false;
 
             if let Some(ev_next) = doc.get_event_mut_at_part_path(p_idx, next_path) {
-                for (n_i, n) in ev_next.notes.iter_mut().enumerate() {
+                for n in ev_next.notes.iter_mut() {
                     if n.string == Some(cur_string) {
                         has_same_string = true;
                         if n.fret == cur_fret {
                             if n.id.is_none() {
-                                n.id = Some(format!(
-                                    "note_tgt_{}_{}_{}_{}",
-                                    p_idx, event_idx, note_idx, n_i
-                                ));
+                                n.id = Some(crate::rebar::generate_note_id());
                             }
                             target_id = n.id.clone();
                         } else {
@@ -1229,7 +1610,7 @@ impl MnxEditorApp {
 
                 if !has_same_string {
                     if ev_next.id.is_none() {
-                        ev_next.id = Some(format!("ev_tgt_{}_{}", p_idx, event_idx));
+                        ev_next.id = Some(crate::rebar::generate_event_id());
                     }
                     target_id = ev_next.id.clone();
                 }
@@ -1297,14 +1678,14 @@ impl MnxEditorApp {
         if let Some(ev_cur) = doc.get_event_mut_at_part_path(p_idx, cur_path) {
             let note_cur = &mut ev_cur.notes[note_idx];
             if note_cur.id.is_none() {
-                note_cur.id = Some(format!("note_src_{}_{}", p_idx, event_idx));
+                note_cur.id = Some(crate::rebar::generate_note_id());
             }
         }
 
         let next_target_id;
 
         if available_beats >= new_note_duration_beats - eps {
-            let id = format!("note_new_1_{}_{}", p_idx, event_idx);
+            let id = crate::rebar::generate_note_id();
             let new_ev = crate::mnx::Event {
                 id: None,
                 duration: cur_dur,
@@ -1343,8 +1724,8 @@ impl MnxEditorApp {
                 None => return,
             };
 
-            let id1 = format!("note_new_split1_{}_{}", p_idx, event_idx);
-            let id2 = format!("note_new_split2_{}_{}", p_idx, event_idx);
+            let id1 = crate::rebar::generate_note_id();
+            let id2 = crate::rebar::generate_note_id();
 
             let ev1 = crate::mnx::Event {
                 id: None,
@@ -1436,7 +1817,7 @@ impl MnxEditorApp {
                     .insert(0, crate::mnx::SequenceItem::Event(ev2));
             }
         } else {
-            let id2 = format!("note_new_split2_{}_{}", p_idx, event_idx);
+            let id2 = crate::rebar::generate_note_id();
             let ev2 = crate::mnx::Event {
                 id: None,
                 duration: cur_dur,
@@ -1919,13 +2300,13 @@ impl crate::gui::MnxEditorApp {
             }
             let f_note = ev.notes.first_mut().unwrap();
             if f_note.id.is_none() {
-                f_note.id = Some(format!("arp_{}_{}_start", p_idx, event_idx));
+                f_note.id = Some(crate::rebar::generate_note_id());
             }
             first_id = f_note.id.clone().unwrap();
 
             let l_note = ev.notes.last_mut().unwrap();
             if l_note.id.is_none() {
-                l_note.id = Some(format!("arp_{}_{}_end", p_idx, event_idx));
+                l_note.id = Some(crate::rebar::generate_note_id());
             }
             last_id = l_note.id.clone().unwrap();
         }
@@ -2877,7 +3258,7 @@ impl MnxEditorApp {
                         base_items.push(crate::mnx::SequenceItem::Event(rem_ev));
 
                         let mut mov_ev = ev.clone();
-                        mov_ev.id = Some(crate::rebar::generate_uuid());
+                        mov_ev.id = Some(crate::rebar::generate_event_id());
                         mov_ev.notes = vec![moved_note];
                         mov_ev.rest = None;
                         raw_moved_items.push(crate::mnx::SequenceItem::Event(mov_ev));
@@ -3010,9 +3391,9 @@ impl MnxEditorApp {
                     match &item {
                         crate::mnx::SequenceItem::Event(ev) => {
                             let mut post_ev = ev.clone();
-                            post_ev.id = Some(crate::rebar::generate_uuid());
+                            post_ev.id = Some(crate::rebar::generate_event_id());
                             for n in &mut post_ev.notes {
-                                n.id = Some(crate::rebar::generate_uuid());
+                                n.id = Some(crate::rebar::generate_note_id());
                             }
                             for chunk in
                                 crate::rebar::greedy_split_event_duration(post_ev, post_beats)

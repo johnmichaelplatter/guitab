@@ -728,94 +728,68 @@ impl MnxEditorApp {
         tempos: &mut [crate::mnx::Tempo],
         tcs: &mut [crate::mnx::TempoChange],
     ) {
-        let mut id_map = HashMap::new();
+        let mut ev_id_map = HashMap::new();
+        let mut note_id_map = HashMap::new();
+        let mut string_aware_note_remap: HashMap<(String, u8), String> = HashMap::new();
 
-        // Pass 1: Generate new IDs for everything and build a map
-        let _collect_ids = |items: &mut [crate::mnx::SequenceItem]| {
-            let mut stack = vec![items];
-            while let Some(slice) = stack.pop() {
-                for item in slice {
-                    match item {
-                        crate::mnx::SequenceItem::Event(ev) => {
-                            if let Some(old_ev_id) = &ev.id {
-                                let new_ev_id = crate::rebar::generate_uuid();
-                                id_map.insert(old_ev_id.clone(), new_ev_id.clone());
-                                ev.id = Some(new_ev_id);
-                            } else {
-                                ev.id = Some(crate::rebar::generate_uuid());
-                            }
-
-                            for n in ev.notes.iter_mut() {
-                                if let Some(old_id) = &n.id {
-                                    let new_id = crate::rebar::generate_uuid();
-                                    id_map.insert(old_id.clone(), new_id.clone());
-                                    n.id = Some(new_id);
-                                } else {
-                                    n.id = Some(crate::rebar::generate_uuid());
-                                }
-                            }
-                        }
-                        crate::mnx::SequenceItem::Tuplet(t) => {
-                            stack.push(&mut t.content);
-                        }
-                        crate::mnx::SequenceItem::Grace(g) => {
-                            stack.push(&mut g.content);
-                        }
-                    }
-                }
-            }
-        };
-
-        // We have to clone to pass to collect_ids since we can't borrow mutably twice
-        // Actually we can just write a recursive fn
-        fn map_ids(items: &mut [crate::mnx::SequenceItem], id_map: &mut HashMap<String, String>) {
+        // Pass 1: Generate new unique IDs with distinct namespaces
+        fn map_ids(
+            items: &mut [crate::mnx::SequenceItem],
+            ev_id_map: &mut HashMap<String, String>,
+            note_id_map: &mut HashMap<String, String>,
+            string_aware_note_remap: &mut HashMap<(String, u8), String>,
+        ) {
             for item in items.iter_mut() {
                 match item {
                     crate::mnx::SequenceItem::Event(ev) => {
+                        let new_ev_id = crate::rebar::generate_event_id();
                         if let Some(old_ev_id) = &ev.id {
-                            let new_ev_id = crate::rebar::generate_uuid();
-                            id_map.insert(old_ev_id.clone(), new_ev_id.clone());
-                            ev.id = Some(new_ev_id);
-                        } else {
-                            ev.id = Some(crate::rebar::generate_uuid());
+                            ev_id_map.insert(old_ev_id.clone(), new_ev_id.clone());
                         }
+                        ev.id = Some(new_ev_id);
+
                         for n in ev.notes.iter_mut() {
+                            let new_note_id = crate::rebar::generate_note_id();
+                            let s = n.string.unwrap_or(0);
                             if let Some(old_id) = &n.id {
-                                let new_id = crate::rebar::generate_uuid();
-                                id_map.insert(old_id.clone(), new_id.clone());
-                                n.id = Some(new_id);
-                            } else {
-                                n.id = Some(crate::rebar::generate_uuid());
+                                note_id_map.insert(old_id.clone(), new_note_id.clone());
+                                string_aware_note_remap.insert((old_id.clone(), s), new_note_id.clone());
                             }
+                            n.id = Some(new_note_id);
                         }
                     }
                     crate::mnx::SequenceItem::Tuplet(t) => {
-                        map_ids(&mut t.content, id_map);
+                        map_ids(&mut t.content, ev_id_map, note_id_map, string_aware_note_remap);
                     }
                     crate::mnx::SequenceItem::Grace(g) => {
-                        map_ids(&mut g.content, id_map);
+                        map_ids(&mut g.content, ev_id_map, note_id_map, string_aware_note_remap);
                     }
                 }
             }
         }
-        map_ids(items, &mut id_map);
+        map_ids(items, &mut ev_id_map, &mut note_id_map, &mut string_aware_note_remap);
 
-        // Pass 2: Update ties and slurs if they point within the map, otherwise remove them
-        fn update_refs(items: &mut [crate::mnx::SequenceItem], id_map: &HashMap<String, String>) {
+        // Pass 2: Update ties, slurs, and arpeggios if they point within the map, otherwise remove them
+        fn update_refs(
+            items: &mut [crate::mnx::SequenceItem],
+            ev_id_map: &HashMap<String, String>,
+            note_id_map: &HashMap<String, String>,
+            string_aware_note_remap: &HashMap<(String, u8), String>,
+        ) {
             for item in items.iter_mut() {
                 match item {
                     crate::mnx::SequenceItem::Event(ev) => {
                         if let Some(slurs) = &mut ev.slurs {
                             slurs.retain_mut(|s| {
-                                if let Some(new_target) = id_map.get(&s.target) {
+                                if let Some(new_target) = ev_id_map.get(&s.target).or_else(|| note_id_map.get(&s.target)) {
                                     s.target = new_target.clone();
                                     if let Some(old_start) = &s.start_note {
-                                        if let Some(new_start) = id_map.get(old_start) {
+                                        if let Some(new_start) = note_id_map.get(old_start) {
                                             s.start_note = Some(new_start.clone());
                                         }
                                     }
                                     if let Some(old_end) = &s.end_note {
-                                        if let Some(new_end) = id_map.get(old_end) {
+                                        if let Some(new_end) = note_id_map.get(old_end) {
                                             s.end_note = Some(new_end.clone());
                                         }
                                     }
@@ -829,9 +803,14 @@ impl MnxEditorApp {
                             }
                         }
                         for n in ev.notes.iter_mut() {
+                            let s = n.string.unwrap_or(0);
                             if let Some(ties) = &mut n.ties {
                                 ties.retain_mut(|t| {
-                                    if let Some(new_target) = id_map.get(&t.target) {
+                                    if let Some(new_target) = string_aware_note_remap
+                                        .get(&(t.target.clone(), s))
+                                        .or_else(|| note_id_map.get(&t.target))
+                                        .or_else(|| ev_id_map.get(&t.target))
+                                    {
                                         t.target = new_target.clone();
                                         true
                                     } else {
@@ -845,20 +824,20 @@ impl MnxEditorApp {
                         }
                     }
                     crate::mnx::SequenceItem::Tuplet(t) => {
-                        update_refs(&mut t.content, id_map);
+                        update_refs(&mut t.content, ev_id_map, note_id_map, string_aware_note_remap);
                     }
                     crate::mnx::SequenceItem::Grace(g) => {
-                        update_refs(&mut g.content, id_map);
+                        update_refs(&mut g.content, ev_id_map, note_id_map, string_aware_note_remap);
                     }
                 }
             }
         }
-        update_refs(items, &id_map);
+        update_refs(items, &ev_id_map, &note_id_map, &string_aware_note_remap);
         for arp in arps {
-            if let Some(new_id) = id_map.get(&arp.span.start) {
+            if let Some(new_id) = note_id_map.get(&arp.span.start) {
                 arp.span.start = new_id.clone();
             }
-            if let Some(new_id) = id_map.get(&arp.span.end) {
+            if let Some(new_id) = note_id_map.get(&arp.span.end) {
                 arp.span.end = new_id.clone();
             }
         }
