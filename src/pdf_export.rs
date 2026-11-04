@@ -1291,7 +1291,7 @@ pub fn populate_page_display_list_for_parts(
                                         };
                                         let clean_text = lyr.text.trim_end_matches('-').trim_end_matches('_').to_string();
                                         let is_split = matches!(lyr.line_type.as_deref(), Some("start") | Some("begin") | Some("middle")) || lyr.text.ends_with('-');
-                                        let has_extender = lyr.ext.extender == Some(true) || lyr.text.ends_with('_');
+                                        let has_extender = lyr.is_extender() || lyr.text.ends_with('_');
 
                                         system_lyrics.push(SystemLyric {
                                             m_idx,
@@ -1796,13 +1796,27 @@ pub fn populate_page_display_list_for_parts(
                 } else {
                     lyr.x + text_w * 0.5 + 2.0
                 };
-                let next_target_x = if let Some(next_lyr) = system_lyrics[i + 1..].iter().find(|l| l.line_num == lyr.line_num) {
-                    let next_w = (next_lyr.clean_text.chars().count() as f32) * 6.5;
-                    Some(next_lyr.x - next_w * 0.5 - 4.0)
+                let next_lyr_opt = system_lyrics[i + 1..].iter().find(|l| l.line_num == lyr.line_num);
+                let next_is_continuation = next_lyr_opt.map_or(false, |next_lyr| {
+                    next_lyr.has_extender && next_lyr.clean_text.is_empty()
+                });
+
+                let next_target_x = if next_is_continuation {
+                    next_lyr_opt.map(|next_lyr| next_lyr.x - 4.0)
                 } else {
                     None
                 };
-                let end_x = next_target_x.unwrap_or(lyr.x + lyr.ev_w * lyr.ev_scale * 0.9);
+
+                let mut end_x = next_target_x.unwrap_or(lyr.x + lyr.ev_w * lyr.ev_scale * 0.85);
+
+                // If there is a following word on this line, never underline or extend into it!
+                if let Some(next_lyr) = next_lyr_opt {
+                    if !next_lyr.clean_text.is_empty() {
+                        let next_w = (next_lyr.clean_text.chars().count() as f32) * 6.5;
+                        let next_word_start = next_lyr.x - next_w * 0.5;
+                        end_x = end_x.min(next_word_start - 6.0);
+                    }
+                }
                 if end_x > start_x + 2.0 {
                     dl.push(DrawItem {
                         id: lyr.lyric_id.clone(),

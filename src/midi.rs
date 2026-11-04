@@ -441,7 +441,27 @@ impl<'a> PlaybackTrackGenerator<'a> {
             }
         }
 
+        let mut all_note_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for m in &part.measures {
+            for seq in &m.sequences {
+                for ev in seq.flattened_events() {
+                    for n in &ev.notes {
+                        if let Some(id) = &n.id {
+                            all_note_ids.insert(id.clone());
+                        }
+                        if let Some(h) = &n.harmonic {
+                            if let Some(id) = &h.sounding_note.id {
+                                all_note_ids.insert(id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut pending_ties: std::collections::HashMap<String, (midly::num::u4, u8)> =
+            std::collections::HashMap::new();
+        let mut ringing_notes_by_string: std::collections::HashMap<u8, (midly::num::u4, u8)> =
             std::collections::HashMap::new();
         let mut final_ticks = 0;
         let mut current_bpm;
@@ -736,6 +756,21 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 let is_tied = note_id_opt
                                     .map_or(false, |id| pending_ties.contains_key(id));
 
+                                if !is_tied {
+                                    if let Some((prev_ch, prev_note_val)) = ringing_notes_by_string.remove(&string) {
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: note_start_ticks,
+                                            kind: InternalEventKind::Midi {
+                                                channel: prev_ch,
+                                                message: MidiMessage::NoteOff {
+                                                    key: u7::from(prev_note_val.min(127)),
+                                                    vel: u7::from(64),
+                                                },
+                                            },
+                                        });
+                                    }
+                                }
+
                                 let (ch, note_val) = if is_tied {
                                     let id = note_id_opt.unwrap();
                                     pending_ties.remove(id).unwrap()
@@ -868,7 +903,13 @@ impl<'a> PlaybackTrackGenerator<'a> {
 
                                 if has_forward_tie {
                                     let target = forward_ties.unwrap()[0].target.clone();
-                                    pending_ties.insert(target, (ch, note_val));
+                                    if all_note_ids.contains(&target) {
+                                        pending_ties.insert(target, (ch, note_val));
+                                    } else {
+                                        // Tie targeting nothing, rest, or non-note (Let Ring / L.R.):
+                                        // Do not emit NoteOff now; ring until next note on this same string
+                                        ringing_notes_by_string.insert(string, (ch, note_val));
+                                    }
                                 } else {
                                     // Legato overlap: if slur or slide, delay NoteOff by ~5% of a quarter note
                                     let overlap = if has_forward_slur || has_forward_slide {
@@ -913,6 +954,19 @@ impl<'a> PlaybackTrackGenerator<'a> {
         }
 
         for (_, (ch, note_val)) in pending_ties.drain() {
+            self.abs_events.push(InternalAbsoluteEvent {
+                time_ticks: final_ticks,
+                kind: InternalEventKind::Midi {
+                    channel: ch,
+                    message: MidiMessage::NoteOff {
+                        key: u7::from(note_val.min(127)),
+                        vel: u7::from(64),
+                    },
+                },
+            });
+        }
+
+        for (_, (ch, note_val)) in ringing_notes_by_string.drain() {
             self.abs_events.push(InternalAbsoluteEvent {
                 time_ticks: final_ticks,
                 kind: InternalEventKind::Midi {

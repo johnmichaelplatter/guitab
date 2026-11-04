@@ -1030,37 +1030,63 @@ impl MnxEditorApp {
                     ui.label(egui::RichText::new("Barlines:").strong());
 
                     let bravura_font = egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into()));
-                    if ui.button(egui::RichText::new("\u{E040}").font(bravura_font.clone())).on_hover_text("Start Repeat").clicked() {
-                        let m_idx = self.get_target_measure_for_layout_or_breaks();
-                        let new_yaml = crate::yaml_editor::set_global_measure_property(
-                            &self.yaml_text,
-                            m_idx,
-                            "repeatStart",
-                            "{}"
-                        );
+                    let m_idx = self.get_target_measure_for_layout_or_breaks();
+
+                    let is_repeat_start = self.parsed_mnx.as_ref()
+                        .and_then(|doc| doc.global.measures.get(m_idx))
+                        .map(|gm| gm.repeat_start.is_some())
+                        .unwrap_or(false);
+                    let (rstart_rect, rstart_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(rstart_rect) {
+                        let visuals = ui.style().interact_selectable(&rstart_resp, is_repeat_start);
+                        ui.painter().rect(rstart_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        ui.painter().text(rstart_rect.center(), egui::Align2::CENTER_CENTER, "\u{E040}", bravura_font.clone(), color);
+                    }
+                    if rstart_resp.on_hover_text("Start Repeat").clicked() {
+                        let new_yaml = if is_repeat_start {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatStart", "")
+                        } else {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatStart", "{}")
+                        };
                         self.update_yaml(new_yaml);
                         self.process_and_render();
                     }
 
-                    if ui.button(egui::RichText::new("\u{E041}").font(bravura_font.clone())).on_hover_text("End Repeat").clicked() {
-                        let m_idx = self.get_target_measure_for_layout_or_breaks();
-                        let new_yaml = crate::yaml_editor::set_global_measure_property(
-                            &self.yaml_text,
-                            m_idx,
-                            "repeatEnd",
-                            "{ times: 2 }"
-                        );
+                    let is_repeat_end = self.parsed_mnx.as_ref()
+                        .and_then(|doc| doc.global.measures.get(m_idx))
+                        .map(|gm| gm.repeat_end.is_some())
+                        .unwrap_or(false);
+                    let (rend_rect, rend_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(rend_rect) {
+                        let visuals = ui.style().interact_selectable(&rend_resp, is_repeat_end);
+                        ui.painter().rect(rend_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        ui.painter().text(rend_rect.center(), egui::Align2::CENTER_CENTER, "\u{E041}", bravura_font.clone(), color);
+                    }
+                    if rend_resp.on_hover_text("End Repeat").clicked() {
+                        let new_yaml = if is_repeat_end {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatEnd", "")
+                        } else {
+                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatEnd", "{ times: 2 }")
+                        };
                         self.update_yaml(new_yaml);
                         self.process_and_render();
                     }
 
-                    if ui.button(egui::RichText::new("\u{E031}").font(bravura_font.clone())).on_hover_text("Double Barline").clicked() {
-                        let m_idx = self.get_target_measure_for_layout_or_breaks();
-                        let is_already_double = self.parsed_mnx.as_ref()
-                            .and_then(|doc| doc.global.measures.get(m_idx))
-                            .and_then(|gm| gm.barline.as_ref())
-                            .map(|b| b.barline_type == "double")
-                            .unwrap_or(false);
+                    let is_already_double = self.parsed_mnx.as_ref()
+                        .and_then(|doc| doc.global.measures.get(m_idx))
+                        .and_then(|gm| gm.barline.as_ref())
+                        .map(|b| b.barline_type == "double")
+                        .unwrap_or(false);
+                    let (dbar_rect, dbar_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(dbar_rect) {
+                        let visuals = ui.style().interact_selectable(&dbar_resp, is_already_double);
+                        ui.painter().rect(dbar_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        ui.painter().text(dbar_rect.center(), egui::Align2::CENTER_CENTER, "\u{E031}", bravura_font.clone(), color);
+                    }
+                    if dbar_resp.on_hover_text("Double Barline").clicked() {
                         let new_yaml = if is_already_double {
                             crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
                         } else {
@@ -1075,13 +1101,19 @@ impl MnxEditorApp {
                         self.process_and_render();
                     }
 
-                    if ui.button(egui::RichText::new("\u{E032}").font(bravura_font.clone())).on_hover_text("Ending Barline").clicked() {
-                        let m_idx = self.get_target_measure_for_layout_or_breaks();
-                        let is_already_final = self.parsed_mnx.as_ref()
-                            .and_then(|doc| doc.global.measures.get(m_idx))
-                            .and_then(|gm| gm.barline.as_ref())
-                            .map(|b| b.barline_type == "final" || b.barline_type == "ending")
-                            .unwrap_or(false);
+                    let is_already_final = self.parsed_mnx.as_ref()
+                        .and_then(|doc| doc.global.measures.get(m_idx))
+                        .and_then(|gm| gm.barline.as_ref())
+                        .map(|b| b.barline_type == "final" || b.barline_type == "ending")
+                        .unwrap_or(false);
+                    let (fbar_rect, fbar_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if ui.is_rect_visible(fbar_rect) {
+                        let visuals = ui.style().interact_selectable(&fbar_resp, is_already_final);
+                        ui.painter().rect(fbar_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+                        let color = visuals.text_color();
+                        ui.painter().text(fbar_rect.center(), egui::Align2::CENTER_CENTER, "\u{E032}", bravura_font.clone(), color);
+                    }
+                    if fbar_resp.on_hover_text("Ending Barline").clicked() {
                         let new_yaml = if is_already_final {
                             crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
                         } else {
@@ -1096,40 +1128,79 @@ impl MnxEditorApp {
                         self.process_and_render();
                     }
 
+                    let (start_m, end_m) = self.get_selected_measure_range();
+                    let (has_closed_ending, has_open_ending) = if let Some(doc) = &self.parsed_mnx {
+                        if let Some(gm) = doc.global.measures.get(start_m) {
+                            if let Some(ending) = &gm.ending {
+                                if ending.open == Some(true) {
+                                    (false, true)
+                                } else {
+                                    (true, false)
+                                }
+                            } else {
+                                (false, false)
+                            }
+                        } else {
+                            (false, false)
+                        }
+                    } else {
+                        (false, false)
+                    };
+
+                    let ending_icon_size = egui::vec2(24.0, 11.56);
+
                     let img_closed = egui::Image::new(include_image!("../../assets/closed ending.svg"))
-                        .fit_to_exact_size(icon_size)
+                        .fit_to_exact_size(ending_icon_size)
                         .tint(ui.visuals().text_color());
-                    if ui.add_sized(btn_size, egui::Button::image(img_closed)).on_hover_text("Insert 1st... Ending").clicked() {
-                        let (start_m, end_m) = self.get_selected_measure_range();
-                        self.active_dialog = ActiveDialog::InsertEnding {
-                            start_m,
-                            end_m,
-                            times_str: "1".to_string(),
-                        };
+                    if ui
+                        .add_sized(btn_size, egui::Button::image(img_closed).selected(has_closed_ending))
+                        .on_hover_text("Insert 1st... Ending")
+                        .clicked()
+                    {
+                        if has_closed_ending {
+                            let yaml = crate::yaml_editor::set_global_measure_property(&self.yaml_text, start_m, "ending", "");
+                            self.update_yaml(yaml);
+                            self.process_and_render();
+                        } else {
+                            self.active_dialog = ActiveDialog::InsertEnding {
+                                start_m,
+                                end_m,
+                                times_str: "1".to_string(),
+                            };
+                        }
                     }
 
                     let img_open = egui::Image::new(include_image!("../../assets/open ending.svg"))
-                        .fit_to_exact_size(icon_size)
+                        .fit_to_exact_size(ending_icon_size)
                         .tint(ui.visuals().text_color());
-                    if ui.add_sized(btn_size, egui::Button::image(img_open)).on_hover_text("Insert Open Ending").clicked() {
-                        let (start_m, end_m) = self.get_selected_measure_range();
-                        let prev_max = if let Some(doc) = &self.parsed_mnx {
-                            doc.get_prior_ending_max(start_m)
+                    if ui
+                        .add_sized(btn_size, egui::Button::image(img_open).selected(has_open_ending))
+                        .on_hover_text("Insert Open Ending")
+                        .clicked()
+                    {
+                        if has_open_ending {
+                            let yaml = crate::yaml_editor::set_global_measure_property(&self.yaml_text, start_m, "ending", "");
+                            self.update_yaml(yaml);
+                            self.process_and_render();
                         } else {
-                            None
-                        }.unwrap_or(0);
-                        let start_num = prev_max + 1;
-                        let numbers = vec![start_num];
-                        let duration = (end_m - start_m + 1) as u32;
-                        let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
-                        let yaml = crate::yaml_editor::set_global_measure_property(
-                            &self.yaml_text,
-                            start_m,
-                            "ending",
-                            &ending_val,
-                        );
-                        self.update_yaml(yaml);
-                        self.process_and_render();
+                            let prev_max = if let Some(doc) = &self.parsed_mnx {
+                                doc.get_prior_ending_max(start_m)
+                            } else {
+                                None
+                            }.unwrap_or(0);
+                            let start_num = prev_max + 1;
+                            let numbers = vec![start_num];
+                            let duration = (end_m - start_m + 1) as u32;
+                            let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
+                            let yaml = crate::yaml_editor::set_global_measure_property(
+                                &self.yaml_text,
+                                start_m,
+                                "ending",
+                                &ending_val,
+                            );
+                            self.update_yaml(yaml);
+                            self.process_and_render();
+                        }
                     }
 
                     if self.view_mode != ViewMode::Continuous {

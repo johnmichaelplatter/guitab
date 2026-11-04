@@ -666,6 +666,9 @@ impl MnxEditorApp {
     pub fn convert_selected_to_rest(&mut self) {
         let p_idx = self.selected_part_idx;
         if let Some(e_idx) = self.selected_event_idx {
+            let was_editing_fret = self.is_editing_fret;
+            let cur_str = self.editing_string;
+            let total_events = self.cached_event_ranges.len();
             self.mutate_doc_and_clean_ties(|doc| {
                 if crate::yaml_editor::convert_event_to_rest_in_doc_part(doc, p_idx, e_idx) {
                     Some(())
@@ -673,7 +676,11 @@ impl MnxEditorApp {
                     None
                 }
             });
-            if self.is_editing_fret {
+            if was_editing_fret {
+                self.is_editing_fret = true;
+                self.editing_fret_buf.clear();
+                self.advance_to_next_note_in_edit_mode(cur_str, total_events);
+            } else if self.is_editing_fret {
                 self.is_editing_fret = false;
                 self.editing_fret_buf.clear();
             }
@@ -2086,7 +2093,7 @@ impl crate::gui::MnxEditorApp {
                         if let Some(lyrics) = &ev.lyrics {
                             if let Some((_key, l)) = lyrics.lines.iter().next() {
                                 let hyphen_suffix = if matches!(l.line_type.as_deref(), Some("start") | Some("middle")) && !l.text.ends_with('-') { "-" } else { "" };
-                                let ext_suffix = if l.ext.extender == Some(true) { "_" } else { "" };
+                                let ext_suffix = if l.is_extender() { "_" } else { "" };
                                 self.editing_lyric_buf = format!("{}{}{}", l.text, hyphen_suffix, ext_suffix);
                             }
                         }
@@ -2172,8 +2179,9 @@ impl crate::gui::MnxEditorApp {
                                 crate::mnx::LyricLine {
                                     text: clean_text,
                                     line_type,
+                                    extender,
                                     comment: None,
-                                    ext: crate::mnx::LyricLineExt { extender },
+                                    ext: crate::mnx::LyricLineExt::default(),
                                 },
                             );
                         }

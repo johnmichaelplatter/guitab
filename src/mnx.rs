@@ -1027,6 +1027,8 @@ pub struct LyricLine {
     pub text: String,
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub line_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extender: Option<bool>,
     #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     #[serde(
@@ -1036,6 +1038,12 @@ pub struct LyricLine {
         skip_serializing_if = "LyricLineExt::is_empty"
     )]
     pub ext: LyricLineExt,
+}
+
+impl LyricLine {
+    pub fn is_extender(&self) -> bool {
+        self.extender == Some(true) || self.ext.extender == Some(true)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
@@ -2597,7 +2605,7 @@ parts:
         if let SequenceItem::Event(ev) = &content[0] {
             let lyr = ev.lyrics.as_ref().unwrap().lines.get("1").unwrap();
             assert_eq!(lyr.text, "Ooh");
-            assert_eq!(lyr.ext.extender, Some(true));
+            assert!(lyr.is_extender());
         } else {
             panic!("Expected Event");
         }

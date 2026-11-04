@@ -1602,18 +1602,34 @@ pub fn set_global_measure_property_in_doc(
     let gm = &mut doc.global.measures[target_m_idx];
     match prop_name {
         "repeatStart" => {
-            gm.repeat_start = Some(crate::mnx::RepeatStart {});
+            gm.repeat_start = if prop_value.trim().is_empty() {
+                None
+            } else {
+                Some(crate::mnx::RepeatStart {})
+            };
         }
         "repeatEnd" => {
-            gm.repeat_end = serde_saphyr::from_str::<crate::mnx::RepeatEnd>(prop_value)
-                .ok()
-                .or(Some(crate::mnx::RepeatEnd { times: 2 }));
+            gm.repeat_end = if prop_value.trim().is_empty() {
+                None
+            } else {
+                serde_saphyr::from_str::<crate::mnx::RepeatEnd>(prop_value)
+                    .ok()
+                    .or(Some(crate::mnx::RepeatEnd { times: 2 }))
+            };
         }
         "barline" => {
-            gm.barline = serde_saphyr::from_str::<crate::mnx::Barline>(prop_value).ok();
+            gm.barline = if prop_value.trim().is_empty() {
+                None
+            } else {
+                serde_saphyr::from_str::<crate::mnx::Barline>(prop_value).ok()
+            };
         }
         "ending" => {
-            gm.ending = serde_saphyr::from_str::<crate::mnx::Ending>(prop_value).ok();
+            gm.ending = if prop_value.trim().is_empty() {
+                None
+            } else {
+                serde_saphyr::from_str::<crate::mnx::Ending>(prop_value).ok()
+            };
         }
         "systemBreak" => {
             gm.system_break = if prop_value.trim() == "true" {

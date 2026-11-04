@@ -1885,7 +1885,7 @@ pub fn draw_tablature(
                             x: current_x,
                             text: lyric.text.clone(),
                             syllabic: lyric.line_type.clone(),
-                            extender: lyric.ext.extender,
+                            extender: lyric.extender.or(lyric.ext.extender),
                             line,
                             is_editing: false,
                         });
@@ -2544,24 +2544,39 @@ pub fn draw_tablature(
         // Draw melisma extender line "_" if extender == Some(true) or text ends with '_'
         let has_extender = lyr.extender == Some(true) || lyr.text.ends_with('_');
         if has_extender {
-            let next_target_x = if let Some(next_lyr) = rendered_lyrics[i + 1..].iter().find(|l| l.line == lyr.line) {
+            let next_lyr_opt = rendered_lyrics[i + 1..].iter().find(|l| l.line == lyr.line);
+            let next_is_continuation = next_lyr_opt.map_or(false, |next_lyr| {
+                let next_has_ext = next_lyr.extender == Some(true) || next_lyr.text.ends_with('_');
                 let next_clean = next_lyr.text.trim_end_matches('-').trim_end_matches('_');
-                let next_galley = painter.layout_no_wrap(next_clean.to_string(), font_id.clone(), note_color);
-                Some(next_lyr.x - next_galley.size().x * 0.5 - 4.0)
+                next_has_ext && next_clean.is_empty()
+            });
+
+            let next_target_x = if next_is_continuation {
+                next_lyr_opt.map(|next_lyr| next_lyr.x - 4.0)
             } else {
                 None
             };
 
-            let end_x = next_target_x.unwrap_or_else(|| {
-                event_x_coords
-                    .iter()
-                    .find(|(idx, _)| *idx > lyr.event_idx)
-                    .map(|(_, x)| *x + 6.0)
-                    .unwrap_or(lyr.x + text_w * 0.5 + 20.0)
-            });
+            let ev_end_x = event_x_coords
+                .iter()
+                .find(|(idx, _)| *idx > lyr.event_idx)
+                .map(|(_, x)| *x - 6.0)
+                .unwrap_or(lyr.x + text_w * 0.5 + 20.0);
+
+            let mut end_x = next_target_x.unwrap_or(ev_end_x);
+
+            // If there is a following word on this line, never underline or extend into it!
+            if let Some(next_lyr) = next_lyr_opt {
+                let next_clean = next_lyr.text.trim_end_matches('-').trim_end_matches('_');
+                if !next_clean.is_empty() {
+                    let next_galley = painter.layout_no_wrap(next_clean.to_string(), font_id.clone(), note_color);
+                    let next_word_start = next_lyr.x - next_galley.size().x * 0.5;
+                    end_x = end_x.min(next_word_start - 6.0);
+                }
+            }
 
             let start_x = if clean_text.is_empty() {
-                lyr.x - 10.0
+                lyr.x - 4.0
             } else {
                 lyr.x + text_w * 0.5 + 3.0
             };

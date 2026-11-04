@@ -2039,7 +2039,8 @@ parts:
 
         let l2 = app.get_event_lyric_line(2, 1).expect("Event 2 should have lyric");
         assert_eq!(l2.text, "sing");
-        assert_eq!(l2.ext.extender, Some(true));
+        assert_eq!(l2.extender, Some(true));
+        assert!(l2.is_extender());
 
         // 4. On event 3, type "_" alone: melisma extend continues on event 3, advances to event 4
         if let ActiveDialog::LyricEditor { ref mut syllable_buf, .. } = app.active_dialog {
@@ -2052,7 +2053,8 @@ parts:
 
         let l3 = app.get_event_lyric_line(3, 1).expect("Event 3 should have lyric");
         assert_eq!(l3.text, "");
-        assert_eq!(l3.ext.extender, Some(true));
+        assert_eq!(l3.extender, Some(true));
+        assert!(l3.is_extender());
 
         // 5. On event 4, press Down arrow: moves to line 2 on event 4
         let mut raw_input = egui::RawInput::default();
@@ -5479,6 +5481,244 @@ parts:
         // Verify YAML output includes both microFretDivisions and fretStepMultiplier
         assert!(app.yaml_text.contains("microFretDivisions: 41"));
         assert!(app.yaml_text.contains("fretStepMultiplier: 2"));
+    }
+
+    #[test]
+    fn test_extender_mnx_spec_and_yaml_serialization() {
+        let mut app = MnxEditorApp::default();
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    _x: { string: 1, fret: 0 }
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: G, octave: 3 }
+                    _x: { string: 3, fret: 0 }
+              - duration: { base: half }
+                rest: {}
+"#;
+        app.update_yaml(yaml.to_string());
+        app.process_and_render();
+
+        // 1. Set lyric on event 0 with extender
+        app.action_set_event_lyric(0, "Ooh_");
+        assert!(app.yaml_text.contains("extender: true"));
+        // Ensure extender is not inside _x
+        assert!(!app.yaml_text.contains("_x:\n            extender: true"));
+        assert!(!app.yaml_text.contains("_x:\n              extender: true"));
+
+        let l0 = app.get_event_lyric_line(0, 1).expect("Event 0 should have lyric");
+        assert_eq!(l0.text, "Ooh");
+        assert_eq!(l0.extender, Some(true));
+        assert!(l0.is_extender());
+
+        // 2. Set standalone extender on event 1
+        app.action_set_event_lyric(1, "_");
+        let l1 = app.get_event_lyric_line(1, 1).expect("Event 1 should have lyric");
+        assert_eq!(l1.text, "");
+        assert_eq!(l1.extender, Some(true));
+        assert!(l1.is_extender());
+
+        // 3. Set following word on event 2
+        app.action_set_event_lyric(2, "yeah");
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let pages = crate::layout::compute_score_layout(doc, 0.0);
+        let mut dl = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list(doc, &pages[0], &mut dl);
+        // Find line draw item for lyric extender
+        for item in &dl.items {
+            if let crate::layout::display_list::DrawKind::Line { to, .. } = item.kind {
+                if item.id.as_deref().map_or(false, |id| id.starts_with("lyric_")) {
+                    // Find following word text item
+                    for text_item in &dl.items {
+                        if let crate::layout::display_list::DrawKind::Text { pos, text, .. } = &text_item.kind {
+                            if text == "yeah" {
+                                let text_start_x = pos.x - (text.chars().count() as f32 * 6.5) * 0.5;
+                                assert!(to.x <= text_start_x, "Extender line must not extend into or underline the following word: line end {} vs word start {}", to.x, text_start_x);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_convert_selected_to_rest_in_orange_edit_mode() {
+        let mut app = MnxEditorApp::default();
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    _x: { string: 1, fret: 0 }
+              - duration: { base: quarter }
+                notes:
+                  - pitch: { step: B, octave: 3 }
+                    _x: { string: 2, fret: 0 }
+              - duration: { base: half }
+                rest: {}
+"#;
+        app.update_yaml(yaml.to_string());
+        app.process_and_render();
+
+        // 1. Select event 0 in orange edit mode on string 1
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.editing_string = Some(1);
+        app.editing_fret_buf = "3".to_string();
+
+        // 2. Convert event 0 to rest
+        app.convert_selected_to_rest();
+
+        // 3. UX should RETAIN orange edit mode and advance to next duration (event 1)
+        assert!(app.is_editing_fret, "Should retain orange edit mode");
+        assert_eq!(app.selected_event_idx, Some(1), "Should advance to next duration over");
+        assert_eq!(app.editing_string, Some(1), "Should retain editing string");
+        assert!(app.editing_fret_buf.is_empty(), "Fret buffer should be cleared for editing next note");
+
+        // Verify event 0 in doc is now a rest
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.get_event_at_part_path(0, crate::mnx::AstPath::TopLevel(0, 0, 0)).unwrap();
+        assert!(ev0.rest.is_some());
+
+        // 4. In blue select mode (is_editing_fret = false), convert_selected_to_rest does not enter orange mode
+        app.is_editing_fret = false;
+        app.selected_event_idx = Some(1);
+        app.convert_selected_to_rest();
+        assert!(!app.is_editing_fret, "Blue mode should remain blue mode");
+    }
+
+    #[test]
+    fn test_toggle_and_remove_special_measure_features() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+"#;
+        // 1. Toggle repeatStart
+        let y_rep_start = crate::yaml_editor::set_global_measure_property(yaml, 0, "repeatStart", "{}");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_rep_start).unwrap();
+        assert!(doc.global.measures[0].repeat_start.is_some());
+
+        let y_rep_start_cleared = crate::yaml_editor::set_global_measure_property(&y_rep_start, 0, "repeatStart", "");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_rep_start_cleared).unwrap();
+        assert!(doc.global.measures[0].repeat_start.is_none(), "repeatStart should be removed");
+
+        // 2. Toggle repeatEnd
+        let y_rep_end = crate::yaml_editor::set_global_measure_property(yaml, 0, "repeatEnd", "{ times: 2 }");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_rep_end).unwrap();
+        assert!(doc.global.measures[0].repeat_end.is_some());
+
+        let y_rep_end_cleared = crate::yaml_editor::set_global_measure_property(&y_rep_end, 0, "repeatEnd", "");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_rep_end_cleared).unwrap();
+        assert!(doc.global.measures[0].repeat_end.is_none(), "repeatEnd should be removed");
+
+        // 3. Toggle barline double
+        let y_dbar = crate::yaml_editor::set_global_measure_property(yaml, 0, "barline", "{ type: double }");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_dbar).unwrap();
+        assert_eq!(doc.global.measures[0].barline.as_ref().map(|b| b.barline_type.as_str()), Some("double"));
+
+        let y_dbar_cleared = crate::yaml_editor::set_global_measure_property(&y_dbar, 0, "barline", "");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_dbar_cleared).unwrap();
+        assert!(doc.global.measures[0].barline.is_none(), "double barline should be removed");
+
+        // 4. Toggle ending
+        let y_ending = crate::yaml_editor::set_global_measure_property(yaml, 0, "ending", "{ duration: 1, numbers: [1] }");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_ending).unwrap();
+        assert!(doc.global.measures[0].ending.is_some());
+
+        let y_ending_cleared = crate::yaml_editor::set_global_measure_property(&y_ending, 0, "ending", "");
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(&y_ending_cleared).unwrap();
+        assert!(doc.global.measures[0].ending.is_none(), "ending should be removed");
+    }
+
+    #[test]
+    fn test_let_ring_midi_playback_without_note_off_until_next_note_on_same_string() {
+        let yaml = r#"---
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Guitar"
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: half }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    ties:
+                      - { target: "ev_non_existent" }
+                    _x: { string: 1, fret: 0 }
+              - duration: { base: half }
+                notes:
+                  - pitch: { step: B, octave: 3 }
+                    _x: { string: 2, fret: 0 }
+      - sequences:
+          - content:
+              - duration: { base: half }
+                notes:
+                  - pitch: { step: G, octave: 4 }
+                    _x: { string: 1, fret: 3 }
+              - duration: { base: half }
+                rest: {}
+"#;
+        let doc: crate::mnx::MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let smf = crate::midi::generate_midi(&doc, crate::midi::MidiOptions::default());
+        let track = &smf.tracks[0];
+
+        // Track events:
+        // Event 0: string 1, note 64 (E4) starts at t=0 (ticks=0). Has let-ring tie.
+        // Event 1: string 2, note 59 (B3) starts at t=960. String 1 note should NOT have NoteOff!
+        // Event 2: string 1, note 67 (G4) starts at t=1920 (measure 2 beat 1).
+        //          String 1 note 64 MUST receive NoteOff at exactly t=1920!
+        let mut note_64_offs: Vec<u32> = Vec::new();
+        let mut curr_tick: u32 = 0;
+        for ev in track {
+            curr_tick += ev.delta.as_int();
+            if let midly::TrackEventKind::Midi { message, .. } = ev.kind {
+                if let midly::MidiMessage::NoteOff { key, .. } = message {
+                    if key.as_int() == 64 {
+                        note_64_offs.push(curr_tick);
+                    }
+                }
+            }
+        }
+
+        assert_eq!(note_64_offs.len(), 1, "Note 64 should have exactly 1 NoteOff");
+        assert_eq!(note_64_offs[0], 1920, "Note 64 NoteOff must occur at tick 1920 (when next note on string 1 is struck), not before");
     }
 }
 

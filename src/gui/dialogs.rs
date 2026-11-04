@@ -178,6 +178,9 @@ impl MnxEditorApp {
                 end_m: usize,
                 times: u32,
             },
+            RemoveEnding {
+                start_m: usize,
+            },
             StartupNewTab,
             StartupOpenFile,
             ApplyTextMarking {
@@ -300,7 +303,12 @@ impl MnxEditorApp {
                 let start_m_val = *start_m;
                 let end_m_val = *end_m;
 
-                egui::Window::new("Insert Ending")
+                let has_existing_ending = self.parsed_mnx.as_ref()
+                    .and_then(|doc| doc.global.measures.get(start_m_val))
+                    .map(|gm| gm.ending.is_some())
+                    .unwrap_or(false);
+
+                egui::Window::new(if has_existing_ending { "Edit Ending" } else { "Insert Ending" })
                     .collapsible(false)
                     .resizable(false)
                     .show(ctx, |ui| {
@@ -324,6 +332,14 @@ impl MnxEditorApp {
                                     times,
                                 });
                                 close_dialog = true;
+                            }
+                            if has_existing_ending {
+                                if ui.button("Remove").clicked() {
+                                    apply_action = Some(DialogAction::RemoveEnding {
+                                        start_m: start_m_val,
+                                    });
+                                    close_dialog = true;
+                                }
                             }
                             if ui.button("Cancel").clicked()
                                 || ui.input(|i| i.key_pressed(egui::Key::Escape))
@@ -2603,6 +2619,17 @@ impl MnxEditorApp {
                             end_m,
                             "repeatEnd",
                             "{}",
+                        );
+                        Some(())
+                    });
+                }
+                DialogAction::RemoveEnding { start_m } => {
+                    self.mutate_doc(|doc| {
+                        crate::yaml_editor::set_global_measure_property_in_doc(
+                            doc,
+                            start_m,
+                            "ending",
+                            "",
                         );
                         Some(())
                     });
