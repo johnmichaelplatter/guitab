@@ -2089,8 +2089,13 @@ impl MnxEditorApp {
                                 }
                                 if !fb_state.frets.is_empty() {
                                     p.custom_frets = Some(fb_state.frets.clone());
-                                    p.micro_fret_divisions = None;
-                                    p.fret_step_multiplier = None;
+                                    if tuning_mode == InstrumentTuningMode::Edo {
+                                        p.micro_fret_divisions = Some(edo);
+                                        p.fret_step_multiplier = Some(step_multiplier);
+                                    } else {
+                                        p.micro_fret_divisions = None;
+                                        p.fret_step_multiplier = None;
+                                    }
                                 } else {
                                     p.custom_frets = None;
                                     p.micro_fret_divisions = Some(edo);
@@ -2648,8 +2653,26 @@ impl MnxEditorApp {
                 state.reference_frequency_hz,
             );
             doc.parts[p_idx].ext.custom_frets = Some(state.frets);
-            doc.parts[p_idx].ext.micro_fret_divisions = None;
-            doc.parts[p_idx].ext.fret_step_multiplier = None;
+            if any_ratio_or_cents_tuning
+                || matches!(
+                    alter_mode,
+                    crate::fretboard_editor::CustomFretboardAlterMode::PureRatio { .. }
+                )
+            {
+                doc.parts[p_idx].ext.micro_fret_divisions = None;
+                doc.parts[p_idx].ext.fret_step_multiplier = None;
+            } else {
+                if doc.parts[p_idx].ext.micro_fret_divisions.is_none() {
+                    if let Some(edo) = doc.parts[p_idx].detect_tuning_edo() {
+                        doc.parts[p_idx].ext.micro_fret_divisions = Some(edo);
+                    }
+                }
+                if doc.parts[p_idx].ext.fret_step_multiplier.is_none() {
+                    if let Some(m) = doc.parts[p_idx].detect_step_multiplier() {
+                        doc.parts[p_idx].ext.fret_step_multiplier = Some(m);
+                    }
+                }
+            }
             any_ratio_or_cents_tuning
                 || matches!(
                     alter_mode,
@@ -2755,7 +2778,13 @@ impl MnxEditorApp {
         if doc.parts[p_idx].name.is_none() {
             doc.parts[p_idx].name = Some(format!("Instrument {}", p_idx + 1));
         }
-        if doc.parts[p_idx].has_custom_frets() {
+        let is_pure_ji = doc.parts[p_idx]
+            .ext
+            .tuning
+            .as_ref()
+            .map(|t| t.iter().any(|st| st.pitch.is_ratio_or_cents_step()))
+            .unwrap_or(false);
+        if is_pure_ji {
             doc.parts[p_idx].micro_fret_divisions = None;
             doc.parts[p_idx].fret_step_multiplier = None;
         } else {

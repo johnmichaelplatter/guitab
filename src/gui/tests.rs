@@ -5331,5 +5331,154 @@ parts:
             assert!(!range.note_ranges.is_empty());
         }
     }
+
+    #[test]
+    fn test_edo_tuning_detection_populates_micro_fret_divisions() {
+        let yaml = r#"---
+mnx: { version: 1 }
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: Guitar
+    _x:
+      tuning:
+        - string: 1
+          pitch: { step: C, octave: 3 }
+        - string: 2
+          pitch: { step: G, octave: 3 }
+        - string: 3
+          pitch: { step: E, alter: "-1\\41", octave: 2 }
+        - string: 4
+          pitch: { step: C, octave: 2 }
+        - string: 5
+          pitch: { step: A, alter: "-1\\41", octave: 2 }
+        - string: 6
+          pitch: { step: F, octave: 1 }
+        - string: 7
+          pitch: { step: C, octave: 1 }
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: whole }
+                rest: {}
+"#;
+        let mut app = MnxEditorApp::default();
+        app.update_yaml(yaml.trim().to_string());
+        app.process_and_render();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let part = &doc.parts[0];
+        assert_eq!(part.detect_tuning_edo(), Some(41));
+        assert_eq!(part.edo(), 41);
+        assert_eq!(part.ext.micro_fret_divisions, Some(41));
+
+        // Verify string labels rendered with 41-EDO formatting
+        let s3_label = crate::render::format_pitch(&part.ext.tuning.as_ref().unwrap()[2].pitch, part.edo());
+        let s5_label = crate::render::format_pitch(&part.ext.tuning.as_ref().unwrap()[4].pitch, part.edo());
+        assert_eq!(s3_label, "vE", "String 3 should render as vE, not Eb");
+        assert_eq!(s5_label, "vA", "String 5 should render as vA, not Ab");
+
+        // Verify YAML text was updated with microFretDivisions: 41
+        assert!(app.yaml_text.contains("microFretDivisions: 41"));
+    }
+
+    #[test]
+    fn test_add_instrument_custom_fretboard_preserves_edo() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch { step: "C".to_string(), alter: None, octave: 3, ext: Default::default() },
+            },
+            crate::mnx::StringTuning {
+                string: 2,
+                pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() },
+            },
+            crate::mnx::StringTuning {
+                string: 3,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    alter: Some(crate::mnx::Alteration::Fraction("-1\\41".to_string())),
+                    octave: 2,
+                    ext: Default::default(),
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 4,
+                pitch: crate::mnx::Pitch { step: "C".to_string(), alter: None, octave: 2, ext: Default::default() },
+            },
+            crate::mnx::StringTuning {
+                string: 5,
+                pitch: crate::mnx::Pitch {
+                    step: "A".to_string(),
+                    alter: Some(crate::mnx::Alteration::Fraction("-1\\41".to_string())),
+                    octave: 2,
+                    ext: Default::default(),
+                },
+            },
+            crate::mnx::StringTuning {
+                string: 6,
+                pitch: crate::mnx::Pitch { step: "F".to_string(), alter: None, octave: 1, ext: Default::default() },
+            },
+            crate::mnx::StringTuning {
+                string: 7,
+                pitch: crate::mnx::Pitch { step: "C".to_string(), alter: None, octave: 1, ext: Default::default() },
+            },
+        ];
+
+        let custom_frets = vec![
+            crate::fretboard_editor::CustomFret {
+                fret_number: 1.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::EdoStep { steps: 2, edo: 41 },
+                strings: vec![1, 2, 3, 4, 5, 6, 7],
+                note_name: "Fret 1".to_string(),
+            },
+            crate::fretboard_editor::CustomFret {
+                fret_number: 2.0,
+                manual_number: None,
+                spec: crate::fretboard_editor::FretLocationSpec::EdoStep { steps: 4, edo: 41 },
+                strings: vec![1, 2, 3, 4, 5, 6, 7],
+                note_name: "Fret 2".to_string(),
+            },
+        ];
+
+        let fb_state = crate::fretboard_editor::FretboardEditorState::new(
+            7,
+            custom_frets.clone(),
+            "D".to_string(),
+            4,
+            293.67,
+        );
+
+        app.open_add_instrument_dialog();
+        app.instrument_setup_name_buf = "41-EDO Kite Guitar".to_string();
+
+        // Add instrument part and apply custom fretboard state (as done on Apply in Add Instrument dialog)
+        app.add_new_instrument_part(
+            "41-EDO Kite Guitar".to_string(),
+            7,
+            41,
+            2,
+            tunings,
+            Some(custom_frets),
+        );
+        app.apply_custom_fretboard_state(fb_state);
+        app.is_adding_instrument_in_dialog = false;
+        app.active_dialog = ActiveDialog::None;
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        assert_eq!(doc.parts.len(), 2);
+        let new_part = &doc.parts[1];
+        assert_eq!(new_part.name.as_deref(), Some("41-EDO Kite Guitar"));
+        assert_eq!(new_part.ext.micro_fret_divisions, Some(41));
+        assert_eq!(new_part.ext.fret_step_multiplier, Some(2));
+        assert!(new_part.has_custom_frets());
+
+        // Verify YAML output includes both microFretDivisions and fretStepMultiplier
+        assert!(app.yaml_text.contains("microFretDivisions: 41"));
+        assert!(app.yaml_text.contains("fretStepMultiplier: 2"));
+    }
 }
 

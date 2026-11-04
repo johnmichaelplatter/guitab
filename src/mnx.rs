@@ -759,6 +759,72 @@ impl PartExt {
             && self.tuning.is_none()
             && self.custom_frets.is_none()
     }
+
+    /// Detects if the tuning strings specify an EDO via fractional alterations (e.g. `"-1\\41"`).
+    /// If found, returns `Some(edo)` (e.g. `Some(41)`).
+    /// Also checks custom frets if all frets specify `EdoStep` with a unified EDO.
+    pub fn detect_tuning_edo(&self) -> Option<u8> {
+        // 1. Check if explicit micro_fret_divisions is already present
+        if let Some(edo) = self.micro_fret_divisions {
+            return Some(edo);
+        }
+
+        // 2. Check string tunings for fractional EDO alterations (e.g. "-1\\41")
+        if let Some(tuning) = &self.tuning {
+            for t in tuning {
+                if let Some(alter) = &t.pitch.alter {
+                    match alter {
+                        Alteration::Fraction(s) => {
+                            if let Some((_, den_str)) = s.split_once('\\') {
+                                if let Ok(edo) = den_str.trim().parse::<u8>() {
+                                    if edo > 0 {
+                                        return Some(edo);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // 3. Check custom frets if all frets specify EdoStep
+        if let Some(frets) = &self.custom_frets {
+            if !frets.is_empty() {
+                let alter_mode = crate::fretboard_editor::classify_fretboard_alter_mode(frets, 293.66);
+                if let crate::fretboard_editor::CustomFretboardAlterMode::UnifiedEdo { lcm_edo } = alter_mode {
+                    if lcm_edo <= 100 {
+                        return Some(lcm_edo as u8);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Detects step multiplier if custom frets specify `EdoStep`.
+    pub fn detect_step_multiplier(&self) -> Option<u8> {
+        if let Some(m) = self.fret_step_multiplier {
+            return Some(m);
+        }
+        if let Some(frets) = &self.custom_frets {
+            let mut g: u64 = 0;
+            for f in frets {
+                if let crate::fretboard_editor::FretLocationSpec::EdoStep { steps, .. } = f.spec {
+                    if steps > 0 {
+                        let s = steps.abs() as u64;
+                        g = if g == 0 { s } else { crate::fretboard_editor::gcd_u64(g, s) };
+                    }
+                }
+            }
+            if g >= 1 && g <= 10 {
+                return Some(g as u8);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
@@ -1536,11 +1602,19 @@ impl Part {
     }
 
     pub fn edo(&self) -> u32 {
-        self.ext.micro_fret_divisions.unwrap_or(12) as u32
+        self.ext
+            .micro_fret_divisions
+            .map(|d| d as u32)
+            .or_else(|| self.detect_tuning_edo().map(|d| d as u32))
+            .unwrap_or(12)
     }
 
     pub fn step_multiplier(&self) -> i32 {
-        self.ext.fret_step_multiplier.unwrap_or(1) as i32
+        self.ext
+            .fret_step_multiplier
+            .map(|m| m as i32)
+            .or_else(|| self.detect_step_multiplier().map(|m| m as i32))
+            .unwrap_or(1)
     }
 
     pub fn num_strings(&self) -> usize {
@@ -1560,10 +1634,48 @@ impl Part {
             .unwrap_or(false)
     }
 
+    pub fn detect_tuning_edo(&self) -> Option<u8> {
+        self.ext.detect_tuning_edo()
+    }
+
+    pub fn detect_step_multiplier(&self) -> Option<u8> {
+        self.ext.detect_step_multiplier()
+    }
+
     pub fn clean_unneeded_fret_fields(&mut self) {
-        if self.has_custom_frets() {
+        let is_pure_ji = self
+            .ext
+            .tuning
+            .as_ref()
+            .map(|tunings| tunings.iter().any(|t| t.pitch.is_ratio_or_cents_step()))
+            .unwrap_or(false)
+            || self
+                .ext
+                .custom_frets
+                .as_ref()
+                .map(|frets| {
+                    !frets.is_empty()
+                        && matches!(
+                            crate::fretboard_editor::classify_fretboard_alter_mode(frets, 293.66),
+                            crate::fretboard_editor::CustomFretboardAlterMode::PureRatio { .. }
+                        )
+                })
+                .unwrap_or(false);
+
+        if is_pure_ji {
             self.ext.micro_fret_divisions = None;
             self.ext.fret_step_multiplier = None;
+        } else {
+            if self.ext.micro_fret_divisions.is_none() {
+                if let Some(detected_edo) = self.detect_tuning_edo() {
+                    self.ext.micro_fret_divisions = Some(detected_edo);
+                }
+            }
+            if self.ext.fret_step_multiplier.is_none() {
+                if let Some(m) = self.detect_step_multiplier() {
+                    self.ext.fret_step_multiplier = Some(m);
+                }
+            }
         }
     }
 

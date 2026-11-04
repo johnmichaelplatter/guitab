@@ -186,12 +186,15 @@ impl InstrumentPreset {
             None
         };
 
-        let (saved_edo, saved_step_multiplier) =
-            if has_custom || tuning_mode == crate::gui::InstrumentTuningMode::RatioCents {
-                (None, None)
-            } else {
-                (Some(edo), Some(step_multiplier.max(1)))
-            };
+        let has_ji = tuning.iter().any(|st| {
+            crate::fretboard_editor::parse_ratio_or_cents_to_cents(&st.pitch.step).is_some()
+        });
+        let is_pure_ji = has_ji || tuning_mode == crate::gui::InstrumentTuningMode::RatioCents;
+        let (saved_edo, saved_step_multiplier) = if is_pure_ji {
+            (None, None)
+        } else {
+            (Some(edo), Some(step_multiplier.max(1)))
+        };
 
         Ok(Self {
             name: clean_name.to_string(),

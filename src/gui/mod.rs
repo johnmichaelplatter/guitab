@@ -1433,6 +1433,15 @@ impl MnxEditorApp {
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(mut doc) => {
                 doc.ensure_measure_parity();
+                let had_missing_edo = doc.parts.iter().any(|p| {
+                    p.ext.micro_fret_divisions.is_none() && p.detect_tuning_edo().is_some()
+                });
+                doc.clean_unneeded_fret_fields();
+                if had_missing_edo {
+                    if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
+                        self.update_yaml(new_yaml);
+                    }
+                }
                 self.sync_from_parsed_doc(doc);
             }
             Err(e) => {
