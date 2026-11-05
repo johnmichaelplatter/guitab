@@ -174,7 +174,7 @@ The score's underlying data structure is based on W3's evolving MNX standard. To
 
 ## Changelog
 
-### v0.8.1 (Most Recent)
+### v0.8.2 (Most Recent)
 - **Multi-Instrument Arrangements**:
   - Full support for adding, editing, reordering, and deleting multiple instrument tabs in a single score.
   - **Stacked Continuous View**: All instrument staves are rendered vertically stacked with synchronized measure widths and common beat lines.
