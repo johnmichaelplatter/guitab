@@ -1323,76 +1323,6 @@ impl MnxEditorApp {
 
                 ui.separator();
 
-                // 2. Dropdown of available MIDI output devices + refresh button
-                let selected_port_name = self.selected_midi_port
-                    .and_then(|id| self.midi_ports.iter().find(|p| p.id == id).map(|p| p.name.clone()))
-                    .unwrap_or_else(|| {
-                        if self.midi_ports.is_empty() {
-                            "No MIDI Out Found".to_string()
-                        } else {
-                            "Select Device...".to_string()
-                        }
-                    });
-
-                egui::ComboBox::from_id_salt("midi_out_device_select")
-                    .selected_text(selected_port_name)
-                    .width(160.0)
-                    .show_ui(ui, |ui| {
-                        if self.midi_ports.is_empty() {
-                            ui.label("No devices detected");
-                        } else {
-                            for port in &self.midi_ports {
-                                ui.selectable_value(&mut self.selected_midi_port, Some(port.id), &port.name);
-                            }
-                        }
-                    });
-
-                if ui.small_button("⟳").on_hover_text("Refresh MIDI devices").clicked() {
-                    self.midi_ports = crate::midi::get_midi_output_ports();
-                    if self.selected_midi_port.is_none() || !self.midi_ports.iter().any(|p| Some(p.id) == self.selected_midi_port) {
-                        self.selected_midi_port = self.midi_ports.first().map(|p| p.id);
-                    }
-                }
-
-                ui.separator();
-
-                // 3. Pitchbend Range (int 1-48, default 2)
-                ui.label("PB Range: ±");
-                let mut pb_range_val = self.pitch_bend_range as i32;
-                if ui.add(egui::DragValue::new(&mut pb_range_val).range(1..=48).speed(0.2)).on_hover_text("Pitch bend range in semitones (1 - 48)").changed() {
-                    let new_pb = pb_range_val.clamp(1, 48) as u8;
-                    self.set_pitch_bend_range_in_yaml(new_pb);
-                }
-                ui.label("st");
-
-                ui.separator();
-
-                // 4. Mode toggle: Multi-timbral vs MPE
-                let mode_label = if self.is_mpe_mode { "Mode: MPE" } else { "Mode: Multi-Timbral" };
-                if ui.selectable_label(self.is_mpe_mode, mode_label)
-                    .on_hover_text("Toggle between Multi-Timbral (channel per string) and MPE mode (Ch 1 Master, Ch 2..n+1 Member channels, default ±48 semitones)")
-                    .clicked()
-                {
-                    self.is_mpe_mode = !self.is_mpe_mode;
-                    let num_strings = self.active_part()
-                        .map(|p| p.num_strings())
-                        .unwrap_or(6) as u8;
-                    if self.is_mpe_mode {
-                        self.set_pitch_bend_range_in_yaml(48);
-                        self.string_channel_map.clear();
-                        for s in 1..=num_strings {
-                            self.string_channel_map.insert(s, s + 1);
-                        }
-                    } else {
-                        self.set_pitch_bend_range_in_yaml(2);
-                        self.string_channel_map.clear();
-                        for s in 1..=num_strings {
-                            self.string_channel_map.insert(s, s);
-                        }
-                    }
-                    self.part_string_channel_maps.clear();
-                }
-
                 // Active Instrument Selector & Multi-Instrument Controls (#2a)
                 let part_names: Vec<String> = self
                     .parsed_mnx
@@ -1446,8 +1376,8 @@ impl MnxEditorApp {
 
                 ui.separator();
 
-                // 5. String-to-Channel Mappings button with Popup (#2b Multi-Port & Per-Instrument)
-                let sc_btn = egui::Button::new("String Channels  ")
+                // 5. String-to-Channel Mappings button with Popup (Per-Instrument MIDI/String Channels)
+                let sc_btn = egui::Button::new("MIDI/String Channels  ")
                     .selected(self.show_string_channels_popup);
                 let sc_btn_resp = ui.add(sc_btn);
                 paint_corner_triangle(ui, &sc_btn_resp);
@@ -1455,6 +1385,7 @@ impl MnxEditorApp {
                     self.show_string_channels_popup = !self.show_string_channels_popup;
                     if self.show_string_channels_popup {
                         self.show_grid_controllers_popup = false;
+                        self.string_channel_dialog_part_idx = self.selected_part_idx;
                     }
                 }
 
@@ -1468,19 +1399,19 @@ impl MnxEditorApp {
                         .fixed_pos(sc_popup_pos)
                         .show(ui.ctx(), |ui| {
                             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                ui.set_min_width(300.0);
-                                let part_combo_id =
-                                    ui.make_persistent_id("string_channels_part_combo");
-                                let port_combo_id =
-                                    ui.make_persistent_id("string_channels_port_combo");
-                                let was_any_sc_combo_open =
-                                    egui::ComboBox::is_open(ui.ctx(), part_combo_id)
-                                        || egui::ComboBox::is_open(ui.ctx(), port_combo_id);
-
-                                let dialog_p_idx = self
+                                ui.set_min_width(320.0);
+                                let mut dialog_p_idx = self
                                     .string_channel_dialog_part_idx
                                     .min(num_parts.saturating_sub(1));
                                 self.string_channel_dialog_part_idx = dialog_p_idx;
+
+                                let part_combo_id =
+                                    ui.make_persistent_id("string_channels_part_combo");
+                                let port_combo_id =
+                                    ui.make_persistent_id(dialog_p_idx).with("string_channels_port_combo");
+                                let was_any_sc_combo_open =
+                                    egui::ComboBox::is_open(ui.ctx(), part_combo_id)
+                                        || egui::ComboBox::is_open(ui.ctx(), port_combo_id);
 
                                 if num_parts > 1 {
                                     ui.horizontal(|ui| {
@@ -1491,142 +1422,153 @@ impl MnxEditorApp {
                                             .unwrap_or_else(|| {
                                                 format!("Instrument {}", dialog_p_idx + 1)
                                             });
+                                        let mut newly_selected_p = None;
                                         egui::ComboBox::from_id_salt("string_channels_part_combo")
                                             .selected_text(sel_name)
                                             .show_ui(ui, |ui| {
                                                 for (idx, name) in part_names.iter().enumerate() {
-                                                    ui.selectable_value(
-                                                        &mut self.string_channel_dialog_part_idx,
-                                                        idx,
-                                                        name,
-                                                    );
-                                                }
-                                            });
-                                    });
-
-                                    let dialog_p_idx = self.string_channel_dialog_part_idx;
-                                    let default_global_port = self.selected_midi_port.unwrap_or(0);
-                                    ui.horizontal(|ui| {
-                                        ui.label("MIDI Port:");
-                                        let port_override =
-                                            self.part_midi_ports.get(&dialog_p_idx).copied();
-                                        let selected_port_label = match port_override {
-                                            None => format!(
-                                                "Default ({})",
-                                                self.selected_midi_port
-                                                    .and_then(|pi| self.midi_ports.get(pi))
-                                                    .map(|p| p.name.as_str())
-                                                    .unwrap_or("None")
-                                            ),
-                                            Some(pi) => self
-                                                .midi_ports
-                                                .get(pi)
-                                                .map(|p| p.name.clone())
-                                                .unwrap_or_else(|| format!("Port {}", pi)),
-                                        };
-                                        egui::ComboBox::from_id_salt("string_channels_port_combo")
-                                            .selected_text(selected_port_label)
-                                            .show_ui(ui, |ui| {
-                                                if ui
-                                                    .selectable_label(
-                                                        port_override.is_none(),
-                                                        "Use Global Output Port",
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    self.part_midi_ports.remove(&dialog_p_idx);
-                                                }
-                                                for (pi, p_info) in
-                                                    self.midi_ports.iter().enumerate()
-                                                {
                                                     if ui
-                                                        .selectable_label(
-                                                            port_override == Some(pi),
-                                                            &p_info.name,
-                                                        )
+                                                        .selectable_label(dialog_p_idx == idx, name)
                                                         .clicked()
                                                     {
-                                                        self.part_midi_ports
-                                                            .insert(dialog_p_idx, pi);
+                                                        newly_selected_p = Some(idx);
                                                     }
                                                 }
                                             });
-                                    });
-
-                                    // Check if total strings sharing this port exceed 15 in MPE mode
-                                    if self.is_mpe_mode {
-                                        let target_port = self
-                                            .part_midi_ports
-                                            .get(&dialog_p_idx)
-                                            .copied()
-                                            .unwrap_or(default_global_port);
-                                        let total_strings_on_port: usize = self
-                                            .parsed_mnx
-                                            .as_ref()
-                                            .map(|d| {
-                                                d.parts
-                                                    .iter()
-                                                    .enumerate()
-                                                    .filter(|(pi, _)| {
-                                                        let p_port = self
-                                                            .part_midi_ports
-                                                            .get(pi)
-                                                            .copied()
-                                                            .unwrap_or(default_global_port);
-                                                        p_port == target_port
-                                                    })
-                                                    .map(|(_, p)| p.num_strings())
-                                                    .sum()
-                                            })
-                                            .unwrap_or(0);
-                                        if total_strings_on_port > 15 {
-                                            ui.colored_label(
-                                                Color32::from_rgb(230, 160, 40),
-                                                format!(
-                                                    "⚠ {} strings share this port (MPE supports max 15 member channels per port). Assign a second MIDI port above to avoid channel sharing.",
-                                                    total_strings_on_port
-                                                ),
-                                            );
+                                        if let Some(new_p) = newly_selected_p {
+                                            self.string_channel_dialog_part_idx = new_p;
+                                            self.select_part(new_p);
+                                            dialog_p_idx = new_p;
                                         }
-                                    }
-                                    ui.separator();
+                                    });
+                                } else {
+                                    let sel_name = part_names
+                                        .first()
+                                        .cloned()
+                                        .unwrap_or_else(|| "Instrument 1".to_string());
+                                    ui.label(egui::RichText::new(format!("Instrument: {}", sel_name)).strong());
                                 }
 
-                                let dialog_p_idx = self.string_channel_dialog_part_idx;
-                                let default_global_port = self.selected_midi_port.unwrap_or(0);
+                                ui.push_id(dialog_p_idx, |ui| {
+                                    let current_port_id = self.get_part_midi_port(dialog_p_idx);
+
+                                // 1. Per-instrument MIDI Out Device selector + refresh button
+                                ui.horizontal(|ui| {
+                                    ui.label("MIDI Out:");
+                                    let selected_port_name = current_port_id
+                                        .and_then(|id| {
+                                            self.midi_ports.iter().find(|p| p.id == id).map(|p| p.name.clone())
+                                        })
+                                        .unwrap_or_else(|| {
+                                            if self.midi_ports.is_empty() {
+                                                "No MIDI Out Found".to_string()
+                                            } else {
+                                                "Select Device...".to_string()
+                                            }
+                                        });
+
+                                    let mut newly_selected_port = None;
+                                    egui::ComboBox::from_id_salt("string_channels_port_combo")
+                                        .selected_text(selected_port_name)
+                                        .width(160.0)
+                                        .show_ui(ui, |ui| {
+                                            if self.midi_ports.is_empty() {
+                                                ui.label("No devices detected");
+                                            } else {
+                                                for port in &self.midi_ports {
+                                                    let is_selected = current_port_id == Some(port.id);
+                                                    if ui.selectable_label(is_selected, &port.name).clicked() {
+                                                        newly_selected_port = Some(port.id);
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    if let Some(port_id) = newly_selected_port {
+                                        self.set_part_midi_port(dialog_p_idx, port_id);
+                                    }
+
+                                    if ui.small_button("⟳").on_hover_text("Refresh MIDI devices").clicked() {
+                                        self.midi_ports = crate::midi::get_midi_output_ports();
+                                        if let Some(port_id) = current_port_id {
+                                            if !self.midi_ports.iter().any(|p| p.id == port_id) {
+                                                if let Some(first_p) = self.midi_ports.first() {
+                                                    self.set_part_midi_port(dialog_p_idx, first_p.id);
+                                                }
+                                            }
+                                        } else if let Some(first_p) = self.midi_ports.first() {
+                                            self.set_part_midi_port(dialog_p_idx, first_p.id);
+                                        }
+                                    }
+                                });
+
+                                // 2. Per-instrument PB Range
+                                ui.horizontal(|ui| {
+                                    ui.label("PB Range: ±");
+                                    let mut pb_range_val = self.get_part_pitch_bend_range(dialog_p_idx) as i32;
+                                    if ui
+                                        .add(egui::DragValue::new(&mut pb_range_val).range(1..=48).speed(0.2))
+                                        .on_hover_text("Pitch bend range in semitones (1 - 48)")
+                                        .changed()
+                                    {
+                                        let new_pb = pb_range_val.clamp(1, 48) as u8;
+                                        self.set_part_pitch_bend_range(dialog_p_idx, new_pb);
+                                    }
+                                    ui.label("st");
+                                });
+
+                                // 3. Per-instrument Mode toggle (Multi-timbral vs MPE)
+                                let is_mpe = self.is_part_mpe_mode(dialog_p_idx);
+                                let mode_label = if is_mpe { "Mode: MPE" } else { "Mode: Multi-Timbral" };
+                                if ui
+                                    .selectable_label(is_mpe, mode_label)
+                                    .on_hover_text(
+                                        "Toggle between Multi-Timbral (channel per string) and MPE mode (Ch 1 Master, Ch 2..n+1 Member channels, default ±48 semitones)",
+                                    )
+                                    .clicked()
+                                {
+                                    self.set_part_mpe_mode(dialog_p_idx, !is_mpe);
+                                }
+
+                                // 4. Check if total strings sharing this port exceed 15 in MPE mode
+                                if is_mpe {
+                                    let target_port = self.get_part_midi_port(dialog_p_idx).unwrap_or(0);
+                                    let total_strings_on_port: usize = self
+                                        .parsed_mnx
+                                        .as_ref()
+                                        .map(|d| {
+                                            d.parts
+                                                .iter()
+                                                .enumerate()
+                                                .filter(|(pi, _)| {
+                                                    self.get_part_midi_port(*pi).unwrap_or(0) == target_port
+                                                })
+                                                .map(|(_, p)| p.num_strings())
+                                                .sum()
+                                        })
+                                        .unwrap_or(0);
+                                    if total_strings_on_port > 15 {
+                                        ui.colored_label(
+                                            Color32::from_rgb(230, 160, 40),
+                                            format!(
+                                                "⚠ {} strings share this port (MPE supports max 15 member channels per port). Assign a second MIDI port above to avoid channel sharing.",
+                                                total_strings_on_port
+                                            ),
+                                        );
+                                    }
+                                }
+
+                                ui.separator();
+
+                                // 5. String-to-Channel Mapping Table
+                                let target_port = self.get_part_midi_port(dialog_p_idx).unwrap_or(0);
+                                let prior_strings_on_port =
+                                    self.compute_prior_strings_on_port(dialog_p_idx, target_port);
                                 let num_strings = self
                                     .parsed_mnx
                                     .as_ref()
                                     .and_then(|d| d.parts.get(dialog_p_idx))
                                     .map(|p| p.num_strings())
                                     .unwrap_or(6) as u8;
-
-                                // Compute default starting channel offset for this instrument on its port
-                                let target_port = self
-                                    .part_midi_ports
-                                    .get(&dialog_p_idx)
-                                    .copied()
-                                    .unwrap_or(default_global_port);
-                                let prior_strings_on_port: u8 = self
-                                    .parsed_mnx
-                                    .as_ref()
-                                    .map(|d| {
-                                        d.parts
-                                            .iter()
-                                            .enumerate()
-                                            .take(dialog_p_idx)
-                                            .filter(|(pi, _)| {
-                                                let p_port = self
-                                                    .part_midi_ports
-                                                    .get(pi)
-                                                    .copied()
-                                                    .unwrap_or(default_global_port);
-                                                p_port == target_port
-                                            })
-                                            .map(|(_, p)| p.num_strings() as u8)
-                                            .sum()
-                                    })
-                                    .unwrap_or(0);
 
                                 if dialog_p_idx == self.selected_part_idx
                                     && self
@@ -1641,7 +1583,7 @@ impl MnxEditorApp {
                                 }
 
                                 ui.label(
-                                    egui::RichText::new(if self.is_mpe_mode {
+                                    egui::RichText::new(if is_mpe {
                                         "String to MPE Member Channel Mapping (Ch 2-16, Ch 1 is Master)"
                                     } else {
                                         "String to MIDI Channel Mapping (Ch 1-16)"
@@ -1657,7 +1599,7 @@ impl MnxEditorApp {
                                 for s in 1..=num_strings {
                                     ui.horizontal(|ui| {
                                         ui.label(format!("String {}:", s));
-                                        let default_ch = if self.is_mpe_mode {
+                                        let default_ch = if is_mpe {
                                             2 + ((prior_strings_on_port + s - 1) % 15)
                                         } else {
                                             1 + ((prior_strings_on_port + s - 1) % 16)
@@ -1665,7 +1607,7 @@ impl MnxEditorApp {
                                         let current_ch = part_map.entry(s).or_insert(default_ch);
                                         let mut ch_val = *current_ch as i32;
                                         let (min_ch, max_ch) =
-                                            if self.is_mpe_mode { (2, 16) } else { (1, 16) };
+                                            if is_mpe { (2, 16) } else { (1, 16) };
                                         if ui
                                             .add(
                                                 egui::DragValue::new(&mut ch_val)
@@ -1681,7 +1623,7 @@ impl MnxEditorApp {
                                     });
                                 }
                                 if ui
-                                    .button(if self.is_mpe_mode {
+                                    .button(if is_mpe {
                                         "Reset to MPE Default"
                                     } else {
                                         "Reset to Default"
@@ -1692,7 +1634,7 @@ impl MnxEditorApp {
                                         self.part_string_channel_maps.get_mut(&dialog_p_idx)
                                     {
                                         for s in 1..=num_strings {
-                                            let def_ch = if self.is_mpe_mode {
+                                            let def_ch = if is_mpe {
                                                 2 + ((prior_strings_on_port + s - 1) % 15)
                                             } else {
                                                 1 + ((prior_strings_on_port + s - 1) % 16)
@@ -1711,6 +1653,7 @@ impl MnxEditorApp {
                                         self.string_channel_map = m.clone();
                                     }
                                 }
+                                });
 
                                 let is_any_sc_combo_open =
                                     egui::ComboBox::is_open(ui.ctx(), part_combo_id)
@@ -2296,7 +2239,7 @@ impl MnxEditorApp {
                                 } else {
                                     None
                                 };
-                                let part_pb = part.pitch_bend_range.unwrap_or(self.pitch_bend_range);
+                                let part_pb = self.get_part_pitch_bend_range(p_idx);
 
                                 let (_resp, clicked, add_bar_clicked, double_clicked_lyric, clicked_tempo, double_clicked_tempo) = render::draw_tablature(
                                     ui,

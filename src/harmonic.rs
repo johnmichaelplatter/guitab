@@ -1208,6 +1208,7 @@ mod tests {
                 capo: None,
                 tuning: Some(tunings),
                 custom_frets: Some(frets),
+                ..Default::default()
             },
             measures: Vec::new(),
         };
@@ -1309,6 +1310,7 @@ mod tests {
                     },
                 }]),
                 custom_frets: Some(edo_frets),
+                ..Default::default()
             },
             measures: Vec::new(),
         };
@@ -1358,6 +1360,7 @@ mod tests {
                     },
                 }]),
                 custom_frets: Some(kite_frets),
+                ..Default::default()
             },
             measures: Vec::new(),
         };

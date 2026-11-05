@@ -973,6 +973,8 @@ pub struct PartExt {
         skip_serializing_if = "Option::is_none"
     )]
     pub custom_frets: Option<Vec<crate::fretboard_editor::CustomFret>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mpe: Option<bool>,
 }
 
 impl PartExt {
@@ -983,6 +985,7 @@ impl PartExt {
             && self.capo.is_none()
             && self.tuning.is_none()
             && self.custom_frets.is_none()
+            && self.mpe.is_none()
     }
 
     /// Detects if the tuning strings specify an EDO via fractional alterations (e.g. `"-1\\41"`).

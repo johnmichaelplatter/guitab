@@ -99,6 +99,8 @@ pub struct MnxEditorApp {
     pub(crate) part_midi_ports: std::collections::HashMap<usize, usize>, // Per-part MIDI port id
     pub(crate) part_string_channel_maps:
         std::collections::HashMap<usize, std::collections::HashMap<u8, u8>>, // Per-part string -> channel
+    pub(crate) part_mpe_modes: std::collections::HashMap<usize, bool>, // Per-part MPE toggle state
+    pub(crate) part_pitch_bend_ranges: std::collections::HashMap<usize, u8>, // Per-part pitch bend range
     pub(crate) string_channel_dialog_part_idx: usize, // Selected part in String Channels popup
     pub(crate) is_mpe_mode: bool, // Toggle button for multi-timbral vs MPE output
     pub(crate) midi_player: crate::midi::MidiPlayer, // Real-time MIDI sequencer playback engine
@@ -461,6 +463,8 @@ impl MnxEditorApp {
             string_channel_map: std::collections::HashMap::new(),
             part_midi_ports: std::collections::HashMap::new(),
             part_string_channel_maps: std::collections::HashMap::new(),
+            part_mpe_modes: std::collections::HashMap::new(),
+            part_pitch_bend_ranges: std::collections::HashMap::new(),
             string_channel_dialog_part_idx: 0,
             is_mpe_mode: false,
             midi_player: crate::midi::MidiPlayer::new(),
@@ -522,11 +526,16 @@ impl MnxEditorApp {
         self.part_string_channel_maps
             .insert(self.selected_part_idx, self.string_channel_map.clone());
         if let Some(p) = self.selected_midi_port {
-            self.part_midi_ports.entry(self.selected_part_idx).or_insert(p);
+            self.part_midi_ports.insert(self.selected_part_idx, p);
         }
+        self.part_mpe_modes
+            .insert(self.selected_part_idx, self.is_mpe_mode);
+        self.part_pitch_bend_ranges
+            .insert(self.selected_part_idx, self.pitch_bend_range);
 
         if self.selected_part_idx != new_idx {
             self.selected_part_idx = new_idx;
+            self.string_channel_dialog_part_idx = new_idx;
             self.selected_note_idx_in_event = None;
             self.is_editing_fret = false;
             self.editing_fret_buf.clear();
@@ -539,17 +548,9 @@ impl MnxEditorApp {
             .get(&self.selected_part_idx)
             .cloned()
             .unwrap_or_default();
-        if let Some(&port) = self.part_midi_ports.get(&self.selected_part_idx) {
-            self.selected_midi_port = Some(port);
-        }
-        if let Some(pb) = self
-            .parsed_mnx
-            .as_ref()
-            .and_then(|d| d.parts.get(self.selected_part_idx))
-            .and_then(|p| p.pitch_bend_range)
-        {
-            self.pitch_bend_range = pb.clamp(1, 48);
-        }
+        self.selected_midi_port = self.get_part_midi_port(self.selected_part_idx);
+        self.pitch_bend_range = self.get_part_pitch_bend_range(self.selected_part_idx);
+        self.is_mpe_mode = self.is_part_mpe_mode(self.selected_part_idx);
 
         self.cached_event_ranges =
             find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
@@ -778,8 +779,7 @@ impl MnxEditorApp {
         current_part_only: bool,
     ) {
         if let Some(doc) = &self.parsed_mnx {
-            let default_port_opt = self.selected_midi_port;
-            if default_port_opt.is_none() && self.part_midi_ports.is_empty() {
+            if self.midi_ports.is_empty() {
                 self.midi_status_msg = Some("No MIDI output device selected.".to_string());
                 return;
             }
@@ -789,12 +789,7 @@ impl MnxEditorApp {
                 std::collections::HashMap::new();
 
             for (p_idx, part) in doc.parts.iter().enumerate() {
-                let Some(port_idx) = self
-                    .part_midi_ports
-                    .get(&p_idx)
-                    .copied()
-                    .or(default_port_opt)
-                else {
+                let Some(port_idx) = self.get_part_midi_port(p_idx) else {
                     continue;
                 };
 
@@ -802,14 +797,17 @@ impl MnxEditorApp {
                 let base_offset = *port_channel_cursor.entry(port_idx).or_insert(0);
                 let mut string_to_channel = std::collections::HashMap::new();
 
-                let custom_map = if p_idx == self.selected_part_idx {
+                let custom_map = if p_idx == self.selected_part_idx && !self.string_channel_map.is_empty() {
                     Some(&self.string_channel_map)
                 } else {
                     self.part_string_channel_maps.get(&p_idx)
                 };
 
+                let is_mpe = self.is_part_mpe_mode(p_idx);
+                let pb_range = self.get_part_pitch_bend_range(p_idx);
+
                 for s in 1..=num_strings {
-                    let default_ch = if self.is_mpe_mode {
+                    let default_ch = if is_mpe {
                         ((base_offset + s - 1) % 15) + 2
                     } else {
                         ((base_offset + s - 1) % 16) + 1
@@ -829,13 +827,12 @@ impl MnxEditorApp {
                     continue;
                 }
 
-                let pb_range = part.pitch_bend_range.unwrap_or(self.pitch_bend_range);
                 part_configs.push(crate::midi::PartMidiConfig {
                     part_idx: p_idx,
                     port_index: port_idx,
                     pitch_bend_range: pb_range,
                     string_to_channel,
-                    is_mpe: self.is_mpe_mode,
+                    is_mpe,
                 });
             }
 
@@ -876,7 +873,7 @@ impl MnxEditorApp {
                         .find(|p| p.id == primary_port)
                         .map(|p| p.name.as_str())
                         .unwrap_or("MIDI device");
-                    let mode_str = if self.is_mpe_mode { " (MPE)" } else { "" };
+                    let mode_str = if self.is_part_mpe_mode(self.selected_part_idx) { " (MPE)" } else { "" };
                     if let Some(start_idx) = start_event {
                         if start_idx > 0 {
                             self.midi_status_msg = Some(format!(
@@ -1107,15 +1104,12 @@ impl MnxEditorApp {
             Some(p) => p,
             None => return,
         };
-        let port_idx = match self
-            .part_midi_ports
-            .get(&self.selected_part_idx)
-            .copied()
-            .or(self.selected_midi_port)
-        {
+        let port_idx = match self.get_part_midi_port(self.selected_part_idx) {
             Some(p) => p,
             None => return,
         };
+        let is_mpe = self.is_part_mpe_mode(self.selected_part_idx);
+        let pb_range = self.get_part_pitch_bend_range(self.selected_part_idx);
 
         // Find the event
         let mut cur_e = 0;
@@ -1170,7 +1164,7 @@ impl MnxEditorApp {
                 .string
                 .or_else(|| note.harmonic.as_ref().and_then(|h| h.sounding_note.string));
             if let Some(string) = string_opt {
-                let default_ch = if self.is_mpe_mode { string + 1 } else { string };
+                let default_ch = if is_mpe { string + 1 } else { string };
                 let ch_1_based = self
                     .string_channel_map
                     .get(&string)
@@ -1186,7 +1180,7 @@ impl MnxEditorApp {
                     let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
 
                     let pitch_bend_val =
-                        crate::midi::calculate_pitch_bend(semitone_diff, self.pitch_bend_range);
+                        crate::midi::calculate_pitch_bend(semitone_diff, pb_range);
 
                     notes_to_play.push(crate::midi::NotePreview {
                         channel,
@@ -1204,9 +1198,9 @@ impl MnxEditorApp {
                 notes_to_play,
                 port_idx,
                 400,
-                self.is_mpe_mode,
+                is_mpe,
                 num_strings,
-                self.pitch_bend_range,
+                pb_range,
             );
         }
     }
@@ -1217,15 +1211,12 @@ impl MnxEditorApp {
         &mut self,
         events: Vec<crate::grid_input::GridLivePlayEvent>,
     ) {
-        let port_idx = match self
-            .part_midi_ports
-            .get(&self.selected_part_idx)
-            .copied()
-            .or(self.selected_midi_port)
-        {
+        let port_idx = match self.get_part_midi_port(self.selected_part_idx) {
             Some(p) => p,
             None => return,
         };
+        let is_mpe = self.is_part_mpe_mode(self.selected_part_idx);
+        let pb_range = self.get_part_pitch_bend_range(self.selected_part_idx);
         let doc = match &self.parsed_mnx {
             Some(d) => d,
             None => return,
@@ -1243,7 +1234,7 @@ impl MnxEditorApp {
         let num_strings = part.num_strings() as u8;
 
         for ev in events {
-            let default_ch = if self.is_mpe_mode {
+            let default_ch = if is_mpe {
                 ev.string + 1
             } else {
                 ev.string
@@ -1264,7 +1255,7 @@ impl MnxEditorApp {
                     let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
                     let pitch_bend_val = crate::midi::calculate_pitch_bend(
                         semitone_diff,
-                        self.pitch_bend_range,
+                        pb_range,
                     );
                     let key = midly::num::u7::from(base_note.min(127));
                     let vel = midly::num::u7::from(ev.velocity.clamp(1, 127));
@@ -1275,9 +1266,9 @@ impl MnxEditorApp {
                         key,
                         vel,
                         Some(pitch_bend_val),
-                        self.is_mpe_mode,
+                        is_mpe,
                         num_strings,
-                        self.pitch_bend_range,
+                        pb_range,
                     );
                     self.active_grid_live_notes
                         .insert((ev.string, ev.fret), (channel, key));
@@ -1357,15 +1348,19 @@ impl MnxEditorApp {
             }
         }
 
-        // Sync pitch bend range from YAML if stored on the active part
-        if let Some(pb) = doc
-            .parts
-            .get(self.selected_part_idx)
-            .or_else(|| doc.parts.first())
-            .and_then(|p| p.pitch_bend_range)
-        {
-            self.pitch_bend_range = pb.clamp(1, 48);
+        // Sync MPE mode and pitch bend range from YAML
+        self.part_mpe_modes.clear();
+        self.part_pitch_bend_ranges.clear();
+        for (i, part) in doc.parts.iter().enumerate() {
+            if let Some(mpe) = part.mpe {
+                self.part_mpe_modes.insert(i, mpe);
+            }
+            if let Some(pb) = part.pitch_bend_range {
+                self.part_pitch_bend_ranges.insert(i, pb.clamp(1, 48));
+            }
         }
+        self.is_mpe_mode = self.is_part_mpe_mode(self.selected_part_idx);
+        self.pitch_bend_range = self.get_part_pitch_bend_range(self.selected_part_idx);
 
         self.parsed_errors = errors;
         self.parsed_mnx = Some(doc);
@@ -1455,13 +1450,132 @@ impl MnxEditorApp {
         }
     }
 
-    pub fn set_pitch_bend_range_in_yaml(&mut self, pb_range: u8) {
+    pub fn get_part_midi_port(&self, part_idx: usize) -> Option<usize> {
+        if let Some(&port) = self.part_midi_ports.get(&part_idx) {
+            if self.midi_ports.iter().any(|p| p.id == port) {
+                return Some(port);
+            }
+        }
+        self.midi_ports.first().map(|p| p.id)
+    }
+
+    pub fn set_part_midi_port(&mut self, part_idx: usize, port_id: usize) {
+        self.part_midi_ports.insert(part_idx, port_id);
+        if part_idx == self.selected_part_idx {
+            self.selected_midi_port = Some(port_id);
+        }
+    }
+
+    pub fn is_part_mpe_mode(&self, part_idx: usize) -> bool {
+        if let Some(&mpe) = self.part_mpe_modes.get(&part_idx) {
+            return mpe;
+        }
+        if let Some(mpe) = self
+            .parsed_mnx
+            .as_ref()
+            .and_then(|d| d.parts.get(part_idx))
+            .and_then(|p| p.mpe)
+        {
+            return mpe;
+        }
+        false
+    }
+
+    pub fn get_part_pitch_bend_range(&self, part_idx: usize) -> u8 {
+        if let Some(&pb) = self.part_pitch_bend_ranges.get(&part_idx) {
+            return pb;
+        }
+        if let Some(pb) = self
+            .parsed_mnx
+            .as_ref()
+            .and_then(|d| d.parts.get(part_idx))
+            .and_then(|p| p.pitch_bend_range)
+        {
+            pb.clamp(1, 48)
+        } else if self.is_part_mpe_mode(part_idx) {
+            48
+        } else {
+            2
+        }
+    }
+
+    pub fn set_part_pitch_bend_range(&mut self, part_idx: usize, pb_range: u8) {
         let clamped = pb_range.clamp(1, 48);
-        self.pitch_bend_range = clamped;
-        let part_idx = self.selected_part_idx;
+        self.part_pitch_bend_ranges.insert(part_idx, clamped);
+        if part_idx == self.selected_part_idx {
+            self.pitch_bend_range = clamped;
+        }
         self.mutate_doc(|doc| {
             let part = doc.parts.get_mut(part_idx)?;
             part.pitch_bend_range = Some(clamped);
+            if part.name.is_none() {
+                part.name = Some(part.display_name(part_idx));
+            }
+            Some(())
+        });
+    }
+
+    #[allow(dead_code)]
+    pub fn set_pitch_bend_range_in_yaml(&mut self, pb_range: u8) {
+        self.set_part_pitch_bend_range(self.selected_part_idx, pb_range);
+    }
+
+    pub fn compute_prior_strings_on_port(&self, part_idx: usize, target_port: usize) -> u8 {
+        self.parsed_mnx
+            .as_ref()
+            .map(|d| {
+                d.parts
+                    .iter()
+                    .enumerate()
+                    .take(part_idx)
+                    .filter(|(pi, _)| {
+                        self.get_part_midi_port(*pi).unwrap_or(0) == target_port
+                    })
+                    .map(|(_, p)| p.num_strings() as u8)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn set_part_mpe_mode(&mut self, part_idx: usize, is_mpe: bool) {
+        self.part_mpe_modes.insert(part_idx, is_mpe);
+        if part_idx == self.selected_part_idx {
+            self.is_mpe_mode = is_mpe;
+        }
+
+        let new_pb = if is_mpe { 48 } else { 2 };
+        self.part_pitch_bend_ranges.insert(part_idx, new_pb);
+        if part_idx == self.selected_part_idx {
+            self.pitch_bend_range = new_pb;
+        }
+
+        let num_strings = self
+            .parsed_mnx
+            .as_ref()
+            .and_then(|d| d.parts.get(part_idx))
+            .map(|p| p.num_strings())
+            .unwrap_or(6) as u8;
+
+        let target_port = self.get_part_midi_port(part_idx).unwrap_or(0);
+        let prior_strings_on_port = self.compute_prior_strings_on_port(part_idx, target_port);
+        let part_map = self.part_string_channel_maps.entry(part_idx).or_default();
+        part_map.clear();
+        for s in 1..=num_strings {
+            let def_ch = if is_mpe {
+                2 + ((prior_strings_on_port + s - 1) % 15)
+            } else {
+                1 + ((prior_strings_on_port + s - 1) % 16)
+            };
+            part_map.insert(s, def_ch);
+        }
+        if part_idx == self.selected_part_idx {
+            self.string_channel_map = part_map.clone();
+        }
+
+        self.mutate_doc(|doc| {
+            let part = doc.parts.get_mut(part_idx)?;
+            part.mpe = Some(is_mpe);
+            part.pitch_bend_range = Some(new_pb);
             if part.name.is_none() {
                 part.name = Some(part.display_name(part_idx));
             }
@@ -1708,6 +1822,7 @@ impl MnxEditorApp {
                     capo: None,
                     tuning: Some(tunings),
                     custom_frets,
+                    ..Default::default()
                 },
                 measures,
             };
@@ -1735,8 +1850,46 @@ impl MnxEditorApp {
         if part_idx < self.ensemble_visible_parts.len() {
             self.ensemble_visible_parts.remove(part_idx);
         }
-        self.part_midi_ports.remove(&part_idx);
-        self.part_string_channel_maps.remove(&part_idx);
+
+        let mut new_midi_ports = std::collections::HashMap::new();
+        for (k, v) in self.part_midi_ports.drain() {
+            if k < part_idx {
+                new_midi_ports.insert(k, v);
+            } else if k > part_idx {
+                new_midi_ports.insert(k - 1, v);
+            }
+        }
+        self.part_midi_ports = new_midi_ports;
+
+        let mut new_channel_maps = std::collections::HashMap::new();
+        for (k, v) in self.part_string_channel_maps.drain() {
+            if k < part_idx {
+                new_channel_maps.insert(k, v);
+            } else if k > part_idx {
+                new_channel_maps.insert(k - 1, v);
+            }
+        }
+        self.part_string_channel_maps = new_channel_maps;
+
+        let mut new_mpe_modes = std::collections::HashMap::new();
+        for (k, v) in self.part_mpe_modes.drain() {
+            if k < part_idx {
+                new_mpe_modes.insert(k, v);
+            } else if k > part_idx {
+                new_mpe_modes.insert(k - 1, v);
+            }
+        }
+        self.part_mpe_modes = new_mpe_modes;
+
+        let mut new_pb_ranges = std::collections::HashMap::new();
+        for (k, v) in self.part_pitch_bend_ranges.drain() {
+            if k < part_idx {
+                new_pb_ranges.insert(k, v);
+            } else if k > part_idx {
+                new_pb_ranges.insert(k - 1, v);
+            }
+        }
+        self.part_pitch_bend_ranges = new_pb_ranges;
 
         self.mutate_doc(|doc| {
             if doc.parts.len() > 1 && part_idx < doc.parts.len() {
@@ -1844,6 +1997,7 @@ impl MnxEditorApp {
                     capo: None,
                     tuning: Some(tunings),
                     custom_frets: None,
+                    ..Default::default()
                 },
                 measures: vec![crate::mnx::Measure {
                     comment: None,
@@ -1877,6 +2031,11 @@ impl MnxEditorApp {
         self.saved_yaml = new_yaml;
         self.current_file_path = None;
         self.selected_part_idx = 0;
+        self.string_channel_dialog_part_idx = 0;
+        self.part_pitch_bend_ranges.clear();
+        self.part_mpe_modes.clear();
+        self.part_midi_ports.clear();
+        self.part_string_channel_maps.clear();
         self.layout_view_tab = LayoutViewTab::Ensemble;
         self.ensemble_visible_parts = vec![true];
         self.selected_event_idx = Some(0);
@@ -1918,6 +2077,11 @@ impl MnxEditorApp {
                     self.saved_yaml = content;
                     self.current_file_path = Some(path);
                     self.selected_part_idx = 0;
+                    self.string_channel_dialog_part_idx = 0;
+                    self.part_pitch_bend_ranges.clear();
+                    self.part_mpe_modes.clear();
+                    self.part_midi_ports.clear();
+                    self.part_string_channel_maps.clear();
                     self.layout_view_tab = LayoutViewTab::Ensemble;
                     self.selected_event_idx = None;
                     self.selected_note_idx_in_event = None;

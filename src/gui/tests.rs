@@ -6301,5 +6301,242 @@ parts:
         assert_eq!(ev0_dur, "quarter", "Event 0 in range bumped to quarter");
         assert_eq!(ev1_dur, "quarter", "Event 1 in range bumped to quarter");
     }
+
+    #[test]
+    fn test_per_instrument_midi_port_configuration() {
+        let mut app = MnxEditorApp::default();
+        app.midi_ports = vec![
+            crate::midi::MidiPortInfo {
+                id: 0,
+                name: "Port A".to_string(),
+            },
+            crate::midi::MidiPortInfo {
+                id: 1,
+                name: "Port B".to_string(),
+            },
+        ];
+
+        // Add second instrument
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    octave: 4,
+                    alter: None,
+                    ..Default::default()
+                },
+            },
+        ];
+        app.add_new_instrument_part("Bass".to_string(), 1, 12, 1, tunings, None);
+
+        // Assign Part 0 to Port 0 and Part 1 to Port 1
+        app.set_part_midi_port(0, 0);
+        app.set_part_midi_port(1, 1);
+        assert_eq!(app.get_part_midi_port(0), Some(0));
+        assert_eq!(app.get_part_midi_port(1), Some(1));
+
+        // When switching active part, selected_midi_port syncs to the active part's port
+        app.select_part(0);
+        assert_eq!(app.selected_midi_port, Some(0));
+        app.select_part(1);
+        assert_eq!(app.selected_midi_port, Some(1));
+
+        // When removing part 0, part 1 shifts down to index 0 and retains its port assignment (Port 1)
+        app.remove_instrument_part(0);
+        assert_eq!(app.get_part_midi_port(0), Some(1));
+    }
+
+    #[test]
+    fn test_per_instrument_pb_range_and_yaml_persistence() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    octave: 4,
+                    alter: None,
+                    ..Default::default()
+                },
+            },
+        ];
+        app.add_new_instrument_part("Synth".to_string(), 1, 12, 1, tunings, None);
+
+        app.set_part_pitch_bend_range(0, 12);
+        app.set_part_pitch_bend_range(1, 24);
+
+        assert_eq!(app.get_part_pitch_bend_range(0), 12);
+        assert_eq!(app.get_part_pitch_bend_range(1), 24);
+
+        // Verify active part selection updates app.pitch_bend_range
+        app.select_part(0);
+        assert_eq!(app.pitch_bend_range, 12);
+        app.select_part(1);
+        assert_eq!(app.pitch_bend_range, 24);
+
+        // Verify YAML roundtrip persistence
+        let mut app2 = MnxEditorApp::default();
+        app2.update_yaml(app.yaml_text.clone());
+        app2.process_and_render();
+        assert_eq!(app2.get_part_pitch_bend_range(0), 12);
+        assert_eq!(app2.get_part_pitch_bend_range(1), 24);
+    }
+
+    #[test]
+    fn test_per_instrument_mpe_mode_and_channel_mapping() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning {
+                string: 1,
+                pitch: crate::mnx::Pitch {
+                    step: "E".to_string(),
+                    octave: 4,
+                    alter: None,
+                    ..Default::default()
+                },
+            },
+        ];
+        app.add_new_instrument_part("Pad".to_string(), 1, 12, 1, tunings, None);
+
+        // Part 0 is Multi-Timbral by default
+        assert!(!app.is_part_mpe_mode(0));
+        assert_eq!(app.get_part_pitch_bend_range(0), 2);
+
+        // Set Part 1 to MPE
+        app.set_part_mpe_mode(1, true);
+        assert!(app.is_part_mpe_mode(1));
+        assert!(!app.is_part_mpe_mode(0));
+        assert_eq!(app.get_part_pitch_bend_range(1), 48);
+
+        // Part 0 has 8 strings on Port 0. When Part 1 shares Port 0,
+        // its member channel offset is 2 + 8 = 10.
+        let map1 = app.part_string_channel_maps.get(&1).unwrap();
+        assert_eq!(map1.get(&1), Some(&10));
+
+        // When Part 1 is assigned its own MIDI port (Port 1), its prior strings on that port is 0,
+        // so its member channel starts at Ch 2.
+        app.midi_ports = vec![
+            crate::midi::MidiPortInfo { id: 0, name: "Port 0".to_string() },
+            crate::midi::MidiPortInfo { id: 1, name: "Port 1".to_string() },
+        ];
+        app.set_part_midi_port(1, 1);
+        app.set_part_mpe_mode(1, true);
+        let map1_own_port = app.part_string_channel_maps.get(&1).unwrap();
+        assert_eq!(map1_own_port.get(&1), Some(&2));
+
+        // Active part selection syncs is_mpe_mode and pitch_bend_range
+        app.select_part(0);
+        assert!(!app.is_mpe_mode);
+        assert_eq!(app.pitch_bend_range, 2);
+
+        app.select_part(1);
+        assert!(app.is_mpe_mode);
+        assert_eq!(app.pitch_bend_range, 48);
+
+        // Verify YAML roundtrip persistence of mpe
+        let mut app3 = MnxEditorApp::default();
+        app3.update_yaml(app.yaml_text.clone());
+        app3.process_and_render();
+        assert!(!app3.is_part_mpe_mode(0));
+        assert!(app3.is_part_mpe_mode(1));
+        assert_eq!(app3.get_part_pitch_bend_range(1), 48);
+    }
+
+    #[test]
+    fn test_per_instrument_pitch_bend_and_mpe_isolation() {
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![crate::mnx::StringTuning {
+            string: 1,
+            pitch: crate::mnx::Pitch { step: "E".to_string(), octave: 4, alter: None, ..Default::default() },
+        }];
+        app.add_new_instrument_part("Synth".to_string(), 1, 12, 1, tunings, None);
+
+        // Initially both are Multi-Timbral with default PB = 2
+        assert_eq!(app.get_part_pitch_bend_range(0), 2);
+        assert_eq!(app.get_part_pitch_bend_range(1), 2);
+        assert!(!app.is_part_mpe_mode(0));
+        assert!(!app.is_part_mpe_mode(1));
+
+        // Set Part 0 PB range to 12
+        app.set_part_pitch_bend_range(0, 12);
+        assert_eq!(app.get_part_pitch_bend_range(0), 12);
+        assert_eq!(app.get_part_pitch_bend_range(1), 2);
+
+        // Set Part 1 MPE mode to true
+        app.set_part_mpe_mode(1, true);
+        assert!(!app.is_part_mpe_mode(0));
+        assert!(app.is_part_mpe_mode(1));
+        assert_eq!(app.get_part_pitch_bend_range(0), 12);
+        assert_eq!(app.get_part_pitch_bend_range(1), 48);
+
+        // Customize Part 1 PB range to 24
+        app.set_part_pitch_bend_range(1, 24);
+        assert_eq!(app.get_part_pitch_bend_range(0), 12);
+        assert_eq!(app.get_part_pitch_bend_range(1), 24);
+        assert!(!app.is_part_mpe_mode(0));
+        assert!(app.is_part_mpe_mode(1));
+
+        // Switching active parts in the editor syncs the editor's live controls
+        app.select_part(0);
+        assert_eq!(app.pitch_bend_range, 12);
+        assert!(!app.is_mpe_mode);
+
+        app.select_part(1);
+        assert_eq!(app.pitch_bend_range, 24);
+        assert!(app.is_mpe_mode);
+
+        // Verify UI rendering with both instruments works cleanly
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        app.show_string_channels_popup = true;
+
+        let event_ranges = app.cached_event_ranges.clone();
+        let total_events = event_ranges.len();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.render_top_panel(ui, &event_ranges, total_events);
+        });
+        out.textures_delta.clear();
+
+        // Verify YAML roundtrip persistence of both PB ranges and MPE modes
+        let mut app2 = MnxEditorApp::default();
+        app2.update_yaml(app.yaml_text.clone());
+        app2.process_and_render();
+        assert_eq!(app2.get_part_pitch_bend_range(0), 12);
+        assert_eq!(app2.get_part_pitch_bend_range(1), 24);
+        assert!(!app2.is_part_mpe_mode(0));
+        assert!(app2.is_part_mpe_mode(1));
+
+        // Removing Part 0 shifts Part 1's settings to index 0
+        app.remove_instrument_part(0);
+        assert_eq!(app.get_part_pitch_bend_range(0), 24);
+        assert!(app.is_part_mpe_mode(0));
+    }
+
+    #[test]
+    fn test_midi_string_channels_popup_ui_rendering() {
+        let mut app = MnxEditorApp::default();
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        app.midi_ports = vec![
+            crate::midi::MidiPortInfo {
+                id: 0,
+                name: "Virtual MIDI Out".to_string(),
+            },
+        ];
+
+        // Open popup
+        app.show_string_channels_popup = true;
+
+        let event_ranges = app.cached_event_ranges.clone();
+        let total_events = event_ranges.len();
+
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.render_top_panel(ui, &event_ranges, total_events);
+        });
+        out.textures_delta.clear();
+        assert!(app.show_string_channels_popup);
+    }
 }
 
