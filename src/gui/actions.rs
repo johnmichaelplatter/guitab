@@ -750,6 +750,90 @@ impl MnxEditorApp {
         }
     }
 
+    pub fn bump_selected_duration(&mut self, step: i32) {
+        let p_idx = self.selected_part_idx;
+        let cursor = match self.selected_event_idx {
+            Some(c) => c,
+            None => return,
+        };
+        let anchor = self.selection_anchor.unwrap_or(cursor);
+        let min_idx = cursor.min(anchor);
+        let max_idx = cursor.max(anchor);
+
+        const DURATION_CYCLE: &[&str] = &[
+            "32nd",
+            "16th",
+            "eighth",
+            "quarter",
+            "half",
+            "whole",
+        ];
+
+        let base_to_index = |base_str: &str| -> usize {
+            let s = base_str.to_lowercase();
+            if s.contains("whole") || s == "1" {
+                5
+            } else if s.contains("half") || s == "1/2" {
+                4
+            } else if s.contains("quarter") || s.contains("4th") || s == "1/4" {
+                3
+            } else if s.contains("eighth") || s.contains("8th") || s == "1/8" {
+                2
+            } else if s.contains("16th") || s.contains("sixteenth") || s == "1/16" {
+                1
+            } else if s.contains("32nd") || s.contains("thirtysecond") || s == "1/32" {
+                0
+            } else {
+                3 // default quarter
+            }
+        };
+
+        if min_idx == max_idx {
+            let cur_dur = self.get_selected_event_duration().unwrap_or_else(|| crate::mnx::Duration {
+                multiple: None,
+                base: "quarter".to_string(),
+                dots: None,
+            });
+            let cur_idx = base_to_index(&cur_dur.base);
+            let new_idx = (cur_idx as i32 + step).clamp(0, (DURATION_CYCLE.len() - 1) as i32) as usize;
+            self.change_selected_duration_base(DURATION_CYCLE[new_idx]);
+            return;
+        }
+
+        self.mutate_doc(|doc| {
+            let paths = doc.get_flattened_event_paths_for_part(p_idx);
+            let mut any_changed = false;
+            for e_idx in min_idx..=max_idx {
+                if let Some(&path) = paths.get(e_idx) {
+                    if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) {
+                        let cur_idx = base_to_index(&ev.duration.base);
+                        let new_idx = (cur_idx as i32 + step).clamp(0, (DURATION_CYCLE.len() - 1) as i32) as usize;
+                        let new_base = DURATION_CYCLE[new_idx];
+                        let is_string_dotted = ev.duration.base.contains("dotted") || ev.duration.base.contains('.');
+                        let dots = if ev.duration.dots.unwrap_or(0) > 0 {
+                            ev.duration.dots
+                        } else if is_string_dotted {
+                            Some(1)
+                        } else {
+                            ev.duration.dots
+                        };
+                        ev.duration = crate::mnx::Duration {
+                            multiple: None,
+                            base: new_base.to_string(),
+                            dots,
+                        };
+                        any_changed = true;
+                    }
+                }
+            }
+            if any_changed {
+                Some(())
+            } else {
+                None
+            }
+        });
+    }
+
     pub fn toggle_selected_duration_dot(&mut self) {
         let p_idx = self.selected_part_idx;
         if let Some(e_idx) = self.selected_event_idx {

@@ -250,6 +250,18 @@ impl MnxEditorApp {
 
                     ui.separator();
 
+                    let is_dark = ui.visuals().dark_mode;
+                    ui.menu_button("Theme", |ui| {
+                        if ui.selectable_label(is_dark, "Dark Mode").clicked() {
+                            ui.ctx().set_visuals(egui::Visuals::dark());
+                            ui.close();
+                        }
+                        if ui.selectable_label(!is_dark, "Light Mode").clicked() {
+                            ui.ctx().set_visuals(egui::Visuals::light());
+                            ui.close();
+                        }
+                    });
+
                     let current_page_size = self
                         .parsed_mnx
                         .as_ref()

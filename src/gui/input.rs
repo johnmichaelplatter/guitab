@@ -731,7 +731,20 @@ impl MnxEditorApp {
                 }
             } else if up_pressed || down_pressed {
                 let (shift_down, alt_down) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
-                if alt_down {
+                if shift_down && alt_down {
+                    self.commit_fret_edit();
+                    self.editing_fret_buf.clear();
+                    if up_pressed {
+                        self.bump_selected_duration(1);
+                    } else if down_pressed {
+                        self.bump_selected_duration(-1);
+                    }
+                    if let Some(e_idx) = self.selected_event_idx {
+                        if let Some(cur_str) = self.editing_string {
+                            self.select_note_on_string(e_idx, cur_str);
+                        }
+                    }
+                } else if alt_down {
                     self.commit_fret_edit();
                     self.editing_fret_buf.clear();
                     if up_pressed {
@@ -1135,7 +1148,13 @@ impl MnxEditorApp {
                 self.is_editing_fret = true;
             } else if left_pressed || right_pressed || up_pressed || down_pressed {
                 let (shift_down, alt_down) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
-                if alt_down && (left_pressed || right_pressed) {
+                if shift_down && alt_down && (up_pressed || down_pressed) {
+                    if up_pressed {
+                        self.bump_selected_duration(1);
+                    } else if down_pressed {
+                        self.bump_selected_duration(-1);
+                    }
+                } else if alt_down && (left_pressed || right_pressed) {
                     if right_pressed {
                         self.action_move_selected_by_grid(1);
                     } else if left_pressed {

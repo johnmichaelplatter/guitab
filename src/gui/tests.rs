@@ -6097,5 +6097,209 @@ parts:
         let ev0_noslur = doc4.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
         assert!(ev0_noslur.slurs.is_none(), "String 2 slur must be toggled off");
     }
+
+    #[test]
+    fn test_view_menu_theme_switch_dark_light() {
+        let mut app = MnxEditorApp::default();
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        let event_ranges = app.cached_event_ranges.clone();
+        let total_events = event_ranges.len();
+
+        // 1. Initially Dark Mode
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(ui.visuals().dark_mode, "Context should be in dark mode");
+            app.render_top_panel(ui, &event_ranges, total_events);
+        });
+        out.textures_delta.clear();
+
+        // 2. Switch to Light Mode
+        ctx.set_visuals(egui::Visuals::light());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(!ui.visuals().dark_mode, "Context should be in light mode");
+            app.render_top_panel(ui, &event_ranges, total_events);
+        });
+        out.textures_delta.clear();
+
+        // 3. Switch back to Dark Mode
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(ui.visuals().dark_mode, "Context should be back in dark mode");
+            app.render_top_panel(ui, &event_ranges, total_events);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_fretboard_editor_ui_dark_and_light_mode() {
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        let mut editor = crate::fretboard_editor::FretboardEditorState::new(
+            6,
+            Vec::new(),
+            "D".to_string(),
+            4,
+            440.0,
+        );
+        editor.guide_input = "5/4".to_string();
+        editor.update_guides();
+        editor.add_all_guide_frets();
+
+        // 1. Render in Dark Mode
+        ctx.set_visuals(egui::Visuals::dark());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(ui.visuals().dark_mode);
+            editor.ui(ui);
+        });
+        out.textures_delta.clear();
+
+        // 2. Render in Light Mode
+        ctx.set_visuals(egui::Visuals::light());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(!ui.visuals().dark_mode);
+            editor.ui(ui);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_shift_alt_up_down_duration_bump_select_and_edit_mode() {
+        let mut app = MnxEditorApp::default();
+        let yaml = r#"mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Guitar"
+    _x:
+      tuning:
+        - string: 1
+          pitch: { step: E, octave: 4 }
+        - string: 2
+          pitch: { step: B, octave: 3 }
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: eighth }
+                notes:
+                  - pitch: { step: E, octave: 4 }
+                    _x: { string: 1, fret: 0 }
+              - duration: { base: eighth }
+                notes:
+                  - pitch: { step: B, octave: 3 }
+                    _x: { string: 2, fret: 0 }
+"#;
+        app.yaml_text = yaml.to_string();
+        app.process_and_render();
+
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        let send_key = |app: &mut MnxEditorApp, ctx: &egui::Context, key: egui::Key, shift: bool, alt: bool| {
+            let mods = egui::Modifiers {
+                shift,
+                alt,
+                ..Default::default()
+            };
+            let mut raw_input = egui::RawInput::default();
+            raw_input.events.push(egui::Event::ModifiersChanged(mods));
+            raw_input.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            });
+            let event_ranges = app.cached_event_ranges.clone();
+            let total_events = event_ranges.len();
+            let mut out = ctx.run_ui(raw_input, |ui| {
+                app.handle_keyboard_input(ui, false, &event_ranges, total_events);
+            });
+            out.textures_delta.clear();
+        };
+
+        // ── 1. Select Mode Bump Tests ──────────────────────────────────────────
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = false;
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "eighth");
+
+        // Shift+Alt+Up -> quarter
+        send_key(&mut app, &ctx, egui::Key::ArrowUp, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "quarter");
+
+        // Shift+Alt+Up -> half
+        send_key(&mut app, &ctx, egui::Key::ArrowUp, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "half");
+
+        // Shift+Alt+Up -> whole
+        send_key(&mut app, &ctx, egui::Key::ArrowUp, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "whole");
+
+        // Shift+Alt+Up again -> capped at whole
+        send_key(&mut app, &ctx, egui::Key::ArrowUp, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "whole");
+
+        // Shift+Alt+Down -> half
+        send_key(&mut app, &ctx, egui::Key::ArrowDown, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "half");
+
+        // Shift+Alt+Down -> quarter
+        send_key(&mut app, &ctx, egui::Key::ArrowDown, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "quarter");
+
+        // Shift+Alt+Down -> eighth
+        send_key(&mut app, &ctx, egui::Key::ArrowDown, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "eighth");
+
+        // Shift+Alt+Down -> 16th
+        send_key(&mut app, &ctx, egui::Key::ArrowDown, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "16th");
+
+        // Shift+Alt+Down -> 32nd
+        send_key(&mut app, &ctx, egui::Key::ArrowDown, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "32nd");
+
+        // Shift+Alt+Down again -> capped at 32nd
+        send_key(&mut app, &ctx, egui::Key::ArrowDown, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "32nd");
+
+        // ── 2. Edit Mode Bump Tests ────────────────────────────────────────────
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(1);
+        app.selected_note_idx_in_event = Some(0);
+        app.is_editing_fret = true;
+        app.editing_fret_buf.clear();
+
+        // Shift+Alt+Up -> 16th (from 32nd)
+        send_key(&mut app, &ctx, egui::Key::ArrowUp, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "16th");
+        assert!(app.is_editing_fret, "Must remain in edit mode");
+        assert_eq!(app.editing_string, Some(1), "Must keep active string");
+
+        // Type fret "7" and press Shift+Alt+Up -> commits fret 7 and bumps duration to eighth
+        app.editing_fret_buf = "7".to_string();
+        send_key(&mut app, &ctx, egui::Key::ArrowUp, true, true);
+        assert_eq!(app.get_selected_event_duration().unwrap().base, "eighth");
+        assert!(app.is_editing_fret, "Must remain in edit mode");
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].content[0].as_event().unwrap();
+        assert_eq!(ev0.notes[0].fret, Some(7), "Fret 7 must be committed");
+
+        // ── 3. Multi-Select Range Bump Tests ───────────────────────────────────
+        app.is_editing_fret = false;
+        app.selected_event_idx = Some(1);
+        app.selection_anchor = Some(0);
+        // Both event 0 and event 1 are currently "eighth" notes.
+        // Bump both to "quarter"
+        send_key(&mut app, &ctx, egui::Key::ArrowUp, true, true);
+        let doc2 = app.parsed_mnx.as_ref().unwrap();
+        let ev0_dur = &doc2.parts[0].measures[0].sequences[0].content[0].as_event().unwrap().duration.base;
+        let ev1_dur = &doc2.parts[0].measures[0].sequences[0].content[1].as_event().unwrap().duration.base;
+        assert_eq!(ev0_dur, "quarter", "Event 0 in range bumped to quarter");
+        assert_eq!(ev1_dur, "quarter", "Event 1 in range bumped to quarter");
+    }
 }
 

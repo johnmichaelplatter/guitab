@@ -1034,8 +1034,23 @@ impl FretboardEditorState {
                 );
                 let painter = ui.painter_at(rect);
 
+                let is_dark = ui.visuals().dark_mode;
+                let bg_color = if is_dark {
+                    Color32::from_rgb(26, 26, 30)
+                } else {
+                    Color32::from_rgb(244, 245, 248)
+                };
+
                 // Background
-                painter.rect_filled(rect, 6.0, Color32::from_rgb(26, 26, 30));
+                painter.rect_filled(rect, 6.0, bg_color);
+                if !is_dark {
+                    painter.rect_stroke(
+                        rect,
+                        6.0,
+                        Stroke::new(1.0, Color32::from_gray(215)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
 
                 let neck_top_y = rect.min.y + top_badge_margin;
                 let neck_bot_y = neck_top_y + neck_height;
@@ -1053,13 +1068,18 @@ impl FretboardEditorState {
                 );
 
                 // Parallel top and bottom fretboard edge lines
+                let edge_color = if is_dark {
+                    Color32::from_gray(200)
+                } else {
+                    Color32::from_gray(160)
+                };
                 painter.line_segment(
                     [Pos2::new(nut_x, neck_top_y), Pos2::new(neck_right_x, neck_top_y)],
-                    Stroke::new(2.5, Color32::from_gray(200)),
+                    Stroke::new(2.5, edge_color),
                 );
                 painter.line_segment(
                     [Pos2::new(nut_x, neck_bot_y), Pos2::new(neck_right_x, neck_bot_y)],
-                    Stroke::new(2.5, Color32::from_gray(200)),
+                    Stroke::new(2.5, edge_color),
                 );
 
                 // Nut line (Fret 0)
@@ -1076,12 +1096,17 @@ impl FretboardEditorState {
                         [Pos2::new(nut_x, sy), Pos2::new(neck_right_x, sy)],
                         Stroke::new(thickness, Color32::from_rgba_unmultiplied(150, 155, 165, 115)),
                     );
+                    let s_label_color = if is_dark {
+                        Color32::from_gray(175)
+                    } else {
+                        Color32::from_gray(60)
+                    };
                     painter.text(
                         Pos2::new(nut_x - 10.0, sy),
                         egui::Align2::RIGHT_CENTER,
                         format!("S{}", s),
                         FontId::monospace(11.5),
-                        Color32::from_gray(175),
+                        s_label_color,
                     );
                 }
 
@@ -1134,10 +1159,15 @@ impl FretboardEditorState {
                     let has_placed_fret = self.frets.iter().any(|f| (f.cents() - guide.to_cents()).abs() < 0.5);
                     if !has_placed_fret {
                         let g_text = guide.display_label();
+                        let guide_label_color = if is_dark {
+                            Color32::from_rgba_unmultiplied(130, 195, 255, 160)
+                        } else {
+                            Color32::from_rgb(25, 95, 175)
+                        };
                         let g_galley = painter.layout_no_wrap(
                             g_text,
                             FontId::monospace(9.5),
-                            Color32::from_rgba_unmultiplied(130, 195, 255, 160),
+                            guide_label_color,
                         );
                         let g_tw = g_galley.size().x;
                         let g_term = Pos2::new(gx - 2.0, neck_bot_y + 8.0);
@@ -1145,7 +1175,7 @@ impl FretboardEditorState {
                         let mut g_shape = egui::epaint::TextShape::new(
                             g_start,
                             g_galley,
-                            Color32::from_rgba_unmultiplied(130, 195, 255, 160),
+                            guide_label_color,
                         );
                         g_shape.angle = -std::f32::consts::FRAC_PI_4;
                         painter.add(g_shape);
@@ -1193,15 +1223,22 @@ impl FretboardEditorState {
                         Color32::from_rgb(220, 120, 50)
                     } else if fret.manual_number.is_some() {
                         Color32::from_rgb(75, 110, 155)
-                    } else {
+                    } else if is_dark {
                         Color32::from_rgb(55, 60, 70)
+                    } else {
+                        Color32::from_rgb(70, 75, 85)
                     };
                     painter.rect_filled(badge_rect, 3.5, badge_bg);
                     if is_sel {
+                        let stroke_color = if is_dark {
+                            Color32::from_rgb(255, 200, 90)
+                        } else {
+                            Color32::from_rgb(215, 130, 20)
+                        };
                         painter.rect_stroke(
                             badge_rect,
                             3.5,
-                            Stroke::new(1.5, Color32::from_rgb(255, 200, 90)),
+                            Stroke::new(1.5, stroke_color),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -1217,11 +1254,21 @@ impl FretboardEditorState {
                     let label_text = fret.spec.display_label();
                     let is_hovered = hovered_fret_idx == Some(f_idx);
                     let label_color = if is_hovered {
-                        Color32::from_rgb(255, 230, 130)
+                        if is_dark {
+                            Color32::from_rgb(255, 230, 130)
+                        } else {
+                            Color32::from_rgb(180, 80, 0)
+                        }
                     } else if is_sel {
-                        Color32::from_rgb(255, 200, 90)
-                    } else {
+                        if is_dark {
+                            Color32::from_rgb(255, 200, 90)
+                        } else {
+                            Color32::from_rgb(190, 100, 10)
+                        }
+                    } else if is_dark {
                         fret_color
+                    } else {
+                        Color32::from_gray(50)
                     };
                     let l_galley = painter.layout_no_wrap(label_text, FontId::monospace(10.0), label_color);
                     let l_tw = l_galley.size().x;
@@ -1232,9 +1279,20 @@ impl FretboardEditorState {
                     painter.add(l_shape);
 
                     // Subtle tick connecting bottom rail to the label end
+                    let tick_color = if is_sel {
+                        if is_dark {
+                            Color32::from_rgb(255, 200, 90)
+                        } else {
+                            Color32::from_rgb(190, 100, 10)
+                        }
+                    } else if is_dark {
+                        fret_color
+                    } else {
+                        Color32::from_gray(130)
+                    };
                     painter.line_segment(
                         [Pos2::new(fx, neck_bot_y), Pos2::new(fx, neck_bot_y + 5.0)],
-                        Stroke::new(1.2, fret_color),
+                        Stroke::new(1.2, tick_color),
                     );
 
                     // Note name popup tooltip on hover over the cent/ratio/edo step text
@@ -1497,7 +1555,7 @@ impl FretboardEditorState {
                             "Click or drag vertically across any dotted line on the neck above to place frets or partial fretlets.",
                         )
                         .italics()
-                        .color(Color32::GRAY),
+                        .color(ui.visuals().weak_text_color()),
                     );
                 }
                 for (idx, fret) in self.frets.iter_mut().enumerate() {
@@ -1537,7 +1595,12 @@ impl FretboardEditorState {
         }
 
         if let Some(msg) = &self.status_msg {
-            ui.label(egui::RichText::new(msg).italics().color(Color32::from_rgb(180, 220, 255)));
+            let msg_color = if ui.visuals().dark_mode {
+                Color32::from_rgb(180, 220, 255)
+            } else {
+                Color32::from_rgb(25, 95, 175)
+            };
+            ui.label(egui::RichText::new(msg).italics().color(msg_color));
         }
     }
 }
