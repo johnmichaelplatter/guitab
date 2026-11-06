@@ -48,19 +48,29 @@ pub(crate) fn setup_custom_fonts(ctx: &egui::Context) {
 }
 
 fn main() -> eframe::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows, if WGPU_BACKEND is not explicitly specified, prefer DirectX (dx12,dx11)
-        // to avoid crashes on legacy Intel Vulkan ICD drivers (e.g. ig9icd64.dll).
-        if std::env::var("WGPU_BACKEND").is_err() {
-            std::env::set_var("WGPU_BACKEND", "dx12,dx11");
+    let wgpu_options = {
+        #[cfg(target_os = "windows")]
+        {
+            let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+            setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::from_env().unwrap_or(
+                eframe::egui_wgpu::wgpu::Backends::DX12 | eframe::egui_wgpu::wgpu::Backends::DX11,
+            );
+            eframe::egui_wgpu::WgpuConfiguration {
+                wgpu_setup: setup.into(),
+                ..Default::default()
+            }
         }
-    }
+        #[cfg(not(target_os = "windows"))]
+        {
+            eframe::egui_wgpu::WgpuConfiguration::default()
+        }
+    };
 
     let icon = eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon.png")[..])
         .expect("Failed to load application icon");
 
     let options = eframe::NativeOptions {
+        wgpu_options,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 600.0])
             .with_icon(icon),

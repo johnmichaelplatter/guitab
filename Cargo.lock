@@ -1662,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "guitab"
-version = "0.8.2"
+version = "0.8.4"
 dependencies = [
  "eframe",
  "egui_extras",
