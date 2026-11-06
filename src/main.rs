@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 pub mod curve_editor;
 mod edo;
 pub mod fretboard_editor;
@@ -46,6 +48,15 @@ pub(crate) fn setup_custom_fonts(ctx: &egui::Context) {
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, if WGPU_BACKEND is not explicitly specified, prefer DirectX (dx12,dx11)
+        // to avoid crashes on legacy Intel Vulkan ICD drivers (e.g. ig9icd64.dll).
+        if std::env::var("WGPU_BACKEND").is_err() {
+            std::env::set_var("WGPU_BACKEND", "dx12,dx11");
+        }
+    }
+
     let icon = eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon.png")[..])
         .expect("Failed to load application icon");
 
