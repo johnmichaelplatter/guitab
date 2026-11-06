@@ -53,7 +53,7 @@ fn main() -> eframe::Result<()> {
         {
             let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
             setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::from_env().unwrap_or(
-                eframe::egui_wgpu::wgpu::Backends::DX12 | eframe::egui_wgpu::wgpu::Backends::DX11,
+                eframe::egui_wgpu::wgpu::Backends::DX12,
             );
             eframe::egui_wgpu::WgpuConfiguration {
                 wgpu_setup: setup.into(),
