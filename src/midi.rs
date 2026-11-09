@@ -81,6 +81,7 @@ pub struct PlaybackEvent {
 pub enum PlaybackEventKind {
     Tempo(u32),
     Midi { channel: u4, message: MidiMessage },
+    Synth(crate::synth::SynthCommand),
     EventMarker(usize),
     EndOfTrack,
 }
@@ -110,6 +111,7 @@ pub enum MultiPartPlaybackEventKind {
         channel: u4,
         message: MidiMessage,
     },
+    Synth(crate::synth::SynthCommand),
     PartEventMarker {
         part_idx: usize,
         event_idx: usize,
@@ -127,6 +129,7 @@ struct InternalAbsoluteEvent {
 enum InternalEventKind {
     Tempo(u32),
     Midi { channel: u4, message: MidiMessage },
+    Synth(crate::synth::SynthCommand),
     EventMarker(usize),
     EndOfTrack,
 }
@@ -471,6 +474,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
             std::collections::HashMap::new();
         let mut ringing_notes_by_string: std::collections::HashMap<u8, (midly::num::u4, u8)> =
             std::collections::HashMap::new();
+        let mut slur_target_note_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut slur_target_event_strings: std::collections::HashMap<
+            String,
+            std::collections::HashSet<u8>,
+        > = std::collections::HashMap::new();
         let mut final_ticks = 0;
         let mut current_bpm;
 
@@ -783,6 +792,60 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                     let id = note_id_opt.unwrap();
                                     pending_ties.remove(id).unwrap()
                                 } else {
+                                    let exact_freq_hz =
+                                        440.0 * 2.0_f64.powf((midi_note_frac - 69.0) / 12.0);
+                                    let is_accented = event
+                                        .markings
+                                        .as_ref()
+                                        .map_or(false, |m| m.accent.is_some());
+                                    let velocity = if is_accented { 127 } else { 100 };
+                                    let vel_norm = (velocity as f32 / 127.0).clamp(0.05, 1.0);
+                                    let is_palm_muted = event.ext.text_markings.iter().any(|tm| {
+                                        let up = tm.text.trim().to_ascii_uppercase();
+                                        up == "P.M." || up == "PM" || up.starts_with("P.M")
+                                    });
+                                    let palm_mute = if is_palm_muted { 0.72 } else { 0.0 };
+
+                                    let is_slurred_into = note_id_opt
+                                        .map_or(false, |id| slur_target_note_ids.remove(id))
+                                        || event
+                                            .id
+                                            .as_ref()
+                                            .and_then(|eid| slur_target_event_strings.get_mut(eid))
+                                            .map_or(false, |set| set.remove(&string));
+
+                                    if is_slurred_into {
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: note_start_ticks,
+                                            kind: InternalEventKind::Synth(
+                                                crate::synth::SynthCommand::SlurString {
+                                                    string_idx: string,
+                                                    new_freq_hz: exact_freq_hz,
+                                                    hammer_energy: vel_norm * 0.75,
+                                                },
+                                            ),
+                                        });
+                                    } else {
+                                        let (trig_freq_hz, harm_node) = if note.harmonic.is_some() {
+                                            (exact_freq_hz * 0.5, Some(2))
+                                        } else {
+                                            (exact_freq_hz, None)
+                                        };
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: note_start_ticks,
+                                            kind: InternalEventKind::Synth(
+                                                crate::synth::SynthCommand::TriggerString {
+                                                    string_idx: string,
+                                                    freq_hz: trig_freq_hz,
+                                                    velocity: vel_norm,
+                                                    pluck_pos: 0.18,
+                                                    palm_mute,
+                                                    harmonic_node: harm_node,
+                                                },
+                                            ),
+                                        });
+                                    }
+
                                     self.abs_events.push(InternalAbsoluteEvent {
                                         time_ticks: note_start_ticks,
                                         kind: InternalEventKind::Midi {
@@ -826,6 +889,19 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                                         ),
                                                     },
                                                 },
+                                            });
+
+                                            let bent_freq_hz = exact_freq_hz
+                                                * 2.0_f64.powf((bend_semitones as f64) / 12.0);
+                                            self.abs_events.push(InternalAbsoluteEvent {
+                                                time_ticks: note_start_ticks + tick_offset,
+                                                kind: InternalEventKind::Synth(
+                                                    crate::synth::SynthCommand::SlideString {
+                                                        string_idx: string,
+                                                        target_freq_hz: bent_freq_hz,
+                                                        glide_samples: 384,
+                                                    },
+                                                ),
                                             });
                                         }
                                     } else if has_forward_slide && slide_target_midi_frac != 0.0
@@ -877,11 +953,24 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                                     },
                                                 },
                                             });
+
+                                            let unclipped_semitones =
+                                                (slide_target_midi_frac - midi_note_frac)
+                                                    * (curve_progress as f64);
+                                            let slid_freq_hz = exact_freq_hz
+                                                * 2.0_f64.powf(unclipped_semitones / 12.0);
+                                            self.abs_events.push(InternalAbsoluteEvent {
+                                                time_ticks: note_start_ticks + tick_offset,
+                                                kind: InternalEventKind::Synth(
+                                                    crate::synth::SynthCommand::SlideString {
+                                                        string_idx: string,
+                                                        target_freq_hz: slid_freq_hz,
+                                                        glide_samples: 384,
+                                                    },
+                                                ),
+                                            });
                                         }
                                     }
-
-                                    let is_accented = event.markings.as_ref().map_or(false, |m| m.accent.is_some());
-                                    let velocity = if is_accented { 127 } else { 100 };
 
                                     self.abs_events.push(InternalAbsoluteEvent {
                                         time_ticks: note_start_ticks,
@@ -903,10 +992,27 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                 let has_forward_tie = forward_ties.map_or(false, |t| !t.is_empty());
 
                                 let mut has_forward_slur = false;
-                                if let (Some(slurs), Some(n_id)) = (&event.slurs, note_id_opt) {
-                                    has_forward_slur = slurs
-                                        .iter()
-                                        .any(|s| s.start_note.as_ref() == Some(n_id));
+                                if let Some(slurs) = &event.slurs {
+                                    for s in slurs {
+                                        if let Some(n_id) = note_id_opt {
+                                            if s.start_note.as_ref() == Some(n_id) {
+                                                has_forward_slur = true;
+                                                if let Some(end_id) = &s.end_note {
+                                                    slur_target_note_ids.insert(end_id.clone());
+                                                }
+                                                slur_target_event_strings
+                                                    .entry(s.target.clone())
+                                                    .or_default()
+                                                    .insert(string);
+                                            }
+                                        } else if s.start_note.is_none() {
+                                            has_forward_slur = true;
+                                            slur_target_event_strings
+                                                .entry(s.target.clone())
+                                                .or_default()
+                                                .insert(string);
+                                        }
+                                    }
                                 }
 
                                 if has_forward_tie {
@@ -938,6 +1044,18 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                             },
                                         },
                                     });
+
+                                    if !has_forward_slur && !has_forward_slide {
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: event_start_ticks + duration_ticks,
+                                            kind: InternalEventKind::Synth(
+                                                crate::synth::SynthCommand::MuteString {
+                                                    string_idx: string,
+                                                    release_rate: 0.9965,
+                                                },
+                                            ),
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -980,6 +1098,15 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                     if grace_end > grace_start {
                                         self.abs_events.push(InternalAbsoluteEvent {
                                             time_ticks: grace_start,
+                                            kind: InternalEventKind::Synth(
+                                                crate::synth::SynthCommand::TriggerDrum {
+                                                    gm_drum_note: midi_note,
+                                                    velocity: (65.0_f32 / 127.0).clamp(0.05, 1.0),
+                                                },
+                                            ),
+                                        });
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: grace_start,
                                             kind: InternalEventKind::Midi {
                                                 channel: perc_ch,
                                                 message: MidiMessage::NoteOn {
@@ -1001,6 +1128,15 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                     }
                                 }
 
+                                self.abs_events.push(InternalAbsoluteEvent {
+                                    time_ticks: event_start_ticks,
+                                    kind: InternalEventKind::Synth(
+                                        crate::synth::SynthCommand::TriggerDrum {
+                                            gm_drum_note: midi_note,
+                                            velocity: (velocity as f32 / 127.0).clamp(0.05, 1.0),
+                                        },
+                                    ),
+                                });
                                 self.abs_events.push(InternalAbsoluteEvent {
                                     time_ticks: event_start_ticks,
                                     kind: InternalEventKind::Midi {
@@ -1089,6 +1225,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
                     playback_events.push(PlaybackEvent {
                         delta_ticks: delta,
                         kind: PlaybackEventKind::Midi { channel, message },
+                    });
+                }
+                InternalEventKind::Synth(cmd) => {
+                    playback_events.push(PlaybackEvent {
+                        delta_ticks: delta,
+                        kind: PlaybackEventKind::Synth(cmd),
                     });
                 }
                 InternalEventKind::Tempo(mpb) => {
@@ -1317,6 +1459,12 @@ pub fn generate_multi_part_playback_track(
                         },
                     });
                 }
+                InternalEventKind::Synth(cmd) => {
+                    combined_abs.push(TaggedAbsEvent {
+                        time_ticks: ev.time_ticks,
+                        kind: MultiPartPlaybackEventKind::Synth(cmd),
+                    });
+                }
                 InternalEventKind::EventMarker(idx) => {
                     combined_abs.push(TaggedAbsEvent {
                         time_ticks: ev.time_ticks,
@@ -1537,7 +1685,9 @@ pub fn generate_midi<'a>(doc: &MnxDocument, options: MidiOptions) -> Smf<'a> {
                 });
                 accumulated_delta = 0;
             }
-            PlaybackEventKind::EventMarker(_) | PlaybackEventKind::EndOfTrack => {
+            PlaybackEventKind::EventMarker(_)
+            | PlaybackEventKind::Synth(_)
+            | PlaybackEventKind::EndOfTrack => {
                 // Internal to player sequencer; omit from standard SMF (accumulated_delta is carried into EndOfTrack below)
             }
         }
@@ -1657,6 +1807,8 @@ pub struct MidiPlayer {
     connections: std::sync::Arc<std::sync::Mutex<Vec<CachedMidiConnection>>>,
     handle: Option<std::thread::JoinHandle<()>>,
     is_preview: bool,
+    synth_sender: Option<crate::synth::SynthSender>,
+    use_external_midi: bool,
 }
 
 impl Drop for MidiPlayer {
@@ -1674,7 +1826,19 @@ impl MidiPlayer {
             connections: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             handle: None,
             is_preview: false,
+            synth_sender: None,
+            use_external_midi: true,
         }
+    }
+
+    /// Configures whether playback routes events to the internal synthesizer, external MIDI, or both.
+    pub fn set_synth_routing(
+        &mut self,
+        synth_sender: Option<crate::synth::SynthSender>,
+        use_external_midi: bool,
+    ) {
+        self.synth_sender = synth_sender;
+        self.use_external_midi = use_external_midi;
     }
 
     pub fn connections_arc(&self) -> std::sync::Arc<std::sync::Mutex<Vec<CachedMidiConnection>>> {
@@ -1735,6 +1899,9 @@ impl MidiPlayer {
         if let Ok(mut guard) = self.current_part_events.lock() {
             guard.clear();
         }
+        if let Some(sender) = &self.synth_sender {
+            sender.all_notes_off();
+        }
         if let Some(h) = self.handle.take() {
             h.thread().unpark();
             let _ = h.join();
@@ -1748,7 +1915,10 @@ impl MidiPlayer {
         port_index: usize,
     ) -> Result<(), String> {
         self.stop();
-        self.ensure_connection(port_index)?;
+        let use_midi = self.use_external_midi;
+        if use_midi {
+            self.ensure_connection(port_index)?;
+        }
 
         let (track, ppq) = generate_playback_track(doc, options);
 
@@ -1762,6 +1932,7 @@ impl MidiPlayer {
         self.current_part_events = part_events_tracker.clone();
 
         let conn_arc = self.connections.clone();
+        let synth_tx = self.synth_sender.clone();
 
         let handle = std::thread::spawn(move || {
             let mut tempo_micros_per_beat = 500_000.0_f64;
@@ -1798,13 +1969,20 @@ impl MidiPlayer {
                         tempo_micros_per_beat = t as f64;
                     }
                     PlaybackEventKind::Midi { channel, message } => {
-                        let bytes = serialize_midi_message(channel, &message);
-                        if !bytes.is_empty() {
-                            if let Ok(mut guard) = conn_arc.lock() {
-                                if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
-                                    let _ = cached.conn.send(&bytes);
+                        if use_midi {
+                            let bytes = serialize_midi_message(channel, &message);
+                            if !bytes.is_empty() {
+                                if let Ok(mut guard) = conn_arc.lock() {
+                                    if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
+                                        let _ = cached.conn.send(&bytes);
+                                    }
                                 }
                             }
+                        }
+                    }
+                    PlaybackEventKind::Synth(cmd) => {
+                        if let Some(tx) = &synth_tx {
+                            tx.send(cmd);
                         }
                     }
                     PlaybackEventKind::EventMarker(idx) => {
@@ -1820,12 +1998,18 @@ impl MidiPlayer {
                 }
             }
 
-            if let Ok(mut guard) = conn_arc.lock() {
-                if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
-                    for ch in 0..16 {
-                        let status_cc = 0xB0 | ch;
-                        let _ = cached.conn.send(&[status_cc, 123, 0]);
-                        let _ = cached.conn.send(&[status_cc, 121, 0]);
+            if let Some(tx) = &synth_tx {
+                tx.all_notes_off();
+            }
+
+            if use_midi {
+                if let Ok(mut guard) = conn_arc.lock() {
+                    if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
+                        for ch in 0..16 {
+                            let status_cc = 0xB0 | ch;
+                            let _ = cached.conn.send(&[status_cc, 123, 0]);
+                            let _ = cached.conn.send(&[status_cc, 121, 0]);
+                        }
                     }
                 }
             }
@@ -1848,8 +2032,11 @@ impl MidiPlayer {
     ) -> Result<(), String> {
         self.stop();
 
-        for cfg in &part_configs {
-            self.ensure_connection(cfg.port_index)?;
+        let use_midi = self.use_external_midi;
+        if use_midi {
+            for cfg in &part_configs {
+                self.ensure_connection(cfg.port_index)?;
+            }
         }
 
         let (track, ppq_f64) = generate_multi_part_playback_track(
@@ -1871,6 +2058,7 @@ impl MidiPlayer {
         self.current_part_events = part_events_tracker.clone();
 
         let conn_arc = self.connections.clone();
+        let synth_tx = self.synth_sender.clone();
         let mut used_ports: Vec<usize> = part_configs.iter().map(|c| c.port_index).collect();
         used_ports.sort_unstable();
         used_ports.dedup();
@@ -1914,15 +2102,22 @@ impl MidiPlayer {
                         channel,
                         message,
                     } => {
-                        let bytes = serialize_midi_message(channel, &message);
-                        if !bytes.is_empty() {
-                            if let Ok(mut guard) = conn_arc.lock() {
-                                if let Some(cached) =
-                                    guard.iter_mut().find(|c| c.port_index == port_index)
-                                {
-                                    let _ = cached.conn.send(&bytes);
+                        if use_midi {
+                            let bytes = serialize_midi_message(channel, &message);
+                            if !bytes.is_empty() {
+                                if let Ok(mut guard) = conn_arc.lock() {
+                                    if let Some(cached) =
+                                        guard.iter_mut().find(|c| c.port_index == port_index)
+                                    {
+                                        let _ = cached.conn.send(&bytes);
+                                    }
                                 }
                             }
+                        }
+                    }
+                    MultiPartPlaybackEventKind::Synth(cmd) => {
+                        if let Some(tx) = &synth_tx {
+                            tx.send(cmd);
                         }
                     }
                     MultiPartPlaybackEventKind::PartEventMarker {
@@ -1943,13 +2138,19 @@ impl MidiPlayer {
                 }
             }
 
-            if let Ok(mut guard) = conn_arc.lock() {
-                for &p_idx in &used_ports {
-                    if let Some(cached) = guard.iter_mut().find(|c| c.port_index == p_idx) {
-                        for ch in 0..16 {
-                            let status_cc = 0xB0 | ch;
-                            let _ = cached.conn.send(&[status_cc, 123, 0]);
-                            let _ = cached.conn.send(&[status_cc, 121, 0]);
+            if let Some(tx) = &synth_tx {
+                tx.all_notes_off();
+            }
+
+            if use_midi {
+                if let Ok(mut guard) = conn_arc.lock() {
+                    for &p_idx in &used_ports {
+                        if let Some(cached) = guard.iter_mut().find(|c| c.port_index == p_idx) {
+                            for ch in 0..16 {
+                                let status_cc = 0xB0 | ch;
+                                let _ = cached.conn.send(&[status_cc, 123, 0]);
+                                let _ = cached.conn.send(&[status_cc, 121, 0]);
+                            }
                         }
                     }
                 }
@@ -2965,6 +3166,130 @@ parts:
             })
             .collect();
         assert_eq!(markers, vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn test_phase4_tab_playback_generates_synth_commands_and_drums() {
+        let yaml = r#"
+mnx:
+  version: 1
+global:
+  measures:
+    - time: { count: 4, unit: 4 }
+parts:
+  - name: "Guitar"
+    _x:
+      microFretDivisions: 12
+      fretStepMultiplier: 1
+      tuning:
+        - string: 1
+          pitch: { step: E, octave: 4 }
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: E, octave: 4 }, _x: { string: 1, fret: 0 } }]
+              - duration: { base: quarter }
+                notes: [{ pitch: { step: G, octave: 4 }, _x: { string: 1, fret: 3 } }]
+  - name: "Drums"
+    kit:
+      snare: { name: "Snare", line: 3, sound: 38 }
+      kick: { name: "Kick", line: 5, sound: 36 }
+    measures:
+      - sequences:
+          - content:
+              - duration: { base: quarter }
+                kitNotes: [{ kitComponent: kick }]
+              - duration: { base: quarter }
+                kitNotes: [{ kitComponent: snare }]
+"#;
+        let doc: MnxDocument = serde_saphyr::from_str(yaml).unwrap();
+        let (track, _) = generate_playback_track(&doc, MidiOptions::default());
+
+        let synth_cmds: Vec<&crate::synth::SynthCommand> = track
+            .iter()
+            .filter_map(|ev| match &ev.kind {
+                PlaybackEventKind::Synth(cmd) => Some(cmd),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            !synth_cmds.is_empty(),
+            "Playback track must include SynthCommand events"
+        );
+        let has_string_trigger = synth_cmds.iter().any(|cmd| {
+            matches!(
+                cmd,
+                crate::synth::SynthCommand::TriggerString {
+                    string_idx: 1,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_string_trigger,
+            "Must generate TriggerString for Guitar part"
+        );
+
+        // Test multi-part track with drums
+        let configs = vec![
+            PartMidiConfig {
+                part_idx: 0,
+                port_index: 0,
+                pitch_bend_range: 2,
+                string_to_channel: HashMap::new(),
+                is_mpe: false,
+                is_percussion: false,
+                percussion_channel: midly::num::u4::from(9),
+            },
+            PartMidiConfig {
+                part_idx: 1,
+                port_index: 0,
+                pitch_bend_range: 2,
+                string_to_channel: HashMap::new(),
+                is_mpe: false,
+                is_percussion: true,
+                percussion_channel: midly::num::u4::from(9),
+            },
+        ];
+        let (multi_track, _) = generate_multi_part_playback_track(
+            &doc,
+            &configs,
+            120.0,
+            midly::num::u15::from(480),
+            0,
+            None,
+        );
+
+        let multi_synth_cmds: Vec<&crate::synth::SynthCommand> = multi_track
+            .iter()
+            .filter_map(|ev| match &ev.kind {
+                MultiPartPlaybackEventKind::Synth(cmd) => Some(cmd),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            multi_synth_cmds.iter().any(|cmd| matches!(
+                cmd,
+                crate::synth::SynthCommand::TriggerDrum {
+                    gm_drum_note: 36,
+                    ..
+                }
+            )),
+            "MultiPart playback must emit Kick (36) SynthCommand"
+        );
+        assert!(
+            multi_synth_cmds.iter().any(|cmd| matches!(
+                cmd,
+                crate::synth::SynthCommand::TriggerDrum {
+                    gm_drum_note: 38,
+                    ..
+                }
+            )),
+            "MultiPart playback must emit Snare (38) SynthCommand"
+        );
     }
 }
 

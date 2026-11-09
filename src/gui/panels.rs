@@ -1576,6 +1576,29 @@ impl MnxEditorApp {
                                     ui.label(egui::RichText::new(format!("Instrument: {}", sel_name)).strong());
                                 }
 
+                                ui.add_space(2.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Audio Routing:").strong());
+                                    if ui
+                                        .checkbox(&mut self.use_internal_synth, "Internal Synth")
+                                        .on_hover_text("Play through built-in microtonal physical-modeling synth")
+                                        .clicked()
+                                    {
+                                        if self.use_internal_synth {
+                                            let _ = self.ensure_synth_engine();
+                                        }
+                                        self.sync_live_play_config();
+                                    }
+                                    if ui
+                                        .checkbox(&mut self.use_external_midi, "External MIDI")
+                                        .on_hover_text("Send MIDI to external device")
+                                        .clicked()
+                                    {
+                                        self.sync_live_play_config();
+                                    }
+                                });
+                                ui.separator();
+
                                 ui.push_id(dialog_p_idx, |ui| {
                                     let current_port_id = self.get_part_midi_port(dialog_p_idx);
 
@@ -2248,6 +2271,28 @@ impl MnxEditorApp {
                                 .size(11.0)
                                 .color(Color32::from_rgb(255, 215, 0)),
                         );
+                    }
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Audio:").size(11.5).strong());
+                    if ui
+                        .selectable_label(self.use_internal_synth, "Internal Synth")
+                        .on_hover_text("Play via built-in microtonal physical-modeling synthesizer")
+                        .clicked()
+                    {
+                        self.use_internal_synth = !self.use_internal_synth;
+                        if self.use_internal_synth {
+                            let _ = self.ensure_synth_engine();
+                        }
+                        self.sync_live_play_config();
+                    }
+                    if ui
+                        .selectable_label(self.use_external_midi, "External MIDI")
+                        .on_hover_text("Send MIDI to connected external hardware or virtual MIDI devices")
+                        .clicked()
+                    {
+                        self.use_external_midi = !self.use_external_midi;
+                        self.sync_live_play_config();
                     }
 
                     ui.separator();

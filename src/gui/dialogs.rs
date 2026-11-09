@@ -3751,17 +3751,25 @@ impl MnxEditorApp {
                 });
 
                 ui.separator();
-                ui.label(egui::RichText::new("2. Percussion & GM Voice Audition").strong());
+                ui.label(egui::RichText::new("3. Procedural Drum Kit Audition (Ch 10)").strong());
 
                 ui.horizontal_wrapped(|ui| {
                     for (label, gm_note) in [
                         ("Kick (36)", 36u8),
                         ("Snare (38)", 38),
+                        ("Rimshot (37)", 37),
+                        ("Clap (39)", 39),
                         ("Closed HH (42)", 42),
+                        ("Pedal HH (44)", 44),
                         ("Open HH (46)", 46),
-                        ("Tom (45)", 45),
+                        ("Low Tom (41)", 41),
+                        ("Mid Tom (47)", 47),
+                        ("High Tom (50)", 50),
                         ("Crash (49)", 49),
                         ("Ride (51)", 51),
+                        ("China (52)", 52),
+                        ("Splash (55)", 55),
+                        ("Cowbell (56)", 56),
                     ] {
                         if ui.button(label).clicked() {
                             commands_to_send.push(crate::synth::SynthCommand::TriggerDrum {
@@ -3772,16 +3780,42 @@ impl MnxEditorApp {
                     }
                 });
 
+                ui.separator();
+                ui.label(egui::RichText::new("4. 2-Operator Microtonal FM Melodic Voices").strong());
+
+                ui.horizontal(|ui| {
+                    ui.label("GM Program:");
+                    ui.add(egui::Slider::new(&mut self.synth_lab.gm_program, 0..=127));
+                    let preset = crate::synth::GmFmPreset::from_gm_program(self.synth_lab.gm_program);
+                    ui.label(egui::RichText::new(format!("({})", preset.label())).italics());
+                    if ui
+                        .button(format!("Play Pitch ({:.1} Hz)", self.synth_lab.freq_hz))
+                        .clicked()
+                    {
+                        commands_to_send.push(crate::synth::SynthCommand::TriggerGmVoice {
+                            channel: 1,
+                            freq_hz: self.synth_lab.freq_hz,
+                            velocity: self.synth_lab.velocity,
+                            program: self.synth_lab.gm_program,
+                        });
+                    }
+                });
+
                 ui.horizontal_wrapped(|ui| {
-                    for (label, ch, hz, prog) in [
-                        ("GM A3 (220 Hz)", 1u8, 220.0, 0u8),
-                        ("GM C#4 JI 5/4 (275 Hz)", 2, 275.0, 24),
-                        ("GM E4 JI 3/2 (330 Hz)", 3, 330.0, 48),
+                    ui.label(egui::RichText::new("Presets:").size(11.5));
+                    for (label, prog, default_hz) in [
+                        ("E-Piano (0)", 0u8, 261.6256),
+                        ("Organ (16)", 16, 329.6276),
+                        ("Synth Bass (33)", 33, 110.0),
+                        ("Strings/Pad (48)", 48, 440.0),
+                        ("Brass (60)", 60, 392.0),
                     ] {
-                        if ui.button(label).clicked() {
+                        if ui.small_button(label).clicked() {
+                            self.synth_lab.gm_program = prog;
+                            self.synth_lab.freq_hz = default_hz;
                             commands_to_send.push(crate::synth::SynthCommand::TriggerGmVoice {
-                                channel: ch,
-                                freq_hz: hz,
+                                channel: 1,
+                                freq_hz: default_hz,
                                 velocity: self.synth_lab.velocity,
                                 program: prog,
                             });

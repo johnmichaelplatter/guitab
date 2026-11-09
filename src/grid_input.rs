@@ -352,7 +352,10 @@ pub struct GridLivePlayState {
     pub slots: [GridControllerSlotConfig; MAX_GRID_CONTROLLERS],
     /// Track currently sounding notes: (slot_idx, pad_note) -> (port_index, channel, key)
     pub active_notes: HashMap<(usize, u8), (usize, midly::num::u4, midly::num::u7)>,
+    /// Track currently sounding synth strings: (slot_idx, pad_note) -> string_num
+    pub active_synth_strings: HashMap<(usize, u8), u8>,
     pub connections: Option<Arc<Mutex<Vec<crate::midi::CachedMidiConnection>>>>,
+    pub synth_sender: Option<crate::synth::SynthSender>,
 }
 
 impl GridLivePlayState {
@@ -376,9 +379,9 @@ impl GridLivePlayState {
             return false;
         }
 
-        let Some(port_idx) = self.port_index else {
+        if self.port_index.is_none() && self.synth_sender.is_none() {
             return false;
-        };
+        }
 
         if is_note_on {
             let Some((string_num, col)) = slot.calibration.map_note(note, self.num_strings) else {
@@ -403,8 +406,17 @@ impl GridLivePlayState {
                 let key = midly::num::u7::from(sound.min(127));
                 let vel = midly::num::u7::from(velocity.clamp(1, 127));
 
-                self.send_raw_note_on(port_idx, channel, key, vel, None, false, 1, 2);
-                self.active_notes.insert((slot_idx, note), (port_idx, channel, key));
+                if let Some(tx) = &self.synth_sender {
+                    tx.send(crate::synth::SynthCommand::TriggerDrum {
+                        gm_drum_note: sound.min(127),
+                        velocity: (velocity as f32 / 127.0).clamp(0.05, 1.0),
+                    });
+                }
+
+                if let Some(port_idx) = self.port_index {
+                    self.send_raw_note_on(port_idx, channel, key, vel, None, false, 1, 2);
+                    self.active_notes.insert((slot_idx, note), (port_idx, channel, key));
+                }
                 return true;
             } else {
                 let default_ch = if self.is_mpe {
@@ -421,44 +433,75 @@ impl GridLivePlayState {
                 let channel = midly::num::u4::from(ch_0_based);
 
                 if let (Some(freq_table), Some(part)) = (&self.freq_table, &self.part_copy) {
-                    if let Some(midi_note_frac) =
-                        freq_table.string_fret_to_midi_note_number(part, string_num, fret)
-                    {
-                        let base_note = midi_note_frac.round() as u8;
-                        let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
-                        let pitch_bend_val = crate::midi::calculate_pitch_bend(
-                            semitone_diff,
-                            self.pb_range,
-                        );
-                        let key = midly::num::u7::from(base_note.min(127));
-                        let vel = midly::num::u7::from(velocity.clamp(1, 127));
-
-                        self.send_raw_note_on(
-                            port_idx,
-                            channel,
-                            key,
-                            vel,
-                            Some(pitch_bend_val),
-                            self.is_mpe,
-                            self.num_strings,
-                            self.pb_range,
-                        );
-                        self.active_notes.insert((slot_idx, note), (port_idx, channel, key));
-                        return true;
+                    if let Some(hz) = freq_table.string_fret_to_frequency_hz(part, string_num, fret) {
+                        if let Some(tx) = &self.synth_sender {
+                            tx.send(crate::synth::SynthCommand::TriggerString {
+                                string_idx: string_num,
+                                freq_hz: hz,
+                                velocity: (velocity as f32 / 127.0).clamp(0.05, 1.0),
+                                pluck_pos: 0.18,
+                                palm_mute: 0.0,
+                                harmonic_node: None,
+                            });
+                            self.active_synth_strings.insert((slot_idx, note), string_num);
+                        }
                     }
+
+                    if let Some(port_idx) = self.port_index {
+                        if let Some(midi_note_frac) =
+                            freq_table.string_fret_to_midi_note_number(part, string_num, fret)
+                        {
+                            let base_note = midi_note_frac.round() as u8;
+                            let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+                            let pitch_bend_val = crate::midi::calculate_pitch_bend(
+                                semitone_diff,
+                                self.pb_range,
+                            );
+                            let key = midly::num::u7::from(base_note.min(127));
+                            let vel = midly::num::u7::from(velocity.clamp(1, 127));
+
+                            self.send_raw_note_on(
+                                port_idx,
+                                channel,
+                                key,
+                                vel,
+                                Some(pitch_bend_val),
+                                self.is_mpe,
+                                self.num_strings,
+                                self.pb_range,
+                            );
+                            self.active_notes.insert((slot_idx, note), (port_idx, channel, key));
+                        }
+                    }
+                    return true;
                 }
             }
         } else if is_note_off {
+            let mut handled = false;
+            if let Some(string_num) = self.active_synth_strings.remove(&(slot_idx, note)) {
+                if let Some(tx) = &self.synth_sender {
+                    tx.send(crate::synth::SynthCommand::MuteString {
+                        string_idx: string_num,
+                        release_rate: 0.995,
+                    });
+                    handled = true;
+                }
+            }
             if let Some((p_idx, ch, key)) = self.active_notes.remove(&(slot_idx, note)) {
                 self.send_raw_note_off(p_idx, ch, key);
-                return true;
+                handled = true;
             }
+            return handled;
         }
 
         false
     }
 
     pub fn silence_all_held_notes(&mut self) {
+        if let Some(tx) = &self.synth_sender {
+            tx.all_notes_off();
+        }
+        self.active_synth_strings.clear();
         let active = std::mem::take(&mut self.active_notes);
         for (_, (port_idx, ch, key)) in active {
             self.send_raw_note_off(port_idx, ch, key);
@@ -466,6 +509,17 @@ impl GridLivePlayState {
     }
 
     pub fn silence_slot_notes(&mut self, slot_idx: usize) {
+        if let Some(tx) = &self.synth_sender {
+            for ((s, _), &string_num) in &self.active_synth_strings {
+                if *s == slot_idx {
+                    tx.send(crate::synth::SynthCommand::MuteString {
+                        string_idx: string_num,
+                        release_rate: 0.995,
+                    });
+                }
+            }
+        }
+        self.active_synth_strings.retain(|(s, _), _| *s != slot_idx);
         let to_silence: Vec<((usize, u8), (usize, midly::num::u4, midly::num::u7))> = self
             .active_notes
             .iter()

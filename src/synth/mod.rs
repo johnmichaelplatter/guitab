@@ -10,15 +10,54 @@
 pub mod backend;
 pub mod body;
 pub mod command;
+pub mod percussion;
 pub mod waveguide;
 
 pub use backend::{flush_denormal, SynthMixer};
 pub use body::{BiquadFilter, BodyResonator, InstrumentProfile};
 pub use command::SynthCommand;
+pub use percussion::{GmFmPreset, PercussionAndGmPool, PolyVoice, MAX_POLY_VOICES};
 pub use waveguide::{StringWaveguide, MAX_STRINGS};
+
+use std::sync::{Arc, Mutex};
 
 /// Capacity of the lock-free SPSC command ringbuffer between UI/sequencer and audio threads.
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
+
+/// Cloneable producer handle allowing the UI thread, sequencer playback thread, and grid live-play
+/// input thread to enqueue [`SynthCommand`] messages into the `rtrb` ringbuffer.
+///
+/// **Note on Real-Time Invariants:** The `Mutex` here only synchronizes producer threads (UI / sequencer);
+/// the `cpal` audio callback thread exclusively owns the `rtrb::Consumer<SynthCommand>` and never
+/// touches this mutex.
+#[derive(Clone)]
+pub struct SynthSender {
+    producer: Arc<Mutex<rtrb::Producer<SynthCommand>>>,
+    sample_rate: f32,
+}
+
+impl SynthSender {
+    /// Pushes a [`SynthCommand`] into the SPSC ringbuffer toward the audio thread.
+    #[inline]
+    pub fn send(&self, cmd: SynthCommand) -> bool {
+        if let Ok(mut guard) = self.producer.lock() {
+            guard.push(cmd).is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Enqueues [`SynthCommand::AllNotesOff`] to immediately silence all voices.
+    #[inline]
+    pub fn all_notes_off(&self) -> bool {
+        self.send(SynthCommand::AllNotesOff)
+    }
+
+    #[inline]
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+}
 
 /// UI state for the interactive "Synth Lab" human-in-the-loop audio verification panel.
 #[derive(Debug, Clone)]
@@ -33,6 +72,7 @@ pub struct SynthTestLabState {
     pub palm_mute: f32,
     pub harmonic_node: Option<u8>,
     pub glide_ms: f32,
+    pub gm_program: u8,
     pub status_msg: Option<String>,
 }
 
@@ -49,6 +89,7 @@ impl Default for SynthTestLabState {
             palm_mute: 0.0,
             harmonic_node: None,
             glide_ms: 220.0,
+            gm_program: 0,
             status_msg: None,
         }
     }
@@ -56,7 +97,7 @@ impl Default for SynthTestLabState {
 
 /// Public handle to the real-time synthesizer engine owned by the UI/playback thread.
 pub struct SynthEngine {
-    producer: rtrb::Producer<SynthCommand>,
+    sender: SynthSender,
     /// Kept alive for the lifetime of the engine (`None` in headless/offline test mode).
     _stream: Option<cpal::Stream>,
     sample_rate: f32,
@@ -68,8 +109,12 @@ impl SynthEngine {
     pub fn new() -> Result<Self, String> {
         let (producer, consumer) = rtrb::RingBuffer::new(COMMAND_QUEUE_CAPACITY);
         let active = backend::spawn_cpal_stream(consumer)?;
+        let sender = SynthSender {
+            producer: Arc::new(Mutex::new(producer)),
+            sample_rate: active.sample_rate,
+        };
         Ok(Self {
-            producer,
+            sender,
             _stream: Some(active.stream),
             sample_rate: active.sample_rate,
             channels: active.channels,
@@ -81,8 +126,12 @@ impl SynthEngine {
     pub fn new_headless(sample_rate: f32, channels: u16) -> (Self, SynthMixer) {
         let (producer, consumer) = rtrb::RingBuffer::new(COMMAND_QUEUE_CAPACITY);
         let mixer = SynthMixer::new(sample_rate, consumer);
+        let sender = SynthSender {
+            producer: Arc::new(Mutex::new(producer)),
+            sample_rate,
+        };
         let engine = Self {
-            producer,
+            sender,
             _stream: None,
             sample_rate,
             channels: channels.max(1),
@@ -90,12 +139,18 @@ impl SynthEngine {
         (engine, mixer)
     }
 
-    /// Pushes a [`SynthCommand`] to the lock-free SPSC ringbuffer without blocking or allocating.
+    /// Returns a cloneable [`SynthSender`] for use by background sequencer or controller threads.
+    #[inline]
+    pub fn sender(&self) -> SynthSender {
+        self.sender.clone()
+    }
+
+    /// Pushes a [`SynthCommand`] to the lock-free SPSC ringbuffer without blocking the audio thread.
     ///
     /// Returns `true` if the command was enqueued, or `false` if the ringbuffer was full.
     #[inline]
     pub fn send(&mut self, cmd: SynthCommand) -> bool {
-        self.producer.push(cmd).is_ok()
+        self.sender.send(cmd)
     }
 
     /// Enqueues [`SynthCommand::AllNotesOff`] to immediately silence all voices.

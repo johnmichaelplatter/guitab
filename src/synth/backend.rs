@@ -9,12 +9,9 @@
 
 use crate::synth::body::{BodyResonator, InstrumentProfile};
 use crate::synth::command::SynthCommand;
+use crate::synth::percussion::PercussionAndGmPool;
 use crate::synth::waveguide::{StringWaveguide, MAX_STRINGS};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::f32::consts::TAU;
-
-/// Maximum number of pre-allocated voices in the Phase 1 verification mixer.
-pub const MAX_TEST_VOICES: usize = 16;
 
 /// Target low-latency hardware buffer size in frames when supported by the host device.
 const TARGET_BUFFER_FRAMES: u32 = 256;
@@ -30,176 +27,6 @@ pub fn flush_denormal(x: f32) -> f32 {
     }
 }
 
-/// A lightweight, zero-allocation test sine + impulse voice used in Phase 1 to verify
-/// lock-free command dispatch, microtonal `f64` frequency control, glides, and audio output.
-#[derive(Clone, Copy, Debug)]
-pub struct TestSineVoice {
-    pub active: bool,
-    pub string_idx: u8,
-    pub phase: f32,
-    pub phase_inc: f32,
-    pub target_phase_inc: f32,
-    pub glide_step: f32,
-    pub glide_remaining: u32,
-    pub env: f32,
-    pub decay_coeff: f32,
-    pub impulse_env: f32,
-    pub pan: f32,
-}
-
-impl Default for TestSineVoice {
-    fn default() -> Self {
-        Self {
-            active: false,
-            string_idx: 0,
-            phase: 0.0,
-            phase_inc: 0.0,
-            target_phase_inc: 0.0,
-            glide_step: 0.0,
-            glide_remaining: 0,
-            env: 0.0,
-            decay_coeff: 0.9995,
-            impulse_env: 0.0,
-            pan: 0.5,
-        }
-    }
-}
-
-impl TestSineVoice {
-    #[inline(always)]
-    pub fn trigger(
-        &mut self,
-        string_idx: u8,
-        freq_hz: f64,
-        velocity: f32,
-        palm_mute: f32,
-        harmonic_node: Option<u8>,
-        sample_rate: f32,
-    ) {
-        let inv_sr = if sample_rate > 1.0 {
-            1.0 / sample_rate
-        } else {
-            1.0 / 48_000.0
-        };
-        let node_mult = match harmonic_node {
-            Some(n) if n > 1 => n as f64,
-            _ => 1.0,
-        };
-        let effective_freq = (freq_hz * node_mult).clamp(15.0, (sample_rate as f64) * 0.45) as f32;
-        let inc = effective_freq * inv_sr;
-
-        self.active = true;
-        self.string_idx = string_idx;
-        self.phase_inc = inc;
-        self.target_phase_inc = inc;
-        self.glide_step = 0.0;
-        self.glide_remaining = 0;
-
-        let vel_clamped = velocity.clamp(0.0, 1.0);
-        self.env = vel_clamped * 0.25;
-        self.impulse_env = vel_clamped * 0.35;
-
-        // Calculate sample-rate-agnostic exponential decay time constant:
-        // Open string ~ 2.5s tau, heavy palm mute ~ 0.12s tau.
-        let mute_clamped = palm_mute.clamp(0.0, 1.0);
-        let tau_seconds = 2.5 * (1.0 - 0.95 * mute_clamped);
-        self.decay_coeff = (-inv_sr / tau_seconds.max(0.01)).exp();
-
-        // Subtle stereo spread by string index
-        self.pan = (0.35 + ((string_idx % 8) as f32) * 0.04).clamp(0.15, 0.85);
-    }
-
-    #[inline(always)]
-    pub fn set_glide(&mut self, target_freq_hz: f64, glide_samples: u32, sample_rate: f32) {
-        if !self.active {
-            return;
-        }
-        let inv_sr = if sample_rate > 1.0 {
-            1.0 / sample_rate
-        } else {
-            1.0 / 48_000.0
-        };
-        let target_inc =
-            (target_freq_hz.clamp(15.0, (sample_rate as f64) * 0.45) as f32) * inv_sr;
-        self.target_phase_inc = target_inc;
-        if glide_samples == 0 {
-            self.phase_inc = target_inc;
-            self.glide_step = 0.0;
-            self.glide_remaining = 0;
-        } else {
-            self.glide_step = (target_inc - self.phase_inc) / (glide_samples as f32);
-            self.glide_remaining = glide_samples;
-        }
-    }
-
-    #[inline(always)]
-    pub fn slur(&mut self, new_freq_hz: f64, hammer_energy: f32, sample_rate: f32) {
-        if !self.active {
-            self.trigger(self.string_idx, new_freq_hz, hammer_energy, 0.0, None, sample_rate);
-            return;
-        }
-        let inv_sr = if sample_rate > 1.0 {
-            1.0 / sample_rate
-        } else {
-            1.0 / 48_000.0
-        };
-        let inc = (new_freq_hz.clamp(15.0, (sample_rate as f64) * 0.45) as f32) * inv_sr;
-        self.phase_inc = inc;
-        self.target_phase_inc = inc;
-        self.glide_remaining = 0;
-        self.env = (self.env + hammer_energy.clamp(0.0, 1.0) * 0.15).min(0.35);
-        self.impulse_env = hammer_energy.clamp(0.0, 1.0) * 0.12;
-    }
-
-    #[inline(always)]
-    pub fn mute(&mut self, release_rate: f32) {
-        if self.active {
-            self.decay_coeff = release_rate.clamp(0.90, 0.9999);
-        }
-    }
-
-    /// Steps one audio sample and returns `(left, right)`.
-    #[inline(always)]
-    pub fn next_frame(&mut self) -> (f32, f32) {
-        if !self.active {
-            return (0.0, 0.0);
-        }
-
-        if self.glide_remaining > 0 {
-            self.phase_inc += self.glide_step;
-            self.glide_remaining -= 1;
-            if self.glide_remaining == 0 {
-                self.phase_inc = self.target_phase_inc;
-            }
-        }
-
-        self.phase += self.phase_inc;
-        if self.phase >= 1.0 {
-            self.phase -= 1.0;
-        }
-
-        // Sine fundamental + 2nd harmonic + short pluck impulse transient
-        let angle = self.phase * TAU;
-        let osc = angle.sin() + 0.25 * (angle * 2.0).sin();
-        let impulse = (angle * 4.0).sin() * self.impulse_env;
-        let raw = osc * self.env + impulse;
-
-        self.env = flush_denormal(self.env * self.decay_coeff);
-        self.impulse_env = flush_denormal(self.impulse_env * 0.985);
-
-        if self.env < 1.0e-5 && self.impulse_env < 1.0e-5 {
-            self.env = 0.0;
-            self.impulse_env = 0.0;
-            self.active = false;
-            return (0.0, 0.0);
-        }
-
-        let left = raw * (1.0 - self.pan);
-        let right = raw * self.pan;
-        (left, right)
-    }
-}
-
 /// Pre-allocated, real-time audio mixer owned exclusively by the `cpal` audio callback thread.
 pub struct SynthMixer {
     sample_rate: f32,
@@ -208,13 +35,12 @@ pub struct SynthMixer {
     strings: Box<[StringWaveguide; MAX_STRINGS]>,
     /// Post-string acoustic body / electric pickup + cabinet resonator.
     body: BodyResonator,
-    /// Auxiliary test voices for drum/GM triggers (prior to Phase 4 percussion module).
-    voices: [TestSineVoice; MAX_TEST_VOICES],
-    voice_cursor: usize,
+    /// Fixed 16-voice polyphonic pool for GM percussion (kick, snare, 808 hats/cymbals) and 2-op FM GM backing.
+    percussion: PercussionAndGmPool,
 }
 
 impl SynthMixer {
-    /// Pre-allocates all mixer, waveguide, body resonator, and voice state prior to starting the `cpal` stream.
+    /// Pre-allocates all mixer, waveguide, body resonator, and percussion/GM voice state prior to starting the `cpal` stream.
     pub fn new(sample_rate: f32, consumer: rtrb::Consumer<SynthCommand>) -> Self {
         let sr = sample_rate.max(8_000.0);
         let strings = Box::new(std::array::from_fn(|i| {
@@ -225,8 +51,7 @@ impl SynthMixer {
             consumer,
             strings,
             body: BodyResonator::new(sr, InstrumentProfile::AcousticGuitar),
-            voices: [TestSineVoice::default(); MAX_TEST_VOICES],
-            voice_cursor: 0,
+            percussion: PercussionAndGmPool::new(sr),
         }
     }
 
@@ -300,34 +125,16 @@ impl SynthMixer {
                 gm_drum_note,
                 velocity,
             } => {
-                let pseudo_string = 100u8.wrapping_add(gm_drum_note);
-                let freq_hz = 60.0 + (gm_drum_note as f64) * 4.5;
-                let slot = self.find_or_steal_voice(pseudo_string);
-                self.voices[slot].trigger(
-                    pseudo_string,
-                    freq_hz,
-                    velocity,
-                    0.85,
-                    None,
-                    self.sample_rate,
-                );
+                self.percussion.trigger_drum(gm_drum_note, velocity);
             }
             SynthCommand::TriggerGmVoice {
                 channel,
                 freq_hz,
                 velocity,
-                program: _,
+                program,
             } => {
-                let pseudo_string = 200u8.wrapping_add(channel);
-                let slot = self.find_or_steal_voice(pseudo_string);
-                self.voices[slot].trigger(
-                    pseudo_string,
-                    freq_hz,
-                    velocity,
-                    0.2,
-                    None,
-                    self.sample_rate,
-                );
+                self.percussion
+                    .trigger_gm_voice(channel, freq_hz, velocity, program);
             }
             SynthCommand::SetInstrumentProfile(profile) => {
                 self.body.set_profile(profile);
@@ -340,30 +147,9 @@ impl SynthMixer {
                     s.clear();
                 }
                 self.body.reset();
-                for v in &mut self.voices {
-                    v.active = false;
-                    v.env = 0.0;
-                    v.impulse_env = 0.0;
-                }
+                self.percussion.all_notes_off();
             }
         }
-    }
-
-    #[inline(always)]
-    fn find_or_steal_voice(&mut self, string_idx: u8) -> usize {
-        for (i, v) in self.voices.iter().enumerate() {
-            if v.active && v.string_idx == string_idx {
-                return i;
-            }
-        }
-        for (i, v) in self.voices.iter().enumerate() {
-            if !v.active {
-                return i;
-            }
-        }
-        let idx = self.voice_cursor % MAX_TEST_VOICES;
-        self.voice_cursor = self.voice_cursor.wrapping_add(1);
-        idx
     }
 
     /// Renders the next stereo frame `(left, right)` in `[-1.0, 1.0]`.
@@ -383,13 +169,10 @@ impl SynthMixer {
         // Route summed string waveguides through the active acoustic body / electric cab resonator
         let (mut left, mut right) = self.body.process_stereo(str_left, str_right);
 
-        for v in &mut self.voices {
-            if v.active {
-                let (l, r) = v.next_frame();
-                left += l;
-                right += r;
-            }
-        }
+        // Sum 16-voice polyphonic percussion & 2-op FM GM backing pool
+        let (perc_l, perc_r) = self.percussion.next_stereo_frame();
+        left += perc_l;
+        right += perc_r;
 
         // Smooth rational soft-clipper + hard clamp to prevent digital overs
         let soft_l = left / (1.0 + left.abs() * 0.25);
