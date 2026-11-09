@@ -167,7 +167,10 @@ pub fn split_event_for_capacity(ev: Event, capacity: f64) -> (Vec<Event>, Vec<Ev
 
     // We need to tie the LAST chunk of chunks1 to the FIRST chunk of chunks2
     let mut template_for_2 = ev;
-    if let Some(last_c1) = chunks1.last_mut() {
+    if template_for_2.notes.is_empty() && !template_for_2.kit_notes.is_empty() {
+        template_for_2.kit_notes.clear();
+        template_for_2.rest = Some(crate::mnx::Rest {});
+    } else if let Some(last_c1) = chunks1.last_mut() {
         for (n_c1, n_template) in last_c1
             .notes
             .iter_mut()
@@ -199,28 +202,33 @@ pub fn greedy_split_event_duration(mut ev: Event, mut total_beats: f64) -> Vec<E
             total_beats -= valid_beats;
 
             if total_beats > eps {
-                // Generate tie to next chunk
-                for n in chunk.notes.iter_mut() {
-                    let new_id = generate_note_id();
-                    if n.ties.is_none() {
-                        n.ties = Some(Vec::new());
+                if ev.notes.is_empty() && !ev.kit_notes.is_empty() {
+                    ev.kit_notes.clear();
+                    ev.rest = Some(crate::mnx::Rest {});
+                } else {
+                    // Generate tie to next chunk
+                    for n in chunk.notes.iter_mut() {
+                        let new_id = generate_note_id();
+                        if n.ties.is_none() {
+                            n.ties = Some(Vec::new());
+                        }
+                        n.ties.as_mut().unwrap().push(Tie {
+                            target: new_id.clone(),
+                        });
                     }
-                    n.ties.as_mut().unwrap().push(Tie {
-                        target: new_id.clone(),
-                    });
-                }
-                // Assign those target IDs to the ev template for the NEXT chunk
-                for (n_chunk, n_ev) in chunk.notes.iter().zip(ev.notes.iter_mut()) {
-                    n_ev.id = Some(
-                        n_chunk
-                            .ties
-                            .as_ref()
-                            .unwrap()
-                            .last()
-                            .unwrap()
-                            .target
-                            .clone(),
-                    );
+                    // Assign those target IDs to the ev template for the NEXT chunk
+                    for (n_chunk, n_ev) in chunk.notes.iter().zip(ev.notes.iter_mut()) {
+                        n_ev.id = Some(
+                            n_chunk
+                                .ties
+                                .as_ref()
+                                .unwrap()
+                                .last()
+                                .unwrap()
+                                .target
+                                .clone(),
+                        );
+                    }
                 }
             }
 

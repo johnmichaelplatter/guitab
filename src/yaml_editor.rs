@@ -84,9 +84,16 @@ pub fn find_all_event_ranges_by_part(yaml: &str) -> Vec<Vec<EventRange>> {
                 continue;
             }
 
-            if trimmed.starts_with("notes:") || trimmed.ends_with("notes:") {
+            if trimmed.starts_with("notes:")
+                || trimmed.ends_with("notes:")
+                || trimmed.starts_with("kitNotes:")
+                || trimmed.ends_with("kitNotes:")
+            {
                 in_notes = true;
-                notes_indent = line.find("notes:").unwrap_or(indent);
+                notes_indent = line
+                    .find("notes:")
+                    .or_else(|| line.find("kitNotes:"))
+                    .unwrap_or(indent);
                 continue;
             }
 
@@ -439,7 +446,7 @@ pub fn fill_measure_to_capacity_with_rests(
     let has_any_notes = seq
         .flattened_events()
         .iter()
-        .any(|ev| !ev.notes.is_empty());
+        .any(|ev| ev.has_any_notes());
     if !has_any_notes {
         // Measure has no music in it: replace with a single rest spanning the full measure
         seq.content = make_rest_items_for_beats(expected_beats);
@@ -448,7 +455,7 @@ pub fn fill_measure_to_capacity_with_rests(
     // Convert any trailing blank events into rests first
     for item in &mut seq.content {
         if let crate::mnx::SequenceItem::Event(ev) = item {
-            if ev.notes.is_empty() && ev.rest.is_none() {
+            if ev.is_blank() {
                 ev.rest = Some(crate::mnx::Rest {});
             }
         }
@@ -697,6 +704,56 @@ pub fn set_or_add_note_on_string(
     serde_saphyr::to_string(&doc).ok()
 }
 
+pub fn set_or_add_kit_note_on_line_in_doc_part(
+    doc: &mut crate::mnx::MnxDocument,
+    part_idx: usize,
+    event_idx: usize,
+    target_line: u8,
+    symbol: &str,
+) -> bool {
+    let comp_id = match doc
+        .parts
+        .get(part_idx)
+        .and_then(|p| p.kit_component_for_line(target_line))
+    {
+        Some((id, _)) => id,
+        None => return false,
+    };
+
+    let paths = doc.get_flattened_event_paths_for_part(part_idx);
+    let Some(&path) = paths.get(event_idx) else {
+        return false;
+    };
+    let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
+        return false;
+    };
+    ev.rest = None;
+
+    let sym_opt = if symbol.trim().is_empty() {
+        None
+    } else {
+        Some(symbol.trim().to_string())
+    };
+
+    if let Some(existing) = ev
+        .kit_notes
+        .iter_mut()
+        .find(|kn| kn.kit_component == comp_id)
+    {
+        existing.ext.symbol = sym_opt;
+    } else {
+        ev.kit_notes.push(crate::mnx::KitNote {
+            id: None,
+            kit_component: comp_id,
+            ext: crate::mnx::KitNoteExt {
+                symbol: sym_opt,
+                sound_override: None,
+            },
+        });
+    }
+    true
+}
+
 /// Removes the note on `target_string` from the event at `event_idx` in `doc`.
 pub fn remove_note_on_string_in_doc(
     doc: &mut crate::mnx::MnxDocument,
@@ -712,6 +769,12 @@ pub fn remove_note_on_string_in_doc_part(
     event_idx: usize,
     target_string: u8,
 ) -> bool {
+    let comp_id_for_line = doc
+        .parts
+        .get(part_idx)
+        .and_then(|p| p.kit_component_for_line(target_string))
+        .map(|(id, _)| id);
+
     let paths = doc.get_flattened_event_paths_for_part(part_idx);
     let Some(&path) = paths.get(event_idx) else {
         return false;
@@ -721,7 +784,16 @@ pub fn remove_note_on_string_in_doc_part(
     };
     let initial_len = ev.notes.len();
     ev.notes.retain(|n| n.string != Some(target_string));
-    ev.notes.len() != initial_len
+    let mut removed = ev.notes.len() != initial_len;
+
+    if let Some(comp_id) = comp_id_for_line {
+        let initial_kit_len = ev.kit_notes.len();
+        ev.kit_notes.retain(|kn| kn.kit_component != comp_id);
+        if ev.kit_notes.len() != initial_kit_len {
+            removed = true;
+        }
+    }
+    removed
 }
 
 /// Removes the note on `target_string` from the event at `event_idx`.
@@ -956,7 +1028,7 @@ pub fn replace_default_rest_with_blank_note_in_doc_part(
         let evs = seq.flattened_events();
         evs.len() == 1
             && evs[0].rest.is_some()
-            && evs[0].notes.is_empty()
+            && !evs[0].has_any_notes()
             && (seq.total_beats() - expected_beats).abs() < 1e-3
     };
     if !is_default_full_rest {
@@ -1061,7 +1133,7 @@ pub fn remove_last_blank_event_in_doc_part(
         if let Some(last_item) = items.last_mut() {
             match last_item {
                 crate::mnx::SequenceItem::Event(e) => {
-                    if e.notes.is_empty() {
+                    if !e.has_any_notes() {
                         items.pop();
                         return true;
                     }
@@ -1102,7 +1174,7 @@ pub fn remove_last_blank_event_in_doc_part(
                     .map(|m| {
                         m.sequences
                             .iter()
-                            .any(|s| s.flattened_events().iter().any(|ev| !ev.notes.is_empty()))
+                            .any(|s| s.flattened_events().iter().any(|ev| ev.has_any_notes()))
                     })
                     .unwrap_or(false)
             });
@@ -1161,8 +1233,7 @@ pub fn remove_blank_event_at_end_of_measure_in_doc_part(
     if flat_evs.len() <= 1 {
         if measure_idx > 0
             && flat_evs.len() == 1
-            && flat_evs[0].notes.is_empty()
-            && flat_evs[0].rest.is_none()
+            && flat_evs[0].is_blank()
         {
             seq.content = make_rest_items_for_beats(expected_beats);
             return true;
@@ -1174,7 +1245,7 @@ pub fn remove_blank_event_at_end_of_measure_in_doc_part(
         if let Some(last_item) = items.last_mut() {
             match last_item {
                 crate::mnx::SequenceItem::Event(e) => {
-                    if e.notes.is_empty() && e.rest.is_none() {
+                    if e.is_blank() {
                         items.pop();
                         return true;
                     }
@@ -1259,10 +1330,11 @@ pub fn convert_event_to_rest_in_doc_part(
     let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
         return false;
     };
-    if ev.rest.is_some() && ev.notes.is_empty() {
+    if ev.rest.is_some() && !ev.has_any_notes() {
         return false;
     }
     ev.notes.clear();
+    ev.kit_notes.clear();
     ev.rest = Some(crate::mnx::Rest {});
     true
 }

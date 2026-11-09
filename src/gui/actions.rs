@@ -1785,6 +1785,7 @@ impl MnxEditorApp {
                         ..Default::default()
                     },
                 }],
+                kit_notes: Vec::new(),
                 rest: None,
                 slurs: None,
                 markings: None,
@@ -1828,6 +1829,7 @@ impl MnxEditorApp {
                         ..Default::default()
                     },
                 }],
+                kit_notes: Vec::new(),
                 rest: None,
                 slurs: None,
                 markings: None,
@@ -1851,6 +1853,7 @@ impl MnxEditorApp {
                         ..Default::default()
                     },
                 }],
+                kit_notes: Vec::new(),
                 rest: None,
                 slurs: None,
                 markings: None,
@@ -1917,6 +1920,7 @@ impl MnxEditorApp {
                         ..Default::default()
                     },
                 }],
+                kit_notes: Vec::new(),
                 rest: None,
                 slurs: None,
                 markings: None,
@@ -2287,7 +2291,7 @@ impl crate::gui::MnxEditorApp {
             return false;
         }
         if let Some(ev) = doc.get_event_at_part_path(p_idx, flattened[event_idx]) {
-            return !ev.notes.is_empty();
+            return ev.has_any_notes();
         }
         false
     }
@@ -3098,62 +3102,127 @@ impl MnxEditorApp {
         let mut changed = false;
         let mut single_new_string: Option<u8> = None;
 
-        for e_idx in min_idx..=max_idx {
-            let Some(&path) = paths.get(e_idx) else {
-                continue;
-            };
-            let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) else {
-                continue;
-            };
+        if part_meta.is_percussion() {
+            for e_idx in min_idx..=max_idx {
+                let Some(&path) = paths.get(e_idx) else {
+                    continue;
+                };
+                let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) else {
+                    continue;
+                };
+                if let Some(n_idx) = single_note_idx {
+                    if n_idx < ev.kit_notes.len() {
+                        let cur_line = part_meta
+                            .kit_line_for_component(&ev.kit_notes[n_idx].kit_component)
+                            .unwrap_or(1);
+                        let new_line = (cur_line as i8 + delta_string).clamp(1, num_strings as i8) as u8;
+                        if new_line != cur_line {
+                            if let Some((new_comp_id, _)) = part_meta.kit_component_for_line(new_line) {
+                                let new_comp_id = new_comp_id.to_string();
+                                let mut moved_kn = ev.kit_notes.remove(n_idx);
+                                ev.kit_notes.retain(|kn| kn.kit_component != new_comp_id);
+                                moved_kn.kit_component = new_comp_id;
+                                ev.kit_notes.push(moved_kn);
+                                ev.kit_notes.sort_by_key(|kn| {
+                                    part_meta.kit_line_for_component(&kn.kit_component).unwrap_or(99)
+                                });
+                                single_new_string = Some(new_line);
+                                changed = true;
+                            }
+                        }
+                    }
+                } else if !ev.kit_notes.is_empty() {
+                    let mut old_kns = std::mem::take(&mut ev.kit_notes);
+                    if delta_string < 0 {
+                        old_kns.sort_by_key(|kn| {
+                            part_meta.kit_line_for_component(&kn.kit_component).unwrap_or(1)
+                        });
+                    } else {
+                        old_kns.sort_by_key(|kn| {
+                            std::cmp::Reverse(
+                                part_meta.kit_line_for_component(&kn.kit_component).unwrap_or(1),
+                            )
+                        });
+                    }
+                    let mut new_kns: Vec<crate::mnx::KitNote> = Vec::with_capacity(old_kns.len());
+                    for mut kn in old_kns {
+                        let cur_line = part_meta
+                            .kit_line_for_component(&kn.kit_component)
+                            .unwrap_or(1);
+                        let new_line = (cur_line as i8 + delta_string).clamp(1, num_strings as i8) as u8;
+                        if new_line != cur_line {
+                            if let Some((new_comp_id, _)) = part_meta.kit_component_for_line(new_line) {
+                                kn.kit_component = new_comp_id.to_string();
+                                changed = true;
+                            }
+                        }
+                        new_kns.retain(|existing| existing.kit_component != kn.kit_component);
+                        new_kns.push(kn);
+                    }
+                    new_kns.sort_by_key(|kn| {
+                        part_meta.kit_line_for_component(&kn.kit_component).unwrap_or(99)
+                    });
+                    ev.kit_notes = new_kns;
+                }
+            }
+        } else {
+            for e_idx in min_idx..=max_idx {
+                let Some(&path) = paths.get(e_idx) else {
+                    continue;
+                };
+                let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) else {
+                    continue;
+                };
 
-            if let Some(n_idx) = single_note_idx {
-                if n_idx < ev.notes.len() {
-                    let cur_str = ev.notes[n_idx].string.unwrap_or(1);
-                    let new_str = (cur_str as i8 + delta_string).clamp(1, num_strings as i8) as u8;
-                    if new_str != cur_str {
-                        let mut moved_note = ev.notes.remove(n_idx);
-                        ev.notes.retain(|n| n.string != Some(new_str));
-                        shift_note_to_string(
-                            &mut moved_note,
-                            cur_str,
-                            new_str,
-                            &part_meta,
-                            ref_note.as_ref(),
-                            &table,
-                        );
-                        ev.notes.push(moved_note);
-                        ev.notes.sort_by_key(|n| n.string.unwrap_or(0));
-                        single_new_string = Some(new_str);
-                        changed = true;
+                if let Some(n_idx) = single_note_idx {
+                    if n_idx < ev.notes.len() {
+                        let cur_str = ev.notes[n_idx].string.unwrap_or(1);
+                        let new_str = (cur_str as i8 + delta_string).clamp(1, num_strings as i8) as u8;
+                        if new_str != cur_str {
+                            let mut moved_note = ev.notes.remove(n_idx);
+                            ev.notes.retain(|n| n.string != Some(new_str));
+                            shift_note_to_string(
+                                &mut moved_note,
+                                cur_str,
+                                new_str,
+                                &part_meta,
+                                ref_note.as_ref(),
+                                &table,
+                            );
+                            ev.notes.push(moved_note);
+                            ev.notes.sort_by_key(|n| n.string.unwrap_or(0));
+                            single_new_string = Some(new_str);
+                            changed = true;
+                        }
                     }
-                }
-            } else if !ev.notes.is_empty() {
-                let mut old_notes = std::mem::take(&mut ev.notes);
-                if delta_string < 0 {
-                    old_notes.sort_by_key(|n| n.string.unwrap_or(1));
-                } else {
-                    old_notes.sort_by_key(|n| std::cmp::Reverse(n.string.unwrap_or(1)));
-                }
-                let mut new_notes: Vec<crate::mnx::Note> = Vec::with_capacity(old_notes.len());
-                for mut note in old_notes {
-                    let cur_str = note.string.unwrap_or(1);
-                    let new_str = (cur_str as i8 + delta_string).clamp(1, num_strings as i8) as u8;
-                    if new_str != cur_str {
-                        shift_note_to_string(
-                            &mut note,
-                            cur_str,
-                            new_str,
-                            &part_meta,
-                            ref_note.as_ref(),
-                            &table,
-                        );
-                        changed = true;
+                } else if !ev.notes.is_empty() {
+                    let mut old_notes = std::mem::take(&mut ev.notes);
+                    if delta_string < 0 {
+                        old_notes.sort_by_key(|n| n.string.unwrap_or(1));
+                    } else {
+                        old_notes.sort_by_key(|n| std::cmp::Reverse(n.string.unwrap_or(1)));
                     }
-                    new_notes.retain(|n| n.string != Some(new_str));
-                    new_notes.push(note);
+                    let mut new_notes: Vec<crate::mnx::Note> = Vec::with_capacity(old_notes.len());
+                    for mut note in old_notes {
+                        let cur_str = note.string.unwrap_or(1);
+                        let new_str = (cur_str as i8 + delta_string).clamp(1, num_strings as i8) as u8;
+                        if new_str != cur_str {
+                            shift_note_to_string(
+                                &mut note,
+                                cur_str,
+                                new_str,
+                                &part_meta,
+                                ref_note.as_ref(),
+                                &table,
+                            );
+                            changed = true;
+                        }
+                        new_notes.retain(|n| n.string != Some(new_str));
+                        new_notes.push(note);
+                    }
+                    new_notes.sort_by_key(|n| n.string.unwrap_or(0));
+                    ev.notes = new_notes;
                 }
-                new_notes.sort_by_key(|n| n.string.unwrap_or(0));
-                ev.notes = new_notes;
             }
         }
 
@@ -3245,14 +3314,14 @@ impl MnxEditorApp {
                 sel_end_beat = ti.b1;
                 match &ti.item {
                     crate::mnx::SequenceItem::Event(ev) => {
-                        if !ev.notes.is_empty() {
+                        if ev.has_any_notes() {
                             has_selected_notes = true;
                         }
                     }
                     crate::mnx::SequenceItem::Tuplet(t) => {
                         for sub in &t.content {
                             if let crate::mnx::SequenceItem::Event(sev) = sub {
-                                if !sev.notes.is_empty() {
+                                if sev.has_any_notes() {
                                     has_selected_notes = true;
                                 }
                             }
@@ -3261,7 +3330,7 @@ impl MnxEditorApp {
                     crate::mnx::SequenceItem::Grace(g) => {
                         for sub in &g.content {
                             if let crate::mnx::SequenceItem::Event(sev) = sub {
-                                if !sev.notes.is_empty() {
+                                if sev.has_any_notes() {
                                     has_selected_notes = true;
                                 }
                             }
@@ -3305,6 +3374,7 @@ impl MnxEditorApp {
                     multiple: None,
                 },
                 notes: vec![],
+                kit_notes: vec![],
                 rest: Some(crate::mnx::Rest {}),
                 slurs: None,
                 markings: None,
@@ -3526,7 +3596,7 @@ impl MnxEditorApp {
                     for item in old_content {
                         let is_pure_rest = match &item {
                             crate::mnx::SequenceItem::Event(ev) => {
-                                ev.notes.is_empty()
+                                !ev.has_any_notes()
                                     && ev.lyrics.is_none()
                                     && ev.markings.is_none()
                                     && ev.text_markings.is_empty()

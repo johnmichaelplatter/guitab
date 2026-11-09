@@ -388,7 +388,9 @@ pub fn populate_page_display_list_for_parts(
             });
         }
 
-        let edo_sub = if first_part.has_custom_frets() {
+        let edo_sub = if first_part.is_percussion() {
+            Some("Percussion".to_string())
+        } else if first_part.has_custom_frets() {
             Some("Custom Fretboard".to_string())
         } else {
             first_part.micro_fret_divisions
@@ -527,12 +529,15 @@ pub fn populate_page_display_list_for_parts(
             });
         }
 
-        // Open string tuning labels at the first bar
+        // Open string tuning / percussion line labels at the first bar
         if system.measure_range.start == 0 {
+            let line_prefixes = crate::render::get_part_line_prefixes(part);
             let edo = part.edo();
             for s in 1..=num_strings {
                 let str_y = staff_top_y + ((s - 1) as f32) * line_spacing;
-                let tuning_str = if let Some(pitch) = part.get_string_tuning(s as u8) {
+                let tuning_str = if part.is_percussion() {
+                    line_prefixes.get(s - 1).cloned().unwrap_or_default()
+                } else if let Some(pitch) = part.get_string_tuning(s as u8) {
                     crate::render::format_pitch(&pitch, edo)
                 } else {
                     let default_name = match s {
@@ -1237,6 +1242,55 @@ pub fn populate_page_display_list_for_parts(
                                                         pos: note_pos,
                                                         align: Align2::CENTER_CENTER,
                                                         text: fret_text,
+                                                        font_id: FontId::proportional(font_sz),
+                                                        color: text_color,
+                                                        bold: false,
+                                                        italic: false,
+                                                    },
+                                                    z_index: 4,
+                                                });
+                                            }
+                                        }
+                                    }
+
+                                    // Draw percussion kit notes
+                                    for kn in &ev.kit_notes {
+                                        if let Some(s) = part.kit_line_for_component(&kn.kit_component) {
+                                            if s >= 1 && (s as usize) <= num_strings {
+                                                let str_y = staff_top_y + ((s - 1) as f32) * line_spacing;
+                                                let default_sym = part
+                                                    .kit
+                                                    .as_ref()
+                                                    .and_then(|k| k.get(&kn.kit_component))
+                                                    .map(|c| c.effective_default_symbol())
+                                                    .unwrap_or("o");
+                                                let sym_text = crate::render::format_kit_note_symbol(kn, default_sym);
+                                                let note_pos = Pos2::new(ev_x, str_y);
+                                                this_event_notes.push((kn.id.clone(), s, 0, note_pos));
+
+                                                let font_sz = if in_grace { 9.5 } else { 11.0 };
+                                                let text_w = (sym_text.chars().count() as f32) * (if in_grace { 5.5 } else { 7.5 });
+                                                let note_item_id = Some(kn.id.clone().unwrap_or_else(|| format!("kitnote_{}_{}_{}", m_idx, ev_idx_in_m, s)));
+                                                dl.push(DrawItem {
+                                                    id: note_item_id.clone(),
+                                                    kind: DrawKind::Rect {
+                                                        rect: Rect::from_center_size(
+                                                            note_pos,
+                                                            eframe::egui::Vec2::new(text_w + 3.0, 11.0),
+                                                        ),
+                                                        fill: Color32::WHITE,
+                                                        stroke: Stroke::NONE,
+                                                        rounding: 0.0,
+                                                    },
+                                                    z_index: 3,
+                                                });
+
+                                                dl.push(DrawItem {
+                                                    id: note_item_id,
+                                                    kind: DrawKind::Text {
+                                                        pos: note_pos,
+                                                        align: Align2::CENTER_CENTER,
+                                                        text: sym_text,
                                                         font_id: FontId::proportional(font_sz),
                                                         color: text_color,
                                                         bold: false,

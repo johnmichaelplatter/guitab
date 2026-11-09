@@ -14,6 +14,8 @@ pub struct MidiOptions {
     pub ppq: u15,
     pub start_event_idx: Option<usize>,
     pub is_mpe: bool,
+    pub is_percussion: bool,
+    pub percussion_channel: u4,
 }
 
 impl Default for MidiOptions {
@@ -25,6 +27,8 @@ impl Default for MidiOptions {
             ppq: u15::from(480),
             start_event_idx: None,
             is_mpe: false,
+            is_percussion: false,
+            percussion_channel: u4::from(9), // Channel 10 (0-indexed 9)
         }
     }
 }
@@ -38,6 +42,8 @@ impl MidiOptions {
             ppq: u15::from(480),
             start_event_idx: None,
             is_mpe: true,
+            is_percussion: false,
+            percussion_channel: u4::from(9),
         }
     }
 }
@@ -86,6 +92,8 @@ pub struct PartMidiConfig {
     pub pitch_bend_range: u8,
     pub string_to_channel: HashMap<u8, u4>,
     pub is_mpe: bool,
+    pub is_percussion: bool,
+    pub percussion_channel: u4,
 }
 
 #[derive(Debug, Clone)]
@@ -934,6 +942,88 @@ impl<'a> PlaybackTrackGenerator<'a> {
                             }
                         }
 
+                        // Emit percussion kit notes (no pitch bend or MPE)
+                        if !event.kit_notes.is_empty() {
+                            let perc_ch = if self.options.is_percussion {
+                                self.options.percussion_channel
+                            } else {
+                                u4::from(part.percussion_midi_channel().saturating_sub(1).min(15))
+                            };
+                            let is_accented = event
+                                .markings
+                                .as_ref()
+                                .map_or(false, |m| m.accent.is_some());
+
+                            for kn in &event.kit_notes {
+                                let comp = part
+                                    .kit
+                                    .as_ref()
+                                    .and_then(|k| k.get(&kn.kit_component));
+                                let midi_note = kn.ext.sound_override.unwrap_or_else(|| {
+                                    comp.map(|c| c.resolve_midi_sound(kn.ext.symbol.as_deref()))
+                                        .unwrap_or(38)
+                                }).min(127);
+
+                                let sym = kn.ext.symbol.as_deref();
+                                let velocity = if sym == Some("g") {
+                                    50
+                                } else if is_accented {
+                                    127
+                                } else {
+                                    100
+                                };
+
+                                // Flam: emit a soft grace hit right before the main hit
+                                if sym == Some("f") {
+                                    let grace_start = event_start_ticks.saturating_sub(25);
+                                    let grace_end = (grace_start + 20).min(event_start_ticks);
+                                    if grace_end > grace_start {
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: grace_start,
+                                            kind: InternalEventKind::Midi {
+                                                channel: perc_ch,
+                                                message: MidiMessage::NoteOn {
+                                                    key: u7::from(midi_note),
+                                                    vel: u7::from(65),
+                                                },
+                                            },
+                                        });
+                                        self.abs_events.push(InternalAbsoluteEvent {
+                                            time_ticks: grace_end,
+                                            kind: InternalEventKind::Midi {
+                                                channel: perc_ch,
+                                                message: MidiMessage::NoteOff {
+                                                    key: u7::from(midi_note),
+                                                    vel: u7::from(64),
+                                                },
+                                            },
+                                        });
+                                    }
+                                }
+
+                                self.abs_events.push(InternalAbsoluteEvent {
+                                    time_ticks: event_start_ticks,
+                                    kind: InternalEventKind::Midi {
+                                        channel: perc_ch,
+                                        message: MidiMessage::NoteOn {
+                                            key: u7::from(midi_note),
+                                            vel: u7::from(velocity),
+                                        },
+                                    },
+                                });
+                                self.abs_events.push(InternalAbsoluteEvent {
+                                    time_ticks: event_start_ticks + duration_ticks.max(20),
+                                    kind: InternalEventKind::Midi {
+                                        channel: perc_ch,
+                                        message: MidiMessage::NoteOff {
+                                            key: u7::from(midi_note),
+                                            vel: u7::from(64),
+                                        },
+                                    },
+                                });
+                            }
+                        }
+
                         if let Some(ev_id) = &event.id {
                             if let Some((ch, note_val)) = pending_ties.remove(ev_id) {
                                 self.abs_events.push(InternalAbsoluteEvent {
@@ -1029,8 +1119,10 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let flattened_measures = compute_flattened_measures(&self.doc.global, total_part_measures);
 
         if let Some(part) = self.doc.parts.first() {
-            let num_strings = part.num_strings() as u8;
-            self.setup_channels_and_mpe(num_strings);
+            if !part.is_percussion() && !self.options.is_percussion {
+                let num_strings = part.num_strings() as u8;
+                self.setup_channels_and_mpe(num_strings);
+            }
             
             let mut raw_event_idx_map = Vec::new();
             let mut current_raw_idx = 0;
@@ -1084,8 +1176,10 @@ impl<'a> PlaybackTrackGenerator<'a> {
         let total_part_measures = part.measures.len();
         let flattened_measures = compute_flattened_measures(&self.doc.global, total_part_measures);
 
-        let num_strings = part.num_strings() as u8;
-        self.setup_channels_and_mpe(num_strings);
+        if !part.is_percussion() && !self.options.is_percussion {
+            let num_strings = part.num_strings() as u8;
+            self.setup_channels_and_mpe(num_strings);
+        }
 
         let mut raw_event_idx_map = Vec::new();
         let mut current_raw_idx = 0;
@@ -1196,6 +1290,8 @@ pub fn generate_multi_part_playback_track(
             ppq,
             start_event_idx: None,
             is_mpe: cfg.is_mpe,
+            is_percussion: cfg.is_percussion,
+            percussion_channel: cfg.percussion_channel,
         };
         let generator = PlaybackTrackGenerator::new(doc, opts);
         let part_abs = generator.generate_for_part_with_offset(cfg.part_idx, start_tick_offset);

@@ -240,6 +240,22 @@ pub fn format_ending_numbers(numbers: &[u32]) -> String {
     format!("{}.", nums_str)
 }
 
+/// Formats a `KitNote` symbol for tablature display.
+/// Ghost notes (`"g"`) are displayed enclosed in parentheses around the default symbol (e.g. `"(o)"` or `"(x)"`).
+pub fn format_kit_note_symbol(kn: &crate::mnx::KitNote, default_sym: &str) -> String {
+    let raw = kn
+        .ext
+        .symbol
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_sym);
+    if raw.eq_ignore_ascii_case("g") {
+        format!("({})", default_sym)
+    } else {
+        raw.to_string()
+    }
+}
+
 /// Returns the maximum displayed text width of an event's note labels in tablature.
 pub fn event_text_width(
     event: &crate::mnx::Event,
@@ -256,6 +272,10 @@ pub fn event_text_width(
         } else {
             note.formatted_fret().map(|s| s.len()).unwrap_or(1)
         };
+        max_chars = max_chars.max(len);
+    }
+    for kn in &event.kit_notes {
+        let len = format_kit_note_symbol(kn, "o").len();
         max_chars = max_chars.max(len);
     }
     if max_chars == 0 {
@@ -412,13 +432,30 @@ pub struct TablatureOptions<'a> {
     pub selected_tempo: Option<(usize, usize)>,
 }
 
-/// Computes the maximum pixel width of the string tuning labels for `part`.
-pub fn compute_part_max_prefix_width(ui: &egui::Ui, part: &Part) -> f32 {
+/// Returns the left-margin staff line prefix labels for `part` (tuning pitch names for stringed instruments,
+/// or short component labels like `"HH"`, `"SD"`, `"BD"` for percussion kits).
+pub fn get_part_line_prefixes(part: &Part) -> Vec<String> {
     let num_strings = part.num_strings();
     if num_strings == 0 {
-        return 0.0;
+        return Vec::new();
     }
-    let font_id = FontId::monospace(14.0);
+    if part.is_percussion() {
+        let mut prefixes: Vec<String> = (1..=num_strings).map(|i| format!("P{}", i)).collect();
+        for (line, comp_id, comp) in part.ordered_kit_lines() {
+            if line >= 1 && (line as usize) <= num_strings {
+                let label = comp
+                    .ext
+                    .short_name
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| comp.name.clone().filter(|s| !s.trim().is_empty()))
+                    .unwrap_or(comp_id);
+                prefixes[(line - 1) as usize] = label;
+            }
+        }
+        return prefixes;
+    }
+
     let mut prefixes: Vec<String> = (1..=num_strings).map(|i| i.to_string()).collect();
     if let Some(tuning) = &part.tuning {
         for t in tuning {
@@ -427,6 +464,16 @@ pub fn compute_part_max_prefix_width(ui: &egui::Ui, part: &Part) -> f32 {
             }
         }
     }
+    prefixes
+}
+
+/// Computes the maximum pixel width of the string tuning or percussion line labels for `part`.
+pub fn compute_part_max_prefix_width(ui: &egui::Ui, part: &Part) -> f32 {
+    let prefixes = get_part_line_prefixes(part);
+    if prefixes.is_empty() {
+        return 0.0;
+    }
+    let font_id = FontId::monospace(14.0);
     prefixes
         .iter()
         .map(|p| {
@@ -598,16 +645,9 @@ pub fn draw_tablature(
 
     let font_id = FontId::monospace(14.0);
 
-    // ── String labels ────────────────────────────────────────────────────────
+    // ── String / Percussion line labels ──────────────────────────────────────
 
-    let mut prefixes: Vec<String> = (1..=num_strings).map(|i| i.to_string()).collect();
-    if let Some(tuning) = &part.tuning {
-        for t in tuning {
-            if t.string >= 1 && (t.string as usize) <= num_strings {
-                prefixes[(t.string - 1) as usize] = format_pitch(&t.pitch, part.edo());
-            }
-        }
-    }
+    let prefixes = get_part_line_prefixes(part);
 
     let max_prefix_width = prefixes
         .iter()
@@ -721,8 +761,9 @@ pub fn draw_tablature(
     let first_barline_x = rect.min.x + first_barline_offset;
     let label_x = first_barline_x - label_gap;
 
-    // ── Instrument name + EDO header ──────────────────────────────────────────
+    // ── Instrument name + EDO / Percussion header ────────────────────────────
 
+    let is_perc = part.is_percussion();
     let has_custom_frets = part
         .ext
         .custom_frets
@@ -732,6 +773,7 @@ pub fn draw_tablature(
     if part.name.is_some()
         || part.micro_fret_divisions.is_some()
         || has_custom_frets
+        || is_perc
         || opts.part_idx > 0
     {
         let header_x = rect.min.x + margin_left;
@@ -754,8 +796,10 @@ pub fn draw_tablature(
             );
         }
 
-        // Plain "N EDO" or "Custom Fretboard" subtitle
-        let subtitle_opt = if has_custom_frets {
+        // Plain "N EDO", "Custom Fretboard", or "Percussion" subtitle
+        let subtitle_opt = if is_perc {
+            Some(format!("Percussion (Ch {})", part.percussion_midi_channel()))
+        } else if has_custom_frets {
             Some("Custom Fretboard".to_string())
         } else {
             part.micro_fret_divisions.map(|d| format!("{} EDO", d))
@@ -965,7 +1009,7 @@ pub fn draw_tablature(
             let num_events = seq.flattened_events().len();
             let is_single_full_measure_rest = num_events == 1
                 && first_ev_info
-                    .map(|(ev, in_g)| !in_g && ev.rest.is_some() && ev.notes.is_empty())
+                    .map(|(ev, in_g)| !in_g && ev.rest.is_some() && !ev.has_any_notes())
                     .unwrap_or(false)
                 && (seq_beats - expected_beats).abs() < 1e-3;
 
@@ -1373,12 +1417,28 @@ pub fn draw_tablature(
                     }
                 }
 
-                // Fret numbers on strings: store (fret, note_idx)
+                // Fret numbers on strings or symbols on percussion lines
                 let current_font_id = if in_grace { FontId::monospace(10.0) } else { font_id.clone() };
                 let mut step_frets: Vec<Option<(i32, usize)>> = vec![None; num_strings];
+                let mut step_kit_notes: Vec<Option<(String, usize)>> = vec![None; num_strings];
                 let mut this_event_notes: Vec<(Option<String>, u8, i32, Pos2)> = Vec::new();
                 let mut min_string_y = f32::MAX;
                 let mut max_string_y = f32::MIN;
+                for (kn_idx, kn) in event.kit_notes.iter().enumerate() {
+                    if let Some(s) = part.kit_line_for_component(&kn.kit_component) {
+                        if s >= 1 && (s as usize) <= num_strings {
+                            let y = string_y_coords[(s - 1) as usize];
+                            min_string_y = min_string_y.min(y);
+                            max_string_y = max_string_y.max(y);
+                            let def_sym = part
+                                .kit_component_for_line(s)
+                                .map(|(_, c)| c.effective_default_symbol())
+                                .unwrap_or("o");
+                            let disp = format_kit_note_symbol(kn, def_sym);
+                            step_kit_notes[(s - 1) as usize] = Some((disp, kn_idx));
+                        }
+                    }
+                }
                 for (n_idx, note) in event.notes.iter().enumerate() {
                     if let Some(s) = note.string {
                         if s >= 1 && (s as usize) <= num_strings {
@@ -1812,6 +1872,53 @@ pub fn draw_tablature(
                                 }
                             }
                         }
+                    } else if let Some((kit_sym, kn_idx)) = &step_kit_notes[i] {
+                        let is_err = error_coords.contains(&(m_idx + 1, e_idx, string_num, 0));
+                        let is_this_string_editing =
+                            is_selected && is_editing_fret && editing_string == Some(string_num);
+                        let is_this_note_selected = !is_editing_fret
+                            && is_selected
+                            && (selected_note_in_event.is_none()
+                                || selected_note_in_event == Some(*kn_idx));
+
+                        let text_color = if is_err {
+                            Color32::RED
+                        } else if is_this_string_editing || is_this_note_selected {
+                            Color32::BLACK
+                        } else {
+                            note_color
+                        };
+
+                        let display_text = if is_this_string_editing && !editing_fret_text.is_empty() {
+                            editing_fret_text.to_string()
+                        } else {
+                            kit_sym.clone()
+                        };
+
+                        let galley = painter.layout_no_wrap(
+                            display_text,
+                            current_font_id.clone(),
+                            text_color,
+                        );
+                        let text_rect =
+                            Rect::from_center_size(Pos2::new(current_x, y), galley.size());
+
+                        if is_this_string_editing {
+                            painter.rect_filled(text_rect.expand(3.5), 3.0, edit_color);
+                        } else if is_this_note_selected {
+                            painter.rect_filled(text_rect.expand(3.5), 3.0, highlight_color);
+                        } else if is_selected {
+                            let chord_frame_color = if opts.is_grid_input_mode {
+                                Color32::from_rgba_unmultiplied(255, 110, 110, 90)
+                            } else {
+                                Color32::from_rgba_unmultiplied(100, 180, 255, 60)
+                            };
+                            painter.rect_filled(text_rect.expand(2.5), 2.0, chord_frame_color);
+                        } else {
+                            painter.rect_filled(text_rect.expand(2.0), 0.0, bg_color);
+                        }
+                        painter.galley(text_rect.min, galley, text_color);
+                        current_fret_rects.push((text_rect, *kn_idx));
                     } else if is_selected && is_editing_fret && editing_string == Some(string_num) {
                         // Empty string currently focused for placement in edit mode
                         let display_text = if editing_fret_text.is_empty() {

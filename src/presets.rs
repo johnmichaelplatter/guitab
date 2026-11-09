@@ -1,8 +1,300 @@
 use crate::edo::{EdoTuning, generate_edo_scale};
-use crate::mnx::{Alteration, Pitch, ReferenceNoteSpec, StringTuning};
+use crate::mnx::{Alteration, KitComponent, KitComponentExt, Pitch, ReferenceNoteSpec, StringTuning};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Standard General MIDI Level 1 Percussion Key Map (MIDI notes 35..=81).
+pub const GM_PERCUSSION_NOTES: &[(u8, &str)] = &[
+    (35, "Acoustic Bass Drum"),
+    (36, "Bass Drum 1 (Kick)"),
+    (37, "Side Stick (Rimshot)"),
+    (38, "Acoustic Snare"),
+    (39, "Hand Clap"),
+    (40, "Electric Snare"),
+    (41, "Low Floor Tom"),
+    (42, "Closed Hi-Hat"),
+    (43, "High Floor Tom"),
+    (44, "Pedal Hi-Hat"),
+    (45, "Low Tom"),
+    (46, "Open Hi-Hat"),
+    (47, "Low-Mid Tom"),
+    (48, "Hi-Mid Tom"),
+    (49, "Crash Cymbal 1"),
+    (50, "High Tom"),
+    (51, "Ride Cymbal 1"),
+    (52, "Chinese Cymbal"),
+    (53, "Ride Bell"),
+    (54, "Tambourine"),
+    (55, "Splash Cymbal"),
+    (56, "Cowbell"),
+    (57, "Crash Cymbal 2"),
+    (58, "Vibraslap"),
+    (59, "Ride Cymbal 2"),
+    (60, "High Bongo"),
+    (61, "Low Bongo"),
+    (62, "Mute High Conga"),
+    (63, "Open High Conga"),
+    (64, "Low Conga"),
+    (65, "High Timbale"),
+    (66, "Low Timbale"),
+    (67, "High Agogo"),
+    (68, "Low Agogo"),
+    (69, "Cabasa"),
+    (70, "Maracas"),
+    (71, "Short Whistle"),
+    (72, "Long Whistle"),
+    (73, "Short Guiro"),
+    (74, "Long Guiro"),
+    (75, "Claves"),
+    (76, "High Wood Block"),
+    (77, "Low Wood Block"),
+    (78, "Mute Cuica"),
+    (79, "Open Cuica"),
+    (80, "Mute Triangle"),
+    (81, "Open Triangle"),
+];
+
+pub fn gm_percussion_name(note: u8) -> &'static str {
+    GM_PERCUSSION_NOTES
+        .iter()
+        .find(|(n, _)| *n == note)
+        .map(|(_, name)| *name)
+        .unwrap_or("Custom MIDI Note")
+}
+
+pub fn format_gm_percussion_label(note: u8) -> String {
+    if let Some((_, name)) = GM_PERCUSSION_NOTES.iter().find(|(n, _)| *n == note) {
+        format!("{} — {}", note, name)
+    } else {
+        format!("{} — Custom Note", note)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PercussionLineConfig {
+    pub id: String,
+    pub short_name: String,
+    pub name: String,
+    pub default_symbol: String,
+    pub sound: u8,
+    pub symbol_sounds: Vec<(String, u8)>,
+}
+
+impl PercussionLineConfig {
+    pub fn new(
+        id: &str,
+        short_name: &str,
+        name: &str,
+        default_symbol: &str,
+        sound: u8,
+        symbol_sounds: &[(&str, u8)],
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            short_name: short_name.to_string(),
+            name: name.to_string(),
+            default_symbol: default_symbol.to_string(),
+            sound,
+            symbol_sounds: symbol_sounds
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+        }
+    }
+}
+
+pub fn default_percussion_line_for_index(line_1_based: u8) -> PercussionLineConfig {
+    match line_1_based {
+        1 => PercussionLineConfig::new("crash", "CC", "Crash Cymbal", "x", 49, &[("o", 55), ("c", 52)]),
+        2 => PercussionLineConfig::new("hi-hat", "HH", "Hi-Hat", "x", 42, &[("o", 46), ("p", 44)]),
+        3 => PercussionLineConfig::new("high-tom", "HT", "High Tom", "o", 48, &[("r", 37)]),
+        4 => PercussionLineConfig::new("snare", "SD", "Snare Drum", "o", 38, &[("x", 37), ("r", 37), ("b", 53)]),
+        5 => PercussionLineConfig::new("floor-tom", "FT", "Floor Tom", "o", 43, &[("r", 37)]),
+        6 => PercussionLineConfig::new("kick", "BD", "Kick Drum", "o", 36, &[("x", 44)]),
+        7 => PercussionLineConfig::new("ride", "RD", "Ride Cymbal", "x", 51, &[("b", 53), ("o", 59)]),
+        8 => PercussionLineConfig::new("mid-tom", "MT", "Mid Tom", "o", 47, &[("r", 37)]),
+        9 => PercussionLineConfig::new("cowbell", "CB", "Cowbell", "x", 56, &[]),
+        10 => PercussionLineConfig::new("tambourine", "TB", "Tambourine", "x", 54, &[]),
+        other => PercussionLineConfig::new(
+            &format!("perc-{}", other),
+            &format!("P{}", other),
+            &format!("Percussion {}", other),
+            "o",
+            38,
+            &[],
+        ),
+    }
+}
+
+pub fn standard_6_line_kit_configs() -> Vec<PercussionLineConfig> {
+    (1..=6).map(default_percussion_line_for_index).collect()
+}
+
+pub fn kit_to_line_configs(kit: &BTreeMap<String, KitComponent>) -> Vec<PercussionLineConfig> {
+    let mut items: Vec<(u8, String, &KitComponent)> = kit
+        .iter()
+        .enumerate()
+        .map(|(idx, (id, comp))| {
+            let line = comp.ext.line.unwrap_or((idx + 1) as u8);
+            (line, id.clone(), comp)
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, (_, id, comp))| {
+            let short_name = comp
+                .ext
+                .short_name
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    comp.name
+                        .as_deref()
+                        .map(|n| n.chars().take(2).collect::<String>().to_uppercase())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| format!("P{}", i + 1))
+                });
+            let name = comp
+                .name
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| id.clone());
+            let default_symbol = comp.effective_default_symbol().to_string();
+            let sound = comp.sound.unwrap_or(38);
+            let symbol_sounds: Vec<(String, u8)> = comp
+                .ext
+                .symbol_sounds
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
+            PercussionLineConfig {
+                id,
+                short_name,
+                name,
+                default_symbol,
+                sound,
+                symbol_sounds,
+            }
+        })
+        .collect()
+}
+
+pub fn line_configs_to_kit(lines: &[PercussionLineConfig]) -> BTreeMap<String, KitComponent> {
+    let mut kit = BTreeMap::new();
+    let mut used_ids = std::collections::HashSet::new();
+    let total = lines.len() as i32;
+
+    for (idx, cfg) in lines.iter().enumerate() {
+        let line_num = (idx + 1) as u8;
+        let base_id = if !cfg.id.trim().is_empty() {
+            cfg.id.trim().to_lowercase().replace(' ', "-")
+        } else if !cfg.name.trim().is_empty() {
+            cfg.name.trim().to_lowercase().replace(' ', "-")
+        } else {
+            format!("line-{}", line_num)
+        };
+        let mut unique_id = base_id.clone();
+        let mut suffix = 2;
+        while used_ids.contains(&unique_id) {
+            unique_id = format!("{}-{}", base_id, suffix);
+            suffix += 1;
+        }
+        used_ids.insert(unique_id.clone());
+
+        let mut sym_map = BTreeMap::new();
+        for (sym, note) in &cfg.symbol_sounds {
+            let clean_sym = sym.trim();
+            if !clean_sym.is_empty() {
+                sym_map.insert(clean_sym.to_string(), *note);
+            }
+        }
+
+        let staff_pos = (total - 1) - (idx as i32) * 2;
+        let short_name = if cfg.short_name.trim().is_empty() {
+            format!("P{}", line_num)
+        } else {
+            cfg.short_name.trim().to_string()
+        };
+        let def_sym = if cfg.default_symbol.trim().is_empty() {
+            "o".to_string()
+        } else {
+            cfg.default_symbol.trim().to_string()
+        };
+
+        kit.insert(
+            unique_id,
+            KitComponent {
+                name: Some(cfg.name.trim().to_string()),
+                staff_position: Some(staff_pos),
+                sound: Some(cfg.sound),
+                ext: KitComponentExt {
+                    line: Some(line_num),
+                    short_name: Some(short_name),
+                    default_symbol: Some(def_sym),
+                    symbol_sounds: sym_map,
+                },
+            },
+        );
+    }
+    kit
+}
+
+pub fn builtin_drum_kit_presets() -> Vec<(String, Vec<PercussionLineConfig>)> {
+    vec![
+        (
+            "6-Line Standard Drum Kit".to_string(),
+            standard_6_line_kit_configs(),
+        ),
+        (
+            "8-Line Full Drum Kit".to_string(),
+            vec![
+                PercussionLineConfig::new("crash", "CC", "Crash Cymbal", "x", 49, &[("o", 55), ("c", 52)]),
+                PercussionLineConfig::new("ride", "RD", "Ride Cymbal", "x", 51, &[("b", 53), ("o", 59)]),
+                PercussionLineConfig::new("hi-hat", "HH", "Hi-Hat", "x", 42, &[("o", 46), ("p", 44)]),
+                PercussionLineConfig::new("high-tom", "HT", "High Tom", "o", 50, &[("r", 37)]),
+                PercussionLineConfig::new("mid-tom", "MT", "Mid Tom", "o", 47, &[("r", 37)]),
+                PercussionLineConfig::new("snare", "SD", "Snare Drum", "o", 38, &[("x", 37), ("r", 37), ("b", 53)]),
+                PercussionLineConfig::new("floor-tom", "FT", "Floor Tom", "o", 43, &[("r", 37)]),
+                PercussionLineConfig::new("kick", "BD", "Kick Drum", "o", 36, &[("x", 44)]),
+            ],
+        ),
+        (
+            "5-Line Compact Kit".to_string(),
+            vec![
+                PercussionLineConfig::new("hi-hat", "HH", "Hi-Hat / Cymbal", "x", 42, &[("o", 46), ("c", 49), ("b", 53)]),
+                PercussionLineConfig::new("high-tom", "HT", "High Tom", "o", 48, &[("r", 37)]),
+                PercussionLineConfig::new("snare", "SD", "Snare Drum", "o", 38, &[("x", 37), ("r", 37)]),
+                PercussionLineConfig::new("floor-tom", "FT", "Floor Tom", "o", 43, &[("r", 37)]),
+                PercussionLineConfig::new("kick", "BD", "Kick Drum", "o", 36, &[("x", 44)]),
+            ],
+        ),
+        (
+            "4-Line Minimal / Jazz Kit".to_string(),
+            vec![
+                PercussionLineConfig::new("ride", "RD", "Ride Cymbal", "x", 51, &[("b", 53), ("c", 49)]),
+                PercussionLineConfig::new("hi-hat", "HH", "Hi-Hat", "x", 42, &[("o", 46), ("p", 44)]),
+                PercussionLineConfig::new("snare", "SD", "Snare Drum", "o", 38, &[("x", 37), ("r", 37)]),
+                PercussionLineConfig::new("kick", "BD", "Kick Drum", "o", 36, &[]),
+            ],
+        ),
+        (
+            "Latin / Aux Percussion (6-Line)".to_string(),
+            vec![
+                PercussionLineConfig::new("cowbell", "CB", "Cowbell", "x", 56, &[("a", 67), ("l", 68)]),
+                PercussionLineConfig::new("timbales", "TM", "Timbales", "o", 65, &[("l", 66), ("r", 37)]),
+                PercussionLineConfig::new("bongos", "BG", "Bongos", "o", 60, &[("l", 61)]),
+                PercussionLineConfig::new("high-conga", "HC", "High Conga", "o", 63, &[("m", 62)]),
+                PercussionLineConfig::new("low-conga", "LC", "Low Conga", "o", 64, &[]),
+                PercussionLineConfig::new("claves", "CL", "Claves / Maracas", "x", 75, &[("m", 70), ("t", 54)]),
+            ],
+        ),
+    ]
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstrumentPreset {

@@ -81,6 +81,9 @@ impl MnxEditorApp {
                 fretboard_editor: crate::fretboard_editor::FretboardEditorState,
                 is_new_tab: bool,
             },
+            ApplyPercussionSetup {
+                is_new_tab: bool,
+            },
             TranslateInstrumentSetup {
                 new_num_strings: u8,
                 new_edo: u8,
@@ -809,20 +812,367 @@ impl MnxEditorApp {
                 };
                 egui::Window::new(win_title)
                     .collapsible(false)
-                    .resizable(*show_custom_fretboard)
-                    .default_width(if *show_custom_fretboard { 900.0 } else { 520.0 })
+                    .resizable(*show_custom_fretboard || self.instrument_setup_is_percussion)
+                    .default_width(if *show_custom_fretboard {
+                        900.0
+                    } else if self.instrument_setup_is_percussion {
+                        720.0
+                    } else {
+                        520.0
+                    })
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ctx, |ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 
                         ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Instrument Type:").strong());
+                            if ui
+                                .selectable_label(
+                                    !self.instrument_setup_is_percussion,
+                                    "🎸 Stringed / Fretted",
+                                )
+                                .clicked()
+                                && self.instrument_setup_is_percussion
+                            {
+                                self.instrument_setup_is_percussion = false;
+                                if self.instrument_setup_name_buf.trim() == "Drum Kit" {
+                                    self.instrument_setup_name_buf = "Guitar".to_string();
+                                }
+                            }
+                            if ui
+                                .selectable_label(
+                                    self.instrument_setup_is_percussion,
+                                    "🥁 Drum / Percussion",
+                                )
+                                .clicked()
+                                && !self.instrument_setup_is_percussion
+                            {
+                                self.instrument_setup_is_percussion = true;
+                                *show_custom_fretboard = false;
+                                let trimmed = self.instrument_setup_name_buf.trim();
+                                if trimmed.is_empty()
+                                    || trimmed == "Guitar"
+                                    || trimmed.starts_with("Guitar ")
+                                {
+                                    self.instrument_setup_name_buf = "Drum Kit".to_string();
+                                }
+                                if self.instrument_setup_percussion_lines.is_empty() {
+                                    self.instrument_setup_percussion_lines =
+                                        crate::presets::standard_6_line_kit_configs();
+                                }
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Instrument Name:").strong());
+                            let hint = if self.instrument_setup_is_percussion {
+                                "e.g. Drum Kit, Jazz Kit, Aux Percussion..."
+                            } else {
+                                "e.g. Electric Guitar, Bass, 19-EDO Guitar..."
+                            };
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.instrument_setup_name_buf)
                                     .desired_width(240.0)
-                                    .hint_text("e.g. Electric Guitar, Bass, 19-EDO Guitar..."),
+                                    .hint_text(hint),
                             );
                         });
+
+                        if self.instrument_setup_is_percussion {
+                            let drum_presets = crate::presets::builtin_drum_kit_presets();
+                            let matched_kit_preset = drum_presets
+                                .iter()
+                                .find(|(_, lines)| *lines == self.instrument_setup_percussion_lines)
+                                .map(|(name, _)| name.as_str())
+                                .unwrap_or("Custom Drum Kit / Select Preset...");
+
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Kit Preset:").strong());
+                                egui::ComboBox::from_id_salt("drum_kit_preset_combo")
+                                    .selected_text(matched_kit_preset)
+                                    .width(260.0)
+                                    .show_ui(ui, |ui| {
+                                        for (preset_name, preset_lines) in &drum_presets {
+                                            if ui.selectable_label(false, preset_name).clicked() {
+                                                self.instrument_setup_percussion_lines =
+                                                    preset_lines.clone();
+                                            }
+                                        }
+                                    });
+
+                                ui.separator();
+                                ui.label(egui::RichText::new("Lines:").strong());
+                                let mut num_lines =
+                                    self.instrument_setup_percussion_lines.len().clamp(1, 15);
+                                if ui
+                                    .add(egui::DragValue::new(&mut num_lines).range(1..=15))
+                                    .changed()
+                                {
+                                    while self.instrument_setup_percussion_lines.len() < num_lines {
+                                        let next_i = (self.instrument_setup_percussion_lines.len() + 1) as u8;
+                                        self.instrument_setup_percussion_lines.push(
+                                            crate::presets::default_percussion_line_for_index(
+                                                next_i,
+                                            ),
+                                        );
+                                    }
+                                    self.instrument_setup_percussion_lines.truncate(num_lines);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.instrument_setup_percussion_lines.len() < 15,
+                                        egui::Button::new("➕ Add Line"),
+                                    )
+                                    .clicked()
+                                {
+                                    let next_i = (self.instrument_setup_percussion_lines.len() + 1) as u8;
+                                    self.instrument_setup_percussion_lines.push(
+                                        crate::presets::default_percussion_line_for_index(next_i),
+                                    );
+                                }
+                            });
+
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(
+                                    "Configure each staff line (top to bottom), its primary General MIDI percussion note, and custom letter symbol overrides (e.g. 'b' for Bell, 'r' for Rim):",
+                                )
+                                .size(11.5)
+                                .weak(),
+                            );
+
+                            let mut line_to_remove: Option<usize> = None;
+                            let can_remove_line = self.instrument_setup_percussion_lines.len() > 1;
+                            egui::ScrollArea::vertical()
+                                .max_height(360.0)
+                                .show(ui, |ui| {
+                                    for (idx, line) in self
+                                        .instrument_setup_percussion_lines
+                                        .iter_mut()
+                                        .enumerate()
+                                    {
+                                        egui::Frame::group(ui.style())
+                                            .inner_margin(egui::Margin::same(6))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(format!(
+                                                            "Line {}:",
+                                                            idx + 1
+                                                        ))
+                                                        .strong(),
+                                                    );
+                                                    ui.label("Label:");
+                                                    ui.add(
+                                                        egui::TextEdit::singleline(
+                                                            &mut line.short_name,
+                                                        )
+                                                        .desired_width(36.0)
+                                                        .hint_text("HH"),
+                                                    )
+                                                    .on_hover_text(
+                                                        "2-4 character label displayed at the left of the staff line",
+                                                    );
+
+                                                    ui.label("Name:");
+                                                    ui.add(
+                                                        egui::TextEdit::singleline(&mut line.name)
+                                                            .desired_width(110.0)
+                                                            .hint_text("Component Name"),
+                                                    );
+
+                                                    ui.label("Default Hit:");
+                                                    if ui
+                                                        .selectable_label(
+                                                            line.default_symbol == "o",
+                                                            "o (Drum)",
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        line.default_symbol = "o".to_string();
+                                                    }
+                                                    if ui
+                                                        .selectable_label(
+                                                            line.default_symbol == "x",
+                                                            "x (Cymbal)",
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        line.default_symbol = "x".to_string();
+                                                    }
+
+                                                    ui.label("GM Sound:");
+                                                    egui::ComboBox::from_id_salt(format!(
+                                                        "perc_line_gm_{}",
+                                                        idx
+                                                    ))
+                                                    .selected_text(
+                                                        crate::presets::format_gm_percussion_label(
+                                                            line.sound,
+                                                        ),
+                                                    )
+                                                    .width(175.0)
+                                                    .show_ui(ui, |ui| {
+                                                        for &(note_num, note_name) in
+                                                            crate::presets::GM_PERCUSSION_NOTES
+                                                        {
+                                                            let lbl = format!(
+                                                                "{} - {}",
+                                                                note_num, note_name
+                                                            );
+                                                            ui.selectable_value(
+                                                                &mut line.sound,
+                                                                note_num,
+                                                                lbl,
+                                                            );
+                                                        }
+                                                    });
+
+                                                    ui.add(
+                                                        egui::DragValue::new(&mut line.sound)
+                                                            .range(0..=127)
+                                                            .prefix("MIDI "),
+                                                    )
+                                                    .on_hover_text(
+                                                        "Custom MIDI note number (0-127)",
+                                                    );
+
+                                                    if can_remove_line
+                                                        && ui
+                                                            .small_button("🗑")
+                                                            .on_hover_text("Remove this line")
+                                                            .clicked()
+                                                    {
+                                                        line_to_remove = Some(idx);
+                                                    }
+                                                });
+
+                                                // Custom Symbol Overrides Row
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new("Symbol Overrides:")
+                                                            .size(11.5)
+                                                            .weak(),
+                                                    );
+                                                    let mut sym_to_remove = None;
+                                                    for (sym_i, (sym_str, sym_sound)) in
+                                                        line.symbol_sounds.iter_mut().enumerate()
+                                                    {
+                                                        ui.horizontal(|ui| {
+                                                            let resp = ui.add(
+                                                                egui::TextEdit::singleline(sym_str)
+                                                                    .desired_width(22.0),
+                                                            ).on_hover_text("Letter symbol typed on this line (e.g. b, r, o, x, p)");
+                                                            if resp.changed() {
+                                                                let filtered: String = sym_str
+                                                                    .chars()
+                                                                    .filter(|c| !c.is_whitespace())
+                                                                    .take(2)
+                                                                    .collect();
+                                                                *sym_str = filtered;
+                                                            }
+                                                            ui.label("→");
+                                                            egui::ComboBox::from_id_salt(format!(
+                                                                "perc_sym_gm_{}_{}",
+                                                                idx, sym_i
+                                                            ))
+                                                            .selected_text(
+                                                                crate::presets::format_gm_percussion_label(
+                                                                    *sym_sound,
+                                                                ),
+                                                            )
+                                                            .width(155.0)
+                                                            .show_ui(ui, |ui| {
+                                                                for &(note_num, note_name) in
+                                                                    crate::presets::GM_PERCUSSION_NOTES
+                                                                {
+                                                                    let lbl = format!(
+                                                                        "{} - {}",
+                                                                        note_num, note_name
+                                                                    );
+                                                                    ui.selectable_value(
+                                                                        sym_sound,
+                                                                        note_num,
+                                                                        lbl,
+                                                                    );
+                                                                }
+                                                            });
+                                                            ui.add(
+                                                                egui::DragValue::new(sym_sound)
+                                                                    .range(0..=127),
+                                                            );
+                                                            if ui
+                                                                .small_button("✕")
+                                                                .on_hover_text(
+                                                                    "Remove symbol override",
+                                                                )
+                                                                .clicked()
+                                                            {
+                                                                sym_to_remove = Some(sym_i);
+                                                            }
+                                                        });
+                                                    }
+                                                    if let Some(rem_i) = sym_to_remove {
+                                                        line.symbol_sounds.remove(rem_i);
+                                                    }
+
+                                                    if ui
+                                                        .small_button("+ Add Symbol Override")
+                                                        .on_hover_text(
+                                                            "Add a letter symbol (e.g. 'b' for Bell, 'r' for Rim, 'o' for Open) that triggers a specific MIDI note on this line",
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        // Pick a sensible default unused letter symbol
+                                                        let candidates =
+                                                            ["b", "r", "o", "x", "p", "c", "s", "m"];
+                                                        let next_sym = candidates
+                                                            .iter()
+                                                            .find(|&&c| {
+                                                                c != line.default_symbol
+                                                                    && !line
+                                                                        .symbol_sounds
+                                                                        .iter()
+                                                                        .any(|(s, _)| s == c)
+                                                            })
+                                                            .copied()
+                                                            .unwrap_or("a");
+                                                        let default_override_sound = match next_sym
+                                                        {
+                                                            "b" => 53, // Ride Bell
+                                                            "r" => 37, // Side Stick / Rim
+                                                            "o" => 46, // Open Hi-Hat
+                                                            "p" => 44, // Pedal Hi-Hat
+                                                            _ => line.sound,
+                                                        };
+                                                        line.symbol_sounds.push((
+                                                            next_sym.to_string(),
+                                                            default_override_sound,
+                                                        ));
+                                                    }
+                                                });
+                                            });
+                                    }
+                                });
+
+                            if let Some(rem_idx) = line_to_remove {
+                                self.instrument_setup_percussion_lines.remove(rem_idx);
+                            }
+
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                if ui.button("Accept").clicked() {
+                                    apply_action = Some(DialogAction::ApplyPercussionSetup {
+                                        is_new_tab: *is_new_tab,
+                                    });
+                                    close_dialog = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    self.is_adding_instrument_in_dialog = false;
+                                    close_dialog = true;
+                                }
+                            });
+                            return;
+                        }
 
                         // ── Preset Selector & Save as Preset Row ─────────────────────
                         let current_probe = crate::presets::InstrumentPreset::from_dialog_state(
@@ -1967,6 +2317,20 @@ impl MnxEditorApp {
                 }
                 DialogAction::RemoveInstrument { part_idx } => {
                     self.remove_instrument_part(part_idx);
+                }
+                DialogAction::ApplyPercussionSetup { is_new_tab } => {
+                    let lines = self.instrument_setup_percussion_lines.clone();
+                    let name = self.instrument_setup_name_buf.trim().to_string();
+                    if is_new_tab {
+                        self.start_new_percussion_tab(lines);
+                    } else if self.is_adding_instrument_in_dialog {
+                        self.add_new_percussion_part(name, lines);
+                    } else {
+                        let p_idx = self.selected_part_idx;
+                        self.apply_percussion_setup_to_part(p_idx, name, lines);
+                    }
+                    self.is_adding_instrument_in_dialog = false;
+                    self.active_dialog = ActiveDialog::None;
                 }
                 DialogAction::ApplyInstrumentSetup {
                     num_strings,

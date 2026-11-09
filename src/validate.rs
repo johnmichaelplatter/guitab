@@ -99,7 +99,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                     && part.measures[m_idx + 1..].iter().all(|m| {
                         m.sequences.iter().all(|s| {
                             let evs = s.flattened_events();
-                            evs.len() == 1 && evs[0].rest.is_some() && evs[0].notes.is_empty()
+                            evs.len() == 1 && evs[0].rest.is_some() && !evs[0].has_any_notes()
                         })
                     }));
             let time_sig = get_time_signature_for_measure(doc, m_idx);
@@ -148,6 +148,37 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                 // Note-level geometry and concurrency checks
                 for (e_idx, event) in seq.flattened_events().into_iter().enumerate() {
                     let mut active_strings = HashSet::new();
+
+                    if !event.kit_notes.is_empty() {
+                        let mut active_lines = HashSet::new();
+                        for kn in &event.kit_notes {
+                            if let Some(line) = part.kit_line_for_component(&kn.kit_component) {
+                                if !active_lines.insert(line) {
+                                    errors.push(ValidationError {
+                                        measure_idx: m_idx + 1,
+                                        event_idx: e_idx,
+                                        string: line,
+                                        fret: 0,
+                                        message: format!(
+                                            "Concurrency violation: Percussion line {} ('{}') is struck multiple times in the same event.",
+                                            line, kn.kit_component
+                                        ),
+                                    });
+                                }
+                            } else {
+                                errors.push(ValidationError {
+                                    measure_idx: m_idx + 1,
+                                    event_idx: e_idx,
+                                    string: 1,
+                                    fret: 0,
+                                    message: format!(
+                                        "KitNote references unknown kitComponent '{}'.",
+                                        kn.kit_component
+                                    ),
+                                });
+                            }
+                        }
+                    }
 
                     for note in &event.notes {
                         if let (Some(string), Some(fret)) = (note.string, note.fret) {

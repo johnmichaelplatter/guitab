@@ -1201,6 +1201,7 @@ mod tests {
             name: Some("Custom JI Guitar".to_string()),
             short_name: None,
             comment: None,
+            kit: None,
             ext: PartExt {
                 micro_fret_divisions: Some(12),
                 fret_step_multiplier: Some(1),
@@ -1295,6 +1296,7 @@ mod tests {
             name: Some("12-EDO Custom Guitar".to_string()),
             short_name: None,
             comment: None,
+            kit: None,
             ext: PartExt {
                 micro_fret_divisions: None,
                 fret_step_multiplier: None,
@@ -1345,6 +1347,7 @@ mod tests {
             name: Some("Kite Guitar".to_string()),
             short_name: None,
             comment: None,
+            kit: None,
             ext: PartExt {
                 micro_fret_divisions: None,
                 fret_step_multiplier: None,

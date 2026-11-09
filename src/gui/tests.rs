@@ -4517,6 +4517,8 @@ parts:
                 pitch_bend_range: 48,
                 string_to_channel: map0,
                 is_mpe: true,
+                is_percussion: false,
+                percussion_channel: midly::num::u4::from(9),
             },
             crate::midi::PartMidiConfig {
                 part_idx: 1,
@@ -4524,6 +4526,8 @@ parts:
                 pitch_bend_range: 48,
                 string_to_channel: map1,
                 is_mpe: true,
+                is_percussion: false,
+                percussion_channel: midly::num::u4::from(9),
             },
         ];
 
@@ -6537,6 +6541,243 @@ parts:
         });
         out.textures_delta.clear();
         assert!(app.show_string_channels_popup);
+    }
+
+    #[test]
+    fn test_phase_3b_percussion_setup_mnx_roundtrip_and_keyboard_entry() {
+        let mut app = MnxEditorApp::default();
+        let mut lines = crate::presets::standard_6_line_kit_configs();
+        // Add user-requested custom letter symbol overrides:
+        // 'b' on Snare (line 4, index 3) -> 53 (Ride Bell)
+        // 'r' on High Tom (line 3, index 2) -> 37 (Side Stick / Rim)
+        lines[3].symbol_sounds.push(("b".to_string(), 53));
+        lines[2].symbol_sounds.push(("r".to_string(), 37));
+
+        app.instrument_setup_name_buf = "Standard Kit".to_string();
+        app.start_new_percussion_tab(lines);
+
+        let doc = app.parsed_mnx.as_ref().expect("parsed mnx");
+        assert_eq!(doc.parts.len(), 1);
+        assert!(doc.parts[0].is_percussion());
+        assert_eq!(doc.parts[0].num_strings(), 6);
+        assert_eq!(doc.parts[0].percussion_midi_channel(), 10);
+
+        // Enter Edit mode on Event 0, Line 4 (Snare Drum)
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.editing_string = Some(4);
+
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+
+        // Press '0' -> commits default symbol ('o' on Snare)
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::Text("0".to_string()));
+        let mut out = ctx.run_ui(raw, |ui| {
+            let ranges = app.cached_event_ranges.clone();
+            let total = ranges.len();
+            app.handle_keyboard_input(ui, false, &ranges, total);
+        });
+        out.textures_delta.clear();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev0.kit_notes.len(), 1);
+        assert_eq!(ev0.kit_notes[0].kit_component, "snare");
+        assert_eq!(ev0.kit_notes[0].ext.symbol, None);
+        assert_eq!(
+            crate::render::format_kit_note_symbol(&ev0.kit_notes[0], "o"),
+            "o"
+        );
+
+        // Press 'b' on Snare -> commits custom symbol 'b' (mapped to Ride Bell 53)
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::Text("b".to_string()));
+        let mut out = ctx.run_ui(raw, |ui| {
+            let ranges = app.cached_event_ranges.clone();
+            let total = ranges.len();
+            app.handle_keyboard_input(ui, false, &ranges, total);
+        });
+        out.textures_delta.clear();
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev0.kit_notes[0].ext.symbol.as_deref(), Some("b"));
+        let snare_comp = doc.parts[0].kit.as_ref().unwrap().get("snare").unwrap();
+        assert_eq!(snare_comp.resolve_midi_sound(Some("b")), 53);
+
+        // Move to Line 3 (High Tom) and press 'r' -> commits custom symbol 'r' (37) instead of rest!
+        app.editing_string = Some(3);
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::Key {
+            key: egui::Key::R,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        raw.events.push(egui::Event::Text("r".to_string()));
+        let mut out = ctx.run_ui(raw, |ui| {
+            let ranges = app.cached_event_ranges.clone();
+            let total = ranges.len();
+            app.handle_keyboard_input(ui, false, &ranges, total);
+        });
+        out.textures_delta.clear();
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert!(ev0.rest.is_none(), "pressing 'r' on a line with 'r' override should enter 'r' hit, not rest");
+        let tom_kn = ev0
+            .kit_notes
+            .iter()
+            .find(|kn| kn.kit_component == "high-tom")
+            .expect("high-tom hit");
+        assert_eq!(tom_kn.ext.symbol.as_deref(), Some("r"));
+        let tom_comp = doc.parts[0].kit.as_ref().unwrap().get("high-tom").unwrap();
+        assert_eq!(tom_comp.resolve_midi_sound(Some("r")), 37);
+
+        // Move to Line 2 (Hi-Hat) and press 'g' -> ghost note displayed as "(x)"
+        app.editing_string = Some(2);
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::Text("g".to_string()));
+        let mut out = ctx.run_ui(raw, |ui| {
+            let ranges = app.cached_event_ranges.clone();
+            let total = ranges.len();
+            app.handle_keyboard_input(ui, false, &ranges, total);
+        });
+        out.textures_delta.clear();
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        let hh_kn = ev0
+            .kit_notes
+            .iter()
+            .find(|kn| kn.kit_component == "hi-hat")
+            .expect("hi-hat hit");
+        assert_eq!(
+            crate::render::format_kit_note_symbol(hh_kn, "x"),
+            "(x)"
+        );
+
+        // Validate MNX document and YAML/JSON roundtrip
+        let errors = crate::validate::validate_mnx(doc);
+        assert!(errors.is_empty(), "Unexpected validation errors: {:?}", errors);
+
+        let json_str = crate::mnx::export_yaml_to_mnx_json(&app.yaml_text).expect("export json");
+        let roundtrip_doc: crate::mnx::MnxDocument =
+            serde_saphyr::from_str(&json_str).expect("parse exported json");
+        assert!(roundtrip_doc.parts[0].is_percussion());
+        assert_eq!(
+            roundtrip_doc.parts[0]
+                .kit
+                .as_ref()
+                .unwrap()
+                .get("snare")
+                .unwrap()
+                .resolve_midi_sound(Some("b")),
+            53
+        );
+    }
+
+    #[test]
+    fn test_phase_3b_percussion_midi_rendering_and_channel_10() {
+        let mut app = MnxEditorApp::default();
+        let mut lines = crate::presets::standard_6_line_kit_configs();
+        lines[3].symbol_sounds.push(("b".to_string(), 53)); // Snare 'b' -> 53
+        app.instrument_setup_name_buf = "Studio Kit".to_string();
+        app.start_new_percussion_tab(lines);
+
+        // Event 0: Kick ('o' -> 36) + Hi-Hat ('o' alt -> 46 Open Hi-Hat) + Snare ('b' custom -> 53)
+        app.selected_event_idx = Some(0);
+        app.is_editing_fret = true;
+        app.editing_string = Some(6); // Kick
+        app.commit_percussion_hit(Some("o"));
+        app.editing_string = Some(2); // Hi-Hat
+        app.commit_percussion_hit(Some("o")); // Open Hi-Hat (46)
+        app.editing_string = Some(4); // Snare
+        app.commit_percussion_hit(Some("b")); // Custom symbol 'b' -> 53
+
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let opts = crate::midi::MidiOptions {
+            default_bpm: 120.0,
+            ppq: midly::num::u15::from(480),
+            pitch_bend_range: 48,
+            string_to_channel: std::collections::HashMap::new(),
+            start_event_idx: None,
+            is_mpe: true, // Even if is_mpe is true, percussion must NOT emit MPE RPN or PitchBend
+            is_percussion: true,
+            percussion_channel: midly::num::u4::from(9), // Channel 10
+        };
+
+        let (track, _ppq) = crate::midi::generate_playback_track(doc, opts);
+
+        let mut note_ons = Vec::new();
+        let mut has_pitch_bend = false;
+        for ev in &track {
+            if let crate::midi::PlaybackEventKind::Midi { channel, message } = &ev.kind {
+                let ch = channel.as_int();
+                match message {
+                    midly::MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
+                        note_ons.push((ch, key.as_int(), vel.as_int()));
+                    }
+                    midly::MidiMessage::PitchBend { .. } => {
+                        has_pitch_bend = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(!has_pitch_bend, "Percussion track must not emit pitch bend messages");
+        assert_eq!(note_ons.len(), 3);
+        // All 3 notes should be on channel 9 (0-indexed MIDI Channel 10)
+        for (ch, _, _) in &note_ons {
+            assert_eq!(*ch, 9);
+        }
+        let mut pitches: Vec<u8> = note_ons.iter().map(|(_, p, _)| *p).collect();
+        pitches.sort();
+        assert_eq!(pitches, vec![36, 46, 53]);
+    }
+
+    #[test]
+    fn test_phase_3b_percussion_ui_shift_lines_and_pdf_export() {
+        let mut app = MnxEditorApp::default();
+        let lines = crate::presets::standard_6_line_kit_configs();
+        app.instrument_setup_name_buf = "Drum Kit".to_string();
+        app.start_new_percussion_tab(lines);
+
+        // Place a hit on line 4 (Snare)
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(4);
+        app.commit_percussion_hit(Some("o"));
+        app.select_note_on_string(0, 4);
+
+        // Shift up to line 3 (High Tom) via action_shift_selected_strings(-1)
+        app.action_shift_selected_strings(-1);
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let ev0 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev0.kit_notes.len(), 1);
+        assert_eq!(ev0.kit_notes[0].kit_component, "high-tom");
+
+        // Render InstrumentSetup dialog in Percussion mode and MIDI/String Channels popup
+        let ctx = egui::Context::default();
+        crate::setup_custom_fonts(&ctx);
+        app.open_instrument_setup_dialog(false);
+        assert!(app.instrument_setup_is_percussion);
+        app.show_string_channels_popup = true;
+
+        let event_ranges = app.cached_event_ranges.clone();
+        let total_events = event_ranges.len();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.render_top_panel(ui, &event_ranges, total_events);
+            app.render_dialogs(ui.ctx());
+        });
+        out.textures_delta.clear();
+
+        // Verify PDF export succeeds on percussion tab
+        let doc = app.parsed_mnx.as_ref().unwrap();
+        let pages = crate::layout::compute_score_layout(doc, 0.0);
+        let pdf_bytes = crate::pdf_export::generate_score_pdf_bytes(doc, &pages)
+            .expect("PDF generation for percussion score");
+        assert!(pdf_bytes.starts_with(b"%PDF"));
     }
 }
 

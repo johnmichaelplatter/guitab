@@ -29,9 +29,9 @@ impl MnxEditorApp {
                 let ev = evs[rel_idx];
                 let is_last_in_measure = rel_idx + 1 == m_len;
                 let is_last_measure = m_idx + 1 == num_measures;
-                let is_blank = ev.notes.is_empty() && ev.rest.is_none();
+                let is_blank = ev.is_blank();
                 let is_single_default_rest =
-                    m_len == 1 && ev.rest.is_some() && ev.notes.is_empty();
+                    m_len == 1 && ev.rest.is_some() && !ev.has_any_notes();
                 let final_dur = ev.duration.clone();
                 let dur_beats = validate::duration_to_quarter_beats(&final_dur);
                 let time_sig = validate::get_time_signature_for_measure(doc, m_idx);
@@ -56,15 +56,27 @@ impl MnxEditorApp {
     pub(crate) fn select_note_on_string(&mut self, e_idx: usize, string_num: u8) {
         self.selected_note_idx_in_event = None;
         if let Some(part) = self.active_part() {
+            let is_perc = part.is_percussion();
             let mut cur_e = 0;
             'find_n: for m in &part.measures {
                 for seq in &m.sequences {
                     for ev in seq.flattened_events() {
                         if cur_e == e_idx {
-                            for (n_i, n) in ev.notes.iter().enumerate() {
-                                if n.string == Some(string_num) {
-                                    self.selected_note_idx_in_event = Some(n_i);
-                                    break;
+                            if is_perc {
+                                for (n_i, kn) in ev.kit_notes.iter().enumerate() {
+                                    if part.kit_line_for_component(&kn.kit_component)
+                                        == Some(string_num)
+                                    {
+                                        self.selected_note_idx_in_event = Some(n_i);
+                                        break;
+                                    }
+                                }
+                            } else {
+                                for (n_i, n) in ev.notes.iter().enumerate() {
+                                    if n.string == Some(string_num) {
+                                        self.selected_note_idx_in_event = Some(n_i);
+                                        break;
+                                    }
                                 }
                             }
                             break 'find_n;
@@ -76,7 +88,55 @@ impl MnxEditorApp {
         }
     }
 
+    pub(crate) fn commit_percussion_hit(&mut self, symbol: Option<&str>) -> bool {
+        let p_idx = self.selected_part_idx;
+        let Some(e_idx) = self.selected_event_idx else {
+            return false;
+        };
+        let Some(cur_str) = self.editing_string else {
+            return false;
+        };
+        let res = self.mutate_doc(|doc| {
+            if crate::yaml_editor::set_or_add_kit_note_on_line_in_doc_part(
+                doc,
+                p_idx,
+                e_idx,
+                cur_str,
+                symbol.unwrap_or(""),
+            ) {
+                Some(())
+            } else {
+                None
+            }
+        });
+        if res.is_some() {
+            self.editing_fret_buf.clear();
+            self.select_note_on_string(e_idx, cur_str);
+            self.preview_selected_sound();
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn commit_fret_edit(&mut self) -> bool {
+        let is_perc = self
+            .active_part()
+            .map(|p| p.is_percussion())
+            .unwrap_or(false);
+        if is_perc {
+            let trimmed = self.editing_fret_buf.trim().to_string();
+            if trimmed.is_empty() {
+                return false;
+            }
+            let sym = if trimmed == "0" {
+                None
+            } else {
+                Some(trimmed.as_str())
+            };
+            return self.commit_percussion_hit(sym);
+        }
+
         let mut committed = false;
         let p_idx = self.selected_part_idx;
         if let Some(e_idx) = self.selected_event_idx {
@@ -158,7 +218,7 @@ impl MnxEditorApp {
             .flat_map(|s| s.flattened_events())
             .collect::<Vec<_>>();
         let cur_ev = flat_events.get(e_idx)?;
-        if cur_ev.notes.is_empty() && cur_ev.rest.is_none() {
+        if cur_ev.is_blank() {
             return None;
         }
 
@@ -384,11 +444,18 @@ impl MnxEditorApp {
 
     pub(crate) fn get_string_for_note(&self, e_idx: usize, note_idx: usize) -> Option<u8> {
         let part = self.active_part()?;
+        let is_perc = part.is_percussion();
         let mut cur_e = 0;
         for m in &part.measures {
             for seq in &m.sequences {
                 for ev in seq.flattened_events() {
                     if cur_e == e_idx {
+                        if is_perc {
+                            return ev
+                                .kit_notes
+                                .get(note_idx)
+                                .and_then(|kn| part.kit_line_for_component(&kn.kit_component));
+                        }
                         return ev.notes.get(note_idx).and_then(|n| n.string);
                     }
                     cur_e += 1;
@@ -400,11 +467,18 @@ impl MnxEditorApp {
 
     pub(crate) fn find_primary_string_for_event(&self, e_idx: usize) -> Option<u8> {
         let part = self.active_part()?;
+        let is_perc = part.is_percussion();
         let mut cur_e = 0;
         for m in &part.measures {
             for seq in &m.sequences {
                 for ev in seq.flattened_events() {
                     if cur_e == e_idx {
+                        if is_perc {
+                            return ev
+                                .kit_notes
+                                .first()
+                                .and_then(|kn| part.kit_line_for_component(&kn.kit_component));
+                        }
                         return ev.notes.first().and_then(|n| n.string);
                     }
                     cur_e += 1;
@@ -416,11 +490,18 @@ impl MnxEditorApp {
 
     pub(crate) fn event_has_note_on_string(&self, e_idx: usize, string_num: u8) -> bool {
         if let Some(part) = self.active_part() {
+            let is_perc = part.is_percussion();
             let mut cur_e = 0;
             for m in &part.measures {
                 for seq in &m.sequences {
                     for ev in seq.flattened_events() {
                         if cur_e == e_idx {
+                            if is_perc {
+                                return ev.kit_notes.iter().any(|kn| {
+                                    part.kit_line_for_component(&kn.kit_component)
+                                        == Some(string_num)
+                                });
+                            }
                             return ev.notes.iter().any(|n| n.string == Some(string_num));
                         }
                         cur_e += 1;
@@ -689,9 +770,26 @@ impl MnxEditorApp {
                 .active_part()
                 .map(|p| p.num_strings())
                 .unwrap_or(6) as u8;
+            let is_perc = self
+                .active_part()
+                .map(|p| p.is_percussion())
+                .unwrap_or(false);
             let p_idx = self.selected_part_idx;
 
-            if r_pressed && self.selected_event_idx.is_some() {
+            // Check if 'r' is mapped as a custom symbol override on the active percussion line
+            let r_is_line_symbol = if is_perc {
+                if let (Some(part), Some(cur_str)) = (self.active_part(), self.editing_string) {
+                    part.kit_component_for_line(cur_str)
+                        .map(|(_, comp)| comp.ext.symbol_sounds.contains_key("r"))
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if r_pressed && !r_is_line_symbol && self.selected_event_idx.is_some() {
                 self.convert_selected_to_rest();
             } else if esc_pressed {
                 self.is_editing_fret = false;
@@ -853,16 +951,41 @@ impl MnxEditorApp {
                 }
             } else {
                 let events = ui.input(|i| i.events.clone());
-                for ev in events {
-                    if let egui::Event::Text(t) = ev {
-                        for c in t.chars() {
-                            if (c.is_ascii_digit()
-                                || c == 'x'
-                                || c == 'X'
-                                || (c == '.' && !self.editing_fret_buf.contains('.')))
-                                && self.editing_fret_buf.len() < 4
-                            {
-                                self.editing_fret_buf.push(c);
+                if is_perc {
+                    let space_pressed = ui.input(|i| i.key_pressed(egui::Key::Space));
+                    let mut hit_symbol: Option<Option<String>> = None;
+                    if space_pressed {
+                        hit_symbol = Some(None); // Default symbol for this line
+                    }
+                    for ev in events {
+                        if let egui::Event::Text(t) = ev {
+                            for c in t.chars() {
+                                if c == '0' || c == ' ' {
+                                    hit_symbol = Some(None);
+                                } else if c.is_ascii_alphabetic() {
+                                    let lower = c.to_ascii_lowercase().to_string();
+                                    if lower != "r" || r_is_line_symbol {
+                                        hit_symbol = Some(Some(lower));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(sym_opt) = hit_symbol {
+                        self.commit_percussion_hit(sym_opt.as_deref());
+                    }
+                } else {
+                    for ev in events {
+                        if let egui::Event::Text(t) = ev {
+                            for c in t.chars() {
+                                if (c.is_ascii_digit()
+                                    || c == 'x'
+                                    || c == 'X'
+                                    || (c == '.' && !self.editing_fret_buf.contains('.')))
+                                    && self.editing_fret_buf.len() < 4
+                                {
+                                    self.editing_fret_buf.push(c);
+                                }
                             }
                         }
                     }
@@ -1126,8 +1249,20 @@ impl MnxEditorApp {
                             for ev in seq.flattened_events() {
                                 if cur_e == e_idx {
                                     if let Some(n_idx) = self.selected_note_idx_in_event {
-                                        if let Some(n) = ev.notes.get(n_idx) {
+                                        if part.is_percussion() {
+                                            if let Some(kn) = ev.kit_notes.get(n_idx) {
+                                                if let Some(s) = part.kit_line_for_component(&kn.kit_component) {
+                                                    initial_string = s;
+                                                }
+                                            }
+                                        } else if let Some(n) = ev.notes.get(n_idx) {
                                             if let Some(s) = n.string {
+                                                initial_string = s;
+                                            }
+                                        }
+                                    } else if part.is_percussion() {
+                                        if let Some(first_kn) = ev.kit_notes.first() {
+                                            if let Some(s) = part.kit_line_for_component(&first_kn.kit_component) {
                                                 initial_string = s;
                                             }
                                         }
@@ -1345,10 +1480,17 @@ impl MnxEditorApp {
                                                 for ev in seq.flattened_events() {
                                                     if cur_e == e_idx {
                                                         note_order.sort_by_key(|&n_i| {
-                                                            ev.notes
-                                                                .get(n_i)
-                                                                .and_then(|n| n.string)
-                                                                .unwrap_or(255)
+                                                            if part.is_percussion() {
+                                                                ev.kit_notes
+                                                                    .get(n_i)
+                                                                    .and_then(|kn| part.kit_line_for_component(&kn.kit_component))
+                                                                    .unwrap_or(255)
+                                                            } else {
+                                                                ev.notes
+                                                                    .get(n_i)
+                                                                    .and_then(|n| n.string)
+                                                                    .unwrap_or(255)
+                                                            }
                                                         });
                                                         break 'find_ev;
                                                     }
@@ -1502,7 +1644,7 @@ impl MnxEditorApp {
                 .flat_map(|s| s.flattened_events())
                 .collect::<Vec<_>>();
             let cur_ev = flat_events.get(e_idx)?;
-            if cur_ev.notes.is_empty() && cur_ev.rest.is_none() {
+            if cur_ev.is_blank() {
                 return None; // Still blank, don't advance
             }
             true

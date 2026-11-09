@@ -107,6 +107,9 @@ pub struct MnxEditorApp {
     pub(crate) midi_status_msg: Option<String>, // Status or error message from MIDI playback
     pub active_dialog: ActiveDialog, // Active modal dialog
     pub(crate) instrument_setup_name_buf: String, // Name buffer for InstrumentSetup dialog
+    pub(crate) instrument_setup_is_percussion: bool, // True when configuring a drum/percussion part
+    pub(crate) instrument_setup_percussion_lines: Vec<crate::presets::PercussionLineConfig>, // Per-line config in InstrumentSetup
+    pub(crate) instrument_setup_new_sym_bufs: Vec<String>, // Temp text buffers for adding custom symbol overrides
     pub(crate) is_adding_instrument_in_dialog: bool, // True when InstrumentSetup is adding a new part
     pub(crate) show_string_channels_popup: bool, // Toggle state for String Channels dropdown panel
     pub(crate) show_grid_controllers_popup: bool, // Toggle state for Grid Controllers dropdown panel
@@ -383,6 +386,7 @@ impl MnxEditorApp {
                 name: Some("Guitar".to_string()),
                 short_name: None,
                 comment: None,
+                kit: None,
                 ext: crate::mnx::PartExt {
                     micro_fret_divisions: Some(12),
                     fret_step_multiplier: Some(1),
@@ -406,6 +410,7 @@ impl MnxEditorApp {
                                 multiple: None,
                             },
                             notes: Vec::new(),
+                            kit_notes: Vec::new(),
                             rest: Some(crate::mnx::Rest {}),
                             slurs: None,
                             lyrics: None,
@@ -475,6 +480,9 @@ impl MnxEditorApp {
                 ActiveDialog::StartupPrompt
             },
             instrument_setup_name_buf: String::from("Guitar"),
+            instrument_setup_is_percussion: false,
+            instrument_setup_percussion_lines: crate::presets::standard_6_line_kit_configs(),
+            instrument_setup_new_sym_bufs: vec![String::new(); 15],
             is_adding_instrument_in_dialog: false,
             show_string_channels_popup: false,
             show_grid_controllers_popup: false,
@@ -793,6 +801,23 @@ impl MnxEditorApp {
                     continue;
                 };
 
+                if part.is_percussion() {
+                    if current_part_only && p_idx != self.selected_part_idx {
+                        continue;
+                    }
+                    let perc_ch = part.percussion_midi_channel().saturating_sub(1).min(15);
+                    part_configs.push(crate::midi::PartMidiConfig {
+                        part_idx: p_idx,
+                        port_index: port_idx,
+                        pitch_bend_range: 2,
+                        string_to_channel: std::collections::HashMap::new(),
+                        is_mpe: false,
+                        is_percussion: true,
+                        percussion_channel: midly::num::u4::from(perc_ch),
+                    });
+                    continue;
+                }
+
                 let num_strings = part.num_strings() as u8;
                 let base_offset = *port_channel_cursor.entry(port_idx).or_insert(0);
                 let mut string_to_channel = std::collections::HashMap::new();
@@ -833,6 +858,8 @@ impl MnxEditorApp {
                     pitch_bend_range: pb_range,
                     string_to_channel,
                     is_mpe,
+                    is_percussion: false,
+                    percussion_channel: midly::num::u4::from(9),
                 });
             }
 
@@ -1130,6 +1157,58 @@ impl MnxEditorApp {
             Some(ev) => ev,
             None => return,
         };
+
+        if part.is_percussion() {
+            if event.kit_notes.is_empty() {
+                self.midi_player.stop();
+                return;
+            }
+            let perc_ch = midly::num::u4::from(part.percussion_midi_channel().saturating_sub(1).min(15));
+            let target_kns: Vec<&crate::mnx::KitNote> =
+                if let Some(n_idx) = self.selected_note_idx_in_event {
+                    if let Some(kn) = event.kit_notes.get(n_idx) {
+                        vec![kn]
+                    } else {
+                        event.kit_notes.iter().collect()
+                    }
+                } else {
+                    event.kit_notes.iter().collect()
+                };
+            let mut notes_to_play = Vec::new();
+            for kn in target_kns {
+                let comp = part.kit.as_ref().and_then(|k| k.get(&kn.kit_component));
+                let midi_note = kn
+                    .ext
+                    .sound_override
+                    .unwrap_or_else(|| {
+                        comp.map(|c| c.resolve_midi_sound(kn.ext.symbol.as_deref()))
+                            .unwrap_or(38)
+                    })
+                    .min(127);
+                let vel = if kn.ext.symbol.as_deref() == Some("g") {
+                    50
+                } else {
+                    100
+                };
+                notes_to_play.push(crate::midi::NotePreview {
+                    channel: perc_ch,
+                    key: midly::num::u7::from(midi_note),
+                    pitch_bend: None,
+                    velocity: midly::num::u7::from(vel),
+                });
+            }
+            if !notes_to_play.is_empty() {
+                let _ = self.midi_player.play_preview(
+                    notes_to_play,
+                    port_idx,
+                    250,
+                    false,
+                    1,
+                    2,
+                );
+            }
+            return;
+        }
 
         if event.notes.is_empty() {
             self.midi_player.stop();
@@ -1595,6 +1674,13 @@ impl MnxEditorApp {
         self.instrument_setup_name_buf = part
             .map(|p| p.display_name(part_idx))
             .unwrap_or_else(|| "Guitar".to_string());
+        self.instrument_setup_is_percussion = part.map(|p| p.is_percussion()).unwrap_or(false);
+        self.instrument_setup_percussion_lines = part
+            .and_then(|p| p.kit.as_ref())
+            .map(crate::presets::kit_to_line_configs)
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(crate::presets::standard_6_line_kit_configs);
+        self.instrument_setup_new_sym_bufs = vec![String::new(); 15];
         let num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
         let edo = part.map(|p| p.edo()).unwrap_or(12) as u8;
         let step_multiplier = part.map(|p| p.step_multiplier()).unwrap_or(1) as u8;
@@ -1704,6 +1790,9 @@ impl MnxEditorApp {
             .map(|d| d.parts.len() + 1)
             .unwrap_or(2);
         self.instrument_setup_name_buf = format!("Guitar {}", next_num);
+        self.instrument_setup_is_percussion = false;
+        self.instrument_setup_percussion_lines = crate::presets::standard_6_line_kit_configs();
+        self.instrument_setup_new_sym_bufs = vec![String::new(); 15];
 
         let mut tunings_text = Vec::new();
         let mut tunings_name = Vec::new();
@@ -1815,6 +1904,7 @@ impl MnxEditorApp {
                 name: Some(part_name),
                 short_name: None,
                 comment: None,
+                kit: None,
                 ext: crate::mnx::PartExt {
                     micro_fret_divisions: Some(edo),
                     fret_step_multiplier: Some(step_multiplier),
@@ -1913,6 +2003,9 @@ impl MnxEditorApp {
     pub fn prompt_new_tab_instrument_setup(&mut self) {
         self.is_adding_instrument_in_dialog = false;
         self.instrument_setup_name_buf = "Guitar".to_string();
+        self.instrument_setup_is_percussion = false;
+        self.instrument_setup_percussion_lines = crate::presets::standard_6_line_kit_configs();
+        self.instrument_setup_new_sym_bufs = vec![String::new(); 15];
         let mut tunings_text = Vec::new();
         let mut tunings_name = Vec::new();
         let mut tunings_octave = Vec::new();
@@ -1986,6 +2079,7 @@ impl MnxEditorApp {
                 name: Some(part_name),
                 short_name: None,
                 comment: None,
+                kit: None,
                 ext: crate::mnx::PartExt {
                     micro_fret_divisions: Some(edo),
                     fret_step_multiplier: Some(step_multiplier),
@@ -2014,6 +2108,7 @@ impl MnxEditorApp {
                                 multiple: None,
                             },
                             notes: Vec::new(),
+                            kit_notes: Vec::new(),
                             rest: Some(crate::mnx::Rest {}),
                             slurs: None,
                             lyrics: None,
@@ -2044,6 +2139,211 @@ impl MnxEditorApp {
         self.editing_fret_buf.clear();
         self.editing_string = None;
         self.sync_from_parsed_doc(doc);
+    }
+
+    pub fn start_new_percussion_tab(
+        &mut self,
+        lines: Vec<crate::presets::PercussionLineConfig>,
+    ) {
+        let part_name = if self.instrument_setup_name_buf.trim().is_empty()
+            || self.instrument_setup_name_buf.trim() == "Guitar"
+        {
+            "Drum Kit".to_string()
+        } else {
+            self.instrument_setup_name_buf.trim().to_string()
+        };
+        let kit = crate::presets::line_configs_to_kit(&lines);
+        let doc = MnxDocument {
+            mnx: crate::mnx::MnxMeta { version: 1 },
+            comment: None,
+            ext: crate::mnx::DocumentExt::default(),
+            global: crate::mnx::Global {
+                measures: vec![crate::mnx::GlobalMeasure {
+                    time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            parts: vec![crate::mnx::Part {
+                id: None,
+                name: Some(part_name),
+                short_name: None,
+                comment: None,
+                kit: Some(kit),
+                ext: crate::mnx::PartExt {
+                    midi_channel: Some(10),
+                    ..Default::default()
+                },
+                measures: vec![crate::mnx::Measure {
+                    comment: None,
+                    beams: None,
+                    arpeggios: None,
+                    sequences: vec![crate::mnx::Sequence {
+                        comment: None,
+                        content: vec![crate::mnx::SequenceItem::Event(crate::mnx::Event {
+                            markings: None,
+                            id: None,
+                            duration: crate::mnx::Duration {
+                                base: "quarter".to_string(),
+                                dots: None,
+                                multiple: None,
+                            },
+                            notes: Vec::new(),
+                            kit_notes: Vec::new(),
+                            rest: Some(crate::mnx::Rest {}),
+                            slurs: None,
+                            lyrics: None,
+                            comment: None,
+                            ext: crate::mnx::EventExt::default(),
+                        })],
+                    }],
+                }],
+            }],
+        };
+
+        let new_yaml = serde_saphyr::to_string(&doc).unwrap_or_default();
+
+        self.update_yaml(new_yaml.clone());
+        self.saved_yaml = new_yaml;
+        self.current_file_path = None;
+        self.selected_part_idx = 0;
+        self.string_channel_dialog_part_idx = 0;
+        self.part_pitch_bend_ranges.clear();
+        self.part_mpe_modes.clear();
+        self.part_midi_ports.clear();
+        self.part_string_channel_maps.clear();
+        self.layout_view_tab = LayoutViewTab::Ensemble;
+        self.ensemble_visible_parts = vec![true];
+        self.selected_event_idx = Some(0);
+        self.selected_note_idx_in_event = None;
+        self.is_editing_fret = false;
+        self.editing_fret_buf.clear();
+        self.editing_string = None;
+        self.sync_from_parsed_doc(doc);
+    }
+
+    pub fn add_new_percussion_part(
+        &mut self,
+        name: String,
+        lines: Vec<crate::presets::PercussionLineConfig>,
+    ) {
+        let trimmed_name = name.trim();
+        let part_name = if trimmed_name.is_empty() || trimmed_name.starts_with("Guitar ") {
+            "Drum Kit".to_string()
+        } else {
+            trimmed_name.to_string()
+        };
+        let kit = crate::presets::line_configs_to_kit(&lines);
+
+        let mut new_part_idx = 0;
+        self.mutate_doc(|doc| {
+            if doc.global.measures.is_empty() {
+                doc.global.measures.push(crate::mnx::GlobalMeasure {
+                    time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                    ..Default::default()
+                });
+            }
+            let num_measures = doc.global.measures.len();
+            let mut measures = Vec::with_capacity(num_measures);
+            for m_idx in 0..num_measures {
+                let ts = crate::render::get_time_signature_for_measure(Some(&doc.global), m_idx);
+                let expected_beats = (ts.count as f64) * (4.0 / (ts.unit as f64));
+                let content = crate::yaml_editor::make_rest_items_for_beats(expected_beats);
+                measures.push(crate::mnx::Measure {
+                    comment: None,
+                    beams: None,
+                    arpeggios: None,
+                    sequences: vec![crate::mnx::Sequence {
+                        comment: None,
+                        content,
+                    }],
+                });
+            }
+
+            let new_part = crate::mnx::Part {
+                id: None,
+                name: Some(part_name),
+                short_name: None,
+                comment: None,
+                kit: Some(kit),
+                ext: crate::mnx::PartExt {
+                    midi_channel: Some(10),
+                    ..Default::default()
+                },
+                measures,
+            };
+
+            doc.parts.push(new_part);
+            new_part_idx = doc.parts.len() - 1;
+            Some(())
+        });
+
+        self.is_adding_instrument_in_dialog = false;
+        self.select_part(new_part_idx);
+        self.selected_event_idx = Some(0);
+    }
+
+    pub fn apply_percussion_setup_to_part(
+        &mut self,
+        part_idx: usize,
+        name: String,
+        lines: Vec<crate::presets::PercussionLineConfig>,
+    ) {
+        let kit = crate::presets::line_configs_to_kit(&lines);
+        self.mutate_doc(|doc| {
+            let part = doc.parts.get_mut(part_idx)?;
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                part.name = Some(trimmed.to_string());
+            }
+            part.kit = Some(kit.clone());
+            part.ext.tuning = None;
+            part.ext.micro_fret_divisions = None;
+            part.ext.fret_step_multiplier = None;
+            part.ext.custom_frets = None;
+            if part.ext.midi_channel.is_none() {
+                part.ext.midi_channel = Some(10);
+            }
+            // Remove any kit_notes referencing deleted component IDs
+            for m in &mut part.measures {
+                for seq in &mut m.sequences {
+                    for item in &mut seq.content {
+                        match item {
+                            crate::mnx::SequenceItem::Event(ev) => {
+                                ev.notes.clear();
+                                ev.kit_notes.retain(|kn| kit.contains_key(&kn.kit_component));
+                                if ev.kit_notes.is_empty() {
+                                    ev.rest = Some(crate::mnx::Rest {});
+                                }
+                            }
+                            crate::mnx::SequenceItem::Tuplet(t) => {
+                                for sub in &mut t.content {
+                                    if let crate::mnx::SequenceItem::Event(ev) = sub {
+                                        ev.notes.clear();
+                                        ev.kit_notes.retain(|kn| kit.contains_key(&kn.kit_component));
+                                        if ev.kit_notes.is_empty() {
+                                            ev.rest = Some(crate::mnx::Rest {});
+                                        }
+                                    }
+                                }
+                            }
+                            crate::mnx::SequenceItem::Grace(g) => {
+                                for sub in &mut g.content {
+                                    if let crate::mnx::SequenceItem::Event(ev) = sub {
+                                        ev.notes.clear();
+                                        ev.kit_notes.retain(|kn| kit.contains_key(&kn.kit_component));
+                                        if ev.kit_notes.is_empty() {
+                                            ev.rest = Some(crate::mnx::Rest {});
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some(())
+        });
     }
 
     pub fn new_file(&mut self) {

@@ -349,6 +349,19 @@ impl MnxDocument {
                                 }
                             }
                         }
+
+                        for kn in &mut ev.kit_notes {
+                            if let Some(old_kid) = &kn.id {
+                                if seen_note_ids.contains(old_kid) || seen_event_ids.contains(old_kid) {
+                                    let new_kid = crate::rebar::generate_note_id();
+                                    kn.id = Some(new_kid.clone());
+                                    seen_note_ids.insert(new_kid);
+                                    *changed = true;
+                                } else {
+                                    seen_note_ids.insert(old_kid.clone());
+                                }
+                            }
+                        }
                     }
                     SequenceItem::Tuplet(t) => {
                         inspect_and_fix_ids(
@@ -944,6 +957,97 @@ pub struct TimeSignature {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct KitComponentExt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u8>,
+    #[serde(
+        rename = "shortName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub short_name: Option<String>,
+    #[serde(
+        rename = "defaultSymbol",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_symbol: Option<String>,
+    #[serde(
+        rename = "symbolSounds",
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
+    pub symbol_sounds: std::collections::BTreeMap<String, u8>,
+}
+
+impl KitComponentExt {
+    pub fn is_empty(&self) -> bool {
+        self.line.is_none()
+            && self.short_name.is_none()
+            && self.default_symbol.is_none()
+            && self.symbol_sounds.is_empty()
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct KitComponent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        rename = "staffPosition",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub staff_position: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<u8>,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        skip_serializing_if = "KitComponentExt::is_empty"
+    )]
+    pub ext: KitComponentExt,
+}
+
+impl std::ops::Deref for KitComponent {
+    type Target = KitComponentExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for KitComponent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
+}
+
+impl KitComponent {
+    pub fn effective_default_symbol(&self) -> &str {
+        self.ext
+            .default_symbol
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("o")
+    }
+
+    pub fn resolve_midi_sound(&self, symbol: Option<&str>) -> u8 {
+        if let Some(sym) = symbol {
+            let trimmed = sym.trim();
+            if let Some(&note) = self.ext.symbol_sounds.get(trimmed) {
+                return note;
+            }
+            let lower = trimmed.to_lowercase();
+            if let Some(&note) = self.ext.symbol_sounds.get(&lower) {
+                return note;
+            }
+        }
+        self.sound.unwrap_or(38)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct PartExt {
     #[serde(
         rename = "microFretDivisions",
@@ -975,6 +1079,12 @@ pub struct PartExt {
     pub custom_frets: Option<Vec<crate::fretboard_editor::CustomFret>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mpe: Option<bool>,
+    #[serde(
+        rename = "midiChannel",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub midi_channel: Option<u8>,
 }
 
 impl PartExt {
@@ -986,6 +1096,7 @@ impl PartExt {
             && self.tuning.is_none()
             && self.custom_frets.is_none()
             && self.mpe.is_none()
+            && self.midi_channel.is_none()
     }
 
     /// Detects if the tuning strings specify an EDO via fractional alterations (e.g. `"-1\\41"`).
@@ -1063,6 +1174,8 @@ pub struct Part {
     pub name: Option<String>,
     #[serde(rename = "shortName", default, skip_serializing_if = "Option::is_none")]
     pub short_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kit: Option<std::collections::BTreeMap<String, KitComponent>>,
     #[serde(rename = "_c", default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     #[serde(
@@ -1352,6 +1465,57 @@ impl EventExt {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct KitNoteExt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    #[serde(
+        rename = "soundOverride",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sound_override: Option<u8>,
+}
+
+impl KitNoteExt {
+    pub fn is_empty(&self) -> bool {
+        self.symbol.is_none() && self.sound_override.is_none()
+    }
+}
+
+pub fn serialize_kit_note_ext<S: Serializer>(ext: &KitNoteExt, s: S) -> Result<S::Ok, S::Error> {
+    FlowMap(ext).serialize(s)
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+pub struct KitNote {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "kitComponent")]
+    pub kit_component: String,
+    #[serde(
+        rename = "_x",
+        default,
+        deserialize_with = "deserialize_ext",
+        serialize_with = "serialize_kit_note_ext",
+        skip_serializing_if = "KitNoteExt::is_empty"
+    )]
+    pub ext: KitNoteExt,
+}
+
+impl std::ops::Deref for KitNote {
+    type Target = KitNoteExt;
+    fn deref(&self) -> &Self::Target {
+        &self.ext
+    }
+}
+
+impl std::ops::DerefMut for KitNote {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ext
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markings: Option<EventMarkings>,
@@ -1361,6 +1525,12 @@ pub struct Event {
     pub duration: Duration,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    #[serde(
+        rename = "kitNotes",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub kit_notes: Vec<KitNote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rest: Option<Rest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1376,6 +1546,16 @@ pub struct Event {
         skip_serializing_if = "EventExt::is_empty"
     )]
     pub ext: EventExt,
+}
+
+impl Event {
+    pub fn has_any_notes(&self) -> bool {
+        !self.notes.is_empty() || !self.kit_notes.is_empty()
+    }
+
+    pub fn is_blank(&self) -> bool {
+        self.notes.is_empty() && self.kit_notes.is_empty() && self.rest.is_none()
+    }
 }
 
 impl std::ops::Deref for Event {
@@ -1869,7 +2049,63 @@ impl Part {
             .unwrap_or(1)
     }
 
+    pub fn is_percussion(&self) -> bool {
+        self.kit
+            .as_ref()
+            .map(|k| !k.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn percussion_midi_channel(&self) -> u8 {
+        self.ext.midi_channel.unwrap_or(10).clamp(1, 16)
+    }
+
+    /// Returns `(line_1_based, component_id, &KitComponent)` sorted by line index `1..=num_strings`.
+    pub fn ordered_kit_lines(&self) -> Vec<(u8, String, &KitComponent)> {
+        let Some(kit) = &self.kit else {
+            return Vec::new();
+        };
+        let mut items: Vec<(u8, String, &KitComponent)> = kit
+            .iter()
+            .enumerate()
+            .map(|(idx, (id, comp))| {
+                let line = comp.ext.line.unwrap_or((idx + 1) as u8);
+                (line, id.clone(), comp)
+            })
+            .collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        items
+    }
+
+    pub fn kit_component_for_line(&self, line: u8) -> Option<(String, &KitComponent)> {
+        let ordered = self.ordered_kit_lines();
+        if let Some((_, id, comp)) = ordered.iter().find(|(l, _, _)| *l == line) {
+            return Some((id.clone(), *comp));
+        }
+        ordered
+            .get((line.saturating_sub(1)) as usize)
+            .map(|(_, id, comp)| (id.clone(), *comp))
+    }
+
+    pub fn kit_line_for_component(&self, comp_id: &str) -> Option<u8> {
+        let ordered = self.ordered_kit_lines();
+        if let Some((idx, (line, _, _))) = ordered
+            .iter()
+            .enumerate()
+            .find(|(_, (_, id, _))| id == comp_id)
+        {
+            return Some((*line).max((idx + 1) as u8));
+        }
+        None
+    }
+
     pub fn num_strings(&self) -> usize {
+        if let Some(kit) = &self.kit {
+            if !kit.is_empty() {
+                let max_line = kit.values().filter_map(|c| c.ext.line).max().unwrap_or(0) as usize;
+                return max_line.max(kit.len()).max(1);
+            }
+        }
         self.ext
             .tuning
             .as_ref()
@@ -1895,6 +2131,16 @@ impl Part {
     }
 
     pub fn clean_unneeded_fret_fields(&mut self) {
+        if self.is_percussion() {
+            self.ext.micro_fret_divisions = None;
+            self.ext.fret_step_multiplier = None;
+            self.ext.tuning = None;
+            self.ext.custom_frets = None;
+            self.ext.capo = None;
+            self.ext.pitch_bend_range = None;
+            self.ext.mpe = None;
+            return;
+        }
         let is_pure_ji = self
             .ext
             .tuning

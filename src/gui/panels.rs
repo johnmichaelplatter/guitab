@@ -1341,9 +1341,14 @@ impl MnxEditorApp {
                     .cloned()
                     .unwrap_or_else(|| format!("Instrument {}", self.selected_part_idx + 1));
 
+                let active_is_perc = self
+                    .active_part()
+                    .map(|p| p.is_percussion())
+                    .unwrap_or(false);
+                let active_icon = if active_is_perc { "🥁" } else { "🎸" };
                 let mut newly_selected_part = None;
                 egui::ComboBox::from_id_salt("active_instrument_selector")
-                    .selected_text(format!("🎸 {}", current_part_name))
+                    .selected_text(format!("{} {}", active_icon, current_part_name))
                     .show_ui(ui, |ui| {
                         for (idx, name) in part_names.iter().enumerate() {
                             if ui
@@ -1501,6 +1506,149 @@ impl MnxEditorApp {
                                     }
                                 });
 
+                                let is_perc_part = self
+                                    .parsed_mnx
+                                    .as_ref()
+                                    .and_then(|d| d.parts.get(dialog_p_idx))
+                                    .map(|p| p.is_percussion())
+                                    .unwrap_or(false);
+
+                                if is_perc_part {
+                                    let mut drum_ch = self
+                                        .parsed_mnx
+                                        .as_ref()
+                                        .and_then(|d| d.parts.get(dialog_p_idx))
+                                        .map(|p| p.percussion_midi_channel())
+                                        .unwrap_or(10) as i32;
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("Drum MIDI Channel:").strong());
+                                        if ui
+                                            .add(
+                                                egui::DragValue::new(&mut drum_ch)
+                                                    .range(1..=16)
+                                                    .speed(0.1),
+                                            )
+                                            .on_hover_text(
+                                                "MIDI Channel for all percussion hits on this instrument (Standard GM Percussion is Channel 10)",
+                                            )
+                                            .changed()
+                                        {
+                                            let new_ch = drum_ch.clamp(1, 16) as u8;
+                                            self.mutate_doc(|doc| {
+                                                let part = doc.parts.get_mut(dialog_p_idx)?;
+                                                part.ext.midi_channel = Some(new_ch);
+                                                Some(())
+                                            });
+                                        }
+                                        if drum_ch != 10 && ui.small_button("Reset to Ch 10").clicked() {
+                                            self.mutate_doc(|doc| {
+                                                let part = doc.parts.get_mut(dialog_p_idx)?;
+                                                part.ext.midi_channel = Some(10);
+                                                Some(())
+                                            });
+                                        }
+                                    });
+
+                                    ui.separator();
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Percussion Line & Symbol MIDI Mapping (General MIDI)",
+                                        )
+                                        .strong(),
+                                    );
+
+                                    let ordered_lines = self
+                                        .parsed_mnx
+                                        .as_ref()
+                                        .and_then(|d| d.parts.get(dialog_p_idx))
+                                        .map(|p| {
+                                            p.ordered_kit_lines()
+                                                .into_iter()
+                                                .map(|(line_num, cid, comp)| {
+                                                    (line_num, cid.to_string(), comp.clone())
+                                                })
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
+
+                                    let mut updated_comp: Option<(String, u8)> = None;
+                                    for (line_num, cid, comp) in &ordered_lines {
+                                        let short_lbl = comp
+                                            .ext
+                                            .short_name
+                                            .as_deref()
+                                            .or(comp.name.as_deref())
+                                            .unwrap_or(cid.as_str());
+                                        let def_sym = comp.effective_default_symbol();
+                                        let mut cur_sound = comp.sound.unwrap_or(38);
+                                        ui.horizontal(|ui| {
+                                            ui.label(format!(
+                                                "L{} {} ({}):",
+                                                line_num, short_lbl, def_sym
+                                            ));
+                                            if ui
+                                                .add(
+                                                    egui::DragValue::new(&mut cur_sound)
+                                                        .range(0..=127)
+                                                        .prefix("Note "),
+                                                )
+                                                .changed()
+                                            {
+                                                updated_comp = Some((cid.clone(), cur_sound));
+                                            }
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    crate::presets::gm_percussion_name(cur_sound),
+                                                )
+                                                .size(11.5)
+                                                .weak(),
+                                            );
+                                        });
+                                        if !comp.ext.symbol_sounds.is_empty() {
+                                            let overrides_str: Vec<String> = comp
+                                                .ext
+                                                .symbol_sounds
+                                                .iter()
+                                                .map(|(s, n)| {
+                                                    format!(
+                                                        "'{}'→{}",
+                                                        s,
+                                                        crate::presets::format_gm_percussion_label(*n)
+                                                    )
+                                                })
+                                                .collect();
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "   Overrides: {}",
+                                                    overrides_str.join(", ")
+                                                ))
+                                                .size(10.5)
+                                                .weak(),
+                                            );
+                                        }
+                                    }
+
+                                    if let Some((cid, new_sound)) = updated_comp {
+                                        self.mutate_doc(|doc| {
+                                            let part = doc.parts.get_mut(dialog_p_idx)?;
+                                            let kit = part.kit.as_mut()?;
+                                            let comp = kit.get_mut(&cid)?;
+                                            comp.sound = Some(new_sound);
+                                            Some(())
+                                        });
+                                    }
+
+                                    ui.add_space(4.0);
+                                    if ui
+                                        .button("Configure Lines & Symbol Overrides...")
+                                        .clicked()
+                                    {
+                                        self.select_part(dialog_p_idx);
+                                        self.show_string_channels_popup = false;
+                                        self.open_instrument_setup_dialog(false);
+                                    }
+                                } else {
                                 // 2. Per-instrument PB Range
                                 ui.horizontal(|ui| {
                                     ui.label("PB Range: ±");
@@ -1539,8 +1687,9 @@ impl MnxEditorApp {
                                             d.parts
                                                 .iter()
                                                 .enumerate()
-                                                .filter(|(pi, _)| {
-                                                    self.get_part_midi_port(*pi).unwrap_or(0) == target_port
+                                                .filter(|(pi, p)| {
+                                                    !p.is_percussion()
+                                                        && self.get_part_midi_port(*pi).unwrap_or(0) == target_port
                                                 })
                                                 .map(|(_, p)| p.num_strings())
                                                 .sum()
@@ -1652,6 +1801,7 @@ impl MnxEditorApp {
                                     {
                                         self.string_channel_map = m.clone();
                                     }
+                                }
                                 }
                                 });
 
