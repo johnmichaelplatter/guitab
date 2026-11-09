@@ -1229,7 +1229,7 @@ impl MnxEditorApp {
 
                                                     if can_remove_line
                                                         && ui
-                                                            .small_button("X")
+                                                            .small_button("🗑")
                                                             .on_hover_text("Remove this line")
                                                             .clicked()
                                                     {
@@ -1297,7 +1297,7 @@ impl MnxEditorApp {
                                                                 .range(0..=127),
                                                         );
                                                         if ui
-                                                            .small_button("X")
+                                                            .small_button("🗑")
                                                             .on_hover_text(
                                                                 "Remove tab letter mapping",
                                                             )

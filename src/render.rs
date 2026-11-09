@@ -275,8 +275,12 @@ pub fn event_text_width(
         max_chars = max_chars.max(len);
     }
     for kn in &event.kit_notes {
-        let len = format_kit_note_symbol(kn, "o").len();
-        max_chars = max_chars.max(len);
+        let sym = format_kit_note_symbol(kn, "o");
+        if sym.starts_with('(') && sym.ends_with(')') {
+            max_chars = max_chars.max(1);
+        } else {
+            max_chars = max_chars.max(sym.len());
+        }
     }
     if max_chars == 0 {
         if event.rest.is_some() {
@@ -736,7 +740,8 @@ pub fn draw_tablature(
         0.0
     };
 
-    let top_pad = if has_endings && has_tempos {
+    let is_perc = part.is_percussion();
+    let base_top_pad = if has_endings && has_tempos {
         130.0_f32
     } else if has_endings {
         108.0_f32
@@ -745,7 +750,14 @@ pub fn draw_tablature(
     } else {
         76.0_f32
     }; // room for name + EDO label + voltas + tempos + slurs on top string
-    let total_height = top_pad + staff_height + rhythm_row_h + lyrics_row_h + 10.0; // top pad + staff + rhythm + lyrics + bottom pad
+    let perc_top_rhythm_extra = if is_perc {
+        rhythm_gap + stem_height
+    } else {
+        0.0
+    };
+    let top_pad = base_top_pad + perc_top_rhythm_extra;
+    let bottom_rhythm_h = if is_perc { 14.0 } else { rhythm_row_h };
+    let total_height = top_pad + staff_height + bottom_rhythm_h + lyrics_row_h + 10.0; // top pad + staff + rhythm + lyrics + bottom pad
     let total_width = start_offset_x
         + total_events_width
         + (part.measures.len() as f32) * measure_spacing
@@ -763,7 +775,6 @@ pub fn draw_tablature(
 
     // ── Instrument name + EDO / Percussion header ────────────────────────────
 
-    let is_perc = part.is_percussion();
     let has_custom_frets = part
         .ext
         .custom_frets
@@ -841,10 +852,23 @@ pub fn draw_tablature(
         );
     }
 
-    // The bottom of the last string line — rhythms sit below here.
+    // For stringed instruments, rhythms sit below `last_string_y`.
+    // For percussion instruments, rhythms sit above `string_y_coords[0]` with beams at `stem_top_y` and stems pointing down to `stem_bot_y`.
     let last_string_y = *string_y_coords.last().unwrap();
-    let stem_top_y = last_string_y + rhythm_gap;
-    let stem_bot_y = stem_top_y + stem_height;
+    let (stem_top_y, stem_bot_y) = if is_perc {
+        let bot = string_y_coords[0] - rhythm_gap;
+        let top = bot - stem_height;
+        (top, bot)
+    } else {
+        let top = last_string_y + rhythm_gap;
+        let bot = top + stem_height;
+        (top, bot)
+    };
+    let staff_visual_top_y = if is_perc {
+        stem_top_y
+    } else {
+        string_y_coords[0]
+    };
 
     // ── Error coordinate set ──────────────────────────────────────────────────
 
@@ -1077,7 +1101,7 @@ pub fn draw_tablature(
                         tuplet_stack.pop();
                         if let Some((start_x, mult)) = active_tuplets.pop() {
                             let end_x = current_x - last_event_spacing * 0.5;
-                            let y = string_y_coords[0] - 25.0; // Above the staff
+                            let y = staff_visual_top_y - if is_perc { 14.0 } else { 25.0 }; // Above the staff / beams
                             painter.line_segment(
                                 [
                                     egui::Pos2::new(start_x, y + 6.0),
@@ -1181,7 +1205,7 @@ pub fn draw_tablature(
                                 
                                 let label = if end_bpm > current_bpm { "accel." } else { "rit." };
                                 
-                                let y = string_y_coords[0] - 45.0;
+                                let y = staff_visual_top_y - if is_perc { 28.0 } else { 45.0 };
                                 
                                 let text_rect = painter.text(
                                     Pos2::new(current_x, y),
@@ -1224,8 +1248,9 @@ pub fn draw_tablature(
                                 let dots_str = (0..tempo.value.dots.unwrap_or(0)).map(|_| ".").collect::<String>();
                                 let text = format!("{} = {}", dots_str, tempo.bpm);
                                 
+                                let tempo_y = staff_visual_top_y - if is_perc { 28.0 } else { 45.0 };
                                 let glyph_rect = painter.text(
-                                    Pos2::new(current_x, string_y_coords[0] - 45.0),
+                                    Pos2::new(current_x, tempo_y),
                                     egui::Align2::LEFT_BOTTOM,
                                     glyph,
                                     egui::FontId::new(20.0, egui::FontFamily::Name("BravuraText".into())),
@@ -1234,7 +1259,7 @@ pub fn draw_tablature(
                                 
 
                                 let text_rect = painter.text(
-                                    Pos2::new(glyph_rect.max.x + 2.0, string_y_coords[0] - 45.0),
+                                    Pos2::new(glyph_rect.max.x + 2.0, tempo_y),
                                     egui::Align2::LEFT_BOTTOM,
                                     text,
                                     egui::FontId::proportional(16.0),
@@ -1345,15 +1370,20 @@ pub fn draw_tablature(
 
                 let event_w = event_text_width(event, in_grace, edit_len);
                 let half_col_w = (event_w * 0.5 + 4.0).max(if in_grace { 8.5 } else { 12.0 });
+                let (col_top_y, col_bot_y) = if is_perc {
+                    (stem_top_y, last_string_y)
+                } else {
+                    (string_y_coords[0], stem_bot_y)
+                };
                 let col_rect = if in_grace {
                     Rect::from_min_max(
-                        Pos2::new(current_x - half_col_w, string_y_coords[0] - 4.0),
-                        Pos2::new(current_x + half_col_w, stem_bot_y + 4.0),
+                        Pos2::new(current_x - half_col_w, col_top_y - 4.0),
+                        Pos2::new(current_x + half_col_w, col_bot_y + 4.0),
                     )
                 } else {
                     Rect::from_min_max(
-                        Pos2::new(current_x - half_col_w, string_y_coords[0] - 6.0),
-                        Pos2::new(current_x + half_col_w, stem_bot_y + 6.0),
+                        Pos2::new(current_x - half_col_w, col_top_y - 6.0),
+                        Pos2::new(current_x + half_col_w, col_bot_y + 6.0),
                     )
                 };
 
@@ -1556,12 +1586,16 @@ pub fn draw_tablature(
                     let font_size = 28.0;
                     let markings_font_id =
                         FontId::new(font_size, egui::FontFamily::Name("Bravura".into()));
-                    let base_y = if min_string_y < f32::MAX {
-                        min_string_y
+                    let mut marking_y = if is_perc {
+                        stem_top_y - 12.0
                     } else {
-                        string_y_coords[0]
-                    };
-                    let mut marking_y = base_y - 20.0; // Place above the chord
+                        let base_y = if min_string_y < f32::MAX {
+                            min_string_y
+                        } else {
+                            string_y_coords[0]
+                        };
+                        base_y - 20.0
+                    }; // Place above the chord / top beam
 
                     if event.markings.as_ref().and_then(|m| m.accent.as_ref()).is_some() {
                         let galley = painter.layout_no_wrap(
@@ -1593,7 +1627,7 @@ pub fn draw_tablature(
                 }
 
                 if !event.text_markings.is_empty() {
-                    let mut tm_y = string_y_coords[0] - 24.0;
+                    let mut tm_y = staff_visual_top_y - if is_perc { 16.0 } else { 24.0 };
                     if event.markings.as_ref().and_then(|m| m.accent.as_ref()).is_some()
                         || event.bow_direction.is_some()
                     {
@@ -1895,9 +1929,16 @@ pub fn draw_tablature(
                             kit_sym.clone()
                         };
 
+                        let is_ghost_sym =
+                            display_text.starts_with('(') && display_text.ends_with(')');
+                        let kit_font_id = if is_ghost_sym {
+                            FontId::proportional(if in_grace { 8.5 } else { 10.5 })
+                        } else {
+                            current_font_id.clone()
+                        };
                         let galley = painter.layout_no_wrap(
                             display_text,
-                            current_font_id.clone(),
+                            kit_font_id,
                             text_color,
                         );
                         let text_rect =
@@ -2179,9 +2220,9 @@ pub fn draw_tablature(
         && let Some(g) = global
     {
         let bracket_y = if has_tempos {
-            string_y_coords[0] - 56.0
+            staff_visual_top_y - if is_perc { 42.0 } else { 56.0 }
         } else {
-            string_y_coords[0] - 32.0
+            staff_visual_top_y - if is_perc { 24.0 } else { 32.0 }
         };
         let hook_len = 14.0_f32;
         let bracket_stroke = Stroke::new(1.2, note_color);
@@ -2473,8 +2514,13 @@ pub fn draw_tablature(
         let mut local_stem_top_y = stem_top_y;
         let mut local_stem_bot_y = stem_bot_y;
         if is_grace {
-            local_stem_top_y -= 8.0;
-            local_stem_bot_y -= 14.0;
+            if is_perc {
+                local_stem_top_y += 10.0;
+                local_stem_bot_y += 4.0;
+            } else {
+                local_stem_top_y -= 8.0;
+                local_stem_bot_y -= 14.0;
+            }
         }
 
         let flags = note.rhythm.flag_count();
@@ -2499,16 +2545,27 @@ pub fn draw_tablature(
             );
         }
 
+        let beam_anchor_y = if is_perc {
+            local_stem_top_y
+        } else {
+            local_stem_bot_y
+        };
+        let beam_step_dir = if is_perc { 1.0_f32 } else { -1.0_f32 };
+
         // ── Dot (augmentation) ────────────────────────────────────────────────
         if note.is_dotted {
-            painter.circle_filled(Pos2::new(cx + 5.0, local_stem_bot_y - 2.0), 1.5, this_stem_color);
+            painter.circle_filled(
+                Pos2::new(cx + 5.0, beam_anchor_y + beam_step_dir * 2.0),
+                1.5,
+                this_stem_color,
+            );
         }
 
-        // ── Flags or beams (at bottom of stems) ────────────────────────────────
+        // ── Flags or beams ────────────────────────────────────────────────────
         if flags == 0 {
             // Whole / Half / Quarter — no beams or flags needed
         } else if beam_to[i].is_some() || beam_from[i].is_some() {
-            // Part of a beam group — draw beams as thick horizontal lines at stem_bot_y
+            // Part of a beam group — draw beams as thick horizontal lines at beam_anchor_y
             if let Some(right_idx) = beam_to[i] {
                 let nx = rhythm_notes[right_idx].x; // right note stem x
                 let sx = cx; // this note stem x
@@ -2518,7 +2575,7 @@ pub fn draw_tablature(
                 let shared_flags = flags.min(right_flags);
                 let beam_thickness = if is_grace { 2.0 } else { 3.0 };
                 for f in 0..shared_flags {
-                    let by = local_stem_bot_y - (f as f32) * flag_spacing;
+                    let by = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
                     painter.line_segment(
                         [Pos2::new(sx, by), Pos2::new(nx, by)],
                         Stroke::new(beam_thickness, note_color),
@@ -2529,7 +2586,7 @@ pub fn draw_tablature(
                 let extra = flags.saturating_sub(right_flags);
                 let stub_w = if is_grace { event_spacing * 0.25 } else { event_spacing * 0.35 };
                 for f in shared_flags..shared_flags + extra {
-                    let by = local_stem_bot_y - (f as f32) * flag_spacing;
+                    let by = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
                     painter.line_segment(
                         [Pos2::new(sx, by), Pos2::new(sx + stub_w, by)],
                         Stroke::new(beam_thickness, this_stem_color),
@@ -2547,7 +2604,7 @@ pub fn draw_tablature(
                         let beam_thickness = if is_grace { 2.0 } else { 3.0 };
                         let stub_w = if is_grace { event_spacing * 0.25 } else { event_spacing * 0.35 };
                         for f in prev_flags..prev_flags + extra {
-                            let by = local_stem_bot_y - (f as f32) * flag_spacing;
+                            let by = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
                             painter.line_segment(
                                 [Pos2::new(sx - stub_w, by), Pos2::new(sx, by)],
                                 Stroke::new(beam_thickness, this_stem_color),
@@ -2557,23 +2614,24 @@ pub fn draw_tablature(
                 }
             }
         } else {
-            // Isolated note — draw flag(s) attached at stem_bot_y angling up towards staff
+            // Isolated note — draw flag(s) attached at beam_anchor_y angling towards staff
             let sx = cx;
             let flag_w = if is_grace { event_spacing * 0.25 } else { event_spacing * 0.45 };
             for f in 0..flags {
-                let flag_y_bot = local_stem_bot_y - (f as f32) * flag_spacing;
-                let flag_y_top = flag_y_bot - flag_spacing - 2.0;
+                let flag_y_start = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
+                let flag_y_mid = flag_y_start + beam_step_dir * (flag_spacing * 0.5);
+                let flag_y_end = flag_y_start + beam_step_dir * (flag_spacing + 2.0);
                 painter.line_segment(
                     [
-                        Pos2::new(sx, flag_y_bot),
-                        Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
+                        Pos2::new(sx, flag_y_start),
+                        Pos2::new(sx + flag_w, flag_y_mid),
                     ],
                     Stroke::new(if is_selected { 2.0 } else if is_grace { 1.2 } else { 1.5 }, this_stem_color),
                 );
                 painter.line_segment(
                     [
-                        Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
-                        Pos2::new(sx + flag_w * 0.4, flag_y_top),
+                        Pos2::new(sx + flag_w, flag_y_mid),
+                        Pos2::new(sx + flag_w * 0.4, flag_y_end),
                     ],
                     Stroke::new(if is_selected { 2.0 } else if is_grace { 1.2 } else { 1.5 }, this_stem_color),
                 );
@@ -2583,7 +2641,11 @@ pub fn draw_tablature(
 
     // ── Draw Lyrics ────────────────────────────────────────────────────────────
     let mut double_clicked_lyric: Option<(usize, usize)> = None;
-    let lyrics_y = stem_bot_y + 16.0;
+    let lyrics_y = if is_perc {
+        last_string_y + 18.0
+    } else {
+        stem_bot_y + 16.0
+    };
     for (i, lyr) in rendered_lyrics.iter().enumerate() {
         let y = lyrics_y + (lyr.line as f32) * 18.0;
         let font_id = FontId::proportional(13.0);

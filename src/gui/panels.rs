@@ -1728,26 +1728,27 @@ impl MnxEditorApp {
                                             );
                                         });
                                         if !comp.ext.symbol_sounds.is_empty() {
-                                            let overrides_str: Vec<String> = comp
-                                                .ext
-                                                .symbol_sounds
-                                                .iter()
-                                                .map(|(s, n)| {
-                                                    format!(
-                                                        "'{}' -> {}",
-                                                        s,
-                                                        crate::presets::format_gm_percussion_label(*n)
-                                                    )
-                                                })
-                                                .collect();
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "   Tab Letter Mappings: {}",
-                                                    overrides_str.join(", ")
-                                                ))
-                                                .size(10.5)
-                                                .weak(),
-                                            );
+                                            ui.horizontal_top(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("   Tab Letter Mappings:")
+                                                        .size(10.5)
+                                                        .weak(),
+                                                );
+                                                ui.vertical(|ui| {
+                                                    ui.spacing_mut().item_spacing.y = 1.0;
+                                                    for (s, n) in &comp.ext.symbol_sounds {
+                                                        ui.label(
+                                                            egui::RichText::new(format!(
+                                                                "'{}' -> {}",
+                                                                s,
+                                                                crate::presets::format_gm_percussion_label(*n)
+                                                            ))
+                                                            .size(10.5)
+                                                            .weak(),
+                                                        );
+                                                    }
+                                                });
+                                            });
                                         }
                                     }
 
@@ -2761,10 +2762,21 @@ impl MnxEditorApp {
                 self.layout_view_tab = LayoutViewTab::Ensemble;
             }
             for (idx, name) in part_names.iter().enumerate() {
+                let is_perc_part = self
+                    .parsed_mnx
+                    .as_ref()
+                    .and_then(|d| d.parts.get(idx))
+                    .map(|p| p.is_percussion())
+                    .unwrap_or(false);
+                let tab_label = if is_perc_part {
+                    name.clone()
+                } else {
+                    format!("🎸 {}", name)
+                };
                 if ui
                     .selectable_label(
                         self.layout_view_tab == LayoutViewTab::Part(idx),
-                        format!("🎸 {}", name),
+                        tab_label,
                     )
                     .clicked()
                 {

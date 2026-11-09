@@ -481,18 +481,36 @@ pub fn populate_page_display_list_for_parts(
         let system_start_x = system.measure_x_positions[0];
         let total_system_w: f32 = system.measure_widths.iter().sum();
         let system_end_x = system_start_x + total_system_w;
-        let first_staff_top_y = system.y_offset;
+        let mut first_staff_top_y = system.y_offset;
         let mut last_staff_bottom_y = system.y_offset;
         let mut current_staff_top_y = system.y_offset;
 
         for (part_order, &p_idx) in effective_parts.iter().enumerate() {
             let is_top_part = part_order == 0;
             let part = &doc.parts[p_idx];
+            let is_perc = part.is_percussion();
             let num_strings = part.num_strings();
             let staff_height = (num_strings as f32 - 1.0).max(0.0) * line_spacing;
-            let staff_top_y = current_staff_top_y;
+            let staff_top_y = if is_perc {
+                current_staff_top_y + 26.0
+            } else {
+                current_staff_top_y
+            };
+            if part_order == 0 {
+                first_staff_top_y = staff_top_y;
+            }
             let last_string_y = staff_top_y + staff_height;
             last_staff_bottom_y = last_string_y;
+            let (stem_top_y, stem_bot_y) = if is_perc {
+                let bot = staff_top_y - 6.0;
+                let top = bot - 20.0;
+                (top, bot)
+            } else {
+                let top = last_string_y + 6.0;
+                let bot = top + 20.0;
+                (top, bot)
+            };
+            let visual_top_y = if is_perc { stem_top_y } else { staff_top_y };
             let staff_mid_y = staff_top_y + staff_height * 0.5;
             let string_spacing = if num_strings > 1 { line_spacing } else { 10.0 };
             let mid_y1 = staff_mid_y - string_spacing * 0.5;
@@ -503,7 +521,7 @@ pub fn populate_page_display_list_for_parts(
                 dl.push(DrawItem {
                     id: Some(format!("part_label_{}_{}", system.measure_range.start, p_idx)),
                     kind: DrawKind::Text {
-                        pos: Pos2::new(system_start_x - 6.0, staff_top_y - 4.0),
+                        pos: Pos2::new(system_start_x - 6.0, visual_top_y - 4.0),
                         align: Align2::RIGHT_BOTTOM,
                         text: part_label,
                         font_id: FontId::proportional(10.0),
@@ -648,7 +666,7 @@ pub fn populate_page_display_list_for_parts(
             dl.push(DrawItem {
                 id: Some(format!("mn_{}", first_m_idx)),
                 kind: DrawKind::Text {
-                    pos: Pos2::new(system_start_x, staff_top_y - 12.0),
+                    pos: Pos2::new(system_start_x, visual_top_y - 12.0),
                     align: Align2::LEFT_BOTTOM,
                     text: mn_str,
                     font_id: FontId::proportional(10.0),
@@ -701,7 +719,7 @@ pub fn populate_page_display_list_for_parts(
                 dl.push(DrawItem {
                     id: Some(format!("mn_{}", m_idx)),
                     kind: DrawKind::Text {
-                        pos: Pos2::new(m_x + 2.0, staff_top_y - 12.0),
+                        pos: Pos2::new(m_x + 2.0, visual_top_y - 12.0),
                         align: Align2::LEFT_BOTTOM,
                         text: mn_str,
                         font_id: FontId::proportional(10.0),
@@ -832,7 +850,7 @@ pub fn populate_page_display_list_for_parts(
                     let has_tempos_in_sys = system.measure_range.clone().any(|mi| {
                         doc.global.measures.get(mi).map(|g| !g.tempos.is_empty()).unwrap_or(false)
                     });
-                    let bracket_y = if has_tempos_in_sys { staff_top_y - 36.0 } else { staff_top_y - 20.0 };
+                    let bracket_y = if has_tempos_in_sys { visual_top_y - 36.0 } else { visual_top_y - 20.0 };
                     let hook_len = 8.0_f32;
                     let is_open = ending.open.unwrap_or(false);
 
@@ -901,7 +919,7 @@ pub fn populate_page_display_list_for_parts(
                 let has_endings_in_sys = system.measure_range.clone().any(|mi| {
                     doc.global.measures.get(mi).and_then(|g| g.ending.as_ref()).is_some()
                 });
-                let tempo_y = if has_endings_in_sys { staff_top_y - 34.0 } else { staff_top_y - 20.0 };
+                let tempo_y = if has_endings_in_sys { visual_top_y - 34.0 } else { visual_top_y - 20.0 };
 
                 for (t_idx, tempo) in gm.tempos.iter().enumerate() {
                     let glyph = match tempo.value.base.as_str() {
@@ -1061,7 +1079,7 @@ pub fn populate_page_display_list_for_parts(
                                 tuplet_stack.pop();
                                 if let Some((t_cnt, start_x, mult)) = active_tuplets.pop() {
                                     let end_x = m_x + start_pad + accum_x * ev_scale;
-                                    let y = staff_top_y - 12.0;
+                                    let y = visual_top_y - 12.0;
                                     tuplet_brackets.push((m_idx, t_cnt, start_x, end_x, mult, y));
                                 }
                             }
@@ -1088,16 +1106,33 @@ pub fn populate_page_display_list_for_parts(
                                 accum_x += ev_w;
                                 ev_idx_in_m += 1;
 
-                                let is_rest = ev.rest.is_some() || ev.notes.is_empty();
+                                let is_rest = ev.rest.is_some() || !ev.has_any_notes();
 
                                 if let Some(ev_id) = &ev.id {
                                     event_id_map.insert(ev_id.clone(), (ev_x, is_rest));
                                     event_id_to_idx.insert(ev_id.clone(), system_rhythm_notes.len());
                                 }
 
+                                // Draw accent marking above staff if present
+                                if ev.markings.as_ref().and_then(|m| m.accent.as_ref()).is_some() {
+                                    dl.push(DrawItem {
+                                        id: Some(format!("accent_{}_{}", m_idx, curr_ev_idx)),
+                                        kind: DrawKind::Text {
+                                            pos: Pos2::new(ev_x, visual_top_y - 10.0),
+                                            align: Align2::CENTER_CENTER,
+                                            text: "\u{E4A0}".to_string(),
+                                            font_id: FontId::new(20.0, egui::FontFamily::Name("Bravura".into())),
+                                            color: text_color,
+                                            bold: false,
+                                            italic: false,
+                                        },
+                                        z_index: 6,
+                                    });
+                                }
+
                                 // Draw text markings attached to this event
                                 if !ev.text_markings.is_empty() {
-                                    let mut tm_y = staff_top_y - 18.0;
+                                    let mut tm_y = visual_top_y - 18.0;
                                     for (tm_i, tm) in ev.text_markings.iter().enumerate() {
                                         if tm.text.trim().is_empty() {
                                             continue;
@@ -1268,8 +1303,19 @@ pub fn populate_page_display_list_for_parts(
                                                 let note_pos = Pos2::new(ev_x, str_y);
                                                 this_event_notes.push((kn.id.clone(), s, 0, note_pos));
 
-                                                let font_sz = if in_grace { 9.5 } else { 11.0 };
-                                                let text_w = (sym_text.chars().count() as f32) * (if in_grace { 5.5 } else { 7.5 });
+                                                let is_ghost = sym_text.starts_with('(') && sym_text.ends_with(')');
+                                                let font_sz = if is_ghost {
+                                                    if in_grace { 7.5 } else { 8.5 }
+                                                } else if in_grace {
+                                                    9.5
+                                                } else {
+                                                    11.0
+                                                };
+                                                let text_w = if is_ghost {
+                                                    if in_grace { 7.0 } else { 9.0 }
+                                                } else {
+                                                    (sym_text.chars().count() as f32) * (if in_grace { 5.5 } else { 7.5 })
+                                                };
                                                 let note_item_id = Some(kn.id.clone().unwrap_or_else(|| format!("kitnote_{}_{}_{}", m_idx, ev_idx_in_m, s)));
                                                 dl.push(DrawItem {
                                                     id: note_item_id.clone(),
@@ -1334,7 +1380,7 @@ pub fn populate_page_display_list_for_parts(
 
                                 // Collect lyrics if present
                                 if let Some(lyrics) = &ev.lyrics {
-                                    let stem_bot = last_string_y + 26.0;
+                                    let stem_bot = if is_perc { last_string_y + 6.0 } else { last_string_y + 26.0 };
                                     for (l_i, (line_key, lyr)) in lyrics.lines.iter().enumerate() {
                                         let line_num = line_key.parse::<usize>().ok().map(|n| n.saturating_sub(1)).unwrap_or(l_i);
                                         let lyr_y = stem_bot + 10.0 + (line_num as f32) * 14.0;
@@ -1426,8 +1472,6 @@ pub fn populate_page_display_list_for_parts(
             }
         }
 
-        let stem_top_y = last_string_y + 6.0;
-        let stem_bot_y = stem_top_y + 20.0;
         let flag_spacing = 4.5_f32;
 
         for (i, note) in system_rhythm_notes.iter().enumerate() {
@@ -1439,9 +1483,16 @@ pub fn populate_page_display_list_for_parts(
             let mut local_stem_top_y = stem_top_y;
             let mut local_stem_bot_y = stem_bot_y;
             if is_grace {
-                local_stem_top_y -= 6.0;
-                local_stem_bot_y -= 10.0;
+                if is_perc {
+                    local_stem_top_y += 8.0;
+                    local_stem_bot_y += 2.0;
+                } else {
+                    local_stem_top_y -= 6.0;
+                    local_stem_bot_y -= 10.0;
+                }
             }
+            let beam_anchor_y = if is_perc { local_stem_top_y } else { local_stem_bot_y };
+            let beam_step_dir = if is_perc { 1.0_f32 } else { -1.0_f32 };
 
             let flags = note.rhythm.flag_count();
             let stem_thickness = if is_grace { 1.0 } else { 1.2 };
@@ -1465,7 +1516,7 @@ pub fn populate_page_display_list_for_parts(
                 dl.push(DrawItem {
                     id: stem_id,
                     kind: DrawKind::Circle {
-                        center: Pos2::new(cx + 5.0, local_stem_bot_y - 2.0),
+                        center: Pos2::new(cx + 5.0, beam_anchor_y + beam_step_dir * 2.0),
                         radius: 1.5,
                         fill: barline_color,
                     },
@@ -1484,7 +1535,7 @@ pub fn populate_page_display_list_for_parts(
                         let beam_thickness = if is_grace { 2.0 } else { 3.0 };
 
                         for f in 0..shared_flags {
-                            let by = local_stem_bot_y - (f as f32) * flag_spacing;
+                            let by = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
                             dl.push(DrawItem {
                                 id: None,
                                 kind: DrawKind::Line {
@@ -1499,7 +1550,7 @@ pub fn populate_page_display_list_for_parts(
                         let extra = flags.saturating_sub(right_flags);
                         let stub_w = 8.0_f32;
                         for f in shared_flags..shared_flags + extra {
-                            let by = local_stem_bot_y - (f as f32) * flag_spacing;
+                            let by = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
                             dl.push(DrawItem {
                                 id: None,
                                 kind: DrawKind::Line {
@@ -1521,7 +1572,7 @@ pub fn populate_page_display_list_for_parts(
                                 let beam_thickness = if is_grace { 2.0 } else { 3.0 };
                                 let stub_w = if is_grace { 4.5_f32 } else { 6.0_f32 };
                                 for f in prev_flags..prev_flags + extra {
-                                    let by = local_stem_bot_y - (f as f32) * flag_spacing;
+                                    let by = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
                                     dl.push(DrawItem {
                                         id: None,
                                         kind: DrawKind::Line {
@@ -1540,13 +1591,14 @@ pub fn populate_page_display_list_for_parts(
                     let sx = cx;
                     let flag_w = if is_grace { 6.0_f32 } else { 9.0_f32 };
                     for f in 0..flags {
-                        let flag_y_bot = local_stem_bot_y - (f as f32) * flag_spacing;
-                        let flag_y_top = flag_y_bot - flag_spacing - 2.0;
+                        let flag_y_start = beam_anchor_y + beam_step_dir * (f as f32) * flag_spacing;
+                        let flag_y_mid = flag_y_start + beam_step_dir * (flag_spacing * 0.5);
+                        let flag_y_end = flag_y_start + beam_step_dir * (flag_spacing + 2.0);
                         dl.push(DrawItem {
                             id: None,
                             kind: DrawKind::Line {
-                                from: Pos2::new(sx, flag_y_bot),
-                                to: Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
+                                from: Pos2::new(sx, flag_y_start),
+                                to: Pos2::new(sx + flag_w, flag_y_mid),
                                 stroke: Stroke::new(1.2, barline_color),
                             },
                             z_index: 3,
@@ -1554,8 +1606,8 @@ pub fn populate_page_display_list_for_parts(
                         dl.push(DrawItem {
                             id: None,
                             kind: DrawKind::Line {
-                                from: Pos2::new(sx + flag_w, flag_y_bot - flag_spacing * 0.5),
-                                to: Pos2::new(sx + flag_w * 0.4, flag_y_top),
+                                from: Pos2::new(sx + flag_w, flag_y_mid),
+                                to: Pos2::new(sx + flag_w * 0.4, flag_y_end),
                                 stroke: Stroke::new(1.2, barline_color),
                             },
                             z_index: 3,
@@ -1892,7 +1944,7 @@ pub fn populate_page_display_list_for_parts(
                         dl.push(DrawItem {
                             id: Some(format!("sys_lock_{}_{}", start_m, end_m)),
                             kind: DrawKind::Text {
-                                pos: Pos2::new(system_end_x - 2.0, staff_top_y - 12.0),
+                                pos: Pos2::new(system_end_x - 2.0, visual_top_y - 12.0),
                                 align: Align2::RIGHT_BOTTOM,
                                 text: "[system]".to_string(),
                                 font_id: FontId::proportional(10.0),

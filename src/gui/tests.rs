@@ -6914,6 +6914,43 @@ parts:
             .flattened_events()[0];
         assert!(ev0_after.bow_direction.is_none());
         assert_eq!(app.active_dialog, ActiveDialog::None);
+
+        // 6. Ghost note `(o)` event_text_width is horizontally compact (1-char width)
+        app.commit_percussion_hit(Some("(o)"));
+        let ev_ghost = &app.parsed_mnx.as_ref().unwrap().parts[0].measures[0].sequences[0]
+            .flattened_events()[0];
+        assert_eq!(ev_ghost.kit_notes[0].ext.symbol.as_deref(), Some("(o)"));
+        let ghost_w = crate::render::event_text_width(ev_ghost, false, None);
+        assert!((ghost_w - 8.45).abs() < 1e-3, "Ghost note (o) width must be single-char compact (8.45), got {}", ghost_w);
+
+        // 7. Layout Mode / PDF DisplayList renders percussion kit_notes (not rests) and places stems above staff
+        let doc_perc = app.parsed_mnx.as_ref().unwrap();
+        let pages = crate::layout::compute_score_layout(doc_perc, 0.0);
+        let mut dl = crate::layout::display_list::DisplayList::new();
+        crate::pdf_export::populate_page_display_list(doc_perc, &pages[0], &mut dl);
+        let has_kit_note_text = dl.items.iter().any(|item| {
+            matches!(&item.kind, crate::layout::display_list::DrawKind::Text { text, .. } if text == "(o)" || text == "r" || text == "o")
+        });
+        assert!(has_kit_note_text, "Layout Mode DisplayList must render percussion kit note symbols");
+
+        let stem_item = dl.items.iter().find(|item| {
+            item.id.as_deref().map(|id| id.starts_with("stem_")).unwrap_or(false)
+        }).expect("Layout Mode DisplayList must emit stem for percussion event");
+        let tuning_item = dl.items.iter().find(|item| {
+            item.id.as_deref() == Some("tuning_1")
+        }).expect("Layout Mode DisplayList must emit top line label");
+        if let (
+            crate::layout::display_list::DrawKind::Line { from, to, .. },
+            crate::layout::display_list::DrawKind::Text { pos: top_line_pos, .. },
+        ) = (&stem_item.kind, &tuning_item.kind) {
+            assert!(
+                from.y < top_line_pos.y && to.y < top_line_pos.y,
+                "Percussion stems ({}, {}) must be positioned above top staff line ({})",
+                from.y,
+                to.y,
+                top_line_pos.y
+            );
+        }
     }
 }
 
