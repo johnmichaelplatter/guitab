@@ -1619,9 +1619,35 @@ pub struct NotePreview {
     pub velocity: midly::num::u7,
 }
 
-struct CachedMidiConnection {
+pub struct CachedMidiConnection {
+    pub port_index: usize,
+    pub conn: midir::MidiOutputConnection,
+}
+
+pub fn ensure_cached_connection(
+    connections: &std::sync::Mutex<Vec<CachedMidiConnection>>,
     port_index: usize,
-    conn: midir::MidiOutputConnection,
+) -> Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    let mut guard = connections
+        .lock()
+        .map_err(|_| String::from("MIDI connection lock poisoned"))?;
+    if guard.iter().any(|c| c.port_index == port_index) {
+        return Ok(());
+    }
+    let midi_out = midir::MidiOutput::new("guitab_player")
+        .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
+    let ports = midi_out.ports();
+    let port = ports
+        .get(port_index)
+        .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
+    let conn = midi_out
+        .connect(port, "mnx_output")
+        .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
+    guard.push(CachedMidiConnection { port_index, conn });
+    Ok(())
 }
 
 pub struct MidiPlayer {
@@ -1651,25 +1677,12 @@ impl MidiPlayer {
         }
     }
 
+    pub fn connections_arc(&self) -> std::sync::Arc<std::sync::Mutex<Vec<CachedMidiConnection>>> {
+        std::sync::Arc::clone(&self.connections)
+    }
+
     fn ensure_connection(&self, port_index: usize) -> Result<(), String> {
-        let mut guard = self
-            .connections
-            .lock()
-            .map_err(|_| String::from("MIDI connection lock poisoned"))?;
-        if guard.iter().any(|c| c.port_index == port_index) {
-            return Ok(());
-        }
-        let midi_out = midir::MidiOutput::new("guitab_player")
-            .map_err(|e| format!("Failed to create MidiOutput: {}", e))?;
-        let ports = midi_out.ports();
-        let port = ports
-            .get(port_index)
-            .ok_or_else(|| format!("Selected MIDI port index {} not found", port_index))?;
-        let conn = midi_out
-            .connect(port, "mnx_output")
-            .map_err(|e| format!("Failed to connect to MIDI port: {}", e))?;
-        guard.push(CachedMidiConnection { port_index, conn });
-        Ok(())
+        ensure_cached_connection(&self.connections, port_index)
     }
 
     pub fn is_playing(&self) -> bool {

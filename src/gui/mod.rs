@@ -135,6 +135,7 @@ pub struct MnxEditorApp {
     pub(crate) grid_input: crate::grid_input::GridInputManager,
     pub(crate) active_grid_live_notes:
         std::collections::HashMap<(u8, i32), (midly::num::u4, midly::num::u7)>,
+    pub(crate) last_synced_part_idx: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -522,7 +523,14 @@ impl MnxEditorApp {
             midi_input_ports: input_ports,
             grid_input: crate::grid_input::GridInputManager::default(),
             active_grid_live_notes: std::collections::HashMap::new(),
+            last_synced_part_idx: None,
         };
+
+        let conn_arc = app.midi_player.connections_arc();
+        if let Ok(mut state) = app.grid_input.live_play_state.lock() {
+            state.connections = Some(conn_arc);
+        }
+        app.sync_live_play_config();
 
         app.process_and_render();
         app
@@ -1297,6 +1305,67 @@ impl MnxEditorApp {
                 num_strings,
                 pb_range,
             );
+        }
+    }
+
+    /// Synchronizes the active instrument's tuning, frequency table, MIDI port, and percussion line mappings
+    /// to the background `GridLivePlayState` for immediate, low-latency background grid controller playback.
+    pub fn sync_live_play_config(&mut self) {
+        let port_idx = self.get_part_midi_port(self.selected_part_idx);
+        let is_mpe = self.is_part_mpe_mode(self.selected_part_idx);
+        let pb_range = self.get_part_pitch_bend_range(self.selected_part_idx);
+        let part_opt = self.active_part().cloned();
+        let is_perc = part_opt.as_ref().map(|p| p.is_percussion()).unwrap_or(false);
+        let perc_channel = part_opt.as_ref().map(|p| p.percussion_midi_channel()).unwrap_or(10);
+        let num_strings = part_opt.as_ref().map(|p| p.num_strings() as u8).unwrap_or(6);
+
+        let mut perc_lines = std::collections::HashMap::new();
+        if let Some(part) = &part_opt {
+            if is_perc {
+                for (line_num, _id, comp) in part.ordered_kit_lines() {
+                    let primary = comp.sound.unwrap_or(38);
+                    let sym_sounds = comp.ext.symbol_sounds.iter().map(|(_, s)| *s).collect();
+                    perc_lines.insert(line_num, (primary, sym_sounds));
+                }
+            }
+        }
+
+        let freq_table = if !is_perc {
+            if let (Some(doc), Some(part)) = (&self.parsed_mnx, &part_opt) {
+                Some(crate::tuning_table::FretboardFrequencyTable::from_doc_part(doc, part))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Ok(mut state) = self.grid_input.live_play_state.lock() {
+            if state.connections.is_none() {
+                state.connections = Some(self.midi_player.connections_arc());
+            }
+            if self.last_synced_part_idx != Some(self.selected_part_idx) {
+                state.silence_all_held_notes();
+                self.last_synced_part_idx = Some(self.selected_part_idx);
+            }
+            if state.port_index != port_idx {
+                state.silence_all_held_notes();
+                state.port_index = port_idx;
+                if let (Some(connections), Some(pid)) = (&state.connections, port_idx) {
+                    let _ = crate::midi::ensure_cached_connection(connections, pid);
+                }
+            }
+            state.just_play_mode = self.grid_input.just_play_mode;
+            state.num_strings = num_strings;
+            state.is_percussion = is_perc;
+            state.percussion_channel = perc_channel;
+            state.percussion_lines = perc_lines;
+            state.is_mpe = is_mpe;
+            state.pb_range = pb_range;
+            state.string_channel_map = self.string_channel_map.clone();
+            state.freq_table = freq_table;
+            state.part_copy = part_opt;
+            state.slots = self.grid_input.slots.clone();
         }
     }
 
@@ -2661,6 +2730,8 @@ impl eframe::App for MnxEditorApp {
         }
 
         let editor_focused = self.show_yaml_panel && ui.memory(|m| m.has_focus(text_edit_id));
+
+        self.sync_live_play_config();
 
         // Poll Grid Controller MIDI Input
         let num_strings = self

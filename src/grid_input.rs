@@ -7,9 +7,10 @@
 
 use crate::midi::MidiPortInfo;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const MAX_GRID_CONTROLLERS: usize = 4;
@@ -331,6 +332,230 @@ pub struct GridLivePlayEvent {
     pub velocity: u8,
 }
 
+/// Thread-safe configuration and active note tracking for live "Just Play" mode,
+/// allowing incoming grid controller events to immediately dispatch to MIDI out
+/// on the audio/MIDI callback thread without waiting for UI ticks or window focus.
+#[derive(Default)]
+pub struct GridLivePlayState {
+    pub just_play_mode: bool,
+    pub port_index: Option<usize>,
+    pub num_strings: u8,
+    pub is_percussion: bool,
+    pub percussion_channel: u8,
+    /// line_number (1-based) -> (primary_sound, symbol_sounds)
+    pub percussion_lines: HashMap<u8, (u8, Vec<u8>)>,
+    pub is_mpe: bool,
+    pub pb_range: u8,
+    pub string_channel_map: HashMap<u8, u8>,
+    pub freq_table: Option<crate::tuning_table::FretboardFrequencyTable>,
+    pub part_copy: Option<crate::mnx::Part>,
+    pub slots: [GridControllerSlotConfig; MAX_GRID_CONTROLLERS],
+    /// Track currently sounding notes: (slot_idx, pad_note) -> (port_index, channel, key)
+    pub active_notes: HashMap<(usize, u8), (usize, midly::num::u4, midly::num::u7)>,
+    pub connections: Option<Arc<Mutex<Vec<crate::midi::CachedMidiConnection>>>>,
+}
+
+impl GridLivePlayState {
+    pub fn handle_midi_event(
+        &mut self,
+        slot_idx: usize,
+        status: u8,
+        note: u8,
+        velocity: u8,
+    ) -> bool {
+        let is_note_on = status == 0x90 && velocity > 0;
+        let is_note_off = status == 0x80 || (status == 0x90 && velocity == 0);
+        if !is_note_on && !is_note_off {
+            return false;
+        }
+
+        let Some(slot) = self.slots.get(slot_idx) else {
+            return false;
+        };
+        if (!slot.enabled && !cfg!(test)) || !slot.is_calibrated {
+            return false;
+        }
+
+        let Some(port_idx) = self.port_index else {
+            return false;
+        };
+
+        if is_note_on {
+            let Some((string_num, col)) = slot.calibration.map_note(note, self.num_strings) else {
+                return false;
+            };
+            let fret = (col + slot.fret_offset).max(0);
+
+            if self.is_percussion {
+                let channel = midly::num::u4::from(self.percussion_channel.saturating_sub(1).min(15));
+                let sound = if fret <= 0 {
+                    self.percussion_lines
+                        .get(&string_num)
+                        .map(|(p, _)| *p)
+                        .unwrap_or(38)
+                } else {
+                    let map_idx = (fret - 1) as usize;
+                    self.percussion_lines
+                        .get(&string_num)
+                        .and_then(|(_, syms)| syms.get(map_idx).copied())
+                        .unwrap_or(38)
+                };
+                let key = midly::num::u7::from(sound.min(127));
+                let vel = midly::num::u7::from(velocity.clamp(1, 127));
+
+                self.send_raw_note_on(port_idx, channel, key, vel, None, false, 1, 2);
+                self.active_notes.insert((slot_idx, note), (port_idx, channel, key));
+                return true;
+            } else {
+                let default_ch = if self.is_mpe {
+                    string_num + 1
+                } else {
+                    string_num
+                };
+                let ch_1_based = self
+                    .string_channel_map
+                    .get(&string_num)
+                    .copied()
+                    .unwrap_or(default_ch);
+                let ch_0_based = (ch_1_based.saturating_sub(1)) % 16;
+                let channel = midly::num::u4::from(ch_0_based);
+
+                if let (Some(freq_table), Some(part)) = (&self.freq_table, &self.part_copy) {
+                    if let Some(midi_note_frac) =
+                        freq_table.string_fret_to_midi_note_number(part, string_num, fret)
+                    {
+                        let base_note = midi_note_frac.round() as u8;
+                        let semitone_diff = (midi_note_frac - (base_note as f64)) as f32;
+                        let pitch_bend_val = crate::midi::calculate_pitch_bend(
+                            semitone_diff,
+                            self.pb_range,
+                        );
+                        let key = midly::num::u7::from(base_note.min(127));
+                        let vel = midly::num::u7::from(velocity.clamp(1, 127));
+
+                        self.send_raw_note_on(
+                            port_idx,
+                            channel,
+                            key,
+                            vel,
+                            Some(pitch_bend_val),
+                            self.is_mpe,
+                            self.num_strings,
+                            self.pb_range,
+                        );
+                        self.active_notes.insert((slot_idx, note), (port_idx, channel, key));
+                        return true;
+                    }
+                }
+            }
+        } else if is_note_off {
+            if let Some((p_idx, ch, key)) = self.active_notes.remove(&(slot_idx, note)) {
+                self.send_raw_note_off(p_idx, ch, key);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn silence_all_held_notes(&mut self) {
+        let active = std::mem::take(&mut self.active_notes);
+        for (_, (port_idx, ch, key)) in active {
+            self.send_raw_note_off(port_idx, ch, key);
+        }
+    }
+
+    pub fn silence_slot_notes(&mut self, slot_idx: usize) {
+        let to_silence: Vec<((usize, u8), (usize, midly::num::u4, midly::num::u7))> = self
+            .active_notes
+            .iter()
+            .filter(|((s, _), _)| *s == slot_idx)
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        for (k, (port_idx, ch, key)) in to_silence {
+            self.active_notes.remove(&k);
+            self.send_raw_note_off(port_idx, ch, key);
+        }
+    }
+
+    fn send_raw_note_on(
+        &self,
+        port_index: usize,
+        channel: midly::num::u4,
+        key: midly::num::u7,
+        velocity: midly::num::u7,
+        pitch_bend: Option<u16>,
+        is_mpe: bool,
+        member_channels: u8,
+        pb_range: u8,
+    ) {
+        if cfg!(test) {
+            return;
+        }
+        let Some(connections) = &self.connections else {
+            return;
+        };
+        let _ = crate::midi::ensure_cached_connection(connections, port_index);
+        let Ok(mut guard) = connections.lock() else {
+            return;
+        };
+        if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
+            let conn_out = &mut cached.conn;
+            if is_mpe {
+                crate::midi::send_mpe_configuration(conn_out, member_channels.min(15));
+            }
+            let ch = channel.as_int();
+            let _ = conn_out.send(&[0xB0 | ch, 101, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 100, 0]);
+            let _ = conn_out.send(&[0xB0 | ch, 6, pb_range.min(127)]);
+            let _ = conn_out.send(&[0xB0 | ch, 38, 0]);
+
+            if let Some(pb_val) = pitch_bend {
+                let pb_msg = midly::MidiMessage::PitchBend {
+                    bend: midly::PitchBend(midly::num::u14::from(pb_val)),
+                };
+                let bytes = crate::midi::serialize_midi_message(channel, &pb_msg);
+                if !bytes.is_empty() {
+                    let _ = conn_out.send(&bytes);
+                }
+            }
+
+            let note_on = midly::MidiMessage::NoteOn { key, vel: velocity };
+            let bytes = crate::midi::serialize_midi_message(channel, &note_on);
+            if !bytes.is_empty() {
+                let _ = conn_out.send(&bytes);
+            }
+        }
+    }
+
+    fn send_raw_note_off(
+        &self,
+        port_index: usize,
+        channel: midly::num::u4,
+        key: midly::num::u7,
+    ) {
+        if cfg!(test) {
+            return;
+        }
+        let Some(connections) = &self.connections else {
+            return;
+        };
+        let Ok(mut guard) = connections.lock() else {
+            return;
+        };
+        if let Some(cached) = guard.iter_mut().find(|c| c.port_index == port_index) {
+            let note_off = midly::MidiMessage::NoteOff {
+                key,
+                vel: midly::num::u7::from(64),
+            };
+            let bytes = crate::midi::serialize_midi_message(channel, &note_off);
+            if !bytes.is_empty() {
+                let _ = cached.conn.send(&bytes);
+            }
+        }
+    }
+}
+
 /// Manages up to 4 live `midir::MidiInputConnection`s and tracks held pads + 500ms release latch.
 pub struct GridInputManager {
     pub slots: [GridControllerSlotConfig; MAX_GRID_CONTROLLERS],
@@ -351,6 +576,8 @@ pub struct GridInputManager {
     pub release_latch_start: Option<Instant>,
     /// Active 4-corner calibration wizard state: `(slot_idx, step, partial_calibration)`
     pub active_calibration: Option<(usize, CalibrationStep, GridCalibration)>,
+    /// Shared live play state for background MIDI dispatch
+    pub live_play_state: Arc<Mutex<GridLivePlayState>>,
 }
 
 impl Default for GridInputManager {
@@ -380,6 +607,7 @@ impl GridInputManager {
             just_play_mode: false,
             release_latch_start: None,
             active_calibration: None,
+            live_play_state: Arc::new(Mutex::new(GridLivePlayState::default())),
         }
     }
 
@@ -399,8 +627,14 @@ impl GridInputManager {
                 });
             }
             self.held_pads.clear();
+            if let Ok(mut state) = self.live_play_state.lock() {
+                state.silence_all_held_notes();
+            }
         }
         self.just_play_mode = active;
+        if let Ok(mut state) = self.live_play_state.lock() {
+            state.just_play_mode = active;
+        }
         note_offs
     }
 
@@ -415,7 +649,12 @@ impl GridInputManager {
         }
     }
 
-    pub fn connect_slot(&mut self, slot_idx: usize, port_id: Option<usize>) -> Result<(), String> {
+    pub fn connect_slot(
+        &mut self,
+        slot_idx: usize,
+        port_id: Option<usize>,
+        ctx: Option<eframe::egui::Context>,
+    ) -> Result<(), String> {
         if slot_idx >= MAX_GRID_CONTROLLERS {
             return Err("Invalid controller slot".to_string());
         }
@@ -435,6 +674,7 @@ impl GridInputManager {
             .unwrap_or_else(|_| format!("Input Port {}", pid));
 
         let tx = self.tx.clone();
+        let live_state = Arc::clone(&self.live_play_state);
         let conn = midi_in
             .connect(
                 port,
@@ -444,20 +684,41 @@ impl GridInputManager {
                         let status = message[0] & 0xF0;
                         let note = message[1];
                         let velocity = message[2];
-                        if status == 0x90 && velocity > 0 {
-                            let _ = tx.send(GridMidiEvent {
-                                slot_idx,
-                                note,
-                                is_note_on: true,
-                                velocity,
-                            });
-                        } else if status == 0x80 || (status == 0x90 && velocity == 0) {
-                            let _ = tx.send(GridMidiEvent {
-                                slot_idx,
-                                note,
-                                is_note_on: false,
-                                velocity: 0,
-                            });
+
+                        let handled = if let Ok(mut state) = live_state.lock() {
+                            if state.just_play_mode {
+                                state.handle_midi_event(slot_idx, status, note, velocity)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if !handled {
+                            let mut sent = false;
+                            if status == 0x90 && velocity > 0 {
+                                let _ = tx.send(GridMidiEvent {
+                                    slot_idx,
+                                    note,
+                                    is_note_on: true,
+                                    velocity,
+                                });
+                                sent = true;
+                            } else if status == 0x80 || (status == 0x90 && velocity == 0) {
+                                let _ = tx.send(GridMidiEvent {
+                                    slot_idx,
+                                    note,
+                                    is_note_on: false,
+                                    velocity: 0,
+                                });
+                                sent = true;
+                            }
+                            if sent {
+                                if let Some(c) = &ctx {
+                                    c.request_repaint();
+                                }
+                            }
                         }
                     }
                 },
@@ -478,6 +739,9 @@ impl GridInputManager {
         } else {
             self.slots[slot_idx].is_calibrated = false;
         }
+        if let Ok(mut state) = self.live_play_state.lock() {
+            state.slots[slot_idx] = self.slots[slot_idx].clone();
+        }
         Ok(())
     }
 
@@ -489,8 +753,15 @@ impl GridInputManager {
             self.slots[slot_idx].port_name = None;
             self.slots[slot_idx].is_calibrated = false;
             self.held_pads.retain(|&(s, _), _| s != slot_idx);
+            if let Ok(mut state) = self.live_play_state.lock() {
+                state.silence_slot_notes(slot_idx);
+                state.slots[slot_idx] = self.slots[slot_idx].clone();
+            }
             if !self.has_connected_and_calibrated_controller() {
                 self.just_play_mode = false;
+                if let Ok(mut state) = self.live_play_state.lock() {
+                    state.just_play_mode = false;
+                }
             }
         }
     }
@@ -1169,5 +1440,49 @@ mod tests {
 
         let not_found = find_saved_calibration("LinnStrument", &loaded);
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_live_play_state_background_dispatch_and_silencing() {
+        let mut state = GridLivePlayState::default();
+        state.just_play_mode = true;
+        state.port_index = Some(0);
+        state.num_strings = 6;
+        state.slots[0].enabled = true;
+        state.slots[0].is_calibrated = true;
+        state.slots[0].calibration = GridCalibration::new_corners(76, 36, 83, 43);
+
+        // 1. Uncalibrated / disabled slot returns false
+        assert!(!state.handle_midi_event(1, 0x90, 60, 100));
+
+        // 2. Percussion mode test
+        state.is_percussion = true;
+        state.percussion_channel = 10;
+        let mut lines = HashMap::new();
+        // Line 1: Primary 42 (Closed HH), Letter overrides: [46 (Open HH), 44 (Pedal HH)]
+        lines.insert(1, (42, vec![46, 44]));
+        state.percussion_lines = lines;
+
+        // Note-on pad at String 1, Col 0 (Pad 76) -> Fret 0 -> Primary sound 42
+        assert!(state.handle_midi_event(0, 0x90, 76, 100));
+        assert!(state.active_notes.contains_key(&(0, 76)));
+        let (_, ch, key) = state.active_notes.get(&(0, 76)).copied().unwrap();
+        assert_eq!(ch.as_int(), 9); // Channel 10 is 0-indexed 9
+        assert_eq!(key.as_int(), 42);
+
+        // Note-on pad at String 1, Col 1 (Pad 77) -> Fret 1 -> Symbol override sound 46
+        assert!(state.handle_midi_event(0, 0x90, 77, 90));
+        assert!(state.active_notes.contains_key(&(0, 77)));
+        let (_, _, key_sym) = state.active_notes.get(&(0, 77)).copied().unwrap();
+        assert_eq!(key_sym.as_int(), 46);
+
+        // Release pad 76
+        assert!(state.handle_midi_event(0, 0x80, 76, 0));
+        assert!(!state.active_notes.contains_key(&(0, 76)));
+        assert!(state.active_notes.contains_key(&(0, 77)));
+
+        // Silencing clears any remaining active notes
+        state.silence_all_held_notes();
+        assert!(state.active_notes.is_empty());
     }
 }

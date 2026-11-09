@@ -2055,7 +2055,7 @@ impl MnxEditorApp {
                                     row_width = row_width.max(row_resp.response.rect.width());
                                 }
                                 if let Some((s_idx, pid)) = slot_port_change {
-                                    if let Err(err) = self.grid_input.connect_slot(s_idx, pid) {
+                                    if let Err(err) = self.grid_input.connect_slot(s_idx, pid, Some(ui.ctx().clone())) {
                                         self.midi_status_msg = Some(err);
                                     }
                                 }
