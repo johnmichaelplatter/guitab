@@ -646,6 +646,47 @@ pub fn set_chord_on_event_in_doc_part(
         Some(p) => p,
         None => return false,
     };
+
+    if part_clone.is_percussion() {
+        let mut new_kit_notes = Vec::new();
+        for (&line_num, &col_val) in chord {
+            let Some((comp_id, comp)) = part_clone.kit_component_for_line(line_num) else {
+                continue;
+            };
+            let sym_opt = if col_val <= 0 {
+                Some(comp.effective_default_symbol().to_string())
+            } else {
+                let map_idx = (col_val - 1) as usize;
+                match comp.ext.symbol_sounds.get(map_idx) {
+                    Some((sym, _)) => Some(sym.clone()),
+                    None => continue,
+                }
+            };
+            new_kit_notes.push(crate::mnx::KitNote {
+                id: None,
+                kit_component: comp_id,
+                ext: crate::mnx::KitNoteExt {
+                    symbol: sym_opt,
+                    sound_override: None,
+                },
+            });
+        }
+        if new_kit_notes.is_empty() {
+            return false;
+        }
+        let paths = doc.get_flattened_event_paths_for_part(part_idx);
+        let Some(&path) = paths.get(event_idx) else {
+            return false;
+        };
+        let Some(ev) = doc.get_event_mut_at_part_path(part_idx, path) else {
+            return false;
+        };
+        ev.rest = None;
+        ev.notes.clear();
+        ev.kit_notes = new_kit_notes;
+        return true;
+    }
+
     let ref_note = doc
         .global
         .ext

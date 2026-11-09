@@ -129,6 +129,7 @@ pub struct MnxEditorApp {
     pub(crate) cached_event_ranges: Vec<crate::yaml_editor::EventRange>,
     pub(crate) current_grid: String,
     pub(crate) instrument_presets: Vec<crate::presets::InstrumentPreset>,
+    pub(crate) drum_kit_presets: Vec<crate::presets::DrumKitPreset>,
     pub(crate) preset_status_msg: Option<String>,
     pub(crate) midi_input_ports: Vec<crate::midi::MidiPortInfo>,
     pub(crate) grid_input: crate::grid_input::GridInputManager,
@@ -246,6 +247,20 @@ pub enum ActiveDialog {
         is_new_tab: bool,
     },
     SaveInstrumentPreset {
+        preset_name: String,
+        error_msg: Option<String>,
+        num_strings: u8,
+        edo: u8,
+        step_multiplier: u8,
+        tuning_mode: InstrumentTuningMode,
+        tunings_text: Vec<String>,
+        tunings_name: Vec<String>,
+        tunings_octave: Vec<i32>,
+        show_custom_fretboard: bool,
+        fretboard_editor: crate::fretboard_editor::FretboardEditorState,
+        is_new_tab: bool,
+    },
+    SaveDrumKitPreset {
         preset_name: String,
         error_msg: Option<String>,
         num_strings: u8,
@@ -502,6 +517,7 @@ impl MnxEditorApp {
             cached_event_ranges: Vec::new(),
             current_grid: String::from("quarter"),
             instrument_presets: crate::presets::load_presets_with_user_config(),
+            drum_kit_presets: crate::presets::load_drum_presets_with_user_config(),
             preset_status_msg: None,
             midi_input_ports: input_ports,
             grid_input: crate::grid_input::GridInputManager::default(),
@@ -1285,15 +1301,13 @@ impl MnxEditorApp {
     }
 
     /// Handles live note-on/note-off events from grid controllers in "Just Play" mode,
-    /// looking up the exact pitch via `FretboardFrequencyTable` and streaming to MIDI output.
+    /// looking up the exact pitch via `FretboardFrequencyTable` (or percussion line/symbol mapping)
+    /// and streaming to MIDI output.
     pub fn handle_grid_live_play_events(
         &mut self,
         events: Vec<crate::grid_input::GridLivePlayEvent>,
     ) {
-        let port_idx = match self.get_part_midi_port(self.selected_part_idx) {
-            Some(p) => p,
-            None => return,
-        };
+        let port_idx_opt = self.get_part_midi_port(self.selected_part_idx);
         let is_mpe = self.is_part_mpe_mode(self.selected_part_idx);
         let pb_range = self.get_part_pitch_bend_range(self.selected_part_idx);
         let doc = match &self.parsed_mnx {
@@ -1308,6 +1322,57 @@ impl MnxEditorApp {
             Some(p) => p,
             None => return,
         };
+
+        if part.is_percussion() {
+            let channel = midly::num::u4::from(part.percussion_midi_channel().saturating_sub(1).min(15));
+            for ev in events {
+                let Some((_, comp)) = part.kit_component_for_line(ev.string) else {
+                    continue;
+                };
+                let midi_note_opt = if ev.fret <= 0 {
+                    Some(comp.sound.unwrap_or(38).min(127))
+                } else {
+                    let map_idx = (ev.fret - 1) as usize;
+                    comp.ext
+                        .symbol_sounds
+                        .get(map_idx)
+                        .map(|(_, note)| (*note).min(127))
+                };
+
+                if ev.is_note_on {
+                    if let Some(midi_note) = midi_note_opt {
+                        let key = midly::num::u7::from(midi_note);
+                        let vel = midly::num::u7::from(ev.velocity.clamp(1, 127));
+                        if let Some(port_idx) = port_idx_opt {
+                            let _ = self.midi_player.send_live_note_on(
+                                port_idx,
+                                channel,
+                                key,
+                                vel,
+                                None,
+                                false,
+                                1,
+                                2,
+                            );
+                        }
+                        self.active_grid_live_notes
+                            .insert((ev.string, ev.fret), (channel, key));
+                    }
+                } else if let Some((ch, key)) =
+                    self.active_grid_live_notes.remove(&(ev.string, ev.fret))
+                {
+                    if let Some(port_idx) = port_idx_opt {
+                        let _ = self.midi_player.send_live_note_off(port_idx, ch, key);
+                    }
+                } else if let Some(midi_note) = midi_note_opt {
+                    let key = midly::num::u7::from(midi_note);
+                    if let Some(port_idx) = port_idx_opt {
+                        let _ = self.midi_player.send_live_note_off(port_idx, channel, key);
+                    }
+                }
+            }
+            return;
+        }
 
         let freq_table = crate::tuning_table::FretboardFrequencyTable::from_doc_part(doc, part);
         let num_strings = part.num_strings() as u8;
@@ -1339,28 +1404,34 @@ impl MnxEditorApp {
                     let key = midly::num::u7::from(base_note.min(127));
                     let vel = midly::num::u7::from(ev.velocity.clamp(1, 127));
 
-                    let _ = self.midi_player.send_live_note_on(
-                        port_idx,
-                        channel,
-                        key,
-                        vel,
-                        Some(pitch_bend_val),
-                        is_mpe,
-                        num_strings,
-                        pb_range,
-                    );
+                    if let Some(port_idx) = port_idx_opt {
+                        let _ = self.midi_player.send_live_note_on(
+                            port_idx,
+                            channel,
+                            key,
+                            vel,
+                            Some(pitch_bend_val),
+                            is_mpe,
+                            num_strings,
+                            pb_range,
+                        );
+                    }
                     self.active_grid_live_notes
                         .insert((ev.string, ev.fret), (channel, key));
                 }
             } else {
                 if let Some((ch, key)) = self.active_grid_live_notes.remove(&(ev.string, ev.fret)) {
-                    let _ = self.midi_player.send_live_note_off(port_idx, ch, key);
+                    if let Some(port_idx) = port_idx_opt {
+                        let _ = self.midi_player.send_live_note_off(port_idx, ch, key);
+                    }
                 } else if let Some(midi_note_frac) =
                     freq_table.string_fret_to_midi_note_number(part, ev.string, ev.fret)
                 {
                     let base_note = midi_note_frac.round() as u8;
                     let key = midly::num::u7::from(base_note.min(127));
-                    let _ = self.midi_player.send_live_note_off(port_idx, channel, key);
+                    if let Some(port_idx) = port_idx_opt {
+                        let _ = self.midi_player.send_live_note_off(port_idx, channel, key);
+                    }
                 }
             }
         }

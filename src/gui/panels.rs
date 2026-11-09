@@ -416,6 +416,10 @@ impl MnxEditorApp {
             let mut arpeggio_up_clicked = false;
             let mut arpeggio_down_clicked = false;
             let mut harmonic_clicked = false;
+            let is_perc_active = self
+                .active_part()
+                .map(|p| p.is_percussion())
+                .unwrap_or(false);
             let has_text_focus = self.is_editing_lyric
                 || self.active_dialog != ActiveDialog::None
                 || ui.memory(|m| {
@@ -443,12 +447,6 @@ impl MnxEditorApp {
 
                     let make_icon_btn = |ui: &mut egui::Ui, texture: &egui::TextureHandle, is_active: bool, tooltip: &str| -> bool {
                         let img = egui::Image::new(texture).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
-                        let btn = egui::Button::image(img).selected(is_active);
-                        ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
-                    };
-
-                    let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
-                        let img = egui::Image::new(source).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
                         let btn = egui::Button::image(img).selected(is_active);
                         ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
                     };
@@ -575,10 +573,29 @@ impl MnxEditorApp {
                         grace_clicked = true;
                     }
 
-                    // Tie button
-                    let is_tie = self.is_selected_event_tied();
-                    if make_svg_btn(ui, include_image!("../../assets/tie.svg"), is_tie, "Tie (Shift+T)") || (!has_text_focus && ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::T))) {
-                        tie_clicked = true;
+                    // Tie button (disabled on percussion tabs)
+                    let is_tie = !is_perc_active && self.is_selected_event_tied();
+                    let tie_tint = if is_perc_active {
+                        ui.visuals().weak_text_color().gamma_multiply(0.45)
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    let tie_img = egui::Image::new(include_image!("../../assets/tie.svg"))
+                        .fit_to_exact_size(icon_size)
+                        .tint(tie_tint);
+                    let tie_btn = egui::Button::image(tie_img).selected(is_tie);
+                    if !is_perc_active {
+                        if ui.add_sized(btn_size, tie_btn).on_hover_text("Tie (Shift+T)").clicked()
+                            || (!has_text_focus
+                                && ui.input(|i| i.modifiers.shift && i.key_pressed(egui::Key::T)))
+                        {
+                            tie_clicked = true;
+                        }
+                    } else {
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.add_sized(btn_size, tie_btn)
+                                .on_disabled_hover_text("Tie (not available on drum tabs)");
+                        });
                     }
 
                 }
@@ -891,30 +908,58 @@ impl MnxEditorApp {
                 ui.label(egui::RichText::new("Technique:").strong());
                 let btn_size = egui::vec2(30.0, 30.0);
                 let icon_size = egui::vec2(24.0, 24.0);
-                let make_svg_btn = |ui: &mut egui::Ui, source: egui::ImageSource<'static>, is_active: bool, tooltip: &str| -> bool {
-                    let img = egui::Image::new(source).fit_to_exact_size(icon_size).tint(ui.visuals().text_color());
-                    let btn = egui::Button::image(img).selected(is_active);
-                    ui.add_sized(btn_size, btn).on_hover_text(tooltip).clicked()
+                let perc_sense = if is_perc_active {
+                    egui::Sense::hover()
+                } else {
+                    egui::Sense::click()
                 };
-                    // Slur button
-                    let is_slur = self.is_selected_note_slurred();
-                    if make_svg_btn(ui, include_image!("../../assets/hammer_pulloff.svg"), is_slur, "Hammer / Pull-off (S)") || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::S))) {
-                        slur_clicked = true;
+                let disabled_color = ui.visuals().weak_text_color().gamma_multiply(0.45);
+
+                    // Slur button (disabled on percussion tabs)
+                    let is_slur = !is_perc_active && self.is_selected_note_slurred();
+                    let slur_tint = if is_perc_active {
+                        disabled_color
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    let slur_img = egui::Image::new(include_image!("../../assets/hammer_pulloff.svg"))
+                        .fit_to_exact_size(icon_size)
+                        .tint(slur_tint);
+                    let slur_btn = egui::Button::image(slur_img).selected(is_slur);
+                    if !is_perc_active {
+                        if ui
+                            .add_sized(btn_size, slur_btn)
+                            .on_hover_text("Hammer / Pull-off (S)")
+                            .clicked()
+                            || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::S)))
+                        {
+                            slur_clicked = true;
+                        }
+                    } else {
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.add_sized(btn_size, slur_btn)
+                                .on_disabled_hover_text("Hammer / Pull-off (not available on drum tabs)");
+                        });
                     }
 
-                    // Tap button
-                    let is_tap = self.is_selected_note_tapped();
-                    let (tap_rect, tap_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    // Tap button (disabled on percussion tabs)
+                    let is_tap = !is_perc_active && self.is_selected_note_tapped();
+                    let (tap_rect, tap_resp) = ui.allocate_exact_size(btn_size, perc_sense);
                     if ui.is_rect_visible(tap_rect) {
                         let visuals = ui.style().interact_selectable(&tap_resp, is_tap);
+                        let stroke = if is_perc_active {
+                            egui::Stroke::new(visuals.bg_stroke.width, visuals.bg_stroke.color.gamma_multiply(0.45))
+                        } else {
+                            visuals.bg_stroke
+                        };
                         ui.painter().rect(
                             tap_rect,
                             visuals.corner_radius,
                             visuals.bg_fill,
-                            visuals.bg_stroke,
+                            stroke,
                             egui::StrokeKind::Inside,
                         );
-                        let color = visuals.text_color();
+                        let color = if is_perc_active { disabled_color } else { visuals.text_color() };
                         ui.painter().text(
                             tap_rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -923,23 +968,36 @@ impl MnxEditorApp {
                             color,
                         );
                     }
-                    if tap_resp.on_hover_text("Tap (T)").clicked() || (!has_text_focus && !ui.input(|i| i.modifiers.shift) && ui.input(|i| i.key_pressed(egui::Key::T))) {
-                        tap_clicked = true;
+                    if !is_perc_active {
+                        if tap_resp.on_hover_text("Tap (T)").clicked()
+                            || (!has_text_focus
+                                && !ui.input(|i| i.modifiers.shift)
+                                && ui.input(|i| i.key_pressed(egui::Key::T)))
+                        {
+                            tap_clicked = true;
+                        }
+                    } else {
+                        tap_resp.on_hover_text("Tap (not available on drum tabs)");
                     }
-                    
-                    // Slide button
-                    let is_slide = self.is_selected_note_sliding();
-                    let (slide_rect, slide_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+
+                    // Slide button (disabled on percussion tabs)
+                    let is_slide = !is_perc_active && self.is_selected_note_sliding();
+                    let (slide_rect, slide_resp) = ui.allocate_exact_size(btn_size, perc_sense);
                     if ui.is_rect_visible(slide_rect) {
                         let visuals = ui.style().interact_selectable(&slide_resp, is_slide);
+                        let stroke = if is_perc_active {
+                            egui::Stroke::new(visuals.bg_stroke.width, visuals.bg_stroke.color.gamma_multiply(0.45))
+                        } else {
+                            visuals.bg_stroke
+                        };
                         ui.painter().rect(
                             slide_rect,
                             visuals.corner_radius,
                             visuals.bg_fill,
-                            visuals.bg_stroke,
+                            stroke,
                             egui::StrokeKind::Inside,
                         );
-                        let color = visuals.text_color();
+                        let color = if is_perc_active { disabled_color } else { visuals.text_color() };
                         let pad = 8.0;
                         ui.painter().line_segment(
                             [
@@ -949,28 +1007,50 @@ impl MnxEditorApp {
                             egui::Stroke::new(2.0, color),
                         );
                     }
-                    if slide_resp.on_hover_text("Slide (L)").clicked() || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::L))) {
-                        slide_clicked = true;
-                    }
-                    
-                    // Bend button
-                    let is_bend = self.is_selected_note_bent();
-                    if ui.add_sized(btn_size, egui::Button::new(egui::RichText::new("Bnd").size(11.0)).selected(is_bend)).on_hover_text("Bend (B)").clicked() || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::B))) {
-                        bend_clicked = true;
+                    if !is_perc_active {
+                        if slide_resp.on_hover_text("Slide (L)").clicked()
+                            || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::L)))
+                        {
+                            slide_clicked = true;
+                        }
+                    } else {
+                        slide_resp.on_hover_text("Slide (not available on drum tabs)");
                     }
 
-                    // Natural Harmonic button
-                    let is_harmonic = self.is_selected_note_harmonic();
+                    // Bend button (disabled on percussion tabs)
+                    let is_bend = !is_perc_active && self.is_selected_note_bent();
+                    let bnd_btn = egui::Button::new(egui::RichText::new("Bnd").size(11.0)).selected(is_bend);
+                    if !is_perc_active {
+                        if ui.add_sized(btn_size, bnd_btn).on_hover_text("Bend (B)").clicked()
+                            || (!has_text_focus && ui.input(|i| i.key_pressed(egui::Key::B)))
+                        {
+                            bend_clicked = true;
+                        }
+                    } else {
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.add_sized(btn_size, bnd_btn)
+                                .on_disabled_hover_text("Bend (not available on drum tabs)");
+                        });
+                    }
+
+                    // Natural Harmonic button (disabled on percussion tabs)
+                    let is_harmonic = !is_perc_active && self.is_selected_note_harmonic();
                     let nh_btn = egui::Button::new(egui::RichText::new("<N.H.>").size(10.5).strong())
                         .selected(is_harmonic);
-                    if ui.add_sized(egui::vec2(44.0, 30.0), nh_btn).on_hover_text("Natural Harmonic (H)").clicked()
-                        || (!has_text_focus && !ui.input(|i| i.modifiers.any()) && ui.input(|i| i.key_pressed(egui::Key::H)))
-                    {
-                        harmonic_clicked = true;
+                    if !is_perc_active {
+                        if ui.add_sized(egui::vec2(44.0, 30.0), nh_btn).on_hover_text("Natural Harmonic (H)").clicked()
+                            || (!has_text_focus && !ui.input(|i| i.modifiers.any()) && ui.input(|i| i.key_pressed(egui::Key::H)))
+                        {
+                            harmonic_clicked = true;
+                        }
+                    } else {
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.add_sized(egui::vec2(44.0, 30.0), nh_btn)
+                                .on_disabled_hover_text("Natural Harmonic (not available on drum tabs)");
+                        });
                     }
-                    
-                    // Strum Up button
-                    // Accent button
+
+                    // Accent button (AVAILABLE on percussion tabs!)
                     let is_accent = self.is_selected_event_accented();
                     let (acc_rect, acc_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
                     if ui.is_rect_visible(acc_rect) {
@@ -983,59 +1063,97 @@ impl MnxEditorApp {
                     if acc_resp.on_hover_text("Accent").clicked() {
                         accent_clicked = true;
                     }
-                    // Arpeggio Up button
-                    let is_arpeggio_up = self.is_selected_event_arpeggiated("up");
-                    let (arpu_rect, arpu_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+
+                    // Arpeggio Up button (disabled on percussion tabs)
+                    let is_arpeggio_up = !is_perc_active && self.is_selected_event_arpeggiated("up");
+                    let (arpu_rect, arpu_resp) = ui.allocate_exact_size(btn_size, perc_sense);
                     if ui.is_rect_visible(arpu_rect) {
                         let visuals = ui.style().interact_selectable(&arpu_resp, is_arpeggio_up);
-                        ui.painter().rect(arpu_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
-                        let color = visuals.text_color();
+                        let stroke = if is_perc_active {
+                            egui::Stroke::new(visuals.bg_stroke.width, visuals.bg_stroke.color.gamma_multiply(0.45))
+                        } else {
+                            visuals.bg_stroke
+                        };
+                        ui.painter().rect(arpu_rect, visuals.corner_radius, visuals.bg_fill, stroke, egui::StrokeKind::Inside);
+                        let color = if is_perc_active { disabled_color } else { visuals.text_color() };
                         let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
                         ui.painter().text(arpu_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E634}", font_id, color);
                     }
-                    if arpu_resp.on_hover_text("Roll chord (low to high)").clicked() {
-                        arpeggio_up_clicked = true;
+                    if !is_perc_active {
+                        if arpu_resp.on_hover_text("Roll chord (low to high)").clicked() {
+                            arpeggio_up_clicked = true;
+                        }
+                    } else {
+                        arpu_resp.on_hover_text("Roll chord (not available on drum tabs)");
                     }
 
-                    // Arpeggio Down button
-                    let is_arpeggio_down = self.is_selected_event_arpeggiated("down");
-                    let (arpd_rect, arpd_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    // Arpeggio Down button (disabled on percussion tabs)
+                    let is_arpeggio_down = !is_perc_active && self.is_selected_event_arpeggiated("down");
+                    let (arpd_rect, arpd_resp) = ui.allocate_exact_size(btn_size, perc_sense);
                     if ui.is_rect_visible(arpd_rect) {
                         let visuals = ui.style().interact_selectable(&arpd_resp, is_arpeggio_down);
-                        ui.painter().rect(arpd_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
-                        let color = visuals.text_color();
+                        let stroke = if is_perc_active {
+                            egui::Stroke::new(visuals.bg_stroke.width, visuals.bg_stroke.color.gamma_multiply(0.45))
+                        } else {
+                            visuals.bg_stroke
+                        };
+                        ui.painter().rect(arpd_rect, visuals.corner_radius, visuals.bg_fill, stroke, egui::StrokeKind::Inside);
+                        let color = if is_perc_active { disabled_color } else { visuals.text_color() };
                         let font_id = egui::FontId::new(18.0, egui::FontFamily::Name("Bravura".into()));
                         ui.painter().text(arpd_rect.center() + egui::vec2(0.0, 13.0), egui::Align2::CENTER_CENTER, "\u{E635}", font_id, color);
                     }
-                    if arpd_resp.on_hover_text("Roll chord (high to low)").clicked() {
-                        arpeggio_down_clicked = true;
+                    if !is_perc_active {
+                        if arpd_resp.on_hover_text("Roll chord (high to low)").clicked() {
+                            arpeggio_down_clicked = true;
+                        }
+                    } else {
+                        arpd_resp.on_hover_text("Roll chord (not available on drum tabs)");
                     }
 
-                    let is_strum_up = self.is_selected_event_strummed("up");
-                    let (sup_rect, sup_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    // Strum Up button (disabled on percussion tabs)
+                    let is_strum_up = !is_perc_active && self.is_selected_event_strummed("up");
+                    let (sup_rect, sup_resp) = ui.allocate_exact_size(btn_size, perc_sense);
                     if ui.is_rect_visible(sup_rect) {
                         let visuals = ui.style().interact_selectable(&sup_resp, is_strum_up);
-                        ui.painter().rect(sup_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
-                        let color = visuals.text_color();
+                        let stroke = if is_perc_active {
+                            egui::Stroke::new(visuals.bg_stroke.width, visuals.bg_stroke.color.gamma_multiply(0.45))
+                        } else {
+                            visuals.bg_stroke
+                        };
+                        ui.painter().rect(sup_rect, visuals.corner_radius, visuals.bg_fill, stroke, egui::StrokeKind::Inside);
+                        let color = if is_perc_active { disabled_color } else { visuals.text_color() };
                         let font_id = egui::FontId::new(24.0, egui::FontFamily::Name("Bravura".into()));
                         ui.painter().text(sup_rect.center() + egui::vec2(0.0, 7.5), egui::Align2::CENTER_CENTER, "\u{EB70}", font_id, color);
                     }
-                    if sup_resp.on_hover_text("Up Strum").clicked() {
-                        strum_up_clicked = true;
+                    if !is_perc_active {
+                        if sup_resp.on_hover_text("Up Strum").clicked() {
+                            strum_up_clicked = true;
+                        }
+                    } else {
+                        sup_resp.on_hover_text("Up Strum (not available on drum tabs)");
                     }
 
-                    // Strum Down button
-                    let is_strum_down = self.is_selected_event_strummed("down");
-                    let (sdown_rect, sdown_resp) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    // Strum Down button (disabled on percussion tabs)
+                    let is_strum_down = !is_perc_active && self.is_selected_event_strummed("down");
+                    let (sdown_rect, sdown_resp) = ui.allocate_exact_size(btn_size, perc_sense);
                     if ui.is_rect_visible(sdown_rect) {
                         let visuals = ui.style().interact_selectable(&sdown_resp, is_strum_down);
-                        ui.painter().rect(sdown_rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
-                        let color = visuals.text_color();
+                        let stroke = if is_perc_active {
+                            egui::Stroke::new(visuals.bg_stroke.width, visuals.bg_stroke.color.gamma_multiply(0.45))
+                        } else {
+                            visuals.bg_stroke
+                        };
+                        ui.painter().rect(sdown_rect, visuals.corner_radius, visuals.bg_fill, stroke, egui::StrokeKind::Inside);
+                        let color = if is_perc_active { disabled_color } else { visuals.text_color() };
                         let font_id = egui::FontId::new(24.0, egui::FontFamily::Name("Bravura".into()));
                         ui.painter().text(sdown_rect.center() + egui::vec2(0.0, 7.5), egui::Align2::CENTER_CENTER, "\u{EB74}", font_id, color);
                     }
-                    if sdown_resp.on_hover_text("Down Strum").clicked() {
-                        strum_down_clicked = true;
+                    if !is_perc_active {
+                        if sdown_resp.on_hover_text("Down Strum").clicked() {
+                            strum_down_clicked = true;
+                        }
+                    } else {
+                        sdown_resp.on_hover_text("Down Strum (not available on drum tabs)");
                     }
 
                     ui.separator();
@@ -1345,10 +1463,14 @@ impl MnxEditorApp {
                     .active_part()
                     .map(|p| p.is_percussion())
                     .unwrap_or(false);
-                let active_icon = if active_is_perc { "🥁" } else { "🎸" };
+                let selected_part_text = if active_is_perc {
+                    current_part_name.clone()
+                } else {
+                    format!("🎸 {}", current_part_name)
+                };
                 let mut newly_selected_part = None;
                 egui::ComboBox::from_id_salt("active_instrument_selector")
-                    .selected_text(format!("{} {}", active_icon, current_part_name))
+                    .selected_text(selected_part_text)
                     .show_ui(ui, |ui| {
                         for (idx, name) in part_names.iter().enumerate() {
                             if ui
@@ -1587,11 +1709,11 @@ impl MnxEditorApp {
                                                 "L{} {} ({}):",
                                                 line_num, short_lbl, def_sym
                                             ));
+                                            ui.label("MIDI Note:");
                                             if ui
                                                 .add(
                                                     egui::DragValue::new(&mut cur_sound)
-                                                        .range(0..=127)
-                                                        .prefix("Note "),
+                                                        .range(0..=127),
                                                 )
                                                 .changed()
                                             {
@@ -1612,7 +1734,7 @@ impl MnxEditorApp {
                                                 .iter()
                                                 .map(|(s, n)| {
                                                     format!(
-                                                        "'{}'→{}",
+                                                        "'{}' -> {}",
                                                         s,
                                                         crate::presets::format_gm_percussion_label(*n)
                                                     )
@@ -1620,7 +1742,7 @@ impl MnxEditorApp {
                                                 .collect();
                                             ui.label(
                                                 egui::RichText::new(format!(
-                                                    "   Overrides: {}",
+                                                    "   Tab Letter Mappings: {}",
                                                     overrides_str.join(", ")
                                                 ))
                                                 .size(10.5)
@@ -1641,7 +1763,7 @@ impl MnxEditorApp {
 
                                     ui.add_space(4.0);
                                     if ui
-                                        .button("Configure Lines & Symbol Overrides...")
+                                        .button("Configure Lines & Tab Letter Mappings...")
                                         .clicked()
                                     {
                                         self.select_part(dialog_p_idx);

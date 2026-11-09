@@ -66,20 +66,149 @@ pub fn gm_percussion_name(note: u8) -> &'static str {
 
 pub fn format_gm_percussion_label(note: u8) -> String {
     if let Some((_, name)) = GM_PERCUSSION_NOTES.iter().find(|(n, _)| *n == note) {
-        format!("{} — {}", note, name)
+        format!("{} - {}", note, name)
     } else {
-        format!("{} — Custom Note", note)
+        format!("{} - Custom Note", note)
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PercussionLineConfig {
+    #[serde(default)]
     pub id: String,
+    #[serde(rename = "shortName", alias = "short_name")]
     pub short_name: String,
     pub name: String,
+    #[serde(rename = "defaultSymbol", alias = "default_symbol")]
     pub default_symbol: String,
     pub sound: u8,
+    #[serde(
+        rename = "symbolSounds",
+        alias = "symbol_sounds",
+        default,
+        with = "crate::mnx::ordered_symbol_sounds",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub symbol_sounds: Vec<(String, u8)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DrumKitPreset {
+    pub name: String,
+    pub lines: Vec<PercussionLineConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DrumPresetListWrapper {
+    #[serde(alias = "drumPresets", alias = "drum_presets")]
+    pub presets: Vec<DrumKitPreset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+enum DrumPresetYamlFormat {
+    WrappedList(DrumPresetListWrapper),
+    BareList(Vec<DrumKitPreset>),
+    Single(DrumKitPreset),
+}
+
+impl DrumKitPreset {
+    pub fn display_label(&self) -> String {
+        format!("{} ({}-line)", self.name, self.lines.len())
+    }
+}
+
+pub fn add_or_update_drum_preset(
+    presets: &mut Vec<DrumKitPreset>,
+    new_preset: DrumKitPreset,
+) {
+    if let Some(existing) = presets
+        .iter_mut()
+        .find(|p| p.name.eq_ignore_ascii_case(&new_preset.name))
+    {
+        *existing = new_preset;
+    } else {
+        presets.push(new_preset);
+    }
+}
+
+pub fn parse_drum_presets_from_yaml(yaml: &str) -> Result<Vec<DrumKitPreset>, String> {
+    let parsed: DrumPresetYamlFormat = serde_saphyr::from_str(yaml)
+        .map_err(|e| format!("Failed to parse drum kit preset YAML: {}", e))?;
+    let list = match parsed {
+        DrumPresetYamlFormat::WrappedList(w) => w.presets,
+        DrumPresetYamlFormat::BareList(v) => v,
+        DrumPresetYamlFormat::Single(p) => vec![p],
+    };
+    if list.is_empty() {
+        return Err("No drum kit presets found in YAML file.".to_string());
+    }
+    Ok(list)
+}
+
+pub fn serialize_drum_preset_to_yaml(preset: &DrumKitPreset) -> Result<String, String> {
+    serde_saphyr::to_string(preset)
+        .map_err(|e| format!("Failed to serialize drum kit preset: {}", e))
+}
+
+pub fn serialize_drum_presets_list_to_yaml(presets: &[DrumKitPreset]) -> Result<String, String> {
+    let wrapper = DrumPresetListWrapper {
+        presets: presets.to_vec(),
+    };
+    serde_saphyr::to_string(&wrapper)
+        .map_err(|e| format!("Failed to serialize drum kit presets: {}", e))
+}
+
+pub fn user_drum_presets_file_path() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME") {
+        let dir = Path::new(&home).join(".config").join("guitab");
+        return Some(dir.join("drum_presets.yaml"));
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = Path::new(&appdata).join("guitab");
+        return Some(dir.join("drum_presets.yaml"));
+    }
+    None
+}
+
+pub fn builtin_drum_kit_preset_structs() -> Vec<DrumKitPreset> {
+    builtin_drum_kit_presets()
+        .into_iter()
+        .map(|(name, lines)| DrumKitPreset { name, lines })
+        .collect()
+}
+
+pub fn load_drum_presets_with_user_config() -> Vec<DrumKitPreset> {
+    let mut presets = builtin_drum_kit_preset_structs();
+    if cfg!(test) {
+        return presets;
+    }
+    if let Some(path) = user_drum_presets_file_path() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(loaded) = parse_drum_presets_from_yaml(&content) {
+                for p in loaded {
+                    add_or_update_drum_preset(&mut presets, p);
+                }
+            }
+        }
+    }
+    presets
+}
+
+pub fn save_drum_presets_to_user_config(presets: &[DrumKitPreset]) -> Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    if let Some(path) = user_drum_presets_file_path() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
+        }
+        let yaml = serialize_drum_presets_list_to_yaml(presets)?;
+        fs::write(&path, yaml)
+            .map_err(|e| format!("Failed to write drum presets file: {}", e))?;
+    }
+    Ok(())
 }
 
 impl PercussionLineConfig {
@@ -206,11 +335,15 @@ pub fn line_configs_to_kit(lines: &[PercussionLineConfig]) -> BTreeMap<String, K
         }
         used_ids.insert(unique_id.clone());
 
-        let mut sym_map = BTreeMap::new();
+        let mut sym_map: Vec<(String, u8)> = Vec::new();
         for (sym, note) in &cfg.symbol_sounds {
             let clean_sym = sym.trim();
             if !clean_sym.is_empty() {
-                sym_map.insert(clean_sym.to_string(), *note);
+                if let Some(existing) = sym_map.iter_mut().find(|(k, _)| k == clean_sym) {
+                    existing.1 = *note;
+                } else {
+                    sym_map.push((clean_sym.to_string(), *note));
+                }
             }
         }
 

@@ -6779,5 +6779,141 @@ parts:
             .expect("PDF generation for percussion score");
         assert!(pdf_bytes.starts_with(b"%PDF"));
     }
+
+    #[test]
+    fn test_phase_3b_tab_letter_mappings_cycle_grid_presets_and_guards() {
+        let mut app = MnxEditorApp::default();
+        let mut lines = crate::presets::standard_6_line_kit_configs();
+        // Snare (line 4, index 3): default 'o' (38), Tab Letter Mappings: ['x' -> 37, 'b' -> 53, 'r' -> 40]
+        lines[3].symbol_sounds = vec![
+            ("x".to_string(), 37),
+            ("b".to_string(), 53),
+            ("r".to_string(), 40),
+        ];
+        app.instrument_setup_name_buf = "Custom Drum Kit".to_string();
+        app.start_new_percussion_tab(lines.clone());
+
+        // 1. Place default hit on Snare (Line 4) -> 'o'
+        app.selected_event_idx = Some(0);
+        app.editing_string = Some(4);
+        app.commit_percussion_hit(Some("o"));
+        app.select_note_on_string(0, 4);
+
+        // Shift+Up (+1) cycles: 'o' -> 'x' -> 'b' -> 'r' -> 'o'
+        app.action_shift_selected_frets(1);
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts[0].measures[0].sequences[0].flattened_events()[0]
+                .kit_notes[0]
+                .ext
+                .symbol
+                .as_deref(),
+            Some("x")
+        );
+        app.action_shift_selected_frets(1);
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts[0].measures[0].sequences[0].flattened_events()[0]
+                .kit_notes[0]
+                .ext
+                .symbol
+                .as_deref(),
+            Some("b")
+        );
+        app.action_shift_selected_frets(1);
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts[0].measures[0].sequences[0].flattened_events()[0]
+                .kit_notes[0]
+                .ext
+                .symbol
+                .as_deref(),
+            Some("r")
+        );
+        app.action_shift_selected_frets(1);
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts[0].measures[0].sequences[0].flattened_events()[0]
+                .kit_notes[0]
+                .ext
+                .symbol
+                .as_deref(),
+            Some("o")
+        );
+        // Shift+Down (-1) cycles backwards: 'o' -> 'r'
+        app.action_shift_selected_frets(-1);
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts[0].measures[0].sequences[0].flattened_events()[0]
+                .kit_notes[0]
+                .ext
+                .symbol
+                .as_deref(),
+            Some("r")
+        );
+
+        // 2. Grid Input Mode on percussion part:
+        // Column 0 -> default symbol ('o' on Kick line 6, 'x' on Hi-Hat line 2)
+        // Column 1 -> 1st Tab Letter Mapping ('x' on Snare line 4)
+        // Column 2 -> 2nd Tab Letter Mapping ('b' on Snare line 4)
+        let mut doc = app.parsed_mnx.as_ref().unwrap().clone();
+        let mut chord = std::collections::BTreeMap::new();
+        chord.insert(6, 0);
+        chord.insert(2, 1);
+        chord.insert(4, 2);
+        assert!(
+            crate::yaml_editor::set_chord_on_event_in_doc_part(&mut doc, 0, 0, &chord),
+            "grid chord on percussion part"
+        );
+        let ev1 = doc.parts[0].measures[0].sequences[0].flattened_events()[0];
+        assert_eq!(ev1.kit_notes.len(), 3);
+        let kick_kn = ev1.kit_notes.iter().find(|k| k.kit_component == "kick").unwrap();
+        let hh_kn = ev1.kit_notes.iter().find(|k| k.kit_component == "hi-hat").unwrap();
+        let snare_kn = ev1.kit_notes.iter().find(|k| k.kit_component == "snare").unwrap();
+        assert_eq!(kick_kn.ext.symbol.as_deref(), Some("o"));
+        assert_eq!(hh_kn.ext.symbol.as_deref(), Some("o")); // col 1 on Hi-Hat -> 1st mapping 'o' (Open Hi-Hat)
+        assert_eq!(snare_kn.ext.symbol.as_deref(), Some("b")); // col 2 on Snare -> 2nd mapping 'b'
+
+        // 3. Kit Presets YAML export/import roundtrip preserves Tab Letter Mapping order
+        let preset = crate::presets::DrumKitPreset {
+            name: "Studio Custom".to_string(),
+            lines: lines.clone(),
+        };
+        let yaml = crate::presets::serialize_drum_preset_to_yaml(&preset).expect("serialize preset");
+        let parsed = crate::presets::parse_drum_presets_from_yaml(&yaml).expect("parse preset");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Studio Custom");
+        assert_eq!(
+            parsed[0].lines[3].symbol_sounds,
+            vec![
+                ("x".to_string(), 37),
+                ("b".to_string(), 53),
+                ("r".to_string(), 40),
+            ]
+        );
+
+        // 4. Tab Letter Mapping input sanitizer restricts to single lowercase ASCII letter
+        assert_eq!(
+            crate::gui::dialogs::sanitize_tab_letter_mapping_input("B9!", "x"),
+            "b"
+        );
+        assert_eq!(
+            crate::gui::dialogs::sanitize_tab_letter_mapping_input("123", "x"),
+            "x"
+        );
+        assert_eq!(
+            crate::gui::dialogs::sanitize_tab_letter_mapping_input("xr", "x"),
+            "r"
+        );
+
+        // 5. Guitar-only actions are no-ops on percussion parts
+        app.selected_event_idx = Some(0);
+        app.action_toggle_strum("down");
+        app.action_toggle_strum("up");
+        app.action_toggle_slide();
+        app.action_edit_bend();
+        app.action_toggle_tap();
+        app.action_toggle_harmonic();
+        app.action_toggle_arpeggio("up");
+        let ev0_after = &app.parsed_mnx.as_ref().unwrap().parts[0].measures[0].sequences[0]
+            .flattened_events()[0];
+        assert!(ev0_after.bow_direction.is_none());
+        assert_eq!(app.active_dialog, ActiveDialog::None);
+    }
 }
 

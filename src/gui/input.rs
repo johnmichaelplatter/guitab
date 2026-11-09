@@ -780,7 +780,7 @@ impl MnxEditorApp {
             let r_is_line_symbol = if is_perc {
                 if let (Some(part), Some(cur_str)) = (self.active_part(), self.editing_string) {
                     part.kit_component_for_line(cur_str)
-                        .map(|(_, comp)| comp.ext.symbol_sounds.contains_key("r"))
+                        .map(|(_, comp)| comp.ext.symbol_sounds.iter().any(|(k, _)| k == "r"))
                         .unwrap_or(false)
                 } else {
                     false

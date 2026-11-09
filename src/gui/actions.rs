@@ -336,6 +336,9 @@ impl MnxEditorApp {
     }
 
     pub fn action_edit_bend(&mut self) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         if let Some(e_idx) = self.selected_event_idx {
             if let Some(n_idx) = self.selected_note_idx_in_event {
                 let mut existing_bend = None;
@@ -474,6 +477,9 @@ impl MnxEditorApp {
     }
 
     pub fn action_toggle_slide(&mut self) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         if self.is_editing_fret && !self.editing_fret_buf.trim().is_empty() {
             self.commit_fret_edit();
             self.editing_fret_buf.clear();
@@ -1029,6 +1035,9 @@ impl MnxEditorApp {
     }
 
     pub fn action_toggle_strum(&mut self, dir: &str) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
@@ -1082,6 +1091,9 @@ impl MnxEditorApp {
         self.apply_mutated_doc(doc);
     }
     pub fn action_add_slur(&mut self) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
@@ -1431,6 +1443,9 @@ impl MnxEditorApp {
         }
     }
     pub fn action_add_tie(&mut self) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
@@ -1981,6 +1996,9 @@ impl MnxEditorApp {
     }
 
     pub fn action_toggle_tap(&mut self) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         if self.is_editing_fret && !self.editing_fret_buf.trim().is_empty() {
             self.commit_fret_edit();
             self.editing_fret_buf.clear();
@@ -2067,6 +2085,9 @@ impl MnxEditorApp {
     }
 
     pub fn action_toggle_harmonic(&mut self) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         if self.is_editing_fret {
             self.commit_fret_edit();
         }
@@ -2250,6 +2271,9 @@ impl MnxEditorApp {
 
 impl crate::gui::MnxEditorApp {
     pub fn action_toggle_mute(&mut self) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
@@ -2330,6 +2354,9 @@ impl crate::gui::MnxEditorApp {
     }
 
     pub fn action_toggle_arpeggio(&mut self, dir: &str) {
+        if self.active_part().map(|p| p.is_percussion()).unwrap_or(false) {
+            return;
+        }
         let p_idx = self.selected_part_idx;
         let event_idx = match self.selected_event_idx {
             Some(idx) => idx,
@@ -2839,6 +2866,101 @@ impl crate::gui::MnxEditorApp {
 
         let paths = doc.get_flattened_event_paths_for_part(p_idx);
         let mut changed = false;
+
+        if part_meta.is_percussion() {
+            let kit = match part_meta.kit.as_ref() {
+                Some(k) => k,
+                None => return,
+            };
+            let editing_comp_id = if min_idx == max_idx {
+                self.editing_string
+                    .and_then(|line| part_meta.kit_component_for_line(line))
+                    .map(|(cid, _)| cid.to_string())
+            } else {
+                None
+            };
+
+            let cycle_kn = |kn: &mut crate::mnx::KitNote| -> bool {
+                let Some(comp) = kit.get(&kn.kit_component) else {
+                    return false;
+                };
+                let symbols = comp.ordered_tab_symbols();
+                if symbols.len() <= 1 {
+                    return false;
+                }
+                let cur_sym = kn
+                    .ext
+                    .symbol
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| comp.effective_default_symbol());
+                let cur_pos = symbols.iter().position(|s| s == cur_sym).unwrap_or(0);
+                let next_pos =
+                    (cur_pos as i32 + delta_fret).rem_euclid(symbols.len() as i32) as usize;
+                let next_sym = symbols[next_pos].clone();
+                if kn.ext.symbol.as_deref() != Some(next_sym.as_str()) {
+                    kn.ext.symbol = Some(next_sym);
+                    true
+                } else {
+                    false
+                }
+            };
+
+            for e_idx in min_idx..=max_idx {
+                let Some(&path) = paths.get(e_idx) else {
+                    continue;
+                };
+                let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) else {
+                    continue;
+                };
+
+                if let Some(n_idx) = single_note_idx {
+                    if let Some(kn) = ev.kit_notes.get_mut(n_idx) {
+                        if cycle_kn(kn) {
+                            changed = true;
+                        }
+                    } else if let Some(ref target_cid) = editing_comp_id {
+                        if let Some(kn) = ev
+                            .kit_notes
+                            .iter_mut()
+                            .find(|k| &k.kit_component == target_cid)
+                        {
+                            if cycle_kn(kn) {
+                                changed = true;
+                            }
+                        }
+                    }
+                } else if let Some(ref target_cid) = editing_comp_id {
+                    if let Some(kn) = ev
+                        .kit_notes
+                        .iter_mut()
+                        .find(|k| &k.kit_component == target_cid)
+                    {
+                        if cycle_kn(kn) {
+                            changed = true;
+                        }
+                    } else {
+                        for kn in &mut ev.kit_notes {
+                            if cycle_kn(kn) {
+                                changed = true;
+                            }
+                        }
+                    }
+                } else {
+                    for kn in &mut ev.kit_notes {
+                        if cycle_kn(kn) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            if changed {
+                self.apply_mutated_doc_and_clean_ties(doc);
+                self.preview_selected_sound();
+            }
+            return;
+        }
 
         for e_idx in min_idx..=max_idx {
             let Some(&path) = paths.get(e_idx) else {

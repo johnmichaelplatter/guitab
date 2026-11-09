@@ -975,9 +975,65 @@ pub struct KitComponentExt {
     #[serde(
         rename = "symbolSounds",
         default,
-        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+        with = "ordered_symbol_sounds",
+        skip_serializing_if = "Vec::is_empty"
     )]
-    pub symbol_sounds: std::collections::BTreeMap<String, u8>,
+    pub symbol_sounds: Vec<(String, u8)>,
+}
+
+pub mod ordered_symbol_sounds {
+    use serde::de::{MapAccess, SeqAccess, Visitor};
+    use serde::ser::SerializeMap;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(val: &[(String, u8)], s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(val.len()))?;
+        for (k, v) in val {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<(String, u8)>, D::Error> {
+        struct OrderedMapVisitor;
+        impl<'de> Visitor<'de> for OrderedMapVisitor {
+            type Value = Vec<(String, u8)>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a map or sequence of tab letter mappings to MIDI note numbers")
+            }
+
+            fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut entries = Vec::with_capacity(access.size_hint().unwrap_or(0));
+                while let Some((key, value)) = access.next_entry::<String, u8>()? {
+                    if let Some(existing) = entries.iter_mut().find(|(k, _): &&mut (String, u8)| *k == key) {
+                        existing.1 = value;
+                    } else {
+                        entries.push((key, value));
+                    }
+                }
+                Ok(entries)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                #[derive(Deserialize)]
+                struct Pair(String, u8);
+                let mut entries = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(Pair(k, v)) = seq.next_element()? {
+                    entries.push((k, v));
+                }
+                Ok(entries)
+            }
+        }
+        d.deserialize_any(OrderedMapVisitor)
+    }
 }
 
 impl KitComponentExt {
@@ -1032,15 +1088,30 @@ impl KitComponent {
             .unwrap_or("o")
     }
 
+    /// Returns the ordered list of valid tab symbols for this component:
+    /// index 0 is `effective_default_symbol()`, followed by each distinct symbol
+    /// in `ext.symbol_sounds` in the order listed in setup.
+    pub fn ordered_tab_symbols(&self) -> Vec<String> {
+        let def = self.effective_default_symbol().to_string();
+        let mut out = vec![def];
+        for (sym, _) in &self.ext.symbol_sounds {
+            let trimmed = sym.trim();
+            if !trimmed.is_empty() && !out.iter().any(|s| s == trimmed) {
+                out.push(trimmed.to_string());
+            }
+        }
+        out
+    }
+
     pub fn resolve_midi_sound(&self, symbol: Option<&str>) -> u8 {
         if let Some(sym) = symbol {
             let trimmed = sym.trim();
-            if let Some(&note) = self.ext.symbol_sounds.get(trimmed) {
-                return note;
+            if let Some((_, note)) = self.ext.symbol_sounds.iter().find(|(k, _)| k == trimmed) {
+                return *note;
             }
             let lower = trimmed.to_lowercase();
-            if let Some(&note) = self.ext.symbol_sounds.get(&lower) {
-                return note;
+            if let Some((_, note)) = self.ext.symbol_sounds.iter().find(|(k, _)| k == &lower) {
+                return *note;
             }
         }
         self.sound.unwrap_or(38)

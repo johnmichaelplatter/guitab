@@ -30,6 +30,78 @@ fn paint_directional_triangle(ui: &egui::Ui, response: &egui::Response, point_up
     ));
 }
 
+/// Paints a small up/down arrow button using `ui.painter()` so it never relies on unicode font glyphs.
+fn small_vertical_arrow_button(
+    ui: &mut egui::Ui,
+    point_up: bool,
+    enabled: bool,
+    tooltip: &str,
+) -> bool {
+    let resp = ui
+        .add_enabled(enabled, egui::Button::new("  ").small())
+        .on_hover_text(tooltip);
+    let r = resp.rect;
+    let center = r.center();
+    let color = if enabled {
+        ui.style().interact(&resp).fg_stroke.color
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let size = 3.5;
+    let points = if point_up {
+        vec![
+            egui::pos2(center.x - size, center.y + size * 0.7),
+            egui::pos2(center.x + size, center.y + size * 0.7),
+            egui::pos2(center.x, center.y - size * 0.9),
+        ]
+    } else {
+        vec![
+            egui::pos2(center.x - size, center.y - size * 0.7),
+            egui::pos2(center.x + size, center.y - size * 0.7),
+            egui::pos2(center.x, center.y + size * 0.9),
+        ]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+    resp.clicked()
+}
+
+/// Filters a Tab Letter Mapping input string so only single lowercase ASCII letters ('a'..='z')
+/// that can be typed in tab edit mode are permitted.
+pub fn sanitize_tab_letter_mapping_input(raw: &str, prev: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    let valid_chars: Vec<char> = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if valid_chars.is_empty() {
+        return prev
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_ascii_lowercase())
+            .last()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+    }
+    if valid_chars.len() > 1 {
+        if let Some(prev_ch) = prev.chars().next() {
+            if let Some(&new_ch) = valid_chars.iter().find(|&&c| c != prev_ch) {
+                return new_ch.to_string();
+            }
+        }
+    }
+    valid_chars
+        .last()
+        .map(|c| c.to_string())
+        .unwrap_or_default()
+}
+
 impl MnxEditorApp {
     pub(crate) fn render_dialogs(&mut self, ctx: &egui::Context) {
         enum DialogAction {
@@ -156,6 +228,45 @@ impl MnxEditorApp {
                 fretboard_editor: crate::fretboard_editor::FretboardEditorState,
             },
             ExportAllPresetsYaml,
+            OpenSaveDrumPresetDialog {
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
+                tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
+                tunings_octave: Vec<i32>,
+                show_custom_fretboard: bool,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
+                is_new_tab: bool,
+            },
+            SaveDrumKitPreset {
+                preset_name: String,
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
+                tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
+                tunings_octave: Vec<i32>,
+                show_custom_fretboard: bool,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
+                is_new_tab: bool,
+            },
+            ImportDrumPresetsYaml {
+                num_strings: u8,
+                edo: u8,
+                step_multiplier: u8,
+                tuning_mode: InstrumentTuningMode,
+                tunings_text: Vec<String>,
+                tunings_name: Vec<String>,
+                tunings_octave: Vec<i32>,
+                show_custom_fretboard: bool,
+                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
+                is_new_tab: bool,
+            },
+            ExportSingleDrumPresetYaml,
+            ExportAllDrumPresetsYaml,
             DiscardChangesSave {
                 target: DiscardTarget,
             },
@@ -197,6 +308,7 @@ impl MnxEditorApp {
         let mut lyric_action: Option<(usize, usize, String, Option<String>, Option<bool>)> = None;
         let mut lyric_advance: Option<(usize, usize, bool)> = None;
         let presets_snapshot = self.instrument_presets.clone();
+        let drum_presets_snapshot = self.drum_kit_presets.clone();
         let preset_status_snapshot = self.preset_status_msg.clone();
 
         match &mut self.active_dialog {
@@ -842,7 +954,7 @@ impl MnxEditorApp {
                             if ui
                                 .selectable_label(
                                     self.instrument_setup_is_percussion,
-                                    "🥁 Drum / Percussion",
+                                    "Drum / Percussion",
                                 )
                                 .clicked()
                                 && !self.instrument_setup_is_percussion
@@ -878,12 +990,11 @@ impl MnxEditorApp {
                         });
 
                         if self.instrument_setup_is_percussion {
-                            let drum_presets = crate::presets::builtin_drum_kit_presets();
-                            let matched_kit_preset = drum_presets
+                            let matched_kit_preset = drum_presets_snapshot
                                 .iter()
-                                .find(|(_, lines)| *lines == self.instrument_setup_percussion_lines)
-                                .map(|(name, _)| name.as_str())
-                                .unwrap_or("Custom Drum Kit / Select Preset...");
+                                .find(|p| p.lines == self.instrument_setup_percussion_lines)
+                                .map(|p| p.display_label())
+                                .unwrap_or_else(|| "Custom Drum Kit / Select Preset...".to_string());
 
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("Kit Preset:").strong());
@@ -891,13 +1002,31 @@ impl MnxEditorApp {
                                     .selected_text(matched_kit_preset)
                                     .width(260.0)
                                     .show_ui(ui, |ui| {
-                                        for (preset_name, preset_lines) in &drum_presets {
-                                            if ui.selectable_label(false, preset_name).clicked() {
+                                        for preset in &drum_presets_snapshot {
+                                            if ui
+                                                .selectable_label(false, preset.display_label())
+                                                .clicked()
+                                            {
                                                 self.instrument_setup_percussion_lines =
-                                                    preset_lines.clone();
+                                                    preset.lines.clone();
                                             }
                                         }
                                     });
+
+                                if ui.button("Save as kit preset...").clicked() {
+                                    apply_action = Some(DialogAction::OpenSaveDrumPresetDialog {
+                                        num_strings: *num_strings,
+                                        edo: *edo,
+                                        step_multiplier: *step_multiplier,
+                                        tuning_mode: *tuning_mode,
+                                        tunings_text: tunings_text.clone(),
+                                        tunings_name: tunings_name.clone(),
+                                        tunings_octave: tunings_octave.clone(),
+                                        show_custom_fretboard: *show_custom_fretboard,
+                                        fretboard_editor: fretboard_editor.clone(),
+                                        is_new_tab: *is_new_tab,
+                                    });
+                                }
 
                                 ui.separator();
                                 ui.label(egui::RichText::new("Lines:").strong());
@@ -920,7 +1049,7 @@ impl MnxEditorApp {
                                 if ui
                                     .add_enabled(
                                         self.instrument_setup_percussion_lines.len() < 15,
-                                        egui::Button::new("➕ Add Line"),
+                                        egui::Button::new("+ Add Line"),
                                     )
                                     .clicked()
                                 {
@@ -931,17 +1060,62 @@ impl MnxEditorApp {
                                 }
                             });
 
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button("Import Kit Preset(s)...")
+                                    .on_hover_text("Import a single drum kit preset or a list of kit presets from a YAML file")
+                                    .clicked()
+                                {
+                                    apply_action = Some(DialogAction::ImportDrumPresetsYaml {
+                                        num_strings: *num_strings,
+                                        edo: *edo,
+                                        step_multiplier: *step_multiplier,
+                                        tuning_mode: *tuning_mode,
+                                        tunings_text: tunings_text.clone(),
+                                        tunings_name: tunings_name.clone(),
+                                        tunings_octave: tunings_octave.clone(),
+                                        show_custom_fretboard: *show_custom_fretboard,
+                                        fretboard_editor: fretboard_editor.clone(),
+                                        is_new_tab: *is_new_tab,
+                                    });
+                                }
+                                if ui
+                                    .button("Export Current Kit...")
+                                    .on_hover_text("Export the current drum kit setup as a YAML preset file")
+                                    .clicked()
+                                {
+                                    apply_action = Some(DialogAction::ExportSingleDrumPresetYaml);
+                                }
+                                if ui
+                                    .button("Export Kit Preset List...")
+                                    .on_hover_text("Export all saved drum kit presets to a YAML file")
+                                    .clicked()
+                                {
+                                    apply_action = Some(DialogAction::ExportAllDrumPresetsYaml);
+                                }
+                            });
+
+                            if let Some(status) = &preset_status_snapshot {
+                                ui.label(
+                                    egui::RichText::new(status)
+                                        .size(11.5)
+                                        .color(egui::Color32::from_rgb(120, 210, 140)),
+                                );
+                            }
+
                             ui.separator();
                             ui.label(
                                 egui::RichText::new(
-                                    "Configure each staff line (top to bottom), its primary General MIDI percussion note, and custom letter symbol overrides (e.g. 'b' for Bell, 'r' for Rim):",
+                                    "Configure each staff line (top to bottom), its primary General MIDI percussion note, and Tab Letter Mappings (e.g. 'b' for Bell, 'r' for Rim):",
                                 )
                                 .size(11.5)
                                 .weak(),
                             );
 
                             let mut line_to_remove: Option<usize> = None;
-                            let can_remove_line = self.instrument_setup_percussion_lines.len() > 1;
+                            let mut line_to_swap: Option<(usize, usize)> = None;
+                            let total_lines = self.instrument_setup_percussion_lines.len();
+                            let can_remove_line = total_lines > 1;
                             egui::ScrollArea::vertical()
                                 .max_height(360.0)
                                 .show(ui, |ui| {
@@ -954,6 +1128,23 @@ impl MnxEditorApp {
                                             .inner_margin(egui::Margin::same(6))
                                             .show(ui, |ui| {
                                                 ui.horizontal(|ui| {
+                                                    if small_vertical_arrow_button(
+                                                        ui,
+                                                        true,
+                                                        idx > 0,
+                                                        "Move this line up",
+                                                    ) {
+                                                        line_to_swap = Some((idx, idx - 1));
+                                                    }
+                                                    if small_vertical_arrow_button(
+                                                        ui,
+                                                        false,
+                                                        idx + 1 < total_lines,
+                                                        "Move this line down",
+                                                    ) {
+                                                        line_to_swap = Some((idx, idx + 1));
+                                                    }
+
                                                     ui.label(
                                                         egui::RichText::new(format!(
                                                             "Line {}:",
@@ -1027,10 +1218,10 @@ impl MnxEditorApp {
                                                         }
                                                     });
 
+                                                    ui.label("MIDI Note:");
                                                     ui.add(
                                                         egui::DragValue::new(&mut line.sound)
-                                                            .range(0..=127)
-                                                            .prefix("MIDI "),
+                                                            .range(0..=127),
                                                     )
                                                     .on_hover_text(
                                                         "Custom MIDI note number (0-127)",
@@ -1038,7 +1229,7 @@ impl MnxEditorApp {
 
                                                     if can_remove_line
                                                         && ui
-                                                            .small_button("🗑")
+                                                            .small_button("X")
                                                             .on_hover_text("Remove this line")
                                                             .clicked()
                                                     {
@@ -1046,83 +1237,89 @@ impl MnxEditorApp {
                                                     }
                                                 });
 
-                                                // Custom Symbol Overrides Row
-                                                ui.horizontal_wrapped(|ui| {
-                                                    ui.label(
-                                                        egui::RichText::new("Symbol Overrides:")
-                                                            .size(11.5)
-                                                            .weak(),
-                                                    );
-                                                    let mut sym_to_remove = None;
-                                                    for (sym_i, (sym_str, sym_sound)) in
-                                                        line.symbol_sounds.iter_mut().enumerate()
-                                                    {
-                                                        ui.horizontal(|ui| {
-                                                            let resp = ui.add(
+                                                // Tab Letter Mappings (each on its own row, with "+ Add Tab Letter Mapping" at the bottom)
+                                                ui.label(
+                                                    egui::RichText::new("Tab Letter Mappings:")
+                                                        .size(11.5)
+                                                        .weak(),
+                                                );
+                                                let mut sym_to_remove = None;
+                                                for (sym_i, (sym_str, sym_sound)) in
+                                                    line.symbol_sounds.iter_mut().enumerate()
+                                                {
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(16.0);
+                                                        let prev_sym = sym_str.clone();
+                                                        let resp = ui
+                                                            .add(
                                                                 egui::TextEdit::singleline(sym_str)
-                                                                    .desired_width(22.0),
-                                                            ).on_hover_text("Letter symbol typed on this line (e.g. b, r, o, x, p)");
-                                                            if resp.changed() {
-                                                                let filtered: String = sym_str
-                                                                    .chars()
-                                                                    .filter(|c| !c.is_whitespace())
-                                                                    .take(2)
-                                                                    .collect();
-                                                                *sym_str = filtered;
-                                                            }
-                                                            ui.label("→");
-                                                            egui::ComboBox::from_id_salt(format!(
-                                                                "perc_sym_gm_{}_{}",
-                                                                idx, sym_i
-                                                            ))
-                                                            .selected_text(
-                                                                crate::presets::format_gm_percussion_label(
-                                                                    *sym_sound,
-                                                                ),
+                                                                    .desired_width(24.0),
                                                             )
-                                                            .width(155.0)
-                                                            .show_ui(ui, |ui| {
-                                                                for &(note_num, note_name) in
-                                                                    crate::presets::GM_PERCUSSION_NOTES
-                                                                {
-                                                                    let lbl = format!(
-                                                                        "{} - {}",
-                                                                        note_num, note_name
-                                                                    );
-                                                                    ui.selectable_value(
-                                                                        sym_sound,
-                                                                        note_num,
-                                                                        lbl,
-                                                                    );
-                                                                }
-                                                            });
-                                                            ui.add(
-                                                                egui::DragValue::new(sym_sound)
-                                                                    .range(0..=127),
+                                                            .on_hover_text(
+                                                                "Single lowercase letter symbol (a-z) typed on this line (e.g. b, r, o, x, p)",
                                                             );
-                                                            if ui
-                                                                .small_button("✕")
-                                                                .on_hover_text(
-                                                                    "Remove symbol override",
-                                                                )
-                                                                .clicked()
+                                                        if resp.changed() {
+                                                            *sym_str =
+                                                                sanitize_tab_letter_mapping_input(
+                                                                    sym_str,
+                                                                    &prev_sym,
+                                                                );
+                                                        }
+                                                        ui.label("->");
+                                                        egui::ComboBox::from_id_salt(format!(
+                                                            "perc_sym_gm_{}_{}",
+                                                            idx, sym_i
+                                                        ))
+                                                        .selected_text(
+                                                            crate::presets::format_gm_percussion_label(
+                                                                *sym_sound,
+                                                            ),
+                                                        )
+                                                        .width(175.0)
+                                                        .show_ui(ui, |ui| {
+                                                            for &(note_num, note_name) in
+                                                                crate::presets::GM_PERCUSSION_NOTES
                                                             {
-                                                                sym_to_remove = Some(sym_i);
+                                                                let lbl = format!(
+                                                                    "{} - {}",
+                                                                    note_num, note_name
+                                                                );
+                                                                ui.selectable_value(
+                                                                    sym_sound,
+                                                                    note_num,
+                                                                    lbl,
+                                                                );
                                                             }
                                                         });
-                                                    }
-                                                    if let Some(rem_i) = sym_to_remove {
-                                                        line.symbol_sounds.remove(rem_i);
-                                                    }
+                                                        ui.label("MIDI Note:");
+                                                        ui.add(
+                                                            egui::DragValue::new(sym_sound)
+                                                                .range(0..=127),
+                                                        );
+                                                        if ui
+                                                            .small_button("X")
+                                                            .on_hover_text(
+                                                                "Remove tab letter mapping",
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            sym_to_remove = Some(sym_i);
+                                                        }
+                                                    });
+                                                }
+                                                if let Some(rem_i) = sym_to_remove {
+                                                    line.symbol_sounds.remove(rem_i);
+                                                }
 
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(16.0);
                                                     if ui
-                                                        .small_button("+ Add Symbol Override")
+                                                        .small_button("+ Add Tab Letter Mapping")
                                                         .on_hover_text(
                                                             "Add a letter symbol (e.g. 'b' for Bell, 'r' for Rim, 'o' for Open) that triggers a specific MIDI note on this line",
                                                         )
                                                         .clicked()
                                                     {
-                                                        // Pick a sensible default unused letter symbol
                                                         let candidates =
                                                             ["b", "r", "o", "x", "p", "c", "s", "m"];
                                                         let next_sym = candidates
@@ -1154,6 +1351,13 @@ impl MnxEditorApp {
                                     }
                                 });
 
+                            if let Some((from_i, to_i)) = line_to_swap {
+                                if from_i < self.instrument_setup_percussion_lines.len()
+                                    && to_i < self.instrument_setup_percussion_lines.len()
+                                {
+                                    self.instrument_setup_percussion_lines.swap(from_i, to_i);
+                                }
+                            }
                             if let Some(rem_idx) = line_to_remove {
                                 self.instrument_setup_percussion_lines.remove(rem_idx);
                             }
@@ -1634,6 +1838,83 @@ impl MnxEditorApp {
                         ui.horizontal(|ui| {
                             if ui.button("Save Preset").clicked() || enter_pressed {
                                 apply_action = Some(DialogAction::SaveInstrumentPreset {
+                                    preset_name: preset_name.clone(),
+                                    num_strings: *num_strings,
+                                    edo: *edo,
+                                    step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
+                                    tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
+                                    tunings_octave: tunings_octave.clone(),
+                                    show_custom_fretboard: *show_custom_fretboard,
+                                    fretboard_editor: fretboard_editor.clone(),
+                                    is_new_tab: *is_new_tab,
+                                });
+                            }
+                            if ui.button("Cancel").clicked() || esc_pressed {
+                                apply_action = Some(DialogAction::ReturnToInstrumentSetup {
+                                    num_strings: *num_strings,
+                                    edo: *edo,
+                                    step_multiplier: *step_multiplier,
+                                    tuning_mode: *tuning_mode,
+                                    tunings_text: tunings_text.clone(),
+                                    tunings_name: tunings_name.clone(),
+                                    tunings_octave: tunings_octave.clone(),
+                                    show_custom_fretboard: *show_custom_fretboard,
+                                    fretboard_editor: fretboard_editor.clone(),
+                                    is_new_tab: *is_new_tab,
+                                });
+                            }
+                        });
+                    });
+            }
+            ActiveDialog::SaveDrumKitPreset {
+                preset_name,
+                error_msg,
+                num_strings,
+                edo,
+                step_multiplier,
+                tuning_mode,
+                tunings_text,
+                tunings_name,
+                tunings_octave,
+                show_custom_fretboard,
+                fretboard_editor,
+                is_new_tab,
+            } => {
+                egui::Window::new("Save as Drum Kit Preset")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        ui.label(format!(
+                            "Save current {}-line drum kit setup to preset list:",
+                            self.instrument_setup_percussion_lines.len()
+                        ));
+                        ui.horizontal(|ui| {
+                            ui.label("Kit preset name:");
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(preset_name)
+                                    .desired_width(220.0)
+                                    .hint_text("e.g. Custom Studio Kit"),
+                            );
+                            if !resp.has_focus() && error_msg.is_none() {
+                                resp.request_focus();
+                            }
+                        });
+
+                        if let Some(err) = error_msg {
+                            ui.label(egui::RichText::new(err.as_str()).color(egui::Color32::RED));
+                        }
+
+                        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Save Kit Preset").clicked() || enter_pressed {
+                                apply_action = Some(DialogAction::SaveDrumKitPreset {
                                     preset_name: preset_name.clone(),
                                     num_strings: *num_strings,
                                     edo: *edo,
@@ -2851,6 +3132,216 @@ impl MnxEditorApp {
                                 self.preset_status_msg = Some(format!(
                                     "Exported {} presets to YAML",
                                     self.instrument_presets.len()
+                                ));
+                            }
+                        }
+                    }
+                }
+                DialogAction::OpenSaveDrumPresetDialog {
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tuning_mode,
+                    tunings_text,
+                    tunings_name,
+                    tunings_octave,
+                    show_custom_fretboard,
+                    fretboard_editor,
+                    is_new_tab,
+                } => {
+                    self.preset_status_msg = None;
+                    self.active_dialog = ActiveDialog::SaveDrumKitPreset {
+                        preset_name: String::new(),
+                        error_msg: None,
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        tuning_mode,
+                        tunings_text,
+                        tunings_name,
+                        tunings_octave,
+                        show_custom_fretboard,
+                        fretboard_editor,
+                        is_new_tab,
+                    };
+                }
+                DialogAction::SaveDrumKitPreset {
+                    preset_name,
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tuning_mode,
+                    tunings_text,
+                    tunings_name,
+                    tunings_octave,
+                    show_custom_fretboard,
+                    fretboard_editor,
+                    is_new_tab,
+                } => {
+                    let clean_name = preset_name.trim().to_string();
+                    if clean_name.is_empty() {
+                        self.active_dialog = ActiveDialog::SaveDrumKitPreset {
+                            preset_name,
+                            error_msg: Some("Kit preset name cannot be empty.".to_string()),
+                            num_strings,
+                            edo,
+                            step_multiplier,
+                            tuning_mode,
+                            tunings_text,
+                            tunings_name,
+                            tunings_octave,
+                            show_custom_fretboard,
+                            fretboard_editor,
+                            is_new_tab,
+                        };
+                    } else {
+                        let preset = crate::presets::DrumKitPreset {
+                            name: clean_name,
+                            lines: self.instrument_setup_percussion_lines.clone(),
+                        };
+                        let saved_label = preset.display_label();
+                        crate::presets::add_or_update_drum_preset(
+                            &mut self.drum_kit_presets,
+                            preset,
+                        );
+                        let _ = crate::presets::save_drum_presets_to_user_config(
+                            &self.drum_kit_presets,
+                        );
+                        self.preset_status_msg =
+                            Some(format!("Saved kit preset: {}", saved_label));
+                        self.active_dialog = ActiveDialog::InstrumentSetup {
+                            num_strings,
+                            edo,
+                            step_multiplier,
+                            tuning_mode,
+                            tunings_text,
+                            tunings_name,
+                            tunings_octave,
+                            show_custom_fretboard,
+                            fretboard_editor,
+                            is_new_tab,
+                        };
+                    }
+                }
+                DialogAction::ImportDrumPresetsYaml {
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tuning_mode,
+                    tunings_text,
+                    tunings_name,
+                    tunings_octave,
+                    show_custom_fretboard,
+                    fretboard_editor,
+                    is_new_tab,
+                } => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("YAML Drum Kit Preset(s)", &["yaml", "yml"])
+                        .pick_file()
+                    {
+                        match std::fs::read_to_string(&path) {
+                            Ok(content) => {
+                                match crate::presets::parse_drum_presets_from_yaml(&content) {
+                                    Ok(imported) => {
+                                        let count = imported.len();
+                                        if let Some(first) = imported.first() {
+                                            self.instrument_setup_percussion_lines =
+                                                first.lines.clone();
+                                        }
+                                        for p in imported {
+                                            crate::presets::add_or_update_drum_preset(
+                                                &mut self.drum_kit_presets,
+                                                p,
+                                            );
+                                        }
+                                        let _ = crate::presets::save_drum_presets_to_user_config(
+                                            &self.drum_kit_presets,
+                                        );
+                                        self.preset_status_msg = Some(format!(
+                                            "Imported {} kit preset(s) from {}",
+                                            count,
+                                            path.file_name()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("file")
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        self.preset_status_msg = Some(e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.preset_status_msg =
+                                    Some(format!("Failed to read file: {}", e));
+                            }
+                        }
+                    }
+                    self.active_dialog = ActiveDialog::InstrumentSetup {
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        tuning_mode,
+                        tunings_text,
+                        tunings_name,
+                        tunings_octave,
+                        show_custom_fretboard,
+                        fretboard_editor,
+                        is_new_tab,
+                    };
+                }
+                DialogAction::ExportSingleDrumPresetYaml => {
+                    let matched_name = self
+                        .drum_kit_presets
+                        .iter()
+                        .find(|p| p.lines == self.instrument_setup_percussion_lines)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| {
+                            let n = self.instrument_setup_name_buf.trim();
+                            if n.is_empty() {
+                                format!(
+                                    "Custom Drum Kit ({}-line)",
+                                    self.instrument_setup_percussion_lines.len()
+                                )
+                            } else {
+                                n.to_string()
+                            }
+                        });
+                    let preset = crate::presets::DrumKitPreset {
+                        name: matched_name,
+                        lines: self.instrument_setup_percussion_lines.clone(),
+                    };
+                    if let Ok(yaml) = crate::presets::serialize_drum_preset_to_yaml(&preset) {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("drum_kit_preset.yaml")
+                            .add_filter("YAML Drum Kit Preset", &["yaml", "yml"])
+                            .save_file()
+                        {
+                            if let Err(e) = std::fs::write(&path, yaml) {
+                                self.preset_status_msg =
+                                    Some(format!("Failed to export kit preset: {}", e));
+                            } else {
+                                self.preset_status_msg =
+                                    Some(format!("Exported kit preset '{}'", preset.name));
+                            }
+                        }
+                    }
+                }
+                DialogAction::ExportAllDrumPresetsYaml => {
+                    if let Ok(yaml) = crate::presets::serialize_drum_presets_list_to_yaml(
+                        &self.drum_kit_presets,
+                    ) {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name("drum_kit_presets.yaml")
+                            .add_filter("YAML Drum Kit Presets List", &["yaml", "yml"])
+                            .save_file()
+                        {
+                            if let Err(e) = std::fs::write(&path, yaml) {
+                                self.preset_status_msg =
+                                    Some(format!("Failed to export kit preset list: {}", e));
+                            } else {
+                                self.preset_status_msg = Some(format!(
+                                    "Exported {} kit presets to YAML",
+                                    self.drum_kit_presets.len()
                                 ));
                             }
                         }
