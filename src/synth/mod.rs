@@ -8,10 +8,12 @@
 //! - [`command`]: Pre-MIDI `Copy` command enum using exact `f64` Hz frequencies.
 
 pub mod backend;
+pub mod body;
 pub mod command;
 pub mod waveguide;
 
 pub use backend::{flush_denormal, SynthMixer};
+pub use body::{BiquadFilter, BodyResonator, InstrumentProfile};
 pub use command::SynthCommand;
 pub use waveguide::{StringWaveguide, MAX_STRINGS};
 
@@ -23,6 +25,7 @@ pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
 pub struct SynthTestLabState {
     pub open: bool,
     pub route_score_preview: bool,
+    pub profile: InstrumentProfile,
     pub string_idx: u8,
     pub freq_hz: f64,
     pub velocity: f32,
@@ -38,6 +41,7 @@ impl Default for SynthTestLabState {
         Self {
             open: false,
             route_score_preview: true,
+            profile: InstrumentProfile::AcousticGuitar,
             string_idx: 1,
             freq_hz: 220.0,
             velocity: 0.85,

@@ -7,6 +7,7 @@
 //! - All voice state is pre-allocated at stream initialization.
 //! - Denormal numbers are flushed to zero in all exponential decay and feedback paths.
 
+use crate::synth::body::{BodyResonator, InstrumentProfile};
 use crate::synth::command::SynthCommand;
 use crate::synth::waveguide::{StringWaveguide, MAX_STRINGS};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -205,13 +206,15 @@ pub struct SynthMixer {
     consumer: rtrb::Consumer<SynthCommand>,
     /// Pre-allocated bank of 12 Extended Karplus-Strong physical string waveguides.
     strings: Box<[StringWaveguide; MAX_STRINGS]>,
+    /// Post-string acoustic body / electric pickup + cabinet resonator.
+    body: BodyResonator,
     /// Auxiliary test voices for drum/GM triggers (prior to Phase 4 percussion module).
     voices: [TestSineVoice; MAX_TEST_VOICES],
     voice_cursor: usize,
 }
 
 impl SynthMixer {
-    /// Pre-allocates all mixer, waveguide, and voice state prior to starting the `cpal` stream.
+    /// Pre-allocates all mixer, waveguide, body resonator, and voice state prior to starting the `cpal` stream.
     pub fn new(sample_rate: f32, consumer: rtrb::Consumer<SynthCommand>) -> Self {
         let sr = sample_rate.max(8_000.0);
         let strings = Box::new(std::array::from_fn(|i| {
@@ -221,6 +224,7 @@ impl SynthMixer {
             sample_rate: sr,
             consumer,
             strings,
+            body: BodyResonator::new(sr, InstrumentProfile::AcousticGuitar),
             voices: [TestSineVoice::default(); MAX_TEST_VOICES],
             voice_cursor: 0,
         }
@@ -228,6 +232,10 @@ impl SynthMixer {
 
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
+    }
+
+    pub fn profile(&self) -> InstrumentProfile {
+        self.body.profile()
     }
 
     #[inline(always)]
@@ -321,10 +329,17 @@ impl SynthMixer {
                     self.sample_rate,
                 );
             }
+            SynthCommand::SetInstrumentProfile(profile) => {
+                self.body.set_profile(profile);
+                for s in self.strings.iter_mut() {
+                    s.set_profile(profile);
+                }
+            }
             SynthCommand::AllNotesOff => {
                 for s in self.strings.iter_mut() {
                     s.clear();
                 }
+                self.body.reset();
                 for v in &mut self.voices {
                     v.active = false;
                     v.env = 0.0;
@@ -354,16 +369,19 @@ impl SynthMixer {
     /// Renders the next stereo frame `(left, right)` in `[-1.0, 1.0]`.
     #[inline(always)]
     pub fn next_stereo_frame(&mut self) -> (f32, f32) {
-        let mut left = 0.0_f32;
-        let mut right = 0.0_f32;
+        let mut str_left = 0.0_f32;
+        let mut str_right = 0.0_f32;
 
         for s in self.strings.iter_mut() {
             if s.active {
                 let (l, r) = s.next_frame();
-                left += l;
-                right += r;
+                str_left += l;
+                str_right += r;
             }
         }
+
+        // Route summed string waveguides through the active acoustic body / electric cab resonator
+        let (mut left, mut right) = self.body.process_stereo(str_left, str_right);
 
         for v in &mut self.voices {
             if v.active {

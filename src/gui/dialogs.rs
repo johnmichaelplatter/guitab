@@ -3566,7 +3566,23 @@ impl MnxEditorApp {
                 );
 
                 ui.separator();
-                ui.label(egui::RichText::new("1. String & Microtonal Excitation").strong());
+                ui.label(egui::RichText::new("1. Instrument & Body Resonator Profile").strong());
+                ui.horizontal_wrapped(|ui| {
+                    for prof in crate::synth::InstrumentProfile::ALL {
+                        if ui
+                            .selectable_label(self.synth_lab.profile == prof, prof.label())
+                            .clicked()
+                        {
+                            self.synth_lab.profile = prof;
+                            self.synth_lab.pluck_pos = prof.waveguide_params().default_pluck_pos;
+                            commands_to_send
+                                .push(crate::synth::SynthCommand::SetInstrumentProfile(prof));
+                        }
+                    }
+                });
+
+                ui.separator();
+                ui.label(egui::RichText::new("2. String & Microtonal Excitation").strong());
 
                 egui::Grid::new("synth_lab_string_grid")
                     .num_columns(2)

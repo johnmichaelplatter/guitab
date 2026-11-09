@@ -52,6 +52,8 @@ pub enum SynthCommand {
         velocity: f32,
         program: u8,
     },
+    /// Switch the active physical instrument & body resonator profile (`AcousticGuitar`, `ElectricClean`, etc.).
+    SetInstrumentProfile(crate::synth::body::InstrumentProfile),
     /// Immediately silence or fast-release all active strings, drums, and GM voices.
     AllNotesOff,
 }

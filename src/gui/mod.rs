@@ -1146,7 +1146,10 @@ impl MnxEditorApp {
     pub fn ensure_synth_engine(&mut self) -> Option<&mut crate::synth::SynthEngine> {
         if self.synth_engine.is_none() && !cfg!(test) {
             match crate::synth::SynthEngine::new() {
-                Ok(eng) => {
+                Ok(mut eng) => {
+                    let _ = eng.send(crate::synth::SynthCommand::SetInstrumentProfile(
+                        self.synth_lab.profile,
+                    ));
                     self.synth_lab.status_msg = Some(format!(
                         "Audio stream active ({:.0} Hz, {} ch)",
                         eng.sample_rate(),

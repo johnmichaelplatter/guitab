@@ -21,6 +21,7 @@
 //!    - Secondary fractional node tap at `delay / n` during the first $30\text{ ms}$ for natural/artificial harmonics.
 
 use crate::synth::backend::flush_denormal;
+use crate::synth::body::InstrumentProfile;
 use std::f32::consts::PI;
 
 /// Maximum number of simultaneous physical strings supported per waveguide bank.
@@ -47,6 +48,7 @@ pub struct StringWaveguide {
 
     pub active: bool,
     pub string_idx: u8,
+    pub profile: InstrumentProfile,
     sample_rate: f32,
 
     /// Current effective delay length in samples (slewed sample-by-sample during slides/slurs).
@@ -108,6 +110,7 @@ impl StringWaveguide {
             exc_write_idx: 0,
             active: false,
             string_idx,
+            profile: InstrumentProfile::AcousticGuitar,
             sample_rate: sr,
             current_delay: 100.0,
             target_delay: 100.0,
@@ -142,6 +145,11 @@ impl StringWaveguide {
         self.sample_rate = sample_rate.max(8_000.0);
     }
 
+    #[inline(always)]
+    pub fn set_profile(&mut self, profile: InstrumentProfile) {
+        self.profile = profile;
+    }
+
     /// Fast, real-time xorshift32 PRNG returning uniform white noise in `[-1.0, 1.0]`.
     #[inline(always)]
     fn next_white_noise(&mut self) -> f32 {
@@ -161,16 +169,19 @@ impl StringWaveguide {
         let sr = self.sample_rate as f64;
         let clamped_freq = freq_hz.clamp(15.0, sr * 0.42);
         let raw_period = (sr / clamped_freq) as f32;
+        let prof = self.profile.waveguide_params();
 
         let mute = palm_mute.clamp(0.0, 1.0);
 
         // Brightness / stretching factor S in H(z) = g * ((1 - S) + S * z^-1):
         // Higher strings have smaller S (brighter); palm muting dramatically increases S.
-        let base_s = (0.06 + (180.0 / (clamped_freq as f32 + 120.0)) * 0.18).clamp(0.04, 0.35);
-        let stretch_s = (base_s + mute * 0.52).clamp(0.04, 0.82);
+        let base_s = ((0.06 + (180.0 / (clamped_freq as f32 + 120.0)) * 0.18) * prof.damping_s_mult)
+            .clamp(0.03, 0.42);
+        let stretch_s = (base_s + mute * 0.52).clamp(0.03, 0.85);
 
-        // Target T60 decay time in seconds: longer for low strings, drastically shorter when palm-muted.
-        let base_t60 = (4.2 - (clamped_freq as f32) * 0.0018).clamp(1.4, 4.5);
+        // Target T60 decay time in seconds: longer for low strings & bass profiles, shorter when palm-muted.
+        let base_t60 =
+            ((4.2 - (clamped_freq as f32) * 0.0018) * prof.sustain_mult).clamp(1.2, 6.8);
         let t60 = if mute > 0.001 {
             base_t60 * (1.0 - 0.92 * mute).max(0.04)
         } else {
@@ -182,15 +193,15 @@ impl StringWaveguide {
         if mute > 0.001 {
             gain_g *= 1.0 - 0.045 * mute;
         }
-        let gain_g = gain_g.clamp(0.88, 0.99985);
+        let gain_g = gain_g.clamp(0.88, 0.9999);
 
         // 1st-order all-pass stiffness dispersion coefficient for bass/wound strings:
-        // Stronger negative coefficient for lower fundamentals (< 250 Hz).
+        // Stronger negative coefficient for lower fundamentals (< 260 Hz), scaled by profile.
         let ap_coeff = if clamped_freq < 260.0 {
             let bass_factor = ((260.0 - clamped_freq as f32) / 245.0).clamp(0.0, 1.0);
-            (-0.04 - 0.28 * bass_factor).clamp(-0.35, -0.02)
+            ((-0.04 - 0.28 * bass_factor) * prof.dispersion_mult).clamp(-0.42, -0.01)
         } else {
-            -0.02
+            (-0.02 * prof.dispersion_mult).clamp(-0.15, -0.005)
         };
 
         // Phase delay compensation at fundamental omega_0 = 2 * pi * f0 / sr:
@@ -226,6 +237,7 @@ impl StringWaveguide {
         self.string_idx = string_idx;
         self.palm_mute = palm_mute.clamp(0.0, 1.0);
         self.pan = (0.30 + ((string_idx % MAX_STRINGS as u8) as f32) * 0.035).clamp(0.15, 0.85);
+        let prof = self.profile.waveguide_params();
 
         let (delay, g, s, ap) = self.compute_loop_parameters(freq_hz, self.palm_mute);
         self.current_delay = delay;
@@ -248,13 +260,15 @@ impl StringWaveguide {
         self.exc_samples_remaining = burst_len;
         self.exc_amplitude = vel * 0.42;
 
-        // Pick-direction / dynamics one-pole lowpass: lower velocity -> higher coefficient (darker)
-        self.exc_lp_coeff = (0.82 - 0.68 * vel).clamp(0.10, 0.85);
+        // Pick-direction / dynamics one-pole lowpass: lower velocity or FingeredBass -> softer/darker
+        self.exc_lp_coeff = (0.82 - 0.68 * vel + prof.exc_softness_offset).clamp(0.06, 0.92);
         self.exc_lp_z1 = 0.0;
 
         // Pick-position comb filter delay: pluck_pos in [0.05, 0.5] of fundamental period
-        let pos = pluck_pos.clamp(0.05, 0.50);
-        self.exc_comb_delay = ((pos * delay).round() as usize).clamp(1, EXCITATION_BUFFER_SIZE - 2);
+        // Blend requested pluck_pos with profile's characteristic pluck position
+        let effective_pos = (0.75 * pluck_pos + 0.25 * prof.default_pluck_pos).clamp(0.05, 0.50);
+        self.exc_comb_delay =
+            ((effective_pos * delay).round() as usize).clamp(1, EXCITATION_BUFFER_SIZE - 2);
 
         // Harmonic node coupling during the first 30ms of excitation
         match harmonic_node {
