@@ -218,11 +218,11 @@ impl FretboardFrequencyTable {
         69.0 + 12.0 * (hz / 440.0).log2()
     }
 
-    /// Resolves the exact continuous MIDI note number for a note on `part`,
+    /// Resolves the exact frequency in Hz (`f64`) for a note on `part`,
     /// taking into account harmonics, custom fretboards (`customFrets`), decimal fretlets, and EDO fret steps.
-    pub fn note_to_midi_note_number(&self, part: &Part, note: &crate::mnx::Note) -> Option<f64> {
+    pub fn note_to_frequency_hz(&self, part: &Part, note: &crate::mnx::Note) -> Option<f64> {
         if let Some(harmonic) = &note.harmonic {
-            return Some(self.pitch_to_midi_note_number(&harmonic.sounding_note.pitch));
+            return Some(self.pitch_to_hz(&harmonic.sounding_note.pitch));
         }
 
         let string_opt = note.string;
@@ -234,7 +234,7 @@ impl FretboardFrequencyTable {
                         .get_hz(string, 0)
                         .or_else(|| part.get_string_tuning(string).map(|p| self.pitch_to_hz(&p)))?;
                     if target_fret.abs() < 1e-6 {
-                        return Some(69.0 + 12.0 * (open_hz / 440.0).log2());
+                        return Some(open_hz);
                     }
                     if let Some(cf) = custom_frets
                         .iter()
@@ -248,35 +248,42 @@ impl FretboardFrequencyTable {
                         })
                     {
                         let hz = open_hz * 2.0_f64.powf(cf.cents() / 1200.0);
-                        return Some(69.0 + 12.0 * (hz / 440.0).log2());
+                        return Some(hz);
                     }
                 }
-                return Some(self.pitch_to_midi_note_number(&note.pitch));
+                return Some(self.pitch_to_hz(&note.pitch));
             }
         }
 
         if note.decimal_fret.is_some() {
-            return Some(self.pitch_to_midi_note_number(&note.pitch));
+            return Some(self.pitch_to_hz(&note.pitch));
         }
 
         if let (Some(string), Some(fret)) = (string_opt, note.fret) {
             if let Some(state) = self.get(string, fret) {
-                return Some(state.midi_note_number);
+                return Some(state.frequency_hz);
             }
         }
 
-        Some(self.pitch_to_midi_note_number(&note.pitch))
+        Some(self.pitch_to_hz(&note.pitch))
     }
 
-    /// Resolves the exact continuous MIDI note number for an arbitrary `(string, fret)` position on `part`,
+    /// Resolves the exact continuous MIDI note number for a note on `part`,
+    /// taking into account harmonics, custom fretboards (`customFrets`), decimal fretlets, and EDO fret steps.
+    pub fn note_to_midi_note_number(&self, part: &Part, note: &crate::mnx::Note) -> Option<f64> {
+        let hz = self.note_to_frequency_hz(part, note)?;
+        Some(69.0 + 12.0 * (hz / 440.0).log2())
+    }
+
+    /// Resolves the exact frequency in Hz (`f64`) for an arbitrary `(string, fret)` position on `part`,
     /// leveraging custom frets (ratios, cents, EDO steps), open string tunings, and EDO math.
-    pub fn string_fret_to_midi_note_number(&self, part: &Part, string: u8, fret: i32) -> Option<f64> {
+    pub fn string_fret_to_frequency_hz(&self, part: &Part, string: u8, fret: i32) -> Option<f64> {
         let open_hz = self
             .get_hz(string, 0)
             .or_else(|| part.get_string_tuning(string).map(|p| self.pitch_to_hz(&p)))?;
 
         if fret == 0 {
-            return Some(69.0 + 12.0 * (open_hz / 440.0).log2());
+            return Some(open_hz);
         }
 
         if let Some(custom_frets) = &part.ext.custom_frets {
@@ -294,13 +301,13 @@ impl FretboardFrequencyTable {
                     })
                 {
                     let hz = open_hz * 2.0_f64.powf(cf.cents() / 1200.0);
-                    return Some(69.0 + 12.0 * (hz / 440.0).log2());
+                    return Some(hz);
                 }
             }
         }
 
         if let Some(state) = self.get(string, fret) {
-            return Some(state.midi_note_number);
+            return Some(state.frequency_hz);
         }
 
         // Fallback for fret beyond max_fret in standard EDO
@@ -324,7 +331,14 @@ impl FretboardFrequencyTable {
             let step_delta = (played_steps - self.ref_steps) as f64;
             self.reference_pitch.frequency_hz * (2.0_f64).powf(step_delta / (self.edo as f64))
         };
-        Some(69.0 + 12.0 * (frequency_hz / 440.0).log2())
+        Some(frequency_hz)
+    }
+
+    /// Resolves the exact continuous MIDI note number for an arbitrary `(string, fret)` position on `part`,
+    /// leveraging custom frets (ratios, cents, EDO steps), open string tunings, and EDO math.
+    pub fn string_fret_to_midi_note_number(&self, part: &Part, string: u8, fret: i32) -> Option<f64> {
+        let hz = self.string_fret_to_frequency_hz(part, string, fret)?;
+        Some(69.0 + 12.0 * (hz / 440.0).log2())
     }
 
     /// Compute frequency in Hz directly for any played step integer in this EDO space.

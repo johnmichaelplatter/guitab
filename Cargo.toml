@@ -19,6 +19,8 @@ midly = "0.5"
 midir = { version = "0.10", features = ["coremidi_send_timestamped"] }
 printpdf = "0.7"
 epaint_default_fonts = "0.36"
+cpal = "0.15"
+rtrb = "0.3"
 
 [profile.dev]
 opt-level = 1

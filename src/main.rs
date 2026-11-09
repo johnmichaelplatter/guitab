@@ -12,6 +12,7 @@ mod mnx;
 pub mod pdf_export;
 pub mod presets;
 mod render;
+pub mod synth;
 pub mod tuning_table;
 mod validate;
 pub mod yaml_editor;

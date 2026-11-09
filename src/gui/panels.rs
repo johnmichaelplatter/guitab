@@ -2249,6 +2249,33 @@ impl MnxEditorApp {
                                 .color(Color32::from_rgb(255, 215, 0)),
                         );
                     }
+
+                    ui.separator();
+                    let synth_btn = if self.synth_lab.open {
+                        egui::Button::new(
+                            egui::RichText::new("Synth Lab")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(110, 230, 175))
+                    } else {
+                        egui::Button::new("Synth Lab")
+                    };
+                    if ui
+                        .add(synth_btn)
+                        .on_hover_text(
+                            "Open the Internal Synth Lab test bench to audition strings, microtonal glides, slurs, and drums",
+                        )
+                        .clicked()
+                    {
+                        self.synth_lab.open = !self.synth_lab.open;
+                        if self.synth_lab.open {
+                            let _ = self.ensure_synth_engine();
+                        }
+                    }
+                    if self.synth_engine.is_some() {
+                        paint_status_dot(ui, Color32::from_rgb(80, 220, 120));
+                    }
                 });
 
                 if self.grid_input.is_grid_input_mode {
