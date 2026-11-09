@@ -8,6 +8,7 @@
 //! - Denormal numbers are flushed to zero in all exponential decay and feedback paths.
 
 use crate::synth::command::SynthCommand;
+use crate::synth::waveguide::{StringWaveguide, MAX_STRINGS};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::f32::consts::TAU;
 
@@ -202,16 +203,24 @@ impl TestSineVoice {
 pub struct SynthMixer {
     sample_rate: f32,
     consumer: rtrb::Consumer<SynthCommand>,
+    /// Pre-allocated bank of 12 Extended Karplus-Strong physical string waveguides.
+    strings: Box<[StringWaveguide; MAX_STRINGS]>,
+    /// Auxiliary test voices for drum/GM triggers (prior to Phase 4 percussion module).
     voices: [TestSineVoice; MAX_TEST_VOICES],
     voice_cursor: usize,
 }
 
 impl SynthMixer {
-    /// Pre-allocates all mixer and voice state prior to starting the `cpal` stream.
+    /// Pre-allocates all mixer, waveguide, and voice state prior to starting the `cpal` stream.
     pub fn new(sample_rate: f32, consumer: rtrb::Consumer<SynthCommand>) -> Self {
+        let sr = sample_rate.max(8_000.0);
+        let strings = Box::new(std::array::from_fn(|i| {
+            StringWaveguide::new(sr, (i + 1) as u8)
+        }));
         Self {
-            sample_rate: sample_rate.max(8_000.0),
+            sample_rate: sr,
             consumer,
+            strings,
             voices: [TestSineVoice::default(); MAX_TEST_VOICES],
             voice_cursor: 0,
         }
@@ -219,6 +228,11 @@ impl SynthMixer {
 
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
+    }
+
+    #[inline(always)]
+    fn map_string_slot(string_idx: u8) -> usize {
+        (string_idx.saturating_sub(1) as usize) % MAX_STRINGS
     }
 
     /// Drains all pending `SynthCommand` messages from the lock-free SPSC queue.
@@ -229,7 +243,7 @@ impl SynthMixer {
         }
     }
 
-    /// Dispatches a single `SynthCommand` in constant $O(V)$ time with zero allocations.
+    /// Dispatches a single `SynthCommand` in constant time with zero allocations.
     #[inline(always)]
     pub fn dispatch_command(&mut self, cmd: SynthCommand) {
         match cmd {
@@ -237,18 +251,18 @@ impl SynthMixer {
                 string_idx,
                 freq_hz,
                 velocity,
-                pluck_pos: _,
+                pluck_pos,
                 palm_mute,
                 harmonic_node,
             } => {
-                let slot = self.find_or_steal_voice(string_idx);
-                self.voices[slot].trigger(
+                let slot = Self::map_string_slot(string_idx);
+                self.strings[slot].trigger(
                     string_idx,
                     freq_hz,
                     velocity,
+                    pluck_pos,
                     palm_mute,
                     harmonic_node,
-                    self.sample_rate,
                 );
             }
             SynthCommand::SlideString {
@@ -256,52 +270,28 @@ impl SynthMixer {
                 target_freq_hz,
                 glide_samples,
             } => {
-                for v in &mut self.voices {
-                    if v.active && v.string_idx == string_idx {
-                        v.set_glide(target_freq_hz, glide_samples, self.sample_rate);
-                    }
-                }
+                let slot = Self::map_string_slot(string_idx);
+                self.strings[slot].slide(target_freq_hz, glide_samples);
             }
             SynthCommand::SlurString {
                 string_idx,
                 new_freq_hz,
                 hammer_energy,
             } => {
-                let mut found = false;
-                for v in &mut self.voices {
-                    if v.active && v.string_idx == string_idx {
-                        v.slur(new_freq_hz, hammer_energy, self.sample_rate);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    let slot = self.find_or_steal_voice(string_idx);
-                    self.voices[slot].trigger(
-                        string_idx,
-                        new_freq_hz,
-                        hammer_energy,
-                        0.0,
-                        None,
-                        self.sample_rate,
-                    );
-                }
+                let slot = Self::map_string_slot(string_idx);
+                self.strings[slot].slur(new_freq_hz, hammer_energy);
             }
             SynthCommand::MuteString {
                 string_idx,
                 release_rate,
             } => {
-                for v in &mut self.voices {
-                    if v.active && v.string_idx == string_idx {
-                        v.mute(release_rate);
-                    }
-                }
+                let slot = Self::map_string_slot(string_idx);
+                self.strings[slot].mute(release_rate);
             }
             SynthCommand::TriggerDrum {
                 gm_drum_note,
                 velocity,
             } => {
-                // Phase 1 transient click/tone placeholder mapped by GM note number
                 let pseudo_string = 100u8.wrapping_add(gm_drum_note);
                 let freq_hz = 60.0 + (gm_drum_note as f64) * 4.5;
                 let slot = self.find_or_steal_voice(pseudo_string);
@@ -332,6 +322,9 @@ impl SynthMixer {
                 );
             }
             SynthCommand::AllNotesOff => {
+                for s in self.strings.iter_mut() {
+                    s.clear();
+                }
                 for v in &mut self.voices {
                     v.active = false;
                     v.env = 0.0;
@@ -343,19 +336,16 @@ impl SynthMixer {
 
     #[inline(always)]
     fn find_or_steal_voice(&mut self, string_idx: u8) -> usize {
-        // 1. Reuse voice already assigned to the same string index
         for (i, v) in self.voices.iter().enumerate() {
             if v.active && v.string_idx == string_idx {
                 return i;
             }
         }
-        // 2. Find an inactive voice
         for (i, v) in self.voices.iter().enumerate() {
             if !v.active {
                 return i;
             }
         }
-        // 3. Round-robin voice steal
         let idx = self.voice_cursor % MAX_TEST_VOICES;
         self.voice_cursor = self.voice_cursor.wrapping_add(1);
         idx
@@ -367,6 +357,14 @@ impl SynthMixer {
         let mut left = 0.0_f32;
         let mut right = 0.0_f32;
 
+        for s in self.strings.iter_mut() {
+            if s.active {
+                let (l, r) = s.next_frame();
+                left += l;
+                right += r;
+            }
+        }
+
         for v in &mut self.voices {
             if v.active {
                 let (l, r) = v.next_frame();
@@ -375,9 +373,11 @@ impl SynthMixer {
             }
         }
 
-        // Soft clip / clamp to prevent digital overs
-        let left_out = flush_denormal(left).clamp(-1.0, 1.0);
-        let right_out = flush_denormal(right).clamp(-1.0, 1.0);
+        // Smooth rational soft-clipper + hard clamp to prevent digital overs
+        let soft_l = left / (1.0 + left.abs() * 0.25);
+        let soft_r = right / (1.0 + right.abs() * 0.25);
+        let left_out = flush_denormal(soft_l).clamp(-1.0, 1.0);
+        let right_out = flush_denormal(soft_r).clamp(-1.0, 1.0);
         (left_out, right_out)
     }
 

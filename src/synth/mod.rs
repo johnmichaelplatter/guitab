@@ -9,9 +9,11 @@
 
 pub mod backend;
 pub mod command;
+pub mod waveguide;
 
 pub use backend::{flush_denormal, SynthMixer};
 pub use command::SynthCommand;
+pub use waveguide::{StringWaveguide, MAX_STRINGS};
 
 /// Capacity of the lock-free SPSC command ringbuffer between UI/sequencer and audio threads.
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
