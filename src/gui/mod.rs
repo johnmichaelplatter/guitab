@@ -4,6 +4,7 @@ pub mod clipboard;
 pub mod dialogs;
 pub mod input;
 pub mod panels;
+pub mod synth_editor;
 #[cfg(test)]
 mod tests;
 

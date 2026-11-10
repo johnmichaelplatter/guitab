@@ -142,6 +142,20 @@ impl SynthMixer {
                     s.set_profile(profile);
                 }
             }
+            SynthCommand::UpdateStringParams(params) => {
+                for s in self.strings.iter_mut() {
+                    s.update_params(&params);
+                }
+            }
+            SynthCommand::UpdateBodyParams(params) => {
+                self.body.update_params(&params);
+            }
+            SynthCommand::UpdateDrumParams { drum_role, params } => {
+                self.percussion.update_drum_params(drum_role, params);
+            }
+            SynthCommand::UpdateGmVoiceParams(params) => {
+                self.percussion.update_fm_params(params);
+            }
             SynthCommand::AllNotesOff => {
                 for s in self.strings.iter_mut() {
                     s.clear();

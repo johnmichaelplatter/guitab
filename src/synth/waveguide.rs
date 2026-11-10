@@ -22,6 +22,7 @@
 
 use crate::synth::backend::flush_denormal;
 use crate::synth::body::InstrumentProfile;
+use crate::synth::patch::StringSynthParams;
 use std::f32::consts::PI;
 
 /// Maximum number of simultaneous physical strings supported per waveguide bank.
@@ -91,6 +92,9 @@ pub struct StringWaveguide {
     pub pan: f32,
     /// Silence counter to deactivate the waveguide once energy decays below the noise floor.
     quiet_samples: u32,
+    /// Live custom patch parameters for this string.
+    pub custom_params: Option<StringSynthParams>,
+    pub exc_noise_mix: f32,
 }
 
 impl Default for StringWaveguide {
@@ -137,6 +141,30 @@ impl StringWaveguide {
             rng_state: if seed == 0 { 0x1234_5678 } else { seed },
             pan: (0.30 + ((string_idx % MAX_STRINGS as u8) as f32) * 0.035).clamp(0.15, 0.85),
             quiet_samples: 0,
+            custom_params: None,
+            exc_noise_mix: 0.65,
+        }
+    }
+
+    #[inline(always)]
+    pub fn update_params(&mut self, params: &StringSynthParams) {
+        self.custom_params = Some(*params);
+        self.exc_noise_mix = params.noise_mix.clamp(0.0, 1.0);
+        if self.active {
+            let clamped_freq = (self.sample_rate / self.current_delay.max(2.0)).clamp(15.0, self.sample_rate * 0.42);
+            let t60 = if self.palm_mute > 0.001 {
+                params.t60_decay_sec * (1.0 - 0.92 * self.palm_mute * (params.palm_mute_damping / 0.22)).max(0.04)
+            } else {
+                params.t60_decay_sec
+            };
+            let periods_per_t60 = (t60 * clamped_freq).max(1.0);
+            let mut gain_g = 10.0_f32.powf(-3.0 / periods_per_t60);
+            if self.palm_mute > 0.001 {
+                gain_g *= 1.0 - 0.045 * self.palm_mute;
+            }
+            self.loop_gain_g = gain_g.clamp(0.85, 0.9999);
+            self.loop_stretch_s = (params.brightness_s + self.palm_mute * 0.52).clamp(0.01, 0.95);
+            self.ap_coeff = (-params.inharmonicity_dispersion).clamp(-0.80, -0.005);
         }
     }
 
@@ -173,17 +201,33 @@ impl StringWaveguide {
 
         let mute = palm_mute.clamp(0.0, 1.0);
 
+        let (base_s, base_t60, base_ap) = if let Some(cp) = self.custom_params {
+            (
+                cp.brightness_s,
+                cp.t60_decay_sec,
+                (-cp.inharmonicity_dispersion).clamp(-0.80, -0.005),
+            )
+        } else {
+            let s = ((0.06 + (180.0 / (clamped_freq as f32 + 120.0)) * 0.18) * prof.damping_s_mult)
+                .clamp(0.03, 0.42);
+            let t = ((4.2 - (clamped_freq as f32) * 0.0018) * prof.sustain_mult).clamp(1.2, 6.8);
+            let ap = if clamped_freq < 260.0 {
+                let bass_factor = ((260.0 - clamped_freq as f32) / 245.0).clamp(0.0, 1.0);
+                ((-0.04 - 0.28 * bass_factor) * prof.dispersion_mult).clamp(-0.42, -0.01)
+            } else {
+                (-0.02 * prof.dispersion_mult).clamp(-0.15, -0.005)
+            };
+            (s, t, ap)
+        };
+
         // Brightness / stretching factor S in H(z) = g * ((1 - S) + S * z^-1):
         // Higher strings have smaller S (brighter); palm muting dramatically increases S.
-        let base_s = ((0.06 + (180.0 / (clamped_freq as f32 + 120.0)) * 0.18) * prof.damping_s_mult)
-            .clamp(0.03, 0.42);
-        let stretch_s = (base_s + mute * 0.52).clamp(0.03, 0.85);
+        let stretch_s = (base_s + mute * 0.52).clamp(0.01, 0.95);
 
         // Target T60 decay time in seconds: longer for low strings & bass profiles, shorter when palm-muted.
-        let base_t60 =
-            ((4.2 - (clamped_freq as f32) * 0.0018) * prof.sustain_mult).clamp(1.2, 6.8);
         let t60 = if mute > 0.001 {
-            base_t60 * (1.0 - 0.92 * mute).max(0.04)
+            let mute_scale = self.custom_params.map(|cp| cp.palm_mute_damping / 0.22).unwrap_or(1.0);
+            base_t60 * (1.0 - 0.92 * mute * mute_scale).max(0.04)
         } else {
             base_t60
         };
@@ -193,16 +237,8 @@ impl StringWaveguide {
         if mute > 0.001 {
             gain_g *= 1.0 - 0.045 * mute;
         }
-        let gain_g = gain_g.clamp(0.88, 0.9999);
-
-        // 1st-order all-pass stiffness dispersion coefficient for bass/wound strings:
-        // Stronger negative coefficient for lower fundamentals (< 260 Hz), scaled by profile.
-        let ap_coeff = if clamped_freq < 260.0 {
-            let bass_factor = ((260.0 - clamped_freq as f32) / 245.0).clamp(0.0, 1.0);
-            ((-0.04 - 0.28 * bass_factor) * prof.dispersion_mult).clamp(-0.42, -0.01)
-        } else {
-            (-0.02 * prof.dispersion_mult).clamp(-0.15, -0.005)
-        };
+        let gain_g = gain_g.clamp(0.85, 0.9999);
+        let ap_coeff = base_ap;
 
         // Phase delay compensation at fundamental omega_0 = 2 * pi * f0 / sr:
         let omega = (2.0 * std::f64::consts::PI * clamped_freq / sr) as f32;
@@ -261,12 +297,19 @@ impl StringWaveguide {
         self.exc_amplitude = vel * 0.42;
 
         // Pick-direction / dynamics one-pole lowpass: lower velocity or FingeredBass -> softer/darker
-        self.exc_lp_coeff = (0.82 - 0.68 * vel + prof.exc_softness_offset).clamp(0.06, 0.92);
+        self.exc_lp_coeff = if let Some(cp) = self.custom_params {
+            self.exc_noise_mix = cp.noise_mix.clamp(0.0, 1.0);
+            let norm_hardness = (cp.pick_hardness / 16_000.0).clamp(0.05, 0.95);
+            (0.92 - 0.70 * norm_hardness * vel).clamp(0.06, 0.92)
+        } else {
+            (0.82 - 0.68 * vel + prof.exc_softness_offset).clamp(0.06, 0.92)
+        };
         self.exc_lp_z1 = 0.0;
 
         // Pick-position comb filter delay: pluck_pos in [0.05, 0.5] of fundamental period
         // Blend requested pluck_pos with profile's characteristic pluck position
-        let effective_pos = (0.75 * pluck_pos + 0.25 * prof.default_pluck_pos).clamp(0.05, 0.50);
+        let base_pluck = self.custom_params.map(|cp| cp.pluck_pos).unwrap_or(prof.default_pluck_pos);
+        let effective_pos = (0.75 * pluck_pos + 0.25 * base_pluck).clamp(0.05, 0.50);
         self.exc_comb_delay =
             ((effective_pos * delay).round() as usize).clamp(1, EXCITATION_BUFFER_SIZE - 2);
 
@@ -274,7 +317,8 @@ impl StringWaveguide {
         match harmonic_node {
             Some(n) if n >= 2 => {
                 self.harmonic_node = n.min(8);
-                let h_samples = (0.030 * self.sample_rate).round().max(1.0) as u32;
+                let harm_ms = self.custom_params.map(|cp| cp.harmonic_damping_ms).unwrap_or(30.0);
+                let h_samples = ((harm_ms * 0.001) * self.sample_rate).round().max(1.0) as u32;
                 self.harmonic_total_samples = h_samples;
                 self.harmonic_samples_remaining = h_samples;
             }
@@ -422,7 +466,8 @@ impl StringWaveguide {
             let noise = self.next_white_noise();
             // Rounded triangle / half-sine pluck transient
             let tri_transient = (PI * progress).sin() * (1.0 - progress);
-            let raw_exc = (0.65 * noise + 0.35 * tri_transient) * self.exc_amplitude;
+            let raw_exc = (self.exc_noise_mix * noise + (1.0 - self.exc_noise_mix) * tri_transient)
+                * self.exc_amplitude;
 
             // Pick-direction / velocity dynamics one-pole lowpass filter
             let lp_exc = flush_denormal(

@@ -10,12 +10,14 @@
 pub mod backend;
 pub mod body;
 pub mod command;
+pub mod patch;
 pub mod percussion;
 pub mod waveguide;
 
 pub use backend::{flush_denormal, SynthMixer};
 pub use body::{BiquadFilter, BodyResonator, InstrumentProfile};
 pub use command::SynthCommand;
+pub use patch::*;
 pub use percussion::{GmFmPreset, PercussionAndGmPool, PolyVoice, MAX_POLY_VOICES};
 pub use waveguide::{StringWaveguide, MAX_STRINGS};
 
@@ -59,7 +61,17 @@ impl SynthSender {
     }
 }
 
-/// UI state for the interactive "Synth Lab" human-in-the-loop audio verification panel.
+/// Tab category for the Sound Design & Patch Editor inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SynthEditorTab {
+    #[default]
+    StringAndPluck,
+    BodyAndAmp,
+    DrumsAndCymbals,
+    GmFmSynth,
+}
+
+/// UI state for the interactive "Synth Lab" human-in-the-loop audio verification and sound design panel.
 #[derive(Debug, Clone)]
 pub struct SynthTestLabState {
     pub open: bool,
@@ -74,10 +86,21 @@ pub struct SynthTestLabState {
     pub glide_ms: f32,
     pub gm_program: u8,
     pub status_msg: Option<String>,
+
+    // Sound Design & Patch Editor state
+    pub active_tab: SynthEditorTab,
+    pub preset: SynthPreset,
+    pub user_presets: Vec<SynthPreset>,
+    pub selected_preset_idx: usize,
+    pub master_gain_db: f32,
+    pub save_dialog_open: bool,
+    pub save_preset_name: String,
+    pub preview_peak_level: f32,
 }
 
 impl Default for SynthTestLabState {
     fn default() -> Self {
+        let preset = SynthPreset::default();
         Self {
             open: false,
             route_score_preview: true,
@@ -91,6 +114,15 @@ impl Default for SynthTestLabState {
             glide_ms: 220.0,
             gm_program: 0,
             status_msg: None,
+
+            active_tab: SynthEditorTab::StringAndPluck,
+            preset,
+            user_presets: Vec::new(),
+            selected_preset_idx: 0,
+            master_gain_db: 0.0,
+            save_dialog_open: false,
+            save_preset_name: "My Custom Preset".to_string(),
+            preview_peak_level: 0.0,
         }
     }
 }

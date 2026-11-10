@@ -3,6 +3,10 @@
 //! All frequencies are specified in exact pre-MIDI `f64` Hz so that arbitrary microtonal EDOs,
 //! Just Intonation ratios, and custom fretlet layouts are rendered with zero pitch quantization.
 
+use crate::synth::patch::{
+    BodyResonatorParams, DrumRole, DrumVoiceParams, FmVoiceParams, StringSynthParams,
+};
+
 /// Commands sent over the lock-free SPSC ringbuffer (`rtrb`) to the `cpal` audio callback.
 ///
 /// Must remain `Copy`, `Clone`, and free of any heap-allocated types (`String`, `Vec`, `Box`).
@@ -56,6 +60,18 @@ pub enum SynthCommand {
     SetInstrumentProfile(crate::synth::body::InstrumentProfile),
     /// Immediately silence or fast-release all active strings, drums, and GM voices.
     AllNotesOff,
+
+    /// Live real-time parameter updates for Extended Karplus-Strong string waveguides.
+    UpdateStringParams(StringSynthParams),
+    /// Live real-time parameter updates for body resonator, drive, and 4-band EQ/cabinet filters.
+    UpdateBodyParams(BodyResonatorParams),
+    /// Live real-time parameter updates for procedural drum kit voices (Kick, Snare, Hi-Hats/Cymbals).
+    UpdateDrumParams {
+        drum_role: DrumRole,
+        params: DrumVoiceParams,
+    },
+    /// Live real-time parameter updates for 2-operator FM melodic backing voices.
+    UpdateGmVoiceParams(FmVoiceParams),
 }
 
 #[cfg(test)]
@@ -67,8 +83,8 @@ mod tests {
         fn assert_copy_send_sync<T: Copy + Clone + Send + Sync>() {}
         assert_copy_send_sync::<SynthCommand>();
         assert!(
-            std::mem::size_of::<SynthCommand>() <= 32,
-            "SynthCommand size ({}) should remain cache-friendly (<= 32 bytes)",
+            std::mem::size_of::<SynthCommand>() <= 96,
+            "SynthCommand size ({}) should remain cache-friendly (<= 96 bytes)",
             std::mem::size_of::<SynthCommand>()
         );
     }

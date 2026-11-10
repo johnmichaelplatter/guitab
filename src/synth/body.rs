@@ -7,11 +7,13 @@
 //! - Filter coefficients are computed dynamically from the active stream's `sample_rate: f32`.
 
 use crate::synth::backend::flush_denormal;
+use crate::synth::patch::BodyResonatorParams;
+use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 
 /// Physical instrument profile configuring both `StringWaveguide` excitation/loop parameters
 /// and the post-waveguide `BodyResonator` filter topology.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum InstrumentProfile {
     #[default]
     AcousticGuitar,
@@ -257,6 +259,32 @@ impl BiquadFilter {
         }
     }
 
+    /// Evaluates the steady-state complex magnitude response $|H(e^{j\omega})|$ at `freq_hz`.
+    pub fn magnitude_response(&self, freq_hz: f32, sample_rate: f32) -> f32 {
+        let sr = sample_rate.max(8_000.0);
+        let f = freq_hz.clamp(1.0, sr * 0.499);
+        let w = 2.0 * PI * f / sr;
+        let cos_w = w.cos();
+        let cos_2w = (2.0 * w).cos();
+        let sin_w = w.sin();
+        let sin_2w = (2.0 * w).sin();
+
+        let num_re = self.b0 + self.b1 * cos_w + self.b2 * cos_2w;
+        let num_im = -self.b1 * sin_w - self.b2 * sin_2w;
+        let den_re = 1.0 + self.a1 * cos_w + self.a2 * cos_2w;
+        let den_im = -self.a1 * sin_w - self.a2 * sin_2w;
+
+        let num_sq = num_re * num_re + num_im * num_im;
+        let den_sq = (den_re * den_re + den_im * den_im).max(1.0e-12);
+        (num_sq / den_sq).sqrt()
+    }
+
+    /// Evaluates the magnitude response in decibels (dB) at `freq_hz`.
+    pub fn magnitude_db(&self, freq_hz: f32, sample_rate: f32) -> f32 {
+        let mag = self.magnitude_response(freq_hz, sample_rate).max(1.0e-6);
+        20.0 * mag.log10()
+    }
+
     #[inline(always)]
     fn copy_coeffs_from(&mut self, other: &Self) {
         self.b0 = other.b0;
@@ -395,6 +423,96 @@ impl ChannelResonatorBank {
         }
     }
 
+    fn configure_custom(&mut self, sample_rate: f32, params: &BodyResonatorParams) {
+        let sr = sample_rate.max(8_000.0);
+        let b0 = params.bands[0];
+        let b1 = params.bands[1];
+        let b2 = params.bands[2];
+        let b3 = params.bands[3];
+
+        let f0 = b0.freq_hz.clamp(20.0, sr * 0.45);
+        let q0 = b0.q.clamp(0.1, 15.0);
+        let f1 = b1.freq_hz.clamp(20.0, sr * 0.45);
+        let q1 = b1.q.clamp(0.1, 15.0);
+        let f2 = b2.freq_hz.clamp(20.0, sr * 0.45);
+        let q2 = b2.q.clamp(0.1, 15.0);
+        let f3 = b3.freq_hz.clamp(20.0, sr * 0.45);
+        let q3 = b3.q.clamp(0.1, 15.0);
+
+        match params.profile_base {
+            InstrumentProfile::AcousticGuitar | InstrumentProfile::HarpOrLute => {
+                if b0.enabled {
+                    self.mode1
+                        .copy_coeffs_from(&BiquadFilter::bandpass_peak(sr, f0, q0));
+                } else {
+                    self.mode1.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+                if b1.enabled {
+                    self.mode2
+                        .copy_coeffs_from(&BiquadFilter::bandpass_peak(sr, f1, q1));
+                } else {
+                    self.mode2.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+                if b2.enabled {
+                    self.mode3
+                        .copy_coeffs_from(&BiquadFilter::bandpass_peak(sr, f2, q2));
+                } else {
+                    self.mode3.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+                if b3.enabled {
+                    self.cab1.copy_coeffs_from(&BiquadFilter::peaking_eq(
+                        sr,
+                        f3,
+                        q3,
+                        b3.gain_db.clamp(-24.0, 24.0),
+                    ));
+                } else {
+                    self.cab1.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+            }
+            InstrumentProfile::ElectricClean
+            | InstrumentProfile::ElectricOverdrive
+            | InstrumentProfile::FingeredBass
+            | InstrumentProfile::PickedBass => {
+                if b0.enabled {
+                    self.cab1
+                        .copy_coeffs_from(&BiquadFilter::highpass(sr, f0, q0));
+                } else {
+                    self.cab1.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+                if b1.enabled {
+                    self.cab2.copy_coeffs_from(&BiquadFilter::peaking_eq(
+                        sr,
+                        f1,
+                        q1,
+                        b1.gain_db.clamp(-24.0, 24.0),
+                    ));
+                } else {
+                    self.cab2.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+                if b2.enabled {
+                    self.pickup_lp
+                        .copy_coeffs_from(&BiquadFilter::lowpass(sr, f2, q2));
+                    self.cab3.copy_coeffs_from(&BiquadFilter::peaking_eq(
+                        sr,
+                        f2,
+                        q2,
+                        b2.gain_db.clamp(-24.0, 24.0),
+                    ));
+                } else {
+                    self.pickup_lp.copy_coeffs_from(&BiquadFilter::passthrough());
+                    self.cab3.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+                if b3.enabled {
+                    self.cab4
+                        .copy_coeffs_from(&BiquadFilter::lowpass(sr, f3, q3));
+                } else {
+                    self.cab4.copy_coeffs_from(&BiquadFilter::passthrough());
+                }
+            }
+        }
+    }
+
     #[inline(always)]
     fn process_sample(&mut self, x: f32, profile: InstrumentProfile) -> f32 {
         match profile {
@@ -462,6 +580,8 @@ pub struct BodyResonator {
     profile: InstrumentProfile,
     left: ChannelResonatorBank,
     right: ChannelResonatorBank,
+    pub custom_params: Option<BodyResonatorParams>,
+    pub post_gain_amp: f32,
 }
 
 impl Default for BodyResonator {
@@ -478,6 +598,8 @@ impl BodyResonator {
             profile,
             left: ChannelResonatorBank::default(),
             right: ChannelResonatorBank::default(),
+            custom_params: None,
+            post_gain_amp: 1.0,
         };
         res.set_profile(profile);
         res
@@ -490,16 +612,32 @@ impl BodyResonator {
 
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate.max(8_000.0);
-        self.left.configure(self.sample_rate, self.profile);
-        self.right.configure(self.sample_rate, self.profile);
+        if let Some(cp) = &self.custom_params {
+            let cp_copy = *cp;
+            self.update_params(&cp_copy);
+        } else {
+            self.left.configure(self.sample_rate, self.profile);
+            self.right.configure(self.sample_rate, self.profile);
+        }
     }
 
     /// Updates the active [`InstrumentProfile`] and recalculates biquad coefficients without
     /// clearing filter delay states (preventing clicks on live preset changes).
     pub fn set_profile(&mut self, profile: InstrumentProfile) {
         self.profile = profile;
+        self.custom_params = None;
+        self.post_gain_amp = 1.0;
         self.left.configure(self.sample_rate, profile);
         self.right.configure(self.sample_rate, profile);
+    }
+
+    /// Applies custom parameter overrides for the body resonator, saturation drive, and 4-band filters.
+    pub fn update_params(&mut self, params: &BodyResonatorParams) {
+        self.profile = params.profile_base;
+        self.custom_params = Some(*params);
+        self.post_gain_amp = 10.0_f32.powf(params.post_gain_db.clamp(-24.0, 24.0) / 20.0);
+        self.left.configure_custom(self.sample_rate, params);
+        self.right.configure_custom(self.sample_rate, params);
     }
 
     #[inline(always)]
@@ -511,9 +649,25 @@ impl BodyResonator {
     /// Processes a stereo string waveguide frame `(left, right)` through the active body/cabinet resonator.
     #[inline(always)]
     pub fn process_stereo(&mut self, left: f32, right: f32) -> (f32, f32) {
-        let out_l = self.left.process_sample(left, self.profile);
-        let out_r = self.right.process_sample(right, self.profile);
-        (flush_denormal(out_l), flush_denormal(out_r))
+        if let Some(cp) = &self.custom_params {
+            let drive = cp.pre_drive.clamp(0.0, 10.0);
+            let in_l = left * drive;
+            let in_r = right * drive;
+
+            let out_l = self.left.process_sample(in_l, self.profile);
+            let out_r = self.right.process_sample(in_r, self.profile);
+
+            let wet_mix = cp.body_wet_mix.clamp(0.0, 1.0);
+            let mix_l = (1.0 - wet_mix) * left + wet_mix * out_l;
+            let mix_r = (1.0 - wet_mix) * right + wet_mix * out_r;
+
+            let gain = self.post_gain_amp;
+            (flush_denormal(mix_l * gain), flush_denormal(mix_r * gain))
+        } else {
+            let out_l = self.left.process_sample(left, self.profile);
+            let out_r = self.right.process_sample(right, self.profile);
+            (flush_denormal(out_l), flush_denormal(out_r))
+        }
     }
 }
 

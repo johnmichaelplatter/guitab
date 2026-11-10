@@ -24,6 +24,7 @@
 
 use crate::synth::backend::flush_denormal;
 use crate::synth::body::{tanh_pade, BiquadFilter};
+use crate::synth::patch::{DrumKitParams, DrumRole, DrumVoiceParams, FmVoiceParams};
 use std::f32::consts::TAU;
 
 /// Fixed polyphonic voice count for percussion and GM melodic backing.
@@ -490,6 +491,51 @@ impl PolyVoice {
         }
     }
 
+    /// Triggers a 2-operator FM melodic voice with custom parameters from the Patch Editor.
+    #[inline(always)]
+    pub fn trigger_gm_fm_custom(
+        &mut self,
+        channel: u8,
+        freq_hz: f64,
+        velocity: f32,
+        params: &FmVoiceParams,
+        sample_rate: f32,
+    ) {
+        let sr = sample_rate.max(8_000.0);
+        let inv_sr = 1.0 / sr;
+        let vel = velocity.clamp(0.05, 1.0);
+
+        self.mode = PolyVoiceMode::GmFmMelodic(GmFmPreset::EPiano);
+        self.voice_tag = 200u8.wrapping_add(channel & 0x0F);
+        self.is_open_hat = false;
+        self.age_samples = 0;
+        self.pan = (0.32 + ((channel % 7) as f32) * 0.06).clamp(0.20, 0.80);
+        self.level = vel * 0.30;
+
+        let carrier_hz = (freq_hz.clamp(15.0, (sr as f64) * 0.45)) as f32;
+        self.phase1 = 0.0;
+        self.phase2 = 0.0;
+        self.fm_last_mod = 0.0;
+        self.base_inc = carrier_hz * inv_sr;
+
+        let mod_ratio = params.mod_ratio.clamp(0.1, 16.0);
+        self.sec_inc = (carrier_hz * mod_ratio).min(sr * 0.45) * inv_sr;
+        self.fm_index_base = params.mod_index * params.mod_adsr.sustain;
+        self.fm_index_env_scale = params.mod_index * (1.0 - params.mod_adsr.sustain).max(0.0) * vel;
+        self.fm_feedback = params.feedback.clamp(0.0, 1.5);
+        self.in_attack = true;
+        self.amp_env = 0.0;
+        let att_sec = (params.carrier_adsr.attack_ms * 0.001).max(0.0005);
+        self.amp_attack_inc = 1.0 / (att_sec * sr).max(1.0);
+        self.fast_env = 1.0;
+        let mod_decay_sec = (params.mod_adsr.decay_ms * 0.001).max(0.005);
+        self.fast_decay = (-inv_sr / mod_decay_sec).exp();
+        self.slow_env = 1.0;
+        let car_decay_sec = (params.carrier_adsr.decay_ms * 0.001).max(0.01);
+        self.slow_decay = (-inv_sr / car_decay_sec).exp();
+        self.filter1 = BiquadFilter::lowpass(sr, 6_500.0, 0.707);
+    }
+
     /// Steps one audio sample and returns stereo `(left, right)`.
     #[inline(always)]
     pub fn next_frame(&mut self) -> (f32, f32) {
@@ -681,6 +727,8 @@ pub struct PercussionAndGmPool {
     sample_rate: f32,
     voices: [PolyVoice; MAX_POLY_VOICES],
     steal_cursor: usize,
+    pub drum_params: DrumKitParams,
+    pub fm_params: Option<FmVoiceParams>,
 }
 
 impl PercussionAndGmPool {
@@ -695,7 +743,23 @@ impl PercussionAndGmPool {
             sample_rate: sr,
             voices,
             steal_cursor: 0,
+            drum_params: DrumKitParams::default(),
+            fm_params: None,
         }
+    }
+
+    /// Updates live procedural drum synthesis parameters.
+    pub fn update_drum_params(&mut self, _role: DrumRole, params: DrumVoiceParams) {
+        match params {
+            DrumVoiceParams::Kick(k) => self.drum_params.kick = k,
+            DrumVoiceParams::Snare(s) => self.drum_params.snare = s,
+            DrumVoiceParams::HiHatAndCymbal(c) => self.drum_params.hats_cymbals = c,
+        }
+    }
+
+    /// Updates live 2-operator FM melodic synthesis parameters.
+    pub fn update_fm_params(&mut self, params: FmVoiceParams) {
+        self.fm_params = Some(params);
     }
 
     /// Selects an available voice slot or steals the quietest/oldest active voice.
@@ -746,9 +810,20 @@ impl PercussionAndGmPool {
 
         match gm_drum_note {
             // 1. Kick & Toms (Notes 35, 36, 41–50)
-            // Acoustic Bass Drum (35) & Bass Drum 1 (36): 160 Hz -> 48 Hz over 25 ms + 5 ms click
-            35 => voice.trigger_kick_or_tom(35, 46.0, 155.0, 0.025, 0.24, 0.50, velocity, sr),
-            36 => voice.trigger_kick_or_tom(36, 48.0, 160.0, 0.025, 0.22, 0.50, velocity, sr),
+            // Acoustic Bass Drum (35) & Bass Drum 1 (36):
+            35 | 36 => {
+                let k = &self.drum_params.kick;
+                voice.trigger_kick_or_tom(
+                    gm_drum_note,
+                    k.pitch_end_hz,
+                    k.pitch_start_hz,
+                    (k.pitch_decay_ms * 0.001).clamp(0.005, 0.20),
+                    0.24,
+                    0.50,
+                    velocity * (0.6 + 0.4 * k.click_level),
+                    sr,
+                );
+            }
             // Floor Toms (41, 43)
             41 => voice.trigger_kick_or_tom(41, 78.0, 145.0, 0.030, 0.28, 0.66, velocity, sr),
             43 => voice.trigger_kick_or_tom(43, 95.0, 175.0, 0.028, 0.26, 0.60, velocity, sr),
@@ -764,30 +839,65 @@ impl PercussionAndGmPool {
             37 => voice.trigger_snare_or_clap(
                 37, 320.0, 590.0, 0.022, 0.030, 2_800.0, 2.2, 0.80, 0.35, false, 0.46, velocity, sr,
             ),
-            // Acoustic Snare (38): Dual body modes (185 Hz & 330 Hz) + bandpass snare wires
-            38 => voice.trigger_snare_or_clap(
-                38, 185.0, 330.0, 0.055, 0.145, 2_400.0, 1.1, 0.58, 0.65, false, 0.46, velocity, sr,
-            ),
+            // Acoustic Snare (38) & Electric Snare (40):
+            38 | 40 => {
+                let s = &self.drum_params.snare;
+                let body_hz = s.tone_freq_hz.clamp(100.0, 450.0);
+                let wire_decay = (s.noise_decay_ms * 0.001).clamp(0.02, 0.80);
+                let noise_m = s.noise_mix.clamp(0.05, 0.95);
+                let body_m = (1.0 - noise_m).clamp(0.05, 0.95);
+                voice.trigger_snare_or_clap(
+                    gm_drum_note,
+                    body_hz,
+                    body_hz * 1.78,
+                    0.055,
+                    wire_decay,
+                    2_400.0,
+                    1.1,
+                    body_m,
+                    noise_m,
+                    false,
+                    0.46,
+                    velocity,
+                    sr,
+                );
+            }
             // Hand Clap (39): Multi-burst bandpass noise @ 1.2 kHz
             39 => voice.trigger_snare_or_clap(
                 39, 185.0, 330.0, 0.028, 0.170, 1_250.0, 1.6, 0.18, 0.90, true, 0.54, velocity, sr,
             ),
-            // Electric Snare (40): Punchier 185 Hz & 330 Hz body + brighter longer wires
-            40 => voice.trigger_snare_or_clap(
-                40, 185.0, 330.0, 0.065, 0.175, 2_750.0, 1.0, 0.62, 0.72, false, 0.46, velocity, sr,
-            ),
 
             // 3. Hi-Hats & Cymbals (Notes 42, 44, 46, 49, 51, 52, 53, 55, 57, 59)
-            // Closed Hi-Hat (42): ~45 ms tight decay, 7 kHz highpass
-            42 => voice.trigger_hat_or_cymbal(42, 1.00, false, false, 0.015, 0.045, 0.34, velocity, sr),
-            // Pedal Hi-Hat (44): ~60 ms tight decay, 7 kHz highpass
-            44 => voice.trigger_hat_or_cymbal(44, 0.96, false, false, 0.018, 0.060, 0.34, velocity, sr),
-            // Open Hi-Hat (46): ~420 ms decay, choked by 42/44
-            46 => voice.trigger_hat_or_cymbal(46, 1.00, false, true, 0.045, 0.420, 0.34, velocity, sr),
+            // Closed Hi-Hat (42):
+            42 => {
+                let c = &self.drum_params.hats_cymbals;
+                let decay = (c.closed_decay_ms * 0.001).clamp(0.01, 0.30);
+                voice.trigger_hat_or_cymbal(42, c.spread, false, false, 0.015, decay, 0.34, velocity, sr);
+            }
+            // Pedal Hi-Hat (44):
+            44 => {
+                let c = &self.drum_params.hats_cymbals;
+                let decay = (c.closed_decay_ms * 0.001 * 1.33).clamp(0.015, 0.35);
+                voice.trigger_hat_or_cymbal(44, c.spread * 0.96, false, false, 0.018, decay, 0.34, velocity, sr);
+            }
+            // Open Hi-Hat (46):
+            46 => {
+                let c = &self.drum_params.hats_cymbals;
+                let decay = (c.open_decay_ms * 0.001).clamp(0.08, 2.5);
+                voice.trigger_hat_or_cymbal(46, c.spread, false, true, 0.045, decay, 0.34, velocity, sr);
+            }
             // Crash Cymbal 1 (49): 3.5 kHz bandpass + highpass, ~1.2 s decay
-            49 => voice.trigger_hat_or_cymbal(49, 0.92, true, false, 0.090, 1.200, 0.30, velocity, sr),
+            49 => {
+                let c = &self.drum_params.hats_cymbals;
+                let decay = (c.open_decay_ms * 0.001 * 1.8).clamp(0.2, 3.0);
+                voice.trigger_hat_or_cymbal(49, c.spread * 0.92, true, false, 0.090, decay, 0.30, velocity, sr);
+            }
             // Ride Cymbal 1 (51): 3.5 kHz bandpass + highpass, ~1.25 s decay
-            51 => voice.trigger_hat_or_cymbal(51, 1.12, true, false, 0.055, 1.250, 0.68, velocity, sr),
+            51 => {
+                let c = &self.drum_params.hats_cymbals;
+                let decay = (c.open_decay_ms * 0.001 * 1.9).clamp(0.2, 3.0);
+                voice.trigger_hat_or_cymbal(51, c.spread * 1.12, true, false, 0.055, decay, 0.68, velocity, sr);
+            }
             // Chinese Cymbal (52): trashier detuned pitch scale, ~1.1 s decay
             52 => voice.trigger_hat_or_cymbal(52, 0.84, true, false, 0.110, 1.100, 0.72, velocity, sr),
             // Ride Bell (53): higher modal scale, clear ping
@@ -830,7 +940,11 @@ impl PercussionAndGmPool {
         let tag = 200u8.wrapping_add(channel & 0x0F);
         // Allow polyphonic chords on the same GM channel by preferring free voices first
         let slot = self.allocate_voice(tag, false);
-        self.voices[slot].trigger_gm_fm(channel, freq_hz, velocity, program, self.sample_rate);
+        if let Some(fmp) = &self.fm_params {
+            self.voices[slot].trigger_gm_fm_custom(channel, freq_hz, velocity, fmp, self.sample_rate);
+        } else {
+            self.voices[slot].trigger_gm_fm(channel, freq_hz, velocity, program, self.sample_rate);
+        }
     }
 
     /// Immediately silences all 16 voices.
