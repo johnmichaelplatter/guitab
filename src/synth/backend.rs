@@ -9,6 +9,7 @@
 
 use crate::synth::body::{BodyResonator, InstrumentProfile};
 use crate::synth::command::SynthCommand;
+use crate::synth::patch::PitchedEngine;
 use crate::synth::percussion::PercussionAndGmPool;
 use crate::synth::waveguide::{StringWaveguide, MAX_STRINGS};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -37,6 +38,10 @@ pub struct SynthMixer {
     body: BodyResonator,
     /// Fixed 16-voice polyphonic pool for GM percussion (kick, snare, 808 hats/cymbals) and 2-op FM GM backing.
     percussion: PercussionAndGmPool,
+    /// Global or default pitched synthesis engine.
+    pub pitched_engine: PitchedEngine,
+    /// Per-part pitched synthesis engine (indexed 0..15).
+    pub part_engines: [PitchedEngine; 16],
 }
 
 impl SynthMixer {
@@ -52,6 +57,8 @@ impl SynthMixer {
             strings,
             body: BodyResonator::new(sr, InstrumentProfile::AcousticGuitar),
             percussion: PercussionAndGmPool::new(sr),
+            pitched_engine: PitchedEngine::PhysicalString,
+            part_engines: [PitchedEngine::PhysicalString; 16],
         }
     }
 
@@ -76,6 +83,12 @@ impl SynthMixer {
         }
     }
 
+    /// Pops a single pending command from the SPSC consumer queue without dispatching it.
+    #[inline]
+    pub fn pop_command(&mut self) -> Option<SynthCommand> {
+        self.consumer.pop().ok()
+    }
+
     /// Dispatches a single `SynthCommand` in constant time with zero allocations.
     #[inline(always)]
     pub fn dispatch_command(&mut self, cmd: SynthCommand) {
@@ -88,15 +101,19 @@ impl SynthMixer {
                 palm_mute,
                 harmonic_node,
             } => {
-                let slot = Self::map_string_slot(string_idx);
-                self.strings[slot].trigger(
-                    string_idx,
-                    freq_hz,
-                    velocity,
-                    pluck_pos,
-                    palm_mute,
-                    harmonic_node,
-                );
+                if self.pitched_engine == PitchedEngine::FmSynth {
+                    self.percussion.trigger_gm_voice(1, freq_hz, velocity, 0);
+                } else {
+                    let slot = Self::map_string_slot(string_idx);
+                    self.strings[slot].trigger(
+                        string_idx,
+                        freq_hz,
+                        velocity,
+                        pluck_pos,
+                        palm_mute,
+                        harmonic_node,
+                    );
+                }
             }
             SynthCommand::SlideString {
                 string_idx,
@@ -142,6 +159,13 @@ impl SynthMixer {
                     s.set_profile(profile);
                 }
             }
+            SynthCommand::SetPitchedEngine(engine) => {
+                self.pitched_engine = engine;
+            }
+            SynthCommand::SetPartEngine { part_idx, engine } => {
+                self.part_engines[(part_idx as usize) % 16] = engine;
+                self.pitched_engine = engine;
+            }
             SynthCommand::UpdateStringParams(params) => {
                 for s in self.strings.iter_mut() {
                     s.update_params(&params);
@@ -154,6 +178,17 @@ impl SynthMixer {
                 self.percussion.update_drum_params(drum_role, params);
             }
             SynthCommand::UpdateGmVoiceParams(params) => {
+                self.percussion.update_fm_params(params);
+            }
+            SynthCommand::UpdatePartStringParams { part_idx: _, params } => {
+                for s in self.strings.iter_mut() {
+                    s.update_params(&params);
+                }
+            }
+            SynthCommand::UpdatePartBodyParams { part_idx: _, params } => {
+                self.body.update_params(&params);
+            }
+            SynthCommand::UpdatePartFmParams { part_idx: _, params } => {
                 self.percussion.update_fm_params(params);
             }
             SynthCommand::AllNotesOff => {

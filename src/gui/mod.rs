@@ -136,11 +136,15 @@ pub struct MnxEditorApp {
     pub(crate) grid_input: crate::grid_input::GridInputManager,
     pub(crate) active_grid_live_notes:
         std::collections::HashMap<(u8, i32), (midly::num::u4, midly::num::u7)>,
+    /// Stack of currently held notes per string for internal synth voice stealing: string (1-based) -> Vec<(fret, freq_hz, velocity)>
+    pub(crate) active_grid_synth_notes:
+        std::collections::HashMap<u8, Vec<(i32, f64, f32)>>,
     pub(crate) last_synced_part_idx: Option<usize>,
     pub(crate) use_internal_synth: bool,
     pub(crate) use_external_midi: bool,
     pub(crate) synth_engine: Option<crate::synth::SynthEngine>,
     pub(crate) synth_lab: crate::synth::SynthTestLabState,
+    pub(crate) part_synth_presets: std::collections::HashMap<usize, crate::synth::SynthPreset>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -528,11 +532,13 @@ impl MnxEditorApp {
             midi_input_ports: input_ports,
             grid_input: crate::grid_input::GridInputManager::default(),
             active_grid_live_notes: std::collections::HashMap::new(),
+            active_grid_synth_notes: std::collections::HashMap::new(),
             last_synced_part_idx: None,
             use_internal_synth: true,
             use_external_midi: true,
             synth_engine: None,
             synth_lab: crate::synth::SynthTestLabState::default(),
+            part_synth_presets: std::collections::HashMap::new(),
         };
 
         let conn_arc = app.midi_player.connections_arc();
@@ -547,6 +553,28 @@ impl MnxEditorApp {
 }
 
 impl MnxEditorApp {
+    pub fn get_part_synth_preset(&self, part_idx: usize) -> crate::synth::SynthPreset {
+        if let Some(preset) = self.part_synth_presets.get(&part_idx) {
+            preset.clone()
+        } else {
+            let is_perc = self
+                .parsed_mnx
+                .as_ref()
+                .and_then(|doc| doc.parts.get(part_idx))
+                .map(|p| p.is_percussion())
+                .unwrap_or(false);
+            if is_perc {
+                crate::synth::SynthPreset::linn_808_kit()
+            } else {
+                crate::synth::SynthPreset::acoustic_dreadnought()
+            }
+        }
+    }
+
+    pub fn set_part_synth_preset(&mut self, part_idx: usize, preset: crate::synth::SynthPreset) {
+        self.part_synth_presets.insert(part_idx, preset);
+    }
+
     pub fn active_part(&self) -> Option<&crate::mnx::Part> {
         let doc = self.parsed_mnx.as_ref()?;
         doc.parts
@@ -1456,6 +1484,8 @@ impl MnxEditorApp {
             }
             if self.last_synced_part_idx != Some(self.selected_part_idx) {
                 state.silence_all_held_notes();
+                self.active_grid_synth_notes.clear();
+                self.active_grid_live_notes.clear();
                 self.last_synced_part_idx = Some(self.selected_part_idx);
             }
             if state.port_index != port_idx {
@@ -1591,11 +1621,16 @@ impl MnxEditorApp {
             if ev.is_note_on {
                 if self.use_internal_synth {
                     if let Some(hz) = freq_table.string_fret_to_frequency_hz(part, ev.string, ev.fret) {
+                        let vel_f32 = (ev.velocity as f32 / 127.0).clamp(0.05, 1.0);
+                        let stack = self.active_grid_synth_notes.entry(ev.string).or_default();
+                        stack.retain(|(f, _, _)| *f != ev.fret);
+                        stack.push((ev.fret, hz, vel_f32));
+
                         if let Some(eng) = self.synth_engine.as_mut() {
                             eng.send(crate::synth::SynthCommand::TriggerString {
                                 string_idx: ev.string,
                                 freq_hz: hz,
-                                velocity: (ev.velocity as f32 / 127.0).clamp(0.05, 1.0),
+                                velocity: vel_f32,
                                 pluck_pos: 0.18,
                                 palm_mute: 0.0,
                                 harmonic_node: None,
@@ -1634,11 +1669,44 @@ impl MnxEditorApp {
                 }
             } else {
                 if self.use_internal_synth {
+                    let mut should_mute = true;
+                    let mut fallback_note = None;
+
+                    if let Some(stack) = self.active_grid_synth_notes.get_mut(&ev.string) {
+                        let was_top = stack.last().map(|(f, _, _)| *f == ev.fret).unwrap_or(false);
+                        stack.retain(|(f, _, _)| *f != ev.fret);
+
+                        if stack.is_empty() {
+                            should_mute = true;
+                        } else if was_top {
+                            // Sounding note released, but another note on this string is still held!
+                            // Fallback to the previous held note (voice stealing release / pull-off)
+                            should_mute = false;
+                            let (_, prev_hz, prev_vel) = *stack.last().unwrap();
+                            fallback_note = Some((prev_hz, prev_vel));
+                        } else {
+                            // An older note was released while a newer note is still held and sounding.
+                            // Do NOT mute or retrigger the sounding note!
+                            should_mute = false;
+                        }
+                    }
+
                     if let Some(eng) = self.synth_engine.as_mut() {
-                        eng.send(crate::synth::SynthCommand::MuteString {
-                            string_idx: ev.string,
-                            release_rate: 0.995,
-                        });
+                        if should_mute {
+                            eng.send(crate::synth::SynthCommand::MuteString {
+                                string_idx: ev.string,
+                                release_rate: 0.995,
+                            });
+                        } else if let Some((hz, vel)) = fallback_note {
+                            eng.send(crate::synth::SynthCommand::TriggerString {
+                                string_idx: ev.string,
+                                freq_hz: hz,
+                                velocity: vel * 0.9,
+                                pluck_pos: 0.18,
+                                palm_mute: 0.0,
+                                harmonic_node: None,
+                            });
+                        }
                     }
                 }
                 if self.use_external_midi {

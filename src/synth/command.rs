@@ -4,7 +4,7 @@
 //! Just Intonation ratios, and custom fretlet layouts are rendered with zero pitch quantization.
 
 use crate::synth::patch::{
-    BodyResonatorParams, DrumRole, DrumVoiceParams, FmVoiceParams, StringSynthParams,
+    BodyResonatorParams, DrumRole, DrumVoiceParams, FmVoiceParams, PitchedEngine, StringSynthParams,
 };
 
 /// Commands sent over the lock-free SPSC ringbuffer (`rtrb`) to the `cpal` audio callback.
@@ -58,6 +58,13 @@ pub enum SynthCommand {
     },
     /// Switch the active physical instrument & body resonator profile (`AcousticGuitar`, `ElectricClean`, etc.).
     SetInstrumentProfile(crate::synth::body::InstrumentProfile),
+    /// Switch the active pitched synthesis engine (`PhysicalString` vs `FmSynth`).
+    SetPitchedEngine(PitchedEngine),
+    /// Assign the active pitched synthesis engine for a specific part/track.
+    SetPartEngine {
+        part_idx: u8,
+        engine: PitchedEngine,
+    },
     /// Immediately silence or fast-release all active strings, drums, and GM voices.
     AllNotesOff,
 
@@ -65,13 +72,29 @@ pub enum SynthCommand {
     UpdateStringParams(StringSynthParams),
     /// Live real-time parameter updates for body resonator, drive, and 4-band EQ/cabinet filters.
     UpdateBodyParams(BodyResonatorParams),
-    /// Live real-time parameter updates for procedural drum kit voices (Kick, Snare, Hi-Hats/Cymbals).
+    /// Live real-time parameter updates for procedural drum kit voices (Kick, Snare, Toms, Hi-Hats, Cymbals, Aux).
     UpdateDrumParams {
         drum_role: DrumRole,
         params: DrumVoiceParams,
     },
     /// Live real-time parameter updates for 2-operator FM melodic backing voices.
     UpdateGmVoiceParams(FmVoiceParams),
+
+    /// Scoped real-time parameter updates for Extended Karplus-Strong string waveguides on a specific part.
+    UpdatePartStringParams {
+        part_idx: u8,
+        params: StringSynthParams,
+    },
+    /// Scoped real-time parameter updates for body resonator on a specific part.
+    UpdatePartBodyParams {
+        part_idx: u8,
+        params: BodyResonatorParams,
+    },
+    /// Scoped real-time parameter updates for FM melodic voice on a specific part.
+    UpdatePartFmParams {
+        part_idx: u8,
+        params: FmVoiceParams,
+    },
 }
 
 #[cfg(test)]

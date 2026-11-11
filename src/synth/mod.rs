@@ -64,11 +64,13 @@ impl SynthSender {
 /// Tab category for the Sound Design & Patch Editor inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SynthEditorTab {
+    /// Unified Extended Karplus-Strong physical string + body/cab resonator panel.
     #[default]
-    StringAndPluck,
-    BodyAndAmp,
-    DrumsAndCymbals,
-    GmFmSynth,
+    PhysicalString,
+    /// 2-operator FM melodic synthesizer panel.
+    FmSynth,
+    /// Procedural GM drum kit panel.
+    DrumKit,
 }
 
 /// UI state for the interactive "Synth Lab" human-in-the-loop audio verification and sound design panel.
@@ -86,6 +88,11 @@ pub struct SynthTestLabState {
     pub glide_ms: f32,
     pub gm_program: u8,
     pub status_msg: Option<String>,
+
+    // Context-aware target instrument / track selection
+    pub target_part_idx: usize,
+    pub active_drum_role: DrumRole,
+    pub active_drum_note: u8,
 
     // Sound Design & Patch Editor state
     pub active_tab: SynthEditorTab,
@@ -115,7 +122,11 @@ impl Default for SynthTestLabState {
             gm_program: 0,
             status_msg: None,
 
-            active_tab: SynthEditorTab::StringAndPluck,
+            target_part_idx: 0,
+            active_drum_role: DrumRole::Kick,
+            active_drum_note: 36,
+
+            active_tab: SynthEditorTab::PhysicalString,
             preset,
             user_presets: Vec::new(),
             selected_preset_idx: 0,

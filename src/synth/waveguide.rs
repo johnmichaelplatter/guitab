@@ -95,6 +95,12 @@ pub struct StringWaveguide {
     /// Live custom patch parameters for this string.
     pub custom_params: Option<StringSynthParams>,
     pub exc_noise_mix: f32,
+    /// Whether the string is actively undergoing exponential release / muting.
+    pub is_muting: bool,
+    /// Release envelope amplitude multiplier (decays smoothly per-sample during note-off).
+    pub mute_env: f32,
+    /// Per-sample multiplier for the release envelope.
+    pub mute_rate: f32,
 }
 
 impl Default for StringWaveguide {
@@ -143,6 +149,9 @@ impl StringWaveguide {
             quiet_samples: 0,
             custom_params: None,
             exc_noise_mix: 0.65,
+            is_muting: false,
+            mute_env: 1.0,
+            mute_rate: 1.0,
         }
     }
 
@@ -330,6 +339,9 @@ impl StringWaveguide {
         }
 
         self.quiet_samples = 0;
+        self.is_muting = false;
+        self.mute_env = 1.0;
+        self.mute_rate = 1.0;
         self.active = true;
     }
 
@@ -345,6 +357,9 @@ impl StringWaveguide {
         self.loop_gain_g = g;
         self.loop_stretch_s = s;
         self.ap_coeff = ap;
+        self.is_muting = false;
+        self.mute_env = 1.0;
+        self.mute_rate = 1.0;
 
         if glide_samples <= 1 {
             self.current_delay = target_delay;
@@ -369,6 +384,9 @@ impl StringWaveguide {
         self.loop_gain_g = g;
         self.loop_stretch_s = s;
         self.ap_coeff = ap;
+        self.is_muting = false;
+        self.mute_env = 1.0;
+        self.mute_rate = 1.0;
 
         // Short ~2.5ms slew to prevent step discontinuity while keeping fretting crisp
         let slew_samples = (0.0025 * self.sample_rate).round().max(8.0) as u32;
@@ -385,12 +403,29 @@ impl StringWaveguide {
         self.quiet_samples = 0;
     }
 
-    /// Dampens the string with the specified exponential release rate.
+    /// Dampens the string with the specified exponential release rate without altering
+    /// loop filter phase delay, guaranteeing zero pitch drift between note on and note off.
     #[inline(always)]
     pub fn mute(&mut self, release_rate: f32) {
         if self.active {
-            self.loop_gain_g = self.loop_gain_g.min(release_rate.clamp(0.85, 0.998));
-            self.loop_stretch_s = self.loop_stretch_s.max(0.55);
+            self.is_muting = true;
+            // release_rate is a per-sample decay factor (e.g. 0.995 to 0.998).
+            self.mute_rate = release_rate.clamp(0.90, 0.9995);
+
+            // Compute per-period loop gain corresponding to the per-sample release rate
+            let per_period = if release_rate > 0.90 {
+                release_rate.clamp(0.90, 0.9999).powf(self.current_delay)
+            } else {
+                release_rate.clamp(0.01, 0.90)
+            };
+            self.loop_gain_g = self.loop_gain_g.min(per_period).clamp(0.01, 0.9999);
+
+            // CRITICAL INVARIANT: We strictly PRESERVE `loop_stretch_s` here!
+            // The one-zero loop lowpass filter H(z) = g * ((1 - S) + S * z^-1) has a phase
+            // delay of ~S samples. In trigger(), the fractional delay line length was phase-compensated
+            // using S. Mutating S on note-off increases the filter's phase delay without shortening the
+            // delay line, which lengthens the overall loop period and causes the decaying tail
+            // to audibly drop in pitch (go flat). Preserving S ensures pitch stability (0 cents drift).
         }
     }
 
@@ -398,6 +433,9 @@ impl StringWaveguide {
     #[inline(always)]
     pub fn clear(&mut self) {
         self.active = false;
+        self.is_muting = false;
+        self.mute_env = 1.0;
+        self.mute_rate = 1.0;
         self.delay_line.fill(0.0);
         self.exc_comb_buf.fill(0.0);
         self.lp_z1 = 0.0;
@@ -517,6 +555,17 @@ impl StringWaveguide {
         self.dc_x1 = flush_denormal(loop_in);
         self.dc_y1 = dc_out;
 
+        // Apply smooth per-sample release envelope when muting
+        if self.is_muting {
+            self.mute_env = flush_denormal(self.mute_env * self.mute_rate);
+            if self.mute_env < 1.0e-4 {
+                self.active = false;
+                self.is_muting = false;
+                self.mute_env = 0.0;
+                return (0.0, 0.0);
+            }
+        }
+
         // Soft saturation inside waveguide to prevent runaway peaks on rapid re-plucks
         let clamped_loop = dc_out.clamp(-2.0, 2.0);
         self.delay_line[self.write_idx] = flush_denormal(clamped_loop);
@@ -527,14 +576,16 @@ impl StringWaveguide {
             self.quiet_samples += 1;
             if self.quiet_samples > (self.current_delay as u32).saturating_mul(2).max(256) {
                 self.active = false;
+                self.is_muting = false;
                 return (0.0, 0.0);
             }
         } else {
             self.quiet_samples = 0;
         }
 
-        let left = clamped_loop * (1.0 - self.pan);
-        let right = clamped_loop * self.pan;
+        let out = clamped_loop * self.mute_env;
+        let left = out * (1.0 - self.pan);
+        let right = out * self.pan;
         (left, right)
     }
 }
@@ -612,5 +663,99 @@ mod tests {
             harm_energy += l * l + r * r;
         }
         assert!(harm_energy > 0.01);
+    }
+
+    #[test]
+    fn test_waveguide_mute_pitch_stability() {
+        let mut wg = StringWaveguide::new(48_000.0, 1);
+        let target_freq = 440.0; // A4 (period = 109.0909 samples at 48kHz)
+        wg.trigger(1, target_freq, 0.9, 0.25, 0.0, None);
+
+        // 1. Advance through excitation burst into steady-state resonance
+        for _ in 0..1500 {
+            wg.next_frame();
+        }
+
+        // 2. Capture steady-state sustain frames
+        let mut sustain_samples = Vec::with_capacity(1500);
+        for _ in 0..1500 {
+            let (l, _) = wg.next_frame();
+            sustain_samples.push(l);
+        }
+
+        // Helper to estimate fundamental period via normalized autocorrelation with parabolic interpolation
+        let calc_period = |samples: &[f32], min_lag: usize, max_lag: usize| -> f32 {
+            let mut best_lag = min_lag;
+            let mut max_corr = f32::MIN;
+            for lag in min_lag..=max_lag {
+                let mut corr = 0.0;
+                let count = samples.len() - lag;
+                for i in 0..count {
+                    corr += samples[i] * samples[i + lag];
+                }
+                corr /= count as f32;
+                if corr > max_corr {
+                    max_corr = corr;
+                    best_lag = lag;
+                }
+            }
+            if best_lag > min_lag && best_lag < max_lag {
+                let eval_corr = |l: usize| -> f32 {
+                    let mut c = 0.0;
+                    let count = samples.len() - l;
+                    for i in 0..count {
+                        c += samples[i] * samples[i + l];
+                    }
+                    c / count as f32
+                };
+                let y1 = eval_corr(best_lag - 1);
+                let y2 = eval_corr(best_lag);
+                let y3 = eval_corr(best_lag + 1);
+                let denom = y1 - 2.0 * y2 + y3;
+                let delta = if denom.abs() > 1e-6 {
+                    0.5 * (y1 - y3) / denom
+                } else {
+                    0.0
+                };
+                (best_lag as f32) + delta.clamp(-0.5, 0.5)
+            } else {
+                best_lag as f32
+            }
+        };
+
+        let period_sustain = calc_period(&sustain_samples, 90, 130);
+
+        // Verify sustain fundamental is in tune (< 2 cents from 48000 / 440 = 109.09)
+        let expected_period = 48_000.0 / target_freq as f32;
+        let sustain_cents = 1200.0 * (expected_period / period_sustain).log2();
+        assert!(
+            sustain_cents.abs() < 2.0,
+            "Sustain pitch out of tune by {:.2} cents (expected: {:.4}, got: {:.4})",
+            sustain_cents,
+            expected_period,
+            period_sustain
+        );
+
+        // 3. Send note-off mute command
+        wg.mute(0.9965);
+
+        // 4. Capture decaying release frames while still audible
+        let mut mute_samples = Vec::with_capacity(800);
+        for _ in 0..800 {
+            let (l, _) = wg.next_frame();
+            mute_samples.push(l);
+        }
+
+        let period_mute = calc_period(&mute_samples, 90, 130);
+
+        // 5. Pitch drift in cents between sustain and mute (< 0.5 cents, well below human 3-5 cent discrimination threshold)
+        let drift_cents = 1200.0 * (period_sustain / period_mute).log2();
+        assert!(
+            drift_cents.abs() < 0.50,
+            "Note-off pitch went flat by {:.2} cents! (sustain period: {:.4}, mute period: {:.4})",
+            drift_cents,
+            period_sustain,
+            period_mute
+        );
     }
 }

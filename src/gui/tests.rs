@@ -3486,6 +3486,137 @@ parts:
     }
 
     #[test]
+    fn test_gui_grid_live_play_voice_stealing_internal_synth() {
+        use crate::synth::{SynthCommand, SynthEngine};
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings);
+        app.use_internal_synth = true;
+
+        let (engine, mut mixer) = SynthEngine::new_headless(48_000.0, 2);
+        app.synth_engine = Some(engine);
+
+        // 1. Press String 1 Fret 5
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 5,
+            is_note_on: true,
+            velocity: 100,
+        }]);
+        let cmd1 = mixer.pop_command().expect("Expected TriggerString for Fret 5");
+        match cmd1 {
+            SynthCommand::TriggerString { string_idx, freq_hz, .. } => {
+                assert_eq!(string_idx, 1);
+                assert!((freq_hz - 440.0).abs() < 1.0); // A4 ~440 Hz
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // 2. Press String 1 Fret 8 while Fret 5 is held
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 8,
+            is_note_on: true,
+            velocity: 100,
+        }]);
+        let cmd2 = mixer.pop_command().expect("Expected TriggerString for Fret 8");
+        match cmd2 {
+            SynthCommand::TriggerString { string_idx, freq_hz, .. } => {
+                assert_eq!(string_idx, 1);
+                assert!((freq_hz - 523.25).abs() < 1.0); // C5 ~523.25 Hz
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // 3. Release String 1 Fret 5 while Fret 8 is still sounding
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 5,
+            is_note_on: false,
+            velocity: 0,
+        }]);
+        assert!(
+            mixer.pop_command().is_none(),
+            "Releasing older held fret 5 must NOT mute string 1 while fret 8 is sounding!"
+        );
+
+        // 4. Release String 1 Fret 8
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 8,
+            is_note_on: false,
+            velocity: 0,
+        }]);
+        let cmd3 = mixer.pop_command().expect("Expected MuteString after all frets released");
+        match cmd3 {
+            SynthCommand::MuteString { string_idx, .. } => {
+                assert_eq!(string_idx, 1);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // 5. Pull-off fallback test: Press Fret 5, Press Fret 8, Release Fret 8 FIRST
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 5,
+            is_note_on: true,
+            velocity: 100,
+        }]);
+        let _ = mixer.pop_command();
+
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 8,
+            is_note_on: true,
+            velocity: 100,
+        }]);
+        let _ = mixer.pop_command();
+
+        // Release Fret 8: must fallback to Fret 5
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 8,
+            is_note_on: false,
+            velocity: 0,
+        }]);
+        let cmd_pull_off = mixer.pop_command().expect("Expected pull-off TriggerString for Fret 5");
+        match cmd_pull_off {
+            SynthCommand::TriggerString { string_idx, freq_hz, .. } => {
+                assert_eq!(string_idx, 1);
+                assert!((freq_hz - 440.0).abs() < 1.0);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // Finally release Fret 5: must mute
+        app.handle_grid_live_play_events(vec![crate::grid_input::GridLivePlayEvent {
+            string: 1,
+            fret: 5,
+            is_note_on: false,
+            velocity: 0,
+        }]);
+        let cmd_final_mute = mixer.pop_command().expect("Expected MuteString after Fret 5 released");
+        match cmd_final_mute {
+            SynthCommand::MuteString { string_idx, .. } => {
+                assert_eq!(string_idx, 1);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+    }
+
+    #[test]
     fn test_phase_2b_custom_fretboard_ratio_and_decimal_fretlet_end_to_end() {
         let mut app = MnxEditorApp::default();
         let doc = app.parsed_mnx.as_ref().unwrap().clone();

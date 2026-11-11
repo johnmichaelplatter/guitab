@@ -1,13 +1,16 @@
 //! Interactive Sound Design & Patch Editor UI (`src/gui/synth_editor.rs`).
 //!
-//! Provides real-time parameter tweaking with lock-free SPSC dispatch, visual frequency
-//! response and envelope preview painting, factory preset selection, and JSON preset export/import.
+//! Provides real-time parameter tweaking with lock-free SPSC dispatch, context-aware track targeting,
+//! exclusive synthesis engine switching (Physical String vs FM Synth for pitched tracks, Procedural Drum Kit
+//! for Channel 10 tracks), frequency response and envelope preview painting, factory preset selection,
+//! and JSON preset export/import.
 
 use super::*;
 use crate::synth::body::{BiquadFilter, InstrumentProfile};
 use crate::synth::command::SynthCommand;
 use crate::synth::patch::{
-    AdsrEnvelopeParams, DrumRole, DrumVoiceParams, FmVoiceParams, StringSynthParams, SynthPreset,
+    AdsrEnvelopeParams, DrumKitParams, DrumRole, DrumVoiceParams, FmVoiceParams, PitchedEngine,
+    SynthPreset,
 };
 use crate::synth::SynthEditorTab;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
@@ -32,11 +35,29 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
 
     let sample_rate = engine_info.map(|(sr, _)| sr).unwrap_or(48_000.0);
 
+    // Validate and clamp target_part_idx
+    let part_count = app
+        .parsed_mnx
+        .as_ref()
+        .map(|d| d.parts.len())
+        .unwrap_or(1)
+        .max(1);
+    if app.synth_lab.target_part_idx >= part_count {
+        app.synth_lab.target_part_idx = 0;
+    }
+
+    let is_target_percussion = app
+        .parsed_mnx
+        .as_ref()
+        .and_then(|d| d.parts.get(app.synth_lab.target_part_idx))
+        .map(|p| p.is_percussion())
+        .unwrap_or(false);
+
     egui::Window::new("Sound Design & Patch Editor (Synth Lab)")
         .open(&mut open)
         .resizable(true)
-        .default_width(560.0)
-        .default_height(680.0)
+        .default_width(580.0)
+        .default_height(720.0)
         .show(ctx, |ui| {
             // -------------------------------------------------------------
             // Top Audio Status & Panic Bar
@@ -77,6 +98,136 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
             }
 
             ui.add_space(2.0);
+
+            // -------------------------------------------------------------
+            // 1. Target Instrument / Track Selector (Context-Aware Editing)
+            // -------------------------------------------------------------
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Target Instrument / Track:").strong());
+
+                let current_label = if let Some(doc) = &app.parsed_mnx {
+                    if let Some(part) = doc.parts.get(app.synth_lab.target_part_idx) {
+                        if part.is_percussion() {
+                            format!(
+                                "{}: {} (Percussion, Ch {})",
+                                app.synth_lab.target_part_idx + 1,
+                                part.display_name(app.synth_lab.target_part_idx),
+                                part.percussion_midi_channel()
+                            )
+                        } else {
+                            format!(
+                                "{}: {} (Pitched)",
+                                app.synth_lab.target_part_idx + 1,
+                                part.display_name(app.synth_lab.target_part_idx)
+                            )
+                        }
+                    } else {
+                        format!("{}: Track {}", app.synth_lab.target_part_idx + 1, app.synth_lab.target_part_idx + 1)
+                    }
+                } else {
+                    "1: Default Track (Pitched)".to_string()
+                };
+
+                let mut target_switched = false;
+                let old_target = app.synth_lab.target_part_idx;
+
+                egui::ComboBox::from_id_salt("synth_target_part_selector")
+                    .selected_text(current_label)
+                    .width(280.0)
+                    .show_ui(ui, |ui| {
+                        if let Some(doc) = &app.parsed_mnx {
+                            for (idx, part) in doc.parts.iter().enumerate() {
+                                let label = if part.is_percussion() {
+                                    format!(
+                                        "{}: {} (Percussion, Ch {})",
+                                        idx + 1,
+                                        part.display_name(idx),
+                                        part.percussion_midi_channel()
+                                    )
+                                } else {
+                                    format!("{}: {} (Pitched)", idx + 1, part.display_name(idx))
+                                };
+                                if ui.selectable_label(app.synth_lab.target_part_idx == idx, label).clicked() {
+                                    if app.synth_lab.target_part_idx != idx {
+                                        app.synth_lab.target_part_idx = idx;
+                                        target_switched = true;
+                                    }
+                                }
+                            }
+                        } else {
+                            if ui.selectable_label(app.synth_lab.target_part_idx == 0, "1: Default Track (Pitched)").clicked() {
+                                app.synth_lab.target_part_idx = 0;
+                            }
+                        }
+                    });
+
+                if target_switched {
+                    // Save old target state
+                    app.set_part_synth_preset(old_target, app.synth_lab.preset.clone());
+
+                    // Load new target state
+                    let new_p = app.get_part_synth_preset(app.synth_lab.target_part_idx);
+                    app.synth_lab.preset = new_p.clone();
+                    app.synth_lab.profile = new_p.body_params.profile_base;
+
+                    let is_perc = app
+                        .parsed_mnx
+                        .as_ref()
+                        .and_then(|d| d.parts.get(app.synth_lab.target_part_idx))
+                        .map(|p| p.is_percussion())
+                        .unwrap_or(false);
+
+                    if is_perc {
+                        app.synth_lab.active_tab = SynthEditorTab::DrumKit;
+                    } else {
+                        app.synth_lab.active_tab = match new_p.engine {
+                            PitchedEngine::PhysicalString => SynthEditorTab::PhysicalString,
+                            PitchedEngine::FmSynth => SynthEditorTab::FmSynth,
+                        };
+                    }
+
+                    // Push full state update to audio thread
+                    commands_to_send.push(SynthCommand::SetInstrumentProfile(new_p.body_params.profile_base));
+                    commands_to_send.push(SynthCommand::SetPitchedEngine(new_p.engine));
+                    commands_to_send.push(SynthCommand::SetPartEngine {
+                        part_idx: app.synth_lab.target_part_idx as u8,
+                        engine: new_p.engine,
+                    });
+                    commands_to_send.push(SynthCommand::UpdateStringParams(new_p.string_params));
+                    commands_to_send.push(SynthCommand::UpdateBodyParams(new_p.body_params));
+                    commands_to_send.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Kick,
+                        params: DrumVoiceParams::Kick(new_p.drum_params.kick),
+                    });
+                    commands_to_send.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Snare,
+                        params: DrumVoiceParams::Snare(new_p.drum_params.snare),
+                    });
+                    commands_to_send.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Toms,
+                        params: DrumVoiceParams::Toms(new_p.drum_params.toms),
+                    });
+                    commands_to_send.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::HiHats,
+                        params: DrumVoiceParams::HiHats(new_p.drum_params.hi_hats),
+                    });
+                    commands_to_send.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Cymbals,
+                        params: DrumVoiceParams::Cymbals(new_p.drum_params.cymbals),
+                    });
+                    commands_to_send.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::PercAux,
+                        params: DrumVoiceParams::PercAux(new_p.drum_params.aux),
+                    });
+                    commands_to_send.push(SynthCommand::UpdateGmVoiceParams(new_p.fm_params));
+
+                    app.synth_lab.status_msg = Some(format!(
+                        "Bound patch to Track {}",
+                        app.synth_lab.target_part_idx + 1
+                    ));
+                }
+            });
+
             ui.horizontal(|ui| {
                 ui.checkbox(
                     &mut app.synth_lab.route_score_preview,
@@ -87,7 +238,7 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
             ui.separator();
 
             // -------------------------------------------------------------
-            // 1. Preset Management & Master Level Bar
+            // 2. Preset Management & Master Level Bar
             // -------------------------------------------------------------
             render_preset_bar(
                 ui,
@@ -95,64 +246,96 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                 &mut commands_to_send,
                 &mut export_json_requested,
                 &mut import_json_requested,
+                is_target_percussion,
             );
 
             ui.separator();
 
             // -------------------------------------------------------------
-            // 2. Live Audition Strip (Zero-Latency Real-Time Triggers)
+            // 3. Scoped Live Audition Strip
             // -------------------------------------------------------------
-            render_audition_strip(ui, app, &mut commands_to_send, &mut strum_open_requested);
+            render_scoped_audition_strip(
+                ui,
+                app,
+                &mut commands_to_send,
+                &mut strum_open_requested,
+                is_target_percussion,
+            );
 
             ui.separator();
 
             // -------------------------------------------------------------
-            // 3. Interactive Frequency / Envelope Preview Canvas
+            // 4. Interactive Frequency / Envelope Preview Canvas
             // -------------------------------------------------------------
-            render_visual_preview_canvas(ui, &app.synth_lab, sample_rate);
+            render_visual_preview_canvas(ui, &app.synth_lab, sample_rate, is_target_percussion);
 
             ui.separator();
 
             // -------------------------------------------------------------
-            // 4. Tabbed Synthesis Inspector
+            // 5. Exclusive Engine Selection & Unified Panels
             // -------------------------------------------------------------
-            ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut app.synth_lab.active_tab,
-                    SynthEditorTab::StringAndPluck,
-                    "1. String & Pluck (EKS)",
-                );
-                ui.selectable_value(
-                    &mut app.synth_lab.active_tab,
-                    SynthEditorTab::BodyAndAmp,
-                    "2. Body & Amp Resonator",
-                );
-                ui.selectable_value(
-                    &mut app.synth_lab.active_tab,
-                    SynthEditorTab::DrumsAndCymbals,
-                    "3. Drums & Cymbals",
-                );
-                ui.selectable_value(
-                    &mut app.synth_lab.active_tab,
-                    SynthEditorTab::GmFmSynth,
-                    "4. GM FM Synth",
-                );
-            });
+            if is_target_percussion {
+                // Drum Mode: Hide pitched tabs, show only Drum Kit Editor
+                app.synth_lab.active_tab = SynthEditorTab::DrumKit;
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        Color32::from_rgb(255, 185, 90),
+                        egui::RichText::new("Drum Mode: Procedural GM Drum Kit (Channel 10)").strong(),
+                    );
+                });
+                ui.add_space(4.0);
+                render_drum_kit_tab(ui, app, &mut commands_to_send);
+            } else {
+                // Pitched Mode: Hide Drums & Cymbals, show exclusive algorithm tabs
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Synthesis Engine:").strong());
 
-            ui.add_space(4.0);
+                    let current_engine = app.synth_lab.preset.engine;
+                    if ui
+                        .selectable_label(
+                            current_engine == PitchedEngine::PhysicalString,
+                            "1. Physical String (EKS + Body)",
+                        )
+                        .clicked()
+                    {
+                        app.synth_lab.active_tab = SynthEditorTab::PhysicalString;
+                        app.synth_lab.preset.engine = PitchedEngine::PhysicalString;
+                        app.set_part_synth_preset(app.synth_lab.target_part_idx, app.synth_lab.preset.clone());
+                        commands_to_send.push(SynthCommand::SetPitchedEngine(PitchedEngine::PhysicalString));
+                        commands_to_send.push(SynthCommand::SetPartEngine {
+                            part_idx: app.synth_lab.target_part_idx as u8,
+                            engine: PitchedEngine::PhysicalString,
+                        });
+                    }
+                    if ui
+                        .selectable_label(
+                            current_engine == PitchedEngine::FmSynth,
+                            "2. FM Synth (2-Operator)",
+                        )
+                        .clicked()
+                    {
+                        app.synth_lab.active_tab = SynthEditorTab::FmSynth;
+                        app.synth_lab.preset.engine = PitchedEngine::FmSynth;
+                        app.set_part_synth_preset(app.synth_lab.target_part_idx, app.synth_lab.preset.clone());
+                        commands_to_send.push(SynthCommand::SetPitchedEngine(PitchedEngine::FmSynth));
+                        commands_to_send.push(SynthCommand::SetPartEngine {
+                            part_idx: app.synth_lab.target_part_idx as u8,
+                            engine: PitchedEngine::FmSynth,
+                        });
+                    }
+                });
 
-            match app.synth_lab.active_tab {
-                SynthEditorTab::StringAndPluck => {
-                    render_string_tab(ui, app, &mut commands_to_send);
-                }
-                SynthEditorTab::BodyAndAmp => {
-                    render_body_tab(ui, app, &mut commands_to_send);
-                }
-                SynthEditorTab::DrumsAndCymbals => {
-                    render_drums_tab(ui, app, &mut commands_to_send);
-                }
-                SynthEditorTab::GmFmSynth => {
-                    render_fm_tab(ui, app, &mut commands_to_send);
+                ui.add_space(4.0);
+
+                match app.synth_lab.preset.engine {
+                    PitchedEngine::PhysicalString => {
+                        app.synth_lab.active_tab = SynthEditorTab::PhysicalString;
+                        render_unified_string_and_body_panel(ui, app, &mut commands_to_send);
+                    }
+                    PitchedEngine::FmSynth => {
+                        app.synth_lab.active_tab = SynthEditorTab::FmSynth;
+                        render_fm_tab(ui, app, &mut commands_to_send);
+                    }
                 }
             }
         });
@@ -207,10 +390,18 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                     app.synth_lab.selected_preset_idx = 7 + app.synth_lab.user_presets.len() - 1;
                     app.synth_lab.status_msg = Some(format!("Loaded preset '{}'", loaded.name));
 
+                    // Save to target part
+                    app.set_part_synth_preset(app.synth_lab.target_part_idx, loaded.clone());
+
                     // Push full update to audio thread
                     let _ = app.ensure_synth_engine();
                     if let Some(engine) = &mut app.synth_engine {
                         engine.send(SynthCommand::SetInstrumentProfile(loaded.body_params.profile_base));
+                        engine.send(SynthCommand::SetPitchedEngine(loaded.engine));
+                        engine.send(SynthCommand::SetPartEngine {
+                            part_idx: app.synth_lab.target_part_idx as u8,
+                            engine: loaded.engine,
+                        });
                         engine.send(SynthCommand::UpdateStringParams(loaded.string_params));
                         engine.send(SynthCommand::UpdateBodyParams(loaded.body_params));
                         engine.send(SynthCommand::UpdateDrumParams {
@@ -222,8 +413,20 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                             params: DrumVoiceParams::Snare(loaded.drum_params.snare),
                         });
                         engine.send(SynthCommand::UpdateDrumParams {
-                            drum_role: DrumRole::HiHatAndCymbal,
-                            params: DrumVoiceParams::HiHatAndCymbal(loaded.drum_params.hats_cymbals),
+                            drum_role: DrumRole::Toms,
+                            params: DrumVoiceParams::Toms(loaded.drum_params.toms),
+                        });
+                        engine.send(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::HiHats,
+                            params: DrumVoiceParams::HiHats(loaded.drum_params.hi_hats),
+                        });
+                        engine.send(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::Cymbals,
+                            params: DrumVoiceParams::Cymbals(loaded.drum_params.cymbals),
+                        });
+                        engine.send(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::PercAux,
+                            params: DrumVoiceParams::PercAux(loaded.drum_params.aux),
                         });
                         engine.send(SynthCommand::UpdateGmVoiceParams(loaded.fm_params));
                     }
@@ -246,6 +449,7 @@ fn render_preset_bar(
     commands: &mut Vec<SynthCommand>,
     export_json: &mut bool,
     import_json: &mut bool,
+    _is_percussion: bool,
 ) {
     let factory_presets = SynthPreset::factory_presets();
 
@@ -276,7 +480,14 @@ fn render_preset_bar(
                         app.synth_lab.pluck_pos = p.string_params.pluck_pos;
                         app.synth_lab.status_msg = Some(format!("Switched to preset '{}'", p.name));
 
+                        app.set_part_synth_preset(app.synth_lab.target_part_idx, p.clone());
+
                         commands.push(SynthCommand::SetInstrumentProfile(p.body_params.profile_base));
+                        commands.push(SynthCommand::SetPitchedEngine(p.engine));
+                        commands.push(SynthCommand::SetPartEngine {
+                            part_idx: app.synth_lab.target_part_idx as u8,
+                            engine: p.engine,
+                        });
                         commands.push(SynthCommand::UpdateStringParams(p.string_params));
                         commands.push(SynthCommand::UpdateBodyParams(p.body_params));
                         commands.push(SynthCommand::UpdateDrumParams {
@@ -288,8 +499,20 @@ fn render_preset_bar(
                             params: DrumVoiceParams::Snare(p.drum_params.snare),
                         });
                         commands.push(SynthCommand::UpdateDrumParams {
-                            drum_role: DrumRole::HiHatAndCymbal,
-                            params: DrumVoiceParams::HiHatAndCymbal(p.drum_params.hats_cymbals),
+                            drum_role: DrumRole::Toms,
+                            params: DrumVoiceParams::Toms(p.drum_params.toms),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::HiHats,
+                            params: DrumVoiceParams::HiHats(p.drum_params.hi_hats),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::Cymbals,
+                            params: DrumVoiceParams::Cymbals(p.drum_params.cymbals),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::PercAux,
+                            params: DrumVoiceParams::PercAux(p.drum_params.aux),
                         });
                         commands.push(SynthCommand::UpdateGmVoiceParams(p.fm_params));
                     }
@@ -298,31 +521,55 @@ fn render_preset_bar(
                 if !app.synth_lab.user_presets.is_empty() {
                     ui.separator();
                     ui.label(egui::RichText::new("— User Presets —").italics().weak());
+                    let mut chosen_user = None;
                     for (u_i, p) in app.synth_lab.user_presets.iter().enumerate() {
                         let idx = factory_presets.len() + u_i;
                         if ui.selectable_label(app.synth_lab.selected_preset_idx == idx, &p.name).clicked() {
-                            app.synth_lab.selected_preset_idx = idx;
-                            app.synth_lab.preset = p.clone();
-                            app.synth_lab.profile = p.body_params.profile_base;
-                            app.synth_lab.status_msg = Some(format!("Switched to user preset '{}'", p.name));
-
-                            commands.push(SynthCommand::SetInstrumentProfile(p.body_params.profile_base));
-                            commands.push(SynthCommand::UpdateStringParams(p.string_params));
-                            commands.push(SynthCommand::UpdateBodyParams(p.body_params));
-                            commands.push(SynthCommand::UpdateDrumParams {
-                                drum_role: DrumRole::Kick,
-                                params: DrumVoiceParams::Kick(p.drum_params.kick),
-                            });
-                            commands.push(SynthCommand::UpdateDrumParams {
-                                drum_role: DrumRole::Snare,
-                                params: DrumVoiceParams::Snare(p.drum_params.snare),
-                            });
-                            commands.push(SynthCommand::UpdateDrumParams {
-                                drum_role: DrumRole::HiHatAndCymbal,
-                                params: DrumVoiceParams::HiHatAndCymbal(p.drum_params.hats_cymbals),
-                            });
-                            commands.push(SynthCommand::UpdateGmVoiceParams(p.fm_params));
+                            chosen_user = Some((idx, u_i));
                         }
+                    }
+                    if let Some((idx, u_i)) = chosen_user {
+                        let p = app.synth_lab.user_presets[u_i].clone();
+                        app.synth_lab.selected_preset_idx = idx;
+                        app.synth_lab.preset = p.clone();
+                        app.synth_lab.profile = p.body_params.profile_base;
+                        app.synth_lab.status_msg = Some(format!("Switched to user preset '{}'", p.name));
+
+                        app.set_part_synth_preset(app.synth_lab.target_part_idx, p.clone());
+
+                        commands.push(SynthCommand::SetInstrumentProfile(p.body_params.profile_base));
+                        commands.push(SynthCommand::SetPitchedEngine(p.engine));
+                        commands.push(SynthCommand::SetPartEngine {
+                            part_idx: app.synth_lab.target_part_idx as u8,
+                            engine: p.engine,
+                        });
+                        commands.push(SynthCommand::UpdateStringParams(p.string_params));
+                        commands.push(SynthCommand::UpdateBodyParams(p.body_params));
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::Kick,
+                            params: DrumVoiceParams::Kick(p.drum_params.kick),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::Snare,
+                            params: DrumVoiceParams::Snare(p.drum_params.snare),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::Toms,
+                            params: DrumVoiceParams::Toms(p.drum_params.toms),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::HiHats,
+                            params: DrumVoiceParams::HiHats(p.drum_params.hi_hats),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::Cymbals,
+                            params: DrumVoiceParams::Cymbals(p.drum_params.cymbals),
+                        });
+                        commands.push(SynthCommand::UpdateDrumParams {
+                            drum_role: DrumRole::PercAux,
+                            params: DrumVoiceParams::PercAux(p.drum_params.aux),
+                        });
+                        commands.push(SynthCommand::UpdateGmVoiceParams(p.fm_params));
                     }
                 }
             });
@@ -339,7 +586,14 @@ fn render_preset_bar(
             };
             app.synth_lab.preset = def.clone();
             app.synth_lab.profile = def.body_params.profile_base;
+            app.set_part_synth_preset(app.synth_lab.target_part_idx, def.clone());
+
             commands.push(SynthCommand::SetInstrumentProfile(def.body_params.profile_base));
+            commands.push(SynthCommand::SetPitchedEngine(def.engine));
+            commands.push(SynthCommand::SetPartEngine {
+                part_idx: app.synth_lab.target_part_idx as u8,
+                engine: def.engine,
+            });
             commands.push(SynthCommand::UpdateStringParams(def.string_params));
             commands.push(SynthCommand::UpdateBodyParams(def.body_params));
             commands.push(SynthCommand::UpdateDrumParams {
@@ -351,8 +605,20 @@ fn render_preset_bar(
                 params: DrumVoiceParams::Snare(def.drum_params.snare),
             });
             commands.push(SynthCommand::UpdateDrumParams {
-                drum_role: DrumRole::HiHatAndCymbal,
-                params: DrumVoiceParams::HiHatAndCymbal(def.drum_params.hats_cymbals),
+                drum_role: DrumRole::Toms,
+                params: DrumVoiceParams::Toms(def.drum_params.toms),
+            });
+            commands.push(SynthCommand::UpdateDrumParams {
+                drum_role: DrumRole::HiHats,
+                params: DrumVoiceParams::HiHats(def.drum_params.hi_hats),
+            });
+            commands.push(SynthCommand::UpdateDrumParams {
+                drum_role: DrumRole::Cymbals,
+                params: DrumVoiceParams::Cymbals(def.drum_params.cymbals),
+            });
+            commands.push(SynthCommand::UpdateDrumParams {
+                drum_role: DrumRole::PercAux,
+                params: DrumVoiceParams::PercAux(def.drum_params.aux),
             });
             commands.push(SynthCommand::UpdateGmVoiceParams(def.fm_params));
             app.synth_lab.status_msg = Some("Reset parameters to default".to_string());
@@ -396,6 +662,7 @@ fn render_preset_bar(
                 app.synth_lab.user_presets.push(new_p.clone());
                 app.synth_lab.selected_preset_idx = factory_presets.len() + app.synth_lab.user_presets.len() - 1;
                 app.synth_lab.save_dialog_open = false;
+                app.set_part_synth_preset(app.synth_lab.target_part_idx, new_p.clone());
                 app.synth_lab.status_msg = Some(format!("Saved user preset '{}'", new_p.name));
             }
             if ui.button("Cancel").clicked() {
@@ -414,143 +681,160 @@ fn render_preset_bar(
         );
         if gain_resp.changed() {
             app.synth_lab.preset.body_params.post_gain_db = app.synth_lab.master_gain_db;
+            app.set_part_synth_preset(app.synth_lab.target_part_idx, app.synth_lab.preset.clone());
             commands.push(SynthCommand::UpdateBodyParams(app.synth_lab.preset.body_params));
+            commands.push(SynthCommand::UpdatePartBodyParams {
+                part_idx: app.synth_lab.target_part_idx as u8,
+                params: app.synth_lab.preset.body_params,
+            });
         }
         if gain_resp.double_clicked() {
             app.synth_lab.master_gain_db = 0.0;
             app.synth_lab.preset.body_params.post_gain_db = 0.0;
+            app.set_part_synth_preset(app.synth_lab.target_part_idx, app.synth_lab.preset.clone());
             commands.push(SynthCommand::UpdateBodyParams(app.synth_lab.preset.body_params));
         }
     });
 }
 
-fn render_audition_strip(
+fn render_scoped_audition_strip(
     ui: &mut egui::Ui,
     app: &mut MnxEditorApp,
     commands: &mut Vec<SynthCommand>,
     strum_open: &mut bool,
+    is_percussion: bool,
 ) {
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Audition:").strong());
+        ui.label(egui::RichText::new("Live Audition:").strong());
 
-        if ui
-            .button("Pluck Low (E2)")
-            .on_hover_text("Trigger low string at 82.41 Hz (E2)")
-            .clicked()
-        {
-            commands.push(SynthCommand::TriggerString {
-                string_idx: 1,
-                freq_hz: 82.40689,
-                velocity: app.synth_lab.velocity,
-                pluck_pos: app.synth_lab.preset.string_params.pluck_pos,
-                palm_mute: app.synth_lab.palm_mute,
-                harmonic_node: app.synth_lab.harmonic_node,
-            });
-        }
-
-        if ui
-            .button("Pluck High (E4)")
-            .on_hover_text("Trigger high string at 329.63 Hz (E4)")
-            .clicked()
-        {
-            commands.push(SynthCommand::TriggerString {
-                string_idx: 6,
-                freq_hz: 329.6276,
-                velocity: app.synth_lab.velocity,
-                pluck_pos: app.synth_lab.preset.string_params.pluck_pos,
-                palm_mute: app.synth_lab.palm_mute,
-                harmonic_node: app.synth_lab.harmonic_node,
-            });
-        }
-
-        if ui
-            .button("Strum Chord (JI 7-Limit)")
-            .on_hover_text("Strum a 4-note pure Just Intonation harmonic chord (1/1, 5/4, 3/2, 7/4)")
-            .clicked()
-        {
-            for (idx, ratio) in [(1, 1.0), (2, 1.25), (3, 1.50), (4, 1.75)] {
-                let f = 196.0 * ratio; // G3 root
-                commands.push(SynthCommand::TriggerString {
-                    string_idx: idx,
-                    freq_hz: f,
-                    velocity: app.synth_lab.velocity * 0.9,
-                    pluck_pos: app.synth_lab.preset.string_params.pluck_pos,
-                    palm_mute: app.synth_lab.palm_mute,
-                    harmonic_node: None,
-                });
+        if is_percussion {
+            // Percussion Audition Strip
+            let quick_drums = [
+                ("Kick (36)", 36),
+                ("Snare (38)", 38),
+                ("Rim (37)", 37),
+                ("Clap (39)", 39),
+                ("Closed Hat (42)", 42),
+                ("Open Hat (46)", 46),
+                ("Crash (49)", 49),
+                ("Cowbell (56)", 56),
+            ];
+            for (label, note) in quick_drums {
+                if ui.button(label).clicked() {
+                    commands.push(SynthCommand::TriggerDrum {
+                        gm_drum_note: note,
+                        velocity: app.synth_lab.velocity,
+                    });
+                }
             }
-        }
+            if ui
+                .button("Strum Kit Lines")
+                .on_hover_text("Audition all defined kit lines for this percussion part")
+                .clicked()
+            {
+                *strum_open = true;
+            }
+        } else {
+            // Pitched Audition Strip (scoped to active PitchedEngine)
+            let is_fm = app.synth_lab.preset.engine == PitchedEngine::FmSynth;
 
-        if ui
-            .button("Harmonic 1/2 (12th)")
-            .on_hover_text("Pluck with natural octave harmonic node divider (Some(2))")
-            .clicked()
-        {
-            commands.push(SynthCommand::TriggerString {
-                string_idx: 2,
-                freq_hz: 110.0,
-                velocity: app.synth_lab.velocity,
-                pluck_pos: 0.15,
-                palm_mute: 0.0,
-                harmonic_node: Some(2),
-            });
-        }
+            let trigger_pitch = |cmds: &mut Vec<SynthCommand>, string_idx: u8, freq_hz: f64, vel: f32, pluck_p: f32| {
+                if is_fm {
+                    cmds.push(SynthCommand::TriggerGmVoice {
+                        channel: 1,
+                        freq_hz,
+                        velocity: vel,
+                        program: 0,
+                    });
+                } else {
+                    cmds.push(SynthCommand::TriggerString {
+                        string_idx,
+                        freq_hz,
+                        velocity: vel,
+                        pluck_pos: pluck_p,
+                        palm_mute: 0.0,
+                        harmonic_node: None,
+                    });
+                }
+            };
 
-        if ui
-            .button("Kick (36)")
-            .on_hover_text("Trigger procedural kick drum")
-            .clicked()
-        {
-            commands.push(SynthCommand::TriggerDrum {
-                gm_drum_note: 36,
-                velocity: app.synth_lab.velocity,
-            });
-        }
+            if ui
+                .button("Low E2 (82 Hz)")
+                .on_hover_text("Trigger low string at 82.41 Hz (E2)")
+                .clicked()
+            {
+                trigger_pitch(commands, 1, 82.40689, app.synth_lab.velocity, app.synth_lab.preset.string_params.pluck_pos);
+            }
 
-        if ui
-            .button("Snare (38)")
-            .on_hover_text("Trigger procedural snare drum")
-            .clicked()
-        {
-            commands.push(SynthCommand::TriggerDrum {
-                gm_drum_note: 38,
-                velocity: app.synth_lab.velocity,
-            });
-        }
+            if ui
+                .button("A2 (110 Hz)")
+                .on_hover_text("Trigger string at 110.00 Hz (A2)")
+                .clicked()
+            {
+                trigger_pitch(commands, 2, 110.00, app.synth_lab.velocity, app.synth_lab.preset.string_params.pluck_pos);
+            }
 
-        if ui
-            .button("Closed Hat (42)")
-            .on_hover_text("Trigger closed metallic hi-hat")
-            .clicked()
-        {
-            commands.push(SynthCommand::TriggerDrum {
-                gm_drum_note: 42,
-                velocity: app.synth_lab.velocity,
-            });
-        }
+            if ui
+                .button("D3 (147 Hz)")
+                .on_hover_text("Trigger string at 146.83 Hz (D3)")
+                .clicked()
+            {
+                trigger_pitch(commands, 3, 146.8324, app.synth_lab.velocity, app.synth_lab.preset.string_params.pluck_pos);
+            }
 
-        if ui
-            .button("Open Hat (46)")
-            .on_hover_text("Trigger open metallic hi-hat")
-            .clicked()
-        {
-            commands.push(SynthCommand::TriggerDrum {
-                gm_drum_note: 46,
-                velocity: app.synth_lab.velocity,
-            });
-        }
+            if ui
+                .button("High E4 (330 Hz)")
+                .on_hover_text("Trigger high string at 329.63 Hz (E4)")
+                .clicked()
+            {
+                trigger_pitch(commands, 6, 329.6276, app.synth_lab.velocity, app.synth_lab.preset.string_params.pluck_pos);
+            }
 
-        if ui
-            .button("Strum Tab Open Strings")
-            .on_hover_text("Strum all open strings of the current tab part using exact microtonal tuning")
-            .clicked()
-        {
-            *strum_open = true;
+            if ui
+                .button("Strum Chord (JI 7-Limit)")
+                .on_hover_text("Strum a 4-note pure Just Intonation harmonic chord (1/1, 5/4, 3/2, 7/4)")
+                .clicked()
+            {
+                for (idx, ratio) in [(1, 1.0), (2, 1.25), (3, 1.50), (4, 1.75)] {
+                    let f = 196.0 * ratio; // G3 root
+                    trigger_pitch(commands, idx, f, app.synth_lab.velocity * 0.9, app.synth_lab.preset.string_params.pluck_pos);
+                }
+            }
+
+            if !is_fm {
+                if ui
+                    .button("Harmonic 1/2 (12th)")
+                    .on_hover_text("Pluck with natural octave harmonic node divider (Some(2))")
+                    .clicked()
+                {
+                    commands.push(SynthCommand::TriggerString {
+                        string_idx: 2,
+                        freq_hz: 110.0,
+                        velocity: app.synth_lab.velocity,
+                        pluck_pos: 0.15,
+                        palm_mute: 0.0,
+                        harmonic_node: Some(2),
+                    });
+                }
+            }
+
+            if ui
+                .button("Strum Tab Open Strings")
+                .on_hover_text("Strum all open strings of the current tab part using exact microtonal tuning")
+                .clicked()
+            {
+                *strum_open = true;
+            }
         }
     });
 }
 
-fn render_visual_preview_canvas(ui: &mut egui::Ui, state: &crate::synth::SynthTestLabState, sample_rate: f32) {
+fn render_visual_preview_canvas(
+    ui: &mut egui::Ui,
+    state: &crate::synth::SynthTestLabState,
+    sample_rate: f32,
+    is_percussion: bool,
+) {
     let desired_size = Vec2::new(ui.available_width().max(320.0), 85.0);
     let (rect, _response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -564,22 +848,16 @@ fn render_visual_preview_canvas(ui: &mut egui::Ui, state: &crate::synth::SynthTe
         egui::StrokeKind::Inside,
     );
 
-    match state.active_tab {
-        SynthEditorTab::BodyAndAmp => {
-            // Plot 4-Band Biquad composite frequency response curve (-24 dB to +24 dB, 20 Hz to 20 kHz)
-            paint_frequency_response_preview(&painter, rect, &state.preset.body_params, sample_rate);
-        }
-        SynthEditorTab::StringAndPluck => {
-            // Plot Karplus-Strong string decay & comb filter preview
-            paint_string_decay_preview(&painter, rect, &state.preset.string_params);
-        }
-        SynthEditorTab::DrumsAndCymbals => {
-            // Plot procedural drum pitch & envelope decay preview
-            paint_drum_envelopes_preview(&painter, rect, &state.preset.drum_params);
-        }
-        SynthEditorTab::GmFmSynth => {
-            // Plot Carrier ADSR and Modulator ADSR curves side-by-side
-            paint_fm_adsr_preview(&painter, rect, &state.preset.fm_params);
+    if is_percussion {
+        paint_drum_envelopes_preview(&painter, rect, &state.preset.drum_params, state.active_drum_role);
+    } else {
+        match state.preset.engine {
+            PitchedEngine::PhysicalString => {
+                paint_frequency_response_preview(&painter, rect, &state.preset.body_params, sample_rate);
+            }
+            PitchedEngine::FmSynth => {
+                paint_fm_adsr_preview(&painter, rect, &state.preset.fm_params);
+            }
         }
     }
 }
@@ -641,7 +919,6 @@ fn paint_frequency_response_preview(
             let f = b.freq_hz.clamp(20.0, sample_rate * 0.45);
             let q = b.q.clamp(0.1, 15.0);
             let g = b.gain_db.clamp(-24.0, 24.0);
-            // Use peaking EQ or bandpass peak
             let filt = BiquadFilter::peaking_eq(sample_rate, f, q, g);
             filters.push(filt);
         }
@@ -682,93 +959,171 @@ fn paint_frequency_response_preview(
     );
 }
 
-/// Paints the Karplus-Strong string decay envelope curve.
-fn paint_string_decay_preview(
-    painter: &egui::Painter,
-    rect: Rect,
-    params: &StringSynthParams,
-) {
-    let t60 = params.t60_decay_sec.clamp(0.1, 10.0);
-    let steps = 80;
-    let mut points: Vec<Pos2> = Vec::with_capacity(steps + 1);
-
-    for s in 0..=steps {
-        let t = (s as f32) / (steps as f32);
-        let time_sec = t * t60 * 1.1;
-        // Exponential decay: exp(-ln(1000) * t / t60) = 10^(-3 * t / t60)
-        let amp = 10.0_f32.powf(-3.0 * (time_sec / t60));
-        let px = rect.min.x + t * rect.width();
-        let py = rect.max.y - (amp.clamp(0.0, 1.0) * (rect.height() - 16.0) + 8.0);
-        points.push(Pos2::new(px, py));
-    }
-
-    painter.add(egui::Shape::line(
-        points,
-        Stroke::new(2.0, Color32::from_rgb(255, 185, 75)),
-    ));
-
-    painter.text(
-        Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
-        egui::Align2::LEFT_TOP,
-        format!(
-            "EKS Decay Curve: T60 = {:.2}s, Pluck Pos = {:.2}, Hardness = {:.0}Hz",
-            params.t60_decay_sec, params.pluck_pos, params.pick_hardness
-        ),
-        egui::FontId::proportional(11.0),
-        Color32::from_rgb(255, 210, 140),
-    );
-}
-
-/// Paints the procedural drum pitch and noise decay envelopes.
+/// Paints procedural drum envelopes and waveforms based on the active drum role.
 fn paint_drum_envelopes_preview(
     painter: &egui::Painter,
     rect: Rect,
-    params: &crate::synth::patch::DrumKitParams,
+    params: &DrumKitParams,
+    active_role: DrumRole,
 ) {
     let half_w = rect.width() * 0.48;
 
-    // Left half: Kick pitch drop
-    let mut kick_points: Vec<Pos2> = Vec::with_capacity(40);
-    for s in 0..=40 {
-        let t = (s as f32) / 40.0;
-        let p_env = (-t * (40.0 / (params.kick.pitch_decay_ms.max(5.0) * 0.5))).exp();
-        let hz = params.kick.pitch_end_hz + (params.kick.pitch_start_hz - params.kick.pitch_end_hz) * p_env;
-        let norm = (hz - 30.0) / (250.0 - 30.0);
-        let px = rect.min.x + t * half_w;
-        let py = rect.max.y - (norm.clamp(0.0, 1.0) * (rect.height() - 18.0) + 9.0);
-        kick_points.push(Pos2::new(px, py));
-    }
-    painter.add(egui::Shape::line(
-        kick_points,
-        Stroke::new(2.0, Color32::from_rgb(255, 95, 110)),
-    ));
+    match active_role {
+        DrumRole::Kick => {
+            // Plot Kick pitch envelope & amplitude decay
+            let mut pitch_pts: Vec<Pos2> = Vec::with_capacity(41);
+            let p_span = params.kick.pitch_start_hz - params.kick.pitch_end_hz;
+            for s in 0..=40 {
+                let t = (s as f32) / 40.0;
+                let env = (-t * (100.0 / params.kick.pitch_decay_ms.max(5.0))).exp();
+                let f = params.kick.pitch_end_hz + p_span * env;
+                let norm_f = (f - 30.0) / (250.0 - 30.0);
+                let px = rect.min.x + t * half_w;
+                let py = rect.max.y - (norm_f.clamp(0.0, 1.0) * (rect.height() - 18.0) + 9.0);
+                pitch_pts.push(Pos2::new(px, py));
+            }
+            painter.add(egui::Shape::line(pitch_pts, Stroke::new(2.0, Color32::from_rgb(255, 140, 90))));
 
-    // Right half: Snare wire decay
-    let right_start = rect.min.x + half_w + 10.0;
-    let right_w = rect.max.x - right_start;
-    let mut snare_points: Vec<Pos2> = Vec::with_capacity(40);
-    for s in 0..=40 {
-        let t = (s as f32) / 40.0;
-        let amp = (-t * (180.0 / params.snare.noise_decay_ms.max(10.0))).exp();
-        let px = right_start + t * right_w;
-        let py = rect.max.y - (amp.clamp(0.0, 1.0) * (rect.height() - 18.0) + 9.0);
-        snare_points.push(Pos2::new(px, py));
-    }
-    painter.add(egui::Shape::line(
-        snare_points,
-        Stroke::new(2.0, Color32::from_rgb(120, 190, 255)),
-    ));
+            let right_start = rect.min.x + half_w + 10.0;
+            let right_w = rect.max.x - right_start;
+            let mut body_pts: Vec<Pos2> = Vec::with_capacity(41);
+            for s in 0..=40 {
+                let t = (s as f32) / 40.0;
+                let amp = (-t * (400.0 / params.kick.body_decay_ms.max(10.0))).exp();
+                let px = right_start + t * right_w;
+                let py = rect.max.y - (amp.clamp(0.0, 1.0) * (rect.height() - 18.0) + 9.0);
+                body_pts.push(Pos2::new(px, py));
+            }
+            painter.add(egui::Shape::line(body_pts, Stroke::new(2.0, Color32::from_rgb(100, 220, 140))));
 
-    painter.text(
-        Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
-        egui::Align2::LEFT_TOP,
-        format!(
-            "Kick: {:.0}->{:.0}Hz ({:.0}ms) | Snare Wire Decay: {:.0}ms",
-            params.kick.pitch_start_hz, params.kick.pitch_end_hz, params.kick.pitch_decay_ms, params.snare.noise_decay_ms
-        ),
-        egui::FontId::proportional(11.0),
-        Color32::from_rgb(200, 215, 240),
-    );
+            painter.text(
+                Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "Kick (35, 36): Pitch {:.0}->{:.0}Hz ({:.0}ms) | Body Decay: {:.0}ms",
+                    params.kick.pitch_start_hz, params.kick.pitch_end_hz, params.kick.pitch_decay_ms, params.kick.body_decay_ms
+                ),
+                egui::FontId::proportional(11.0),
+                Color32::from_rgb(255, 200, 160),
+            );
+        }
+        DrumRole::Snare => {
+            // Plot Snare tone vs wire noise envelope
+            let mut wire_pts: Vec<Pos2> = Vec::with_capacity(41);
+            for s in 0..=40 {
+                let t = (s as f32) / 40.0;
+                let amp = (-t * (300.0 / params.snare.noise_decay_ms.max(10.0))).exp();
+                let px = rect.min.x + t * rect.width();
+                let py = rect.max.y - (amp.clamp(0.0, 1.0) * (rect.height() - 18.0) + 9.0);
+                wire_pts.push(Pos2::new(px, py));
+            }
+            painter.add(egui::Shape::line(wire_pts, Stroke::new(2.0, Color32::from_rgb(120, 190, 255))));
+
+            painter.text(
+                Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "Snare/Clap (37..40): Modes {:.0}/{:.0}Hz | Wire Cutoff: {:.0}Hz | Noise Decay: {:.0}ms",
+                    params.snare.tone_freq_hz, params.snare.mode2_freq_hz, params.snare.wire_cutoff_hz, params.snare.noise_decay_ms
+                ),
+                egui::FontId::proportional(11.0),
+                Color32::from_rgb(200, 220, 255),
+            );
+        }
+        DrumRole::Toms => {
+            let mut tom_pts: Vec<Pos2> = Vec::with_capacity(41);
+            for s in 0..=40 {
+                let t = (s as f32) / 40.0;
+                let amp = (-t * (400.0 / params.toms.decay_ms.max(10.0))).exp();
+                let px = rect.min.x + t * rect.width();
+                let py = rect.max.y - (amp.clamp(0.0, 1.0) * (rect.height() - 18.0) + 9.0);
+                tom_pts.push(Pos2::new(px, py));
+            }
+            painter.add(egui::Shape::line(tom_pts, Stroke::new(2.0, Color32::from_rgb(220, 160, 240))));
+
+            painter.text(
+                Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "Toms (41, 43, 45, 47, 48, 50): Scale {:.2}x | Drop Ratio {:.2} | Head Decay {:.0}ms",
+                    params.toms.pitch_scale, params.toms.pitch_drop_ratio, params.toms.decay_ms
+                ),
+                egui::FontId::proportional(11.0),
+                Color32::from_rgb(235, 205, 250),
+            );
+        }
+        DrumRole::HiHats => {
+            let mut closed_pts: Vec<Pos2> = Vec::with_capacity(41);
+            let mut open_pts: Vec<Pos2> = Vec::with_capacity(41);
+            for s in 0..=40 {
+                let t = (s as f32) / 40.0;
+                let amp_c = (-t * (100.0 / params.hi_hats.closed_decay_ms.max(5.0))).exp();
+                let amp_o = (-t * (800.0 / params.hi_hats.open_decay_ms.max(10.0))).exp();
+                let px = rect.min.x + t * rect.width();
+                closed_pts.push(Pos2::new(px, rect.max.y - (amp_c * (rect.height() - 20.0) + 10.0)));
+                open_pts.push(Pos2::new(px, rect.max.y - (amp_o * (rect.height() - 20.0) + 10.0)));
+            }
+            painter.add(egui::Shape::line(open_pts, Stroke::new(1.5, Color32::from_rgb(255, 220, 120))));
+            painter.add(egui::Shape::line(closed_pts, Stroke::new(2.0, Color32::from_rgb(140, 240, 220))));
+
+            painter.text(
+                Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "Hi-Hats (42, 44, 46): HP Cutoff {:.0}Hz | Closed: {:.0}ms | Open: {:.0}ms",
+                    params.hi_hats.highpass_cutoff_hz, params.hi_hats.closed_decay_ms, params.hi_hats.open_decay_ms
+                ),
+                egui::FontId::proportional(11.0),
+                Color32::from_rgb(240, 240, 180),
+            );
+        }
+        DrumRole::Cymbals => {
+            let mut crash_pts: Vec<Pos2> = Vec::with_capacity(41);
+            let mut ride_pts: Vec<Pos2> = Vec::with_capacity(41);
+            for s in 0..=40 {
+                let t = (s as f32) / 40.0;
+                let amp_c = (-t * (1500.0 / params.cymbals.crash_decay_ms.max(20.0))).exp();
+                let amp_r = (-t * (1500.0 / params.cymbals.ride_decay_ms.max(20.0))).exp();
+                let px = rect.min.x + t * rect.width();
+                crash_pts.push(Pos2::new(px, rect.max.y - (amp_c * (rect.height() - 20.0) + 10.0)));
+                ride_pts.push(Pos2::new(px, rect.max.y - (amp_r * (rect.height() - 20.0) + 10.0)));
+            }
+            painter.add(egui::Shape::line(crash_pts, Stroke::new(1.5, Color32::from_rgb(255, 120, 160))));
+            painter.add(egui::Shape::line(ride_pts, Stroke::new(2.0, Color32::from_rgb(160, 210, 255))));
+
+            painter.text(
+                Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "Cymbals (49, 51, 52, 53, 55, 57, 59): Cutoff {:.0}Hz | Crash: {:.0}ms | Ride: {:.0}ms",
+                    params.cymbals.cutoff_hz, params.cymbals.crash_decay_ms, params.cymbals.ride_decay_ms
+                ),
+                egui::FontId::proportional(11.0),
+                Color32::from_rgb(255, 200, 220),
+            );
+        }
+        DrumRole::PercAux => {
+            let mut aux_pts: Vec<Pos2> = Vec::with_capacity(41);
+            for s in 0..=40 {
+                let t = (s as f32) / 40.0;
+                let amp = (-t * (250.0 / params.aux.decay_ms.max(10.0))).exp();
+                let px = rect.min.x + t * rect.width();
+                aux_pts.push(Pos2::new(px, rect.max.y - (amp * (rect.height() - 20.0) + 10.0)));
+            }
+            painter.add(egui::Shape::line(aux_pts, Stroke::new(2.0, Color32::from_rgb(255, 215, 110))));
+
+            painter.text(
+                Pos2::new(rect.min.x + 8.0, rect.min.y + 6.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "Cowbell & Aux (56): Modes {:.0}Hz + {:.0}Hz (Q {:.1}) | Decay: {:.0}ms",
+                    params.aux.freq1_hz, params.aux.freq2_hz, params.aux.bandpass_q, params.aux.decay_ms
+                ),
+                egui::FontId::proportional(11.0),
+                Color32::from_rgb(255, 235, 180),
+            );
+        }
+    }
 }
 
 /// Paints the FM Carrier & Modulator ADSR curves side-by-side.
@@ -779,7 +1134,6 @@ fn paint_fm_adsr_preview(
 ) {
     let half_w = rect.width() * 0.48;
 
-    // Helper to generate ADSR polyline points
     let make_adsr_points = |adsr: &AdsrEnvelopeParams, offset_x: f32, width: f32| -> Vec<Pos2> {
         let total_time = adsr.attack_ms + adsr.decay_ms + 150.0 + adsr.release_ms;
         let x_from_t = |t_ms: f32| -> f32 {
@@ -825,330 +1179,642 @@ fn paint_fm_adsr_preview(
 }
 
 // -----------------------------------------------------------------------------
-// Inspector Tabs: String, Body, Drums, FM
+// Inspector Panels: Unified Physical String, Expanded GM Drum Kit, FM Synth
 // -----------------------------------------------------------------------------
 
-fn render_string_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut Vec<SynthCommand>) {
-    let mut changed = false;
-    let p = &mut app.synth_lab.preset.string_params;
+/// Unified panel merging Extended Karplus-Strong string waveguide and post-string Body/Amp Resonator.
+fn render_unified_string_and_body_panel(
+    ui: &mut egui::Ui,
+    app: &mut MnxEditorApp,
+    commands: &mut Vec<SynthCommand>,
+) {
+    let mut str_changed = false;
+    let mut body_changed = false;
 
-    egui::Grid::new("string_synth_params_grid")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new("Excitation:").strong());
-            ui.label("");
-            ui.end_row();
+    // Archetype Profile Selector
+    ui.group(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Instrument Profile:").strong());
 
-            ui.label("Pluck Position:");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.pluck_pos, 0.05..=0.50)
-                    .text("bridge -> neck"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.pluck_pos = 0.18; changed = true; }
-            ui.end_row();
+            let current_prof = app.synth_lab.preset.body_params.profile_base;
+            for prof in [
+                InstrumentProfile::AcousticGuitar,
+                InstrumentProfile::ElectricClean,
+                InstrumentProfile::ElectricOverdrive,
+                InstrumentProfile::FingeredBass,
+                InstrumentProfile::PickedBass,
+                InstrumentProfile::HarpOrLute,
+            ] {
+                if ui.selectable_label(current_prof == prof, prof.label()).clicked() {
+                    app.synth_lab.profile = prof;
+                    app.synth_lab.preset.body_params.profile_base = prof;
+                    commands.push(SynthCommand::SetInstrumentProfile(prof));
+                    body_changed = true;
+                }
+            }
+        });
+    });
 
-            ui.label("Pick Hardness (Cutoff):");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.pick_hardness, 500.0..=16_000.0)
-                    .logarithmic(true)
-                    .suffix(" Hz"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.pick_hardness = 8_500.0; changed = true; }
-            ui.end_row();
+    ui.add_space(4.0);
 
-            ui.label("Noise vs. Triangle Mix:");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.noise_mix, 0.0..=1.0)
-                    .text("triangle -> noise"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.noise_mix = 0.65; changed = true; }
-            ui.end_row();
+    let mut p = app.synth_lab.preset.string_params;
+    let mut bp = app.synth_lab.preset.body_params;
 
-            ui.separator();
-            ui.separator();
-            ui.end_row();
+    // Two-Column Grid: Left = String & Pluck (EKS), Right = Body & Amp Resonator
+    ui.columns(2, |cols| {
+        // ---------------------------------------------------------
+        // Column 1: String & Pluck (Extended Karplus-Strong)
+        // ---------------------------------------------------------
+        cols[0].group(|ui| {
+            ui.label(egui::RichText::new("String Waveguide (EKS):").strong());
+            ui.add_space(2.0);
 
-            ui.label(egui::RichText::new("Loop & Decay:").strong());
-            ui.label("");
-            ui.end_row();
+            egui::Grid::new("unified_string_params_grid")
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Pluck Position:");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut p.pluck_pos, 0.05..=0.50)
+                            .text("bridge -> neck"),
+                    );
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.pluck_pos = 0.18; str_changed = true; }
+                    ui.end_row();
 
-            ui.label("Sustain Decay T60:");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.t60_decay_sec, 0.1..=10.0)
-                    .logarithmic(true)
-                    .suffix(" s"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.t60_decay_sec = 4.2; changed = true; }
-            ui.end_row();
+                    ui.label("Pick Hardness:");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut p.pick_hardness, 500.0..=16_000.0)
+                            .logarithmic(true)
+                            .suffix(" Hz"),
+                    );
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.pick_hardness = 8_500.0; str_changed = true; }
+                    ui.end_row();
 
-            ui.label("Loop Brightness S:");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.brightness_s, 0.01..=0.99)
-                    .text("bright -> warm"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.brightness_s = 0.15; changed = true; }
-            ui.end_row();
+                    ui.label("Pluck Noise Mix:");
+                    let resp = ui.add(egui::Slider::new(&mut p.noise_mix, 0.0..=1.0));
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.noise_mix = 0.65; str_changed = true; }
+                    ui.end_row();
 
-            ui.label("Wound String Dispersion:");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.inharmonicity_dispersion, 0.0..=0.80)
-                    .text("pure -> inharmonic"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.inharmonicity_dispersion = 0.12; changed = true; }
-            ui.end_row();
+                    ui.label("Sustain (T60):");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut p.t60_decay_sec, 0.1..=10.0)
+                            .suffix(" s")
+                            .logarithmic(true),
+                    );
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.t60_decay_sec = 3.5; str_changed = true; }
+                    ui.end_row();
 
-            ui.separator();
-            ui.separator();
-            ui.end_row();
+                    ui.label("Brightness (S):");
+                    let resp = ui.add(egui::Slider::new(&mut p.brightness_s, 0.01..=0.99));
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.brightness_s = 0.16; str_changed = true; }
+                    ui.end_row();
 
-            ui.label(egui::RichText::new("Damping & Harmonics:").strong());
-            ui.label("");
-            ui.end_row();
+                    ui.label("Stiffness Dispersion:");
+                    let resp = ui.add(egui::Slider::new(&mut p.inharmonicity_dispersion, 0.0..=0.80));
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.inharmonicity_dispersion = 0.12; str_changed = true; }
+                    ui.end_row();
 
-            ui.label("Palm Mute Damping:");
-            let resp = ui.add(egui::Slider::new(&mut p.palm_mute_damping, 0.01..=0.80));
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.palm_mute_damping = 0.22; changed = true; }
-            ui.end_row();
+                    ui.label("Palm Mute Damping:");
+                    let resp = ui.add(egui::Slider::new(&mut p.palm_mute_damping, 0.01..=0.80));
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.palm_mute_damping = 0.22; str_changed = true; }
+                    ui.end_row();
 
-            ui.label("Harmonic Tap Coupling:");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.harmonic_damping_ms, 10.0..=500.0)
-                    .suffix(" ms"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.harmonic_damping_ms = 30.0; changed = true; }
-            ui.end_row();
+                    ui.label("Harmonic Damping:");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut p.harmonic_damping_ms, 10.0..=500.0)
+                            .suffix(" ms"),
+                    );
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.harmonic_damping_ms = 30.0; str_changed = true; }
+                    ui.end_row();
+                });
         });
 
-    if changed {
-        commands.push(SynthCommand::UpdateStringParams(*p));
+        // ---------------------------------------------------------
+        // Column 2: Body Resonator & Cabinet Filter Bank
+        // ---------------------------------------------------------
+        cols[1].group(|ui| {
+            ui.label(egui::RichText::new("Body & Resonator:").strong());
+            ui.add_space(2.0);
+
+            egui::Grid::new("unified_body_core_grid")
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Wet/Dry Mix:");
+                    let resp = ui.add(egui::Slider::new(&mut bp.body_wet_mix, 0.0..=1.0));
+                    if resp.changed() { body_changed = true; }
+                    ui.end_row();
+
+                    ui.label("Overdrive Drive:");
+                    let resp = ui.add(egui::Slider::new(&mut bp.pre_drive, 0.0..=5.0));
+                    if resp.changed() { body_changed = true; }
+                    ui.end_row();
+
+                    ui.label("Makeup Gain:");
+                    let resp = ui.add(
+                        egui::Slider::new(&mut bp.post_gain_db, -18.0..=12.0)
+                            .suffix(" dB"),
+                    );
+                    if resp.changed() { body_changed = true; }
+                    ui.end_row();
+                });
+
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Parametric 4-Band EQ:").strong());
+
+            let band_labels = [
+                "B1: Helmholtz (~98Hz)",
+                "B2: Wood Dipole (~205Hz)",
+                "B3: Pickup Peak (~2.8kHz)",
+                "B4: Cabinet Cone (~5kHz)",
+            ];
+
+            for (idx, b) in bp.bands.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut b.enabled, "").changed() {
+                        body_changed = true;
+                    }
+                    ui.label(egui::RichText::new(band_labels[idx]).size(11.0));
+                });
+                if b.enabled {
+                    ui.horizontal(|ui| {
+                        ui.label("F:");
+                        if ui
+                            .add(egui::DragValue::new(&mut b.freq_hz).speed(2.0).range(20.0..=18_000.0).suffix("Hz"))
+                            .changed()
+                        {
+                            body_changed = true;
+                        }
+                        ui.label("Q:");
+                        if ui
+                            .add(egui::DragValue::new(&mut b.q).speed(0.05).range(0.1..=15.0))
+                            .changed()
+                        {
+                            body_changed = true;
+                        }
+                        ui.label("G:");
+                        if ui
+                            .add(egui::DragValue::new(&mut b.gain_db).speed(0.2).range(-24.0..=24.0).suffix("dB"))
+                            .changed()
+                        {
+                            body_changed = true;
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    if str_changed {
+        app.synth_lab.preset.string_params = p;
+        app.set_part_synth_preset(app.synth_lab.target_part_idx, app.synth_lab.preset.clone());
+        commands.push(SynthCommand::UpdateStringParams(p));
+        commands.push(SynthCommand::UpdatePartStringParams {
+            part_idx: app.synth_lab.target_part_idx as u8,
+            params: p,
+        });
+    }
+
+    if body_changed {
+        app.synth_lab.preset.body_params = bp;
+        app.set_part_synth_preset(app.synth_lab.target_part_idx, app.synth_lab.preset.clone());
+        commands.push(SynthCommand::UpdateBodyParams(bp));
+        commands.push(SynthCommand::UpdatePartBodyParams {
+            part_idx: app.synth_lab.target_part_idx as u8,
+            params: bp,
+        });
     }
 }
 
-fn render_body_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut Vec<SynthCommand>) {
-    let mut changed = false;
-    let p = &mut app.synth_lab.preset.body_params;
+/// Expanded, General MIDI Labeled Drum Kit Editor.
+fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut Vec<SynthCommand>) {
+    let mut dp = app.synth_lab.preset.drum_params;
+    let target_idx = app.synth_lab.target_part_idx;
 
+    // Drum Role Selector with GM note labels
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Archetype Profile:").strong());
-        for prof in InstrumentProfile::ALL {
-            if ui
-                .selectable_label(p.profile_base == prof, prof.label())
-                .clicked()
-            {
-                p.profile_base = prof;
-                app.synth_lab.profile = prof;
-                changed = true;
-                commands.push(SynthCommand::SetInstrumentProfile(prof));
+        ui.label(egui::RichText::new("Drum Voice:").strong());
+
+        let roles = [
+            ("Bass Drums (35, 36)", DrumRole::Kick, 36),
+            ("Snares & Claps (37..40)", DrumRole::Snare, 38),
+            ("Toms (41..50)", DrumRole::Toms, 45),
+            ("Hi-Hats (42, 44, 46)", DrumRole::HiHats, 42),
+            ("Cymbals (49..59)", DrumRole::Cymbals, 49),
+            ("Cowbell & Aux (56)", DrumRole::PercAux, 56),
+        ];
+
+        for (label, role, def_note) in roles {
+            if ui.selectable_label(app.synth_lab.active_drum_role == role, label).clicked() {
+                app.synth_lab.active_drum_role = role;
+                app.synth_lab.active_drum_note = def_note;
             }
         }
     });
 
     ui.add_space(4.0);
 
-    egui::Grid::new("body_amp_overview_grid")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Body Wet Mix:");
-            let resp = ui.add(egui::Slider::new(&mut p.body_wet_mix, 0.0..=1.0));
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.body_wet_mix = 0.35; changed = true; }
-            ui.end_row();
+    // Dedicated "Trigger [Selected Drum]" Audition Bar
+    ui.group(|ui| {
+        ui.horizontal(|ui| {
+            let (role_name, active_note) = match app.synth_lab.active_drum_role {
+                DrumRole::Kick => ("Kick", app.synth_lab.active_drum_note.clamp(35, 36)),
+                DrumRole::Snare => ("Snare", app.synth_lab.active_drum_note.clamp(37, 40)),
+                DrumRole::Toms => ("Tom", app.synth_lab.active_drum_note.clamp(41, 50)),
+                DrumRole::HiHats => ("Hi-Hat", app.synth_lab.active_drum_note.clamp(42, 46)),
+                DrumRole::Cymbals => ("Cymbal", app.synth_lab.active_drum_note.clamp(49, 59)),
+                DrumRole::PercAux => ("Cowbell", 56),
+            };
 
-            ui.label("Pre Drive / Saturation:");
-            let resp = ui.add(egui::Slider::new(&mut p.pre_drive, 0.0..=5.0));
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.pre_drive = 1.0; changed = true; }
-            ui.end_row();
+            if ui
+                .button(egui::RichText::new(format!("Trigger {} (Note {})", role_name, active_note)).strong())
+                .clicked()
+            {
+                commands.push(SynthCommand::TriggerDrum {
+                    gm_drum_note: active_note,
+                    velocity: app.synth_lab.velocity,
+                });
+            }
 
-            ui.label("Post Gain (Makeup):");
-            let resp = ui.add(
-                egui::Slider::new(&mut p.post_gain_db, -18.0..=12.0)
-                    .suffix(" dB"),
-            );
-            if resp.changed() { changed = true; }
-            if resp.double_clicked() { p.post_gain_db = 0.0; changed = true; }
-            ui.end_row();
+            ui.separator();
+            ui.label(egui::RichText::new("Quick Audition:").weak());
+
+            match app.synth_lab.active_drum_role {
+                DrumRole::Kick => {
+                    for (note_name, note) in [("35: Acoustic Bass", 35), ("36: Electric Bass 1", 36)] {
+                        if ui.small_button(note_name).clicked() {
+                            app.synth_lab.active_drum_note = note;
+                            commands.push(SynthCommand::TriggerDrum { gm_drum_note: note, velocity: app.synth_lab.velocity });
+                        }
+                    }
+                }
+                DrumRole::Snare => {
+                    for (note_name, note) in [
+                        ("37: Side Stick", 37),
+                        ("38: Acoustic Snare", 38),
+                        ("39: Hand Clap", 39),
+                        ("40: Electric Snare", 40),
+                    ] {
+                        if ui.small_button(note_name).clicked() {
+                            app.synth_lab.active_drum_note = note;
+                            commands.push(SynthCommand::TriggerDrum { gm_drum_note: note, velocity: app.synth_lab.velocity });
+                        }
+                    }
+                }
+                DrumRole::Toms => {
+                    for (note_name, note) in [
+                        ("41: Low Floor", 41),
+                        ("43: High Floor", 43),
+                        ("45: Low", 45),
+                        ("47: Low-Mid", 47),
+                        ("48: Hi-Mid", 48),
+                        ("50: High", 50),
+                    ] {
+                        if ui.small_button(note_name).clicked() {
+                            app.synth_lab.active_drum_note = note;
+                            commands.push(SynthCommand::TriggerDrum { gm_drum_note: note, velocity: app.synth_lab.velocity });
+                        }
+                    }
+                }
+                DrumRole::HiHats => {
+                    for (note_name, note) in [
+                        ("42: Closed Hat", 42),
+                        ("44: Pedal Hat", 44),
+                        ("46: Open Hat", 46),
+                    ] {
+                        if ui.small_button(note_name).clicked() {
+                            app.synth_lab.active_drum_note = note;
+                            commands.push(SynthCommand::TriggerDrum { gm_drum_note: note, velocity: app.synth_lab.velocity });
+                        }
+                    }
+                }
+                DrumRole::Cymbals => {
+                    for (note_name, note) in [
+                        ("49: Crash 1", 49),
+                        ("51: Ride 1", 51),
+                        ("52: China", 52),
+                        ("53: Ride Bell", 53),
+                        ("55: Splash", 55),
+                        ("57: Crash 2", 57),
+                        ("59: Ride 2", 59),
+                    ] {
+                        if ui.small_button(note_name).clicked() {
+                            app.synth_lab.active_drum_note = note;
+                            commands.push(SynthCommand::TriggerDrum { gm_drum_note: note, velocity: app.synth_lab.velocity });
+                        }
+                    }
+                }
+                DrumRole::PercAux => {
+                    if ui.small_button("56: Cowbell").clicked() {
+                        app.synth_lab.active_drum_note = 56;
+                        commands.push(SynthCommand::TriggerDrum { gm_drum_note: 56, velocity: app.synth_lab.velocity });
+                    }
+                }
+            }
         });
+    });
 
-    ui.separator();
-    ui.label(egui::RichText::new("4-Band Parametric Filter Bank:").strong());
+    ui.add_space(4.0);
 
-    let band_names = [
-        "Band 1 (Helmholtz / Air Cavity)",
-        "Band 2 (Top Plate Wood Dipole)",
-        "Band 3 (Pickup / Presence Peak)",
-        "Band 4 (Cabinet / Speaker Roll-off)",
-    ];
+    // Active Drum Role Parameter Sliders
+    match app.synth_lab.active_drum_role {
+        DrumRole::Kick => {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Bass Drum Voice Parameters (GM 35, 36):").strong());
+                let mut k_changed = false;
+                let k = &mut dp.kick;
 
-    for (i, &name) in band_names.iter().enumerate() {
-        let b = &mut p.bands[i];
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                if ui.checkbox(&mut b.enabled, name).changed() {
-                    changed = true;
+                egui::Grid::new("kick_params_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Pitch Envelope Start:");
+                        let r1 = ui.add(egui::Slider::new(&mut k.pitch_start_hz, 80.0..=250.0).suffix(" Hz"));
+                        if r1.changed() { k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Resting Sub-Bass Pitch:");
+                        let r2 = ui.add(egui::Slider::new(&mut k.pitch_end_hz, 30.0..=65.0).suffix(" Hz"));
+                        if r2.changed() { k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Pitch Drop Time:");
+                        let r3 = ui.add(egui::Slider::new(&mut k.pitch_decay_ms, 10.0..=80.0).suffix(" ms"));
+                        if r3.changed() { k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Shell Body Decay:");
+                        let r4 = ui.add(egui::Slider::new(&mut k.body_decay_ms, 50.0..=600.0).suffix(" ms"));
+                        if r4.changed() { k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Click Beater Level:");
+                        let r5 = ui.add(egui::Slider::new(&mut k.click_level, 0.0..=1.0));
+                        if r5.changed() { k_changed = true; }
+                        ui.end_row();
+                    });
+
+                if k_changed {
+                    app.synth_lab.preset.drum_params.kick = *k;
+                    app.set_part_synth_preset(target_idx, app.synth_lab.preset.clone());
+                    commands.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Kick,
+                        params: DrumVoiceParams::Kick(*k),
+                    });
                 }
             });
+        }
+        DrumRole::Snare => {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Snare, Rim & Clap Voice Parameters (GM 37, 38, 39, 40):").strong());
+                let mut s_changed = false;
+                let s = &mut dp.snare;
 
-            ui.horizontal(|ui| {
-                ui.label("Freq:");
-                let resp_f = ui.add(
-                    egui::Slider::new(&mut b.freq_hz, 20.0..=18_000.0)
-                        .logarithmic(true)
-                        .suffix(" Hz"),
-                );
-                if resp_f.changed() { changed = true; }
+                egui::Grid::new("snare_params_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Mode 1 Tone Freq:");
+                        let r1 = ui.add(egui::Slider::new(&mut s.tone_freq_hz, 120.0..=350.0).suffix(" Hz"));
+                        if r1.changed() { s_changed = true; }
+                        ui.end_row();
 
-                ui.label("Q:");
-                let resp_q = ui.add(egui::Slider::new(&mut b.q, 0.1..=15.0));
-                if resp_q.changed() { changed = true; }
+                        ui.label("Mode 2 Resonance:");
+                        let r2 = ui.add(egui::Slider::new(&mut s.mode2_freq_hz, 200.0..=600.0).suffix(" Hz"));
+                        if r2.changed() { s_changed = true; }
+                        ui.end_row();
 
-                ui.label("Gain:");
-                let resp_g = ui.add(
-                    egui::Slider::new(&mut b.gain_db, -24.0..=24.0)
-                        .suffix(" dB"),
-                );
-                if resp_g.changed() { changed = true; }
+                        ui.label("Shell Tone Decay:");
+                        let r3 = ui.add(egui::Slider::new(&mut s.tone_decay_ms, 20.0..=200.0).suffix(" ms"));
+                        if r3.changed() { s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Wire Noise Cutoff:");
+                        let r4 = ui.add(egui::Slider::new(&mut s.wire_cutoff_hz, 1000.0..=5000.0).suffix(" Hz"));
+                        if r4.changed() { s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Wire Noise Decay:");
+                        let r5 = ui.add(egui::Slider::new(&mut s.noise_decay_ms, 50.0..=400.0).suffix(" ms"));
+                        if r5.changed() { s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Noise / Tone Mix:");
+                        let r6 = ui.add(egui::Slider::new(&mut s.noise_mix, 0.0..=1.0));
+                        if r6.changed() { s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Clap Burst Spacing:");
+                        let r7 = ui.add(egui::Slider::new(&mut s.clap_spacing_ms, 5.0..=30.0).suffix(" ms"));
+                        if r7.changed() { s_changed = true; }
+                        ui.end_row();
+                    });
+
+                if s_changed {
+                    app.synth_lab.preset.drum_params.snare = *s;
+                    app.set_part_synth_preset(target_idx, app.synth_lab.preset.clone());
+                    commands.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Snare,
+                        params: DrumVoiceParams::Snare(*s),
+                    });
+                }
             });
-        });
-    }
+        }
+        DrumRole::Toms => {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Tuned Tom-Toms (GM 41, 43, 45, 47, 48, 50):").strong());
+                let mut t_changed = false;
+                let t = &mut dp.toms;
 
-    if changed {
-        commands.push(SynthCommand::UpdateBodyParams(*p));
+                egui::Grid::new("tom_params_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Pitch Scaling Multiplier:");
+                        let r1 = ui.add(egui::Slider::new(&mut t.pitch_scale, 0.5..=2.0));
+                        if r1.changed() { t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Pitch Drop Sweep Ratio:");
+                        let r2 = ui.add(egui::Slider::new(&mut t.pitch_drop_ratio, 1.2..=3.0));
+                        if r2.changed() { t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Tomhead Decay Time:");
+                        let r3 = ui.add(egui::Slider::new(&mut t.decay_ms, 50.0..=800.0).suffix(" ms"));
+                        if r3.changed() { t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Stick Attack Level:");
+                        let r4 = ui.add(egui::Slider::new(&mut t.stick_attack, 0.0..=1.0));
+                        if r4.changed() { t_changed = true; }
+                        ui.end_row();
+                    });
+
+                if t_changed {
+                    app.synth_lab.preset.drum_params.toms = *t;
+                    app.set_part_synth_preset(target_idx, app.synth_lab.preset.clone());
+                    commands.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Toms,
+                        params: DrumVoiceParams::Toms(*t),
+                    });
+                }
+            });
+        }
+        DrumRole::HiHats => {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Hi-Hats (GM 42, 44, 46 - Closed/Pedal/Open):").strong());
+                let mut h_changed = false;
+                let h = &mut dp.hi_hats;
+
+                egui::Grid::new("hihat_params_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Metallic Matrix Spread:");
+                        let r1 = ui.add(egui::Slider::new(&mut h.spread, 0.5..=2.0));
+                        if r1.changed() { h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Highpass Cutoff:");
+                        let r2 = ui.add(egui::Slider::new(&mut h.highpass_cutoff_hz, 3000.0..=12000.0).suffix(" Hz"));
+                        if r2.changed() { h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Closed Hat Decay:");
+                        let r3 = ui.add(egui::Slider::new(&mut h.closed_decay_ms, 15.0..=150.0).suffix(" ms"));
+                        if r3.changed() { h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Pedal Hat Decay:");
+                        let r4 = ui.add(egui::Slider::new(&mut h.pedal_decay_ms, 20.0..=200.0).suffix(" ms"));
+                        if r4.changed() { h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Open Hat Decay:");
+                        let r5 = ui.add(egui::Slider::new(&mut h.open_decay_ms, 100.0..=2000.0).suffix(" ms"));
+                        if r5.changed() { h_changed = true; }
+                        ui.end_row();
+                    });
+
+                if h_changed {
+                    app.synth_lab.preset.drum_params.hi_hats = *h;
+                    app.set_part_synth_preset(target_idx, app.synth_lab.preset.clone());
+                    commands.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::HiHats,
+                        params: DrumVoiceParams::HiHats(*h),
+                    });
+                }
+            });
+        }
+        DrumRole::Cymbals => {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Crash & Ride Cymbals (GM 49, 51, 52, 53, 55, 57, 59):").strong());
+                let mut c_changed = false;
+                let c = &mut dp.cymbals;
+
+                egui::Grid::new("cymbals_params_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Shimmer Matrix Spread:");
+                        let r1 = ui.add(egui::Slider::new(&mut c.matrix_spread, 0.5..=2.0));
+                        if r1.changed() { c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Bandpass/Highpass Cutoff:");
+                        let r2 = ui.add(egui::Slider::new(&mut c.cutoff_hz, 2000.0..=8000.0).suffix(" Hz"));
+                        if r2.changed() { c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Ride Bell Peak Level:");
+                        let r3 = ui.add(egui::Slider::new(&mut c.bell_peak_level, 0.0..=1.0));
+                        if r3.changed() { c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Crash Cymbal Decay:");
+                        let r4 = ui.add(egui::Slider::new(&mut c.crash_decay_ms, 300.0..=3000.0).suffix(" ms"));
+                        if r4.changed() { c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Ride Cymbal Decay:");
+                        let r5 = ui.add(egui::Slider::new(&mut c.ride_decay_ms, 400.0..=3500.0).suffix(" ms"));
+                        if r5.changed() { c_changed = true; }
+                        ui.end_row();
+                    });
+
+                if c_changed {
+                    app.synth_lab.preset.drum_params.cymbals = *c;
+                    app.set_part_synth_preset(target_idx, app.synth_lab.preset.clone());
+                    commands.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::Cymbals,
+                        params: DrumVoiceParams::Cymbals(*c),
+                    });
+                }
+            });
+        }
+        DrumRole::PercAux => {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Cowbell & Auxiliary Percussion (GM 56):").strong());
+                let mut a_changed = false;
+                let a = &mut dp.aux;
+
+                egui::Grid::new("aux_params_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Fundamental Mode 1:");
+                        let r1 = ui.add(egui::Slider::new(&mut a.freq1_hz, 300.0..=1000.0).suffix(" Hz"));
+                        if r1.changed() { a_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Harmonic Mode 2:");
+                        let r2 = ui.add(egui::Slider::new(&mut a.freq2_hz, 400.0..=1400.0).suffix(" Hz"));
+                        if r2.changed() { a_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Detune Offset:");
+                        let r3 = ui.add(egui::Slider::new(&mut a.detune, -50.0..=50.0).suffix(" Hz"));
+                        if r3.changed() { a_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Bandpass Q:");
+                        let r4 = ui.add(egui::Slider::new(&mut a.bandpass_q, 0.5..=10.0));
+                        if r4.changed() { a_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Ring Decay Time:");
+                        let r5 = ui.add(egui::Slider::new(&mut a.decay_ms, 20.0..=500.0).suffix(" ms"));
+                        if r5.changed() { a_changed = true; }
+                        ui.end_row();
+                    });
+
+                if a_changed {
+                    app.synth_lab.preset.drum_params.aux = *a;
+                    app.set_part_synth_preset(target_idx, app.synth_lab.preset.clone());
+                    commands.push(SynthCommand::UpdateDrumParams {
+                        drum_role: DrumRole::PercAux,
+                        params: DrumVoiceParams::PercAux(*a),
+                    });
+                }
+            });
+        }
     }
 }
 
-fn render_drums_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut Vec<SynthCommand>) {
-    let dp = &mut app.synth_lab.preset.drum_params;
-
-    // 1. Kick Drum
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("Kick Drum (GM 35, 36):").strong());
-        let mut k_changed = false;
-        let k = &mut dp.kick;
-
-        egui::Grid::new("kick_params_grid")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
-            .show(ui, |ui| {
-                ui.label("Pitch Start:");
-                let r1 = ui.add(egui::Slider::new(&mut k.pitch_start_hz, 80.0..=250.0).suffix(" Hz"));
-                if r1.changed() { k_changed = true; }
-                ui.end_row();
-
-                ui.label("Pitch End:");
-                let r2 = ui.add(egui::Slider::new(&mut k.pitch_end_hz, 30.0..=65.0).suffix(" Hz"));
-                if r2.changed() { k_changed = true; }
-                ui.end_row();
-
-                ui.label("Pitch Drop Time:");
-                let r3 = ui.add(egui::Slider::new(&mut k.pitch_decay_ms, 10.0..=80.0).suffix(" ms"));
-                if r3.changed() { k_changed = true; }
-                ui.end_row();
-
-                ui.label("Click Attack Level:");
-                let r4 = ui.add(egui::Slider::new(&mut k.click_level, 0.0..=1.0));
-                if r4.changed() { k_changed = true; }
-                ui.end_row();
-            });
-
-        if k_changed {
-            commands.push(SynthCommand::UpdateDrumParams {
-                drum_role: DrumRole::Kick,
-                params: DrumVoiceParams::Kick(*k),
-            });
-        }
-    });
-
-    // 2. Snare Drum
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("Snare Drum (GM 38, 40):").strong());
-        let mut s_changed = false;
-        let s = &mut dp.snare;
-
-        egui::Grid::new("snare_params_grid")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
-            .show(ui, |ui| {
-                ui.label("Shell Tone Freq:");
-                let r1 = ui.add(egui::Slider::new(&mut s.tone_freq_hz, 120.0..=350.0).suffix(" Hz"));
-                if r1.changed() { s_changed = true; }
-                ui.end_row();
-
-                ui.label("Wire Noise Decay:");
-                let r2 = ui.add(egui::Slider::new(&mut s.noise_decay_ms, 50.0..=400.0).suffix(" ms"));
-                if r2.changed() { s_changed = true; }
-                ui.end_row();
-
-                ui.label("Noise / Tone Mix:");
-                let r3 = ui.add(egui::Slider::new(&mut s.noise_mix, 0.0..=1.0));
-                if r3.changed() { s_changed = true; }
-                ui.end_row();
-            });
-
-        if s_changed {
-            commands.push(SynthCommand::UpdateDrumParams {
-                drum_role: DrumRole::Snare,
-                params: DrumVoiceParams::Snare(*s),
-            });
-        }
-    });
-
-    // 3. Hi-Hats & Cymbals
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("Hi-Hats & Cymbals (GM 42, 44, 46, 49, 51):").strong());
-        let mut c_changed = false;
-        let c = &mut dp.hats_cymbals;
-
-        egui::Grid::new("cymbal_params_grid")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
-            .show(ui, |ui| {
-                ui.label("Metallic Matrix Spread:");
-                let r1 = ui.add(egui::Slider::new(&mut c.spread, 0.5..=2.0));
-                if r1.changed() { c_changed = true; }
-                ui.end_row();
-
-                ui.label("Highpass Cutoff:");
-                let r2 = ui.add(
-                    egui::Slider::new(&mut c.highpass_cutoff_hz, 3_000.0..=10_000.0)
-                        .suffix(" Hz"),
-                );
-                if r2.changed() { c_changed = true; }
-                ui.end_row();
-
-                ui.label("Closed Hat Decay:");
-                let r3 = ui.add(egui::Slider::new(&mut c.closed_decay_ms, 20.0..=120.0).suffix(" ms"));
-                if r3.changed() { c_changed = true; }
-                ui.end_row();
-
-                ui.label("Open Hat / Crash Decay:");
-                let r4 = ui.add(egui::Slider::new(&mut c.open_decay_ms, 200.0..=1500.0).suffix(" ms"));
-                if r4.changed() { c_changed = true; }
-                ui.end_row();
-            });
-
-        if c_changed {
-            commands.push(SynthCommand::UpdateDrumParams {
-                drum_role: DrumRole::HiHatAndCymbal,
-                params: DrumVoiceParams::HiHatAndCymbal(*c),
-            });
-        }
-    });
-}
-
+/// 2-Operator FM Melodic Backing Synthesizer Tab.
 fn render_fm_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut Vec<SynthCommand>) {
     let mut changed = false;
-    let fmp = &mut app.synth_lab.preset.fm_params;
+    let mut fmp = app.synth_lab.preset.fm_params;
+    let target_idx = app.synth_lab.target_part_idx;
 
     ui.group(|ui| {
         ui.label(egui::RichText::new("2-Operator Modulation Parameters:").strong());
@@ -1210,7 +1876,13 @@ fn render_fm_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut Vec<S
     });
 
     if changed {
-        commands.push(SynthCommand::UpdateGmVoiceParams(*fmp));
+        app.synth_lab.preset.fm_params = fmp;
+        app.set_part_synth_preset(target_idx, app.synth_lab.preset.clone());
+        commands.push(SynthCommand::UpdateGmVoiceParams(fmp));
+        commands.push(SynthCommand::UpdatePartFmParams {
+            part_idx: target_idx as u8,
+            params: fmp,
+        });
     }
 }
 
@@ -1221,7 +1893,7 @@ fn strum_current_part_open_strings(app: &mut MnxEditorApp) {
     if let Some(doc) = &app.parsed_mnx {
         if let Some(part) = doc
             .parts
-            .get(app.selected_part_idx)
+            .get(app.synth_lab.target_part_idx)
             .or_else(|| doc.parts.first())
         {
             if part.is_percussion() {
@@ -1240,18 +1912,28 @@ fn strum_current_part_open_strings(app: &mut MnxEditorApp) {
                 let pluck_pos = app.synth_lab.preset.string_params.pluck_pos;
                 let palm_mute = app.synth_lab.palm_mute;
                 let velocity = app.synth_lab.velocity;
+                let is_fm = app.synth_lab.preset.engine == PitchedEngine::FmSynth;
 
                 if let Some(engine) = &mut app.synth_engine {
                     for s in (1..=n_str).rev() {
                         if let Some(hz) = table.string_fret_to_frequency_hz(part, s, 0) {
-                            engine.send(SynthCommand::TriggerString {
-                                string_idx: s,
-                                freq_hz: hz,
-                                velocity,
-                                pluck_pos,
-                                palm_mute,
-                                harmonic_node: app.synth_lab.harmonic_node,
-                            });
+                            if is_fm {
+                                engine.send(SynthCommand::TriggerGmVoice {
+                                    channel: 1,
+                                    freq_hz: hz,
+                                    velocity,
+                                    program: 0,
+                                });
+                            } else {
+                                engine.send(SynthCommand::TriggerString {
+                                    string_idx: s,
+                                    freq_hz: hz,
+                                    velocity,
+                                    pluck_pos,
+                                    palm_mute,
+                                    harmonic_node: app.synth_lab.harmonic_node,
+                                });
+                            }
                         }
                     }
                 }

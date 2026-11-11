@@ -295,6 +295,7 @@ impl PolyVoice {
         body_mix: f32,
         noise_mix: f32,
         is_clap: bool,
+        clap_spacing_ms: f32,
         pan: f32,
         velocity: f32,
         sample_rate: f32,
@@ -315,10 +316,14 @@ impl PolyVoice {
         self.base_inc = mode1_hz.clamp(60.0, sr * 0.45) * inv_sr;
         self.sec_inc = mode2_hz.clamp(80.0, sr * 0.45) * inv_sr;
 
-        // Small initial drumhead pitch snap on the dual body modes
+        // Small initial drumhead pitch snap on the dual body modes (or clap burst rate)
         self.pitch_env = 1.0;
         self.pitch_decay = (-inv_sr / 0.010).exp();
-        self.pitch_mod_span_inc = (mode1_hz * 0.35) * inv_sr;
+        if is_clap {
+            self.pitch_mod_span_inc = (1000.0 / clap_spacing_ms.clamp(4.0, 50.0)) * inv_sr;
+        } else {
+            self.pitch_mod_span_inc = (mode1_hz * 0.35) * inv_sr;
+        }
 
         // Fast body envelope (`fast_env`) + snare wire / clap envelope (`slow_env`)
         self.fast_env = 1.0;
@@ -345,6 +350,8 @@ impl PolyVoice {
         is_open_hat: bool,
         fast_tau_sec: f32,
         slow_tau_sec: f32,
+        cutoff_hz: f32,
+        bell_peak: f32,
         pan: f32,
         velocity: f32,
         sample_rate: f32,
@@ -373,14 +380,18 @@ impl PolyVoice {
         self.slow_decay = (-inv_sr / slow_tau_sec.max(0.015)).exp();
 
         if is_cymbal_bandpass {
-            // Crash / Ride / Splash / China: bandpass at 3.5 kHz + highpass at 4.5 kHz
-            self.filter1 = BiquadFilter::bandpass_peak(sr, 3_500.0, 1.15);
-            self.filter2 = BiquadFilter::highpass(sr, 4_500.0, 0.75);
+            // Crash / Ride / Splash / China: bandpass at cutoff_hz + highpass at 1.3 * cutoff_hz
+            let bp_cut = cutoff_hz.clamp(1000.0, sr * 0.45);
+            let hp_cut = (cutoff_hz * 1.3).clamp(1200.0, sr * 0.45);
+            self.filter1 = BiquadFilter::bandpass_peak(sr, bp_cut, 1.15);
+            self.filter2 = BiquadFilter::highpass(sr, hp_cut, 0.75);
+            self.body_mix = bell_peak.clamp(0.0, 2.0);
         } else {
-            // Closed / Pedal / Open Hi-Hats: crisp highpass at 7.0 kHz
-            let hp_cutoff = (7_000.0_f32).min(sr * 0.42);
+            // Closed / Pedal / Open Hi-Hats: crisp highpass at cutoff_hz
+            let hp_cutoff = cutoff_hz.clamp(2000.0, sr * 0.42);
             self.filter1 = BiquadFilter::highpass(sr, hp_cutoff, 0.85);
-            self.filter2 = BiquadFilter::highpass(sr, (5_200.0_f32).min(sr * 0.40), 0.707);
+            self.filter2 = BiquadFilter::highpass(sr, (hp_cutoff * 0.75).min(sr * 0.40), 0.707);
+            self.body_mix = 0.0;
         }
     }
 
@@ -601,8 +612,8 @@ impl PolyVoice {
                 let shaped_noise = self.filter2.process(bp_noise + white * 0.22);
 
                 let noise_env = if self.is_clap {
-                    // Classic 3-burst micro-stutter over the first ~28 ms for hand clap (note 39)
-                    let burst_phase = (self.age_samples as f32) * self.base_inc * 0.45;
+                    // Multi-burst micro-stutter over the attack phase for hand clap (note 39)
+                    let burst_phase = (self.age_samples as f32) * self.pitch_mod_span_inc;
                     if self.fast_env > 0.25 {
                         0.45 + 0.55 * (burst_phase * TAU).cos().abs()
                     } else {
@@ -650,12 +661,12 @@ impl PolyVoice {
                 let matrix = (xor_01 + xor_23 + xor_45 + cross_14) * 0.18 + modal_sum * 0.35 + stick_noise;
 
                 let filtered = if self.is_cymbal_bandpass {
-                    // Bandpass @ 3.5 kHz body shimmer + highpass @ 4.5 kHz sizzle
+                    // Bandpass body shimmer + highpass sizzle with bell peak presence boost
                     let bp = self.filter1.process(matrix);
                     let hp = self.filter2.process(matrix);
-                    bp * 0.55 + hp * 0.65
+                    bp * (0.55 + 0.35 * self.body_mix) + hp * 0.65
                 } else {
-                    // Crisp 2-stage highpass @ 7 kHz for hi-hats
+                    // Crisp 2-stage highpass for hi-hats
                     let hp1 = self.filter1.process(matrix);
                     self.filter2.process(hp1)
                 };
@@ -753,7 +764,10 @@ impl PercussionAndGmPool {
         match params {
             DrumVoiceParams::Kick(k) => self.drum_params.kick = k,
             DrumVoiceParams::Snare(s) => self.drum_params.snare = s,
-            DrumVoiceParams::HiHatAndCymbal(c) => self.drum_params.hats_cymbals = c,
+            DrumVoiceParams::Toms(t) => self.drum_params.toms = t,
+            DrumVoiceParams::HiHats(h) => self.drum_params.hi_hats = h,
+            DrumVoiceParams::Cymbals(c) => self.drum_params.cymbals = c,
+            DrumVoiceParams::PercAux(a) => self.drum_params.aux = a,
         }
     }
 
@@ -813,109 +827,171 @@ impl PercussionAndGmPool {
             // Acoustic Bass Drum (35) & Bass Drum 1 (36):
             35 | 36 => {
                 let k = &self.drum_params.kick;
+                let body_decay = (k.body_decay_ms * 0.001).clamp(0.04, 0.80);
                 voice.trigger_kick_or_tom(
                     gm_drum_note,
                     k.pitch_end_hz,
                     k.pitch_start_hz,
                     (k.pitch_decay_ms * 0.001).clamp(0.005, 0.20),
-                    0.24,
+                    body_decay,
                     0.50,
                     velocity * (0.6 + 0.4 * k.click_level),
                     sr,
                 );
             }
-            // Floor Toms (41, 43)
-            41 => voice.trigger_kick_or_tom(41, 78.0, 145.0, 0.030, 0.28, 0.66, velocity, sr),
-            43 => voice.trigger_kick_or_tom(43, 95.0, 175.0, 0.028, 0.26, 0.60, velocity, sr),
-            // Low & Low-Mid Toms (45, 47)
-            45 => voice.trigger_kick_or_tom(45, 118.0, 215.0, 0.026, 0.24, 0.52, velocity, sr),
-            47 => voice.trigger_kick_or_tom(47, 145.0, 260.0, 0.024, 0.22, 0.45, velocity, sr),
-            // Hi-Mid & High Toms (48, 50)
-            48 => voice.trigger_kick_or_tom(48, 172.0, 305.0, 0.022, 0.20, 0.38, velocity, sr),
-            50 => voice.trigger_kick_or_tom(50, 205.0, 355.0, 0.020, 0.19, 0.32, velocity, sr),
+            // Floor Toms (41, 43), Low & Low-Mid Toms (45, 47), Hi-Mid & High Toms (48, 50)
+            41 | 43 | 45 | 47 | 48 | 50 => {
+                let t = &self.drum_params.toms;
+                let std_freq = match gm_drum_note {
+                    41 => 78.0,
+                    43 => 95.0,
+                    45 => 118.0,
+                    47 => 145.0,
+                    48 => 172.0,
+                    50 => 205.0,
+                    _ => 120.0,
+                };
+                let pan = match gm_drum_note {
+                    41 => 0.66,
+                    43 => 0.60,
+                    45 => 0.52,
+                    47 => 0.45,
+                    48 => 0.38,
+                    50 => 0.32,
+                    _ => 0.50,
+                };
+                let base_hz = (std_freq * t.pitch_scale).clamp(35.0, sr * 0.4);
+                let start_hz = (base_hz * t.pitch_drop_ratio).clamp(base_hz, sr * 0.45);
+                let decay_tau = (t.decay_ms * 0.001).clamp(0.04, 1.20);
+                voice.trigger_kick_or_tom(
+                    gm_drum_note,
+                    base_hz,
+                    start_hz,
+                    0.026,
+                    decay_tau,
+                    pan,
+                    velocity * (0.5 + 0.5 * t.stick_attack),
+                    sr,
+                );
+            }
 
             // 2. Snare & Claps (Notes 37, 38, 39, 40)
             // Side Stick / Rimshot (37): High woody modes + tight snap
-            37 => voice.trigger_snare_or_clap(
-                37, 320.0, 590.0, 0.022, 0.030, 2_800.0, 2.2, 0.80, 0.35, false, 0.46, velocity, sr,
-            ),
+            37 => {
+                let s = &self.drum_params.snare;
+                voice.trigger_snare_or_clap(
+                    37, 320.0, 590.0, 0.022, 0.030, s.wire_cutoff_hz.max(1800.0), 2.2, 0.80, 0.35, false, s.clap_spacing_ms, 0.46, velocity, sr,
+                );
+            }
             // Acoustic Snare (38) & Electric Snare (40):
             38 | 40 => {
                 let s = &self.drum_params.snare;
                 let body_hz = s.tone_freq_hz.clamp(100.0, 450.0);
+                let mode2_hz = s.mode2_freq_hz.clamp(150.0, 800.0);
+                let tone_decay = (s.tone_decay_ms * 0.001).clamp(0.015, 0.40);
                 let wire_decay = (s.noise_decay_ms * 0.001).clamp(0.02, 0.80);
                 let noise_m = s.noise_mix.clamp(0.05, 0.95);
                 let body_m = (1.0 - noise_m).clamp(0.05, 0.95);
                 voice.trigger_snare_or_clap(
                     gm_drum_note,
                     body_hz,
-                    body_hz * 1.78,
-                    0.055,
+                    mode2_hz,
+                    tone_decay,
                     wire_decay,
-                    2_400.0,
+                    s.wire_cutoff_hz.clamp(800.0, 6000.0),
                     1.1,
                     body_m,
                     noise_m,
                     false,
+                    s.clap_spacing_ms,
                     0.46,
                     velocity,
                     sr,
                 );
             }
             // Hand Clap (39): Multi-burst bandpass noise @ 1.2 kHz
-            39 => voice.trigger_snare_or_clap(
-                39, 185.0, 330.0, 0.028, 0.170, 1_250.0, 1.6, 0.18, 0.90, true, 0.54, velocity, sr,
-            ),
+            39 => {
+                let s = &self.drum_params.snare;
+                voice.trigger_snare_or_clap(
+                    39, 185.0, 330.0, 0.028, 0.170, 1_250.0, 1.6, 0.18, 0.90, true, s.clap_spacing_ms, 0.54, velocity, sr,
+                );
+            }
 
             // 3. Hi-Hats & Cymbals (Notes 42, 44, 46, 49, 51, 52, 53, 55, 57, 59)
             // Closed Hi-Hat (42):
             42 => {
-                let c = &self.drum_params.hats_cymbals;
-                let decay = (c.closed_decay_ms * 0.001).clamp(0.01, 0.30);
-                voice.trigger_hat_or_cymbal(42, c.spread, false, false, 0.015, decay, 0.34, velocity, sr);
+                let h = &self.drum_params.hi_hats;
+                let decay = (h.closed_decay_ms * 0.001).clamp(0.01, 0.30);
+                voice.trigger_hat_or_cymbal(42, h.spread, false, false, 0.015, decay, h.highpass_cutoff_hz, 0.0, 0.34, velocity, sr);
             }
             // Pedal Hi-Hat (44):
             44 => {
-                let c = &self.drum_params.hats_cymbals;
-                let decay = (c.closed_decay_ms * 0.001 * 1.33).clamp(0.015, 0.35);
-                voice.trigger_hat_or_cymbal(44, c.spread * 0.96, false, false, 0.018, decay, 0.34, velocity, sr);
+                let h = &self.drum_params.hi_hats;
+                let decay = (h.pedal_decay_ms * 0.001).clamp(0.015, 0.35);
+                voice.trigger_hat_or_cymbal(44, h.spread * 0.96, false, false, 0.018, decay, h.highpass_cutoff_hz, 0.0, 0.34, velocity, sr);
             }
             // Open Hi-Hat (46):
             46 => {
-                let c = &self.drum_params.hats_cymbals;
-                let decay = (c.open_decay_ms * 0.001).clamp(0.08, 2.5);
-                voice.trigger_hat_or_cymbal(46, c.spread, false, true, 0.045, decay, 0.34, velocity, sr);
+                let h = &self.drum_params.hi_hats;
+                let decay = (h.open_decay_ms * 0.001).clamp(0.08, 2.5);
+                voice.trigger_hat_or_cymbal(46, h.spread, false, true, 0.045, decay, h.highpass_cutoff_hz, 0.0, 0.34, velocity, sr);
             }
-            // Crash Cymbal 1 (49): 3.5 kHz bandpass + highpass, ~1.2 s decay
+            // Crash Cymbal 1 (49):
             49 => {
-                let c = &self.drum_params.hats_cymbals;
-                let decay = (c.open_decay_ms * 0.001 * 1.8).clamp(0.2, 3.0);
-                voice.trigger_hat_or_cymbal(49, c.spread * 0.92, true, false, 0.090, decay, 0.30, velocity, sr);
+                let c = &self.drum_params.cymbals;
+                let decay = (c.crash_decay_ms * 0.001).clamp(0.2, 4.0);
+                voice.trigger_hat_or_cymbal(49, c.matrix_spread * 0.92, true, false, 0.090, decay, c.cutoff_hz, c.bell_peak_level, 0.30, velocity, sr);
             }
-            // Ride Cymbal 1 (51): 3.5 kHz bandpass + highpass, ~1.25 s decay
+            // Ride Cymbal 1 (51):
             51 => {
-                let c = &self.drum_params.hats_cymbals;
-                let decay = (c.open_decay_ms * 0.001 * 1.9).clamp(0.2, 3.0);
-                voice.trigger_hat_or_cymbal(51, c.spread * 1.12, true, false, 0.055, decay, 0.68, velocity, sr);
+                let c = &self.drum_params.cymbals;
+                let decay = (c.ride_decay_ms * 0.001).clamp(0.2, 4.0);
+                voice.trigger_hat_or_cymbal(51, c.matrix_spread * 1.12, true, false, 0.055, decay, c.cutoff_hz, c.bell_peak_level, 0.68, velocity, sr);
             }
-            // Chinese Cymbal (52): trashier detuned pitch scale, ~1.1 s decay
-            52 => voice.trigger_hat_or_cymbal(52, 0.84, true, false, 0.110, 1.100, 0.72, velocity, sr),
+            // Chinese Cymbal (52): trashier detuned pitch scale
+            52 => {
+                let c = &self.drum_params.cymbals;
+                let decay = (c.crash_decay_ms * 0.001 * 0.9).clamp(0.2, 3.5);
+                voice.trigger_hat_or_cymbal(52, c.matrix_spread * 0.84, true, false, 0.110, decay, c.cutoff_hz * 0.9, c.bell_peak_level, 0.72, velocity, sr);
+            }
             // Ride Bell (53): higher modal scale, clear ping
-            53 => voice.trigger_hat_or_cymbal(53, 1.38, true, false, 0.070, 0.950, 0.68, velocity, sr),
+            53 => {
+                let c = &self.drum_params.cymbals;
+                let decay = (c.ride_decay_ms * 0.001 * 0.75).clamp(0.2, 3.0);
+                voice.trigger_hat_or_cymbal(53, c.matrix_spread * 1.38, true, false, 0.070, decay, c.cutoff_hz * 1.25, c.bell_peak_level * 1.5, 0.68, velocity, sr);
+            }
             // Splash Cymbal (55): bright fast crash
-            55 => voice.trigger_hat_or_cymbal(55, 1.18, true, false, 0.050, 0.650, 0.38, velocity, sr),
-            // Crash Cymbal 2 (57): ~1.2 s decay
-            57 => voice.trigger_hat_or_cymbal(57, 0.98, true, false, 0.095, 1.200, 0.64, velocity, sr),
-            // Ride Cymbal 2 (59)
-            59 => voice.trigger_hat_or_cymbal(59, 1.06, true, false, 0.060, 1.180, 0.66, velocity, sr),
+            55 => {
+                let c = &self.drum_params.cymbals;
+                let decay = (c.crash_decay_ms * 0.001 * 0.55).clamp(0.15, 2.0);
+                voice.trigger_hat_or_cymbal(55, c.matrix_spread * 1.18, true, false, 0.050, decay, c.cutoff_hz * 1.15, c.bell_peak_level, 0.38, velocity, sr);
+            }
+            // Crash Cymbal 2 (57):
+            57 => {
+                let c = &self.drum_params.cymbals;
+                let decay = (c.crash_decay_ms * 0.001 * 1.05).clamp(0.2, 4.0);
+                voice.trigger_hat_or_cymbal(57, c.matrix_spread * 0.98, true, false, 0.095, decay, c.cutoff_hz, c.bell_peak_level, 0.64, velocity, sr);
+            }
+            // Ride Cymbal 2 (59):
+            59 => {
+                let c = &self.drum_params.cymbals;
+                let decay = (c.ride_decay_ms * 0.001 * 0.95).clamp(0.2, 4.0);
+                voice.trigger_hat_or_cymbal(59, c.matrix_spread * 1.06, true, false, 0.060, decay, c.cutoff_hz, c.bell_peak_level, 0.66, velocity, sr);
+            }
 
-            // Cowbell (56): 540 Hz & 800 Hz metallic pair
-            56 => voice.trigger_snare_or_clap(
-                56, 540.0, 800.0, 0.085, 0.015, 2_000.0, 2.0, 0.92, 0.12, false, 0.58, velocity, sr,
-            ),
+            // Cowbell & Aux (56):
+            56 => {
+                let a = &self.drum_params.aux;
+                let f1 = (a.freq1_hz + a.detune).clamp(100.0, 3000.0);
+                let f2 = (a.freq2_hz - a.detune).clamp(150.0, 3500.0);
+                let decay = (a.decay_ms * 0.001).clamp(0.015, 0.80);
+                voice.trigger_snare_or_clap(
+                    56, f1, f2, decay, decay * 0.20, 2000.0, a.bandpass_q, 0.92, 0.08, false, 12.0, 0.58, velocity, sr,
+                );
+            }
             // Tambourine (54) / Shaker (70) / Maracas (70)
             54 | 69 | 70 => {
-                voice.trigger_hat_or_cymbal(gm_drum_note, 1.25, false, false, 0.025, 0.095, 0.60, velocity, sr)
+                voice.trigger_hat_or_cymbal(gm_drum_note, 1.25, false, false, 0.025, 0.095, 7500.0, 0.0, 0.60, velocity, sr)
             }
             // Fallback for other GM Latin/aux percussion notes (congas, bongos, woodblocks)
             other => {

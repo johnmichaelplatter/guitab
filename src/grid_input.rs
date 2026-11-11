@@ -354,6 +354,8 @@ pub struct GridLivePlayState {
     pub active_notes: HashMap<(usize, u8), (usize, midly::num::u4, midly::num::u7)>,
     /// Track currently sounding synth strings: (slot_idx, pad_note) -> string_num
     pub active_synth_strings: HashMap<(usize, u8), u8>,
+    /// Stack of currently held notes per string for voice stealing: string (1-based) -> Vec<(slot_idx, pad_note, freq_hz, velocity)>
+    pub string_held_notes: HashMap<u8, Vec<(usize, u8, f64, f32)>>,
     pub connections: Option<Arc<Mutex<Vec<crate::midi::CachedMidiConnection>>>>,
     pub synth_sender: Option<crate::synth::SynthSender>,
 }
@@ -434,16 +436,20 @@ impl GridLivePlayState {
 
                 if let (Some(freq_table), Some(part)) = (&self.freq_table, &self.part_copy) {
                     if let Some(hz) = freq_table.string_fret_to_frequency_hz(part, string_num, fret) {
+                        let vel_f32 = (velocity as f32 / 127.0).clamp(0.05, 1.0);
                         if let Some(tx) = &self.synth_sender {
                             tx.send(crate::synth::SynthCommand::TriggerString {
                                 string_idx: string_num,
                                 freq_hz: hz,
-                                velocity: (velocity as f32 / 127.0).clamp(0.05, 1.0),
+                                velocity: vel_f32,
                                 pluck_pos: 0.18,
                                 palm_mute: 0.0,
                                 harmonic_node: None,
                             });
                             self.active_synth_strings.insert((slot_idx, note), string_num);
+                            let stack = self.string_held_notes.entry(string_num).or_default();
+                            stack.retain(|(s, n, _, _)| !(*s == slot_idx && *n == note));
+                            stack.push((slot_idx, note, hz, vel_f32));
                         }
                     }
 
@@ -479,11 +485,44 @@ impl GridLivePlayState {
         } else if is_note_off {
             let mut handled = false;
             if let Some(string_num) = self.active_synth_strings.remove(&(slot_idx, note)) {
+                let mut should_mute = true;
+                let mut fallback_note = None;
+
+                if let Some(stack) = self.string_held_notes.get_mut(&string_num) {
+                    let was_top = stack.last().map(|(s, n, _, _)| *s == slot_idx && *n == note).unwrap_or(false);
+                    stack.retain(|(s, n, _, _)| !(*s == slot_idx && *n == note));
+
+                    if stack.is_empty() {
+                        should_mute = true;
+                    } else if was_top {
+                        // Sounding note released, but another note on this string is still held!
+                        // Fallback to the previous held note (voice stealing release / pull-off)
+                        should_mute = false;
+                        let (_, _, prev_hz, prev_vel) = *stack.last().unwrap();
+                        fallback_note = Some((prev_hz, prev_vel));
+                    } else {
+                        // An underlying note was released while a newer note is still held and sounding.
+                        // Do NOT mute or retrigger the sounding note!
+                        should_mute = false;
+                    }
+                }
+
                 if let Some(tx) = &self.synth_sender {
-                    tx.send(crate::synth::SynthCommand::MuteString {
-                        string_idx: string_num,
-                        release_rate: 0.995,
-                    });
+                    if should_mute {
+                        tx.send(crate::synth::SynthCommand::MuteString {
+                            string_idx: string_num,
+                            release_rate: 0.995,
+                        });
+                    } else if let Some((hz, vel)) = fallback_note {
+                        tx.send(crate::synth::SynthCommand::TriggerString {
+                            string_idx: string_num,
+                            freq_hz: hz,
+                            velocity: vel * 0.9,
+                            pluck_pos: 0.18,
+                            palm_mute: 0.0,
+                            harmonic_node: None,
+                        });
+                    }
                     handled = true;
                 }
             }
@@ -502,6 +541,7 @@ impl GridLivePlayState {
             tx.all_notes_off();
         }
         self.active_synth_strings.clear();
+        self.string_held_notes.clear();
         let active = std::mem::take(&mut self.active_notes);
         for (_, (port_idx, ch, key)) in active {
             self.send_raw_note_off(port_idx, ch, key);
@@ -510,15 +550,28 @@ impl GridLivePlayState {
 
     pub fn silence_slot_notes(&mut self, slot_idx: usize) {
         if let Some(tx) = &self.synth_sender {
-            for ((s, _), &string_num) in &self.active_synth_strings {
-                if *s == slot_idx {
+            for (string_num, stack) in &mut self.string_held_notes {
+                let had_notes = !stack.is_empty();
+                stack.retain(|(s, _, _, _)| *s != slot_idx);
+                if had_notes && stack.is_empty() {
                     tx.send(crate::synth::SynthCommand::MuteString {
-                        string_idx: string_num,
+                        string_idx: *string_num,
                         release_rate: 0.995,
+                    });
+                } else if !stack.is_empty() {
+                    let (_, _, prev_hz, prev_vel) = *stack.last().unwrap();
+                    tx.send(crate::synth::SynthCommand::TriggerString {
+                        string_idx: *string_num,
+                        freq_hz: prev_hz,
+                        velocity: prev_vel * 0.9,
+                        pluck_pos: 0.18,
+                        palm_mute: 0.0,
+                        harmonic_node: None,
                     });
                 }
             }
         }
+        self.string_held_notes.retain(|_, stack| !stack.is_empty());
         self.active_synth_strings.retain(|(s, _), _| *s != slot_idx);
         let to_silence: Vec<((usize, u8), (usize, midly::num::u4, midly::num::u7))> = self
             .active_notes
@@ -1538,5 +1591,112 @@ mod tests {
         // Silencing clears any remaining active notes
         state.silence_all_held_notes();
         assert!(state.active_notes.is_empty());
+    }
+
+    #[test]
+    fn test_grid_controller_voice_stealing_per_string() {
+        use crate::synth::{SynthCommand, SynthEngine};
+        let (engine, mut mixer) = SynthEngine::new_headless(48_000.0, 2);
+
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        let mut app = crate::gui::MnxEditorApp::default();
+        app.start_new_tab(6, 12, 1, tunings);
+        let doc = app.parsed_mnx.clone().unwrap();
+        let part = doc.parts[0].clone();
+        let freq_table = crate::tuning_table::FretboardFrequencyTable::from_doc_part(&doc, &part);
+
+        let mut state = GridLivePlayState::default();
+        state.just_play_mode = true;
+        state.num_strings = 6;
+        state.freq_table = Some(freq_table);
+        state.part_copy = Some(part);
+        state.synth_sender = Some(engine.sender());
+        state.slots[0].enabled = true;
+        state.slots[0].is_calibrated = true;
+        state.slots[0].calibration = GridCalibration::new_corners(76, 36, 83, 43); // String 1 Col 0..7 = 76..83
+
+        let pad_col5 = 81; // Fret 5 (A4 ~440Hz)
+        let pad_col7 = 83; // Fret 7 (B4 ~493.88Hz)
+
+        // 1. Press String 1 Col 5 (Pad 81)
+        assert!(state.handle_midi_event(0, 0x90, pad_col5, 100));
+        let cmd1 = mixer.pop_command().expect("Expected TriggerString for Col 5");
+        match cmd1 {
+            SynthCommand::TriggerString { string_idx, freq_hz, .. } => {
+                assert_eq!(string_idx, 1);
+                assert!((freq_hz - 440.0).abs() < 1.0);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // 2. Press String 1 Col 7 (Pad 83) while Col 5 is still held!
+        assert!(state.handle_midi_event(0, 0x90, pad_col7, 100));
+        let cmd2 = mixer.pop_command().expect("Expected TriggerString for Col 7");
+        match cmd2 {
+            SynthCommand::TriggerString { string_idx, freq_hz, .. } => {
+                assert_eq!(string_idx, 1);
+                assert!((freq_hz - 493.88).abs() < 1.0);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // 3. Release String 1 Col 5 (Pad 81) while Col 7 is STILL SOUNDING!
+        assert!(state.handle_midi_event(0, 0x80, pad_col5, 0));
+        // MUST NOT send MuteString! Col 7 is still active on String 1!
+        assert!(
+            mixer.pop_command().is_none(),
+            "Releasing older held fret 5 must NOT mute string 1 while fret 7 is sounding!"
+        );
+
+        // 4. Release String 1 Col 7 (Pad 83)
+        assert!(state.handle_midi_event(0, 0x80, pad_col7, 0));
+        let cmd3 = mixer.pop_command().expect("Expected MuteString after all pads on string 1 released");
+        match cmd3 {
+            SynthCommand::MuteString { string_idx, .. } => {
+                assert_eq!(string_idx, 1);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // 5. Test Fallback (Pull-off):
+        // Press Col 5, press Col 7, then release Col 7 FIRST.
+        // It must fallback and re-trigger Col 5!
+        assert!(state.handle_midi_event(0, 0x90, pad_col5, 100));
+        let _ = mixer.pop_command();
+        assert!(state.handle_midi_event(0, 0x90, pad_col7, 100));
+        let _ = mixer.pop_command();
+
+        // Release Col 7:
+        assert!(state.handle_midi_event(0, 0x80, pad_col7, 0));
+        let cmd_fallback = mixer.pop_command().expect("Expected fallback TriggerString for Col 5");
+        match cmd_fallback {
+            SynthCommand::TriggerString { string_idx, freq_hz, .. } => {
+                assert_eq!(string_idx, 1);
+                assert!((freq_hz - 440.0).abs() < 1.0);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
+
+        // Now release Col 5:
+        assert!(state.handle_midi_event(0, 0x80, pad_col5, 0));
+        let cmd_mute = mixer.pop_command().expect("Expected MuteString after Col 5 finally released");
+        match cmd_mute {
+            SynthCommand::MuteString { string_idx, .. } => {
+                assert_eq!(string_idx, 1);
+            }
+            other => panic!("Unexpected command: {:?}", other),
+        }
+        assert!(mixer.pop_command().is_none());
     }
 }

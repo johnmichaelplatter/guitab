@@ -7,6 +7,16 @@ use crate::synth::body::InstrumentProfile;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Active synthesis algorithm for pitched tracks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PitchedEngine {
+    /// Extended Karplus-Strong physical string waveguide + acoustic/pickup body resonator.
+    #[default]
+    PhysicalString,
+    /// 2-operator frequency modulation synthesizer for melodic backing and keyboard sounds.
+    FmSynth,
+}
+
 /// Extended Karplus-Strong physical string waveguide parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StringSynthParams {
@@ -128,7 +138,14 @@ impl Default for BodyResonatorParams {
 pub enum DrumRole {
     Kick,
     Snare,
-    HiHatAndCymbal,
+    Toms,
+    HiHats,
+    Cymbals,
+    PercAux,
+}
+
+fn default_kick_body_decay() -> f32 {
+    240.0
 }
 
 /// Kick drum voice parameters.
@@ -142,6 +159,9 @@ pub struct KickParams {
     pub pitch_decay_ms: f32,
     /// High-frequency beater attack click transient level (0.0..=1.0).
     pub click_level: f32,
+    /// Main drum shell body resonant decay duration in milliseconds (50.0..=600.0 ms).
+    #[serde(default = "default_kick_body_decay")]
+    pub body_decay_ms: f32,
 }
 
 impl Default for KickParams {
@@ -151,51 +171,162 @@ impl Default for KickParams {
             pitch_end_hz: 48.0,
             pitch_decay_ms: 25.0,
             click_level: 0.65,
+            body_decay_ms: 240.0,
         }
     }
 }
 
-/// Snare drum voice parameters.
+fn default_snare_mode2() -> f32 {
+    330.0
+}
+fn default_snare_tone_decay() -> f32 {
+    55.0
+}
+fn default_snare_wire_cutoff() -> f32 {
+    2400.0
+}
+fn default_snare_clap_spacing() -> f32 {
+    12.0
+}
+
+/// Snare drum, rimshot, and hand clap voice parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SnareParams {
     /// Fundamental shell body tone frequency in Hz (120.0..=350.0).
     pub tone_freq_hz: f32,
+    /// Second resonant drumhead mode frequency in Hz (200.0..=600.0).
+    #[serde(default = "default_snare_mode2")]
+    pub mode2_freq_hz: f32,
+    /// Shell body tone resonance decay duration in milliseconds (20.0..=200.0 ms).
+    #[serde(default = "default_snare_tone_decay")]
+    pub tone_decay_ms: f32,
+    /// Snare wire noise bandpass center frequency in Hz (1000.0..=5000.0).
+    #[serde(default = "default_snare_wire_cutoff")]
+    pub wire_cutoff_hz: f32,
     /// Snare wire noise decay duration in milliseconds (50.0..=400.0 ms).
     pub noise_decay_ms: f32,
     /// Mix ratio between filtered noise wires and resonant sine body (0.0..=1.0).
     pub noise_mix: f32,
+    /// Burst repetition spacing for multi-clap transient in milliseconds (5.0..=30.0 ms).
+    #[serde(default = "default_snare_clap_spacing")]
+    pub clap_spacing_ms: f32,
 }
 
 impl Default for SnareParams {
     fn default() -> Self {
         Self {
             tone_freq_hz: 185.0,
+            mode2_freq_hz: 330.0,
+            tone_decay_ms: 55.0,
+            wire_cutoff_hz: 2400.0,
             noise_decay_ms: 180.0,
             noise_mix: 0.55,
+            clap_spacing_ms: 12.0,
         }
     }
 }
 
-/// Metallic hi-hat and cymbal parameters.
+/// Tuned tom-tom voice parameters across all 6 General MIDI toms.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CymbalParams {
+pub struct TomParams {
+    /// Global pitch scaling multiplier across all 6 toms (0.5..=2.0).
+    pub pitch_scale: f32,
+    /// Exponential pitch drop sweep ratio $f_{start} / f_{end}$ (1.2..=3.0).
+    pub pitch_drop_ratio: f32,
+    /// Tomhead resonant decay duration in milliseconds (50.0..=800.0 ms).
+    pub decay_ms: f32,
+    /// Stick beater attack level (0.0..=1.0).
+    pub stick_attack: f32,
+}
+
+impl Default for TomParams {
+    fn default() -> Self {
+        Self {
+            pitch_scale: 1.0,
+            pitch_drop_ratio: 1.85,
+            decay_ms: 240.0,
+            stick_attack: 0.60,
+        }
+    }
+}
+
+/// Metallic hi-hat parameters for closed, pedal, and open modes.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HiHatParams {
     /// Frequency spread multiplier on the 6 non-harmonic TR-808 metallic oscillators (0.5..=2.0).
     pub spread: f32,
-    /// Highpass filter cutoff frequency in Hz (3000.0..=10000.0).
+    /// Highpass filter cutoff frequency in Hz (3000.0..=12000.0).
     pub highpass_cutoff_hz: f32,
-    /// Closed hi-hat decay time in milliseconds (20.0..=120.0 ms).
+    /// Closed hi-hat decay time in milliseconds (15.0..=150.0 ms).
     pub closed_decay_ms: f32,
-    /// Open hi-hat and crash/ride decay time in milliseconds (200.0..=1500.0 ms).
+    /// Pedal hi-hat decay time in milliseconds (20.0..=200.0 ms).
+    pub pedal_decay_ms: f32,
+    /// Open hi-hat decay time in milliseconds (100.0..=2000.0 ms).
     pub open_decay_ms: f32,
 }
 
-impl Default for CymbalParams {
+impl Default for HiHatParams {
     fn default() -> Self {
         Self {
             spread: 1.0,
             highpass_cutoff_hz: 7000.0,
             closed_decay_ms: 45.0,
+            pedal_decay_ms: 60.0,
             open_decay_ms: 650.0,
+        }
+    }
+}
+
+/// Metallic crash and ride cymbal parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CymbalParams {
+    /// Frequency spread multiplier on the metallic oscillator matrix (0.5..=2.0).
+    pub matrix_spread: f32,
+    /// Bandpass/highpass filter cutoff frequency in Hz (2000.0..=8000.0).
+    pub cutoff_hz: f32,
+    /// Ride bell harmonic presence peak level (0.0..=1.0).
+    pub bell_peak_level: f32,
+    /// Crash cymbal decay time in milliseconds (300.0..=3000.0 ms).
+    pub crash_decay_ms: f32,
+    /// Ride cymbal decay time in milliseconds (400.0..=3500.0 ms).
+    pub ride_decay_ms: f32,
+}
+
+impl Default for CymbalParams {
+    fn default() -> Self {
+        Self {
+            matrix_spread: 1.0,
+            cutoff_hz: 3500.0,
+            bell_peak_level: 0.50,
+            crash_decay_ms: 1200.0,
+            ride_decay_ms: 1300.0,
+        }
+    }
+}
+
+/// Tuned metallic auxiliary percussion parameters (Cowbell, Agogo, etc.).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PercAuxParams {
+    /// Fundamental modal frequency 1 in Hz (300.0..=1000.0).
+    pub freq1_hz: f32,
+    /// Second modal frequency 2 in Hz (400.0..=1400.0).
+    pub freq2_hz: f32,
+    /// Detune offset in Hz (-50.0..=50.0).
+    pub detune: f32,
+    /// Resonant bandpass filter Q factor (0.5..=10.0).
+    pub bandpass_q: f32,
+    /// Resonant metallic ring decay in milliseconds (20.0..=500.0 ms).
+    pub decay_ms: f32,
+}
+
+impl Default for PercAuxParams {
+    fn default() -> Self {
+        Self {
+            freq1_hz: 540.0,
+            freq2_hz: 800.0,
+            detune: 0.0,
+            bandpass_q: 2.0,
+            decay_ms: 85.0,
         }
     }
 }
@@ -203,9 +334,18 @@ impl Default for CymbalParams {
 /// Complete procedural drum kit parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct DrumKitParams {
+    #[serde(default)]
     pub kick: KickParams,
+    #[serde(default)]
     pub snare: SnareParams,
-    pub hats_cymbals: CymbalParams,
+    #[serde(default)]
+    pub toms: TomParams,
+    #[serde(default)]
+    pub hi_hats: HiHatParams,
+    #[serde(default)]
+    pub cymbals: CymbalParams,
+    #[serde(default)]
+    pub aux: PercAuxParams,
 }
 
 /// Lightweight `Copy` parameter payload for updating a specific drum role.
@@ -213,7 +353,10 @@ pub struct DrumKitParams {
 pub enum DrumVoiceParams {
     Kick(KickParams),
     Snare(SnareParams),
-    HiHatAndCymbal(CymbalParams),
+    Toms(TomParams),
+    HiHats(HiHatParams),
+    Cymbals(CymbalParams),
+    PercAux(PercAuxParams),
 }
 
 impl DrumVoiceParams {
@@ -221,7 +364,10 @@ impl DrumVoiceParams {
         match self {
             DrumVoiceParams::Kick(_) => DrumRole::Kick,
             DrumVoiceParams::Snare(_) => DrumRole::Snare,
-            DrumVoiceParams::HiHatAndCymbal(_) => DrumRole::HiHatAndCymbal,
+            DrumVoiceParams::Toms(_) => DrumRole::Toms,
+            DrumVoiceParams::HiHats(_) => DrumRole::HiHats,
+            DrumVoiceParams::Cymbals(_) => DrumRole::Cymbals,
+            DrumVoiceParams::PercAux(_) => DrumRole::PercAux,
         }
     }
 }
@@ -292,6 +438,8 @@ impl Default for FmVoiceParams {
 pub struct SynthPreset {
     pub name: String,
     pub author: String,
+    #[serde(default)]
+    pub engine: PitchedEngine,
     pub string_params: StringSynthParams,
     pub body_params: BodyResonatorParams,
     pub drum_params: DrumKitParams,
@@ -310,6 +458,7 @@ impl SynthPreset {
         Self {
             name: "Acoustic Dreadnought".to_string(),
             author: "guitab".to_string(),
+            engine: PitchedEngine::PhysicalString,
             string_params: StringSynthParams {
                 pluck_pos: 0.18,
                 pick_hardness: 8_500.0,
@@ -362,6 +511,7 @@ impl SynthPreset {
         Self {
             name: "Tele Clean".to_string(),
             author: "guitab".to_string(),
+            engine: PitchedEngine::PhysicalString,
             string_params: StringSynthParams {
                 pluck_pos: 0.14,
                 pick_hardness: 11_000.0,
@@ -414,6 +564,7 @@ impl SynthPreset {
         Self {
             name: "Heavy Lead".to_string(),
             author: "guitab".to_string(),
+            engine: PitchedEngine::PhysicalString,
             string_params: StringSynthParams {
                 pluck_pos: 0.12,
                 pick_hardness: 12_500.0,
@@ -466,6 +617,7 @@ impl SynthPreset {
         Self {
             name: "Upright Bass".to_string(),
             author: "guitab".to_string(),
+            engine: PitchedEngine::PhysicalString,
             string_params: StringSynthParams {
                 pluck_pos: 0.28,
                 pick_hardness: 4_200.0,
@@ -518,6 +670,7 @@ impl SynthPreset {
         Self {
             name: "Linn-808 Kit".to_string(),
             author: "guitab".to_string(),
+            engine: PitchedEngine::PhysicalString,
             string_params: StringSynthParams::default(),
             body_params: BodyResonatorParams::default(),
             drum_params: DrumKitParams {
@@ -526,18 +679,27 @@ impl SynthPreset {
                     pitch_end_hz: 45.0,
                     pitch_decay_ms: 32.0,
                     click_level: 0.75,
+                    body_decay_ms: 260.0,
                 },
                 snare: SnareParams {
                     tone_freq_hz: 210.0,
+                    mode2_freq_hz: 340.0,
+                    tone_decay_ms: 60.0,
+                    wire_cutoff_hz: 2600.0,
                     noise_decay_ms: 220.0,
                     noise_mix: 0.65,
+                    clap_spacing_ms: 12.0,
                 },
-                hats_cymbals: CymbalParams {
+                toms: TomParams::default(),
+                hi_hats: HiHatParams {
                     spread: 1.05,
                     highpass_cutoff_hz: 7500.0,
                     closed_decay_ms: 40.0,
+                    pedal_decay_ms: 55.0,
                     open_decay_ms: 750.0,
                 },
+                cymbals: CymbalParams::default(),
+                aux: PercAuxParams::default(),
             },
             fm_params: FmVoiceParams::default(),
         }
@@ -548,6 +710,7 @@ impl SynthPreset {
         Self {
             name: "FM DX Electric Piano".to_string(),
             author: "guitab".to_string(),
+            engine: PitchedEngine::FmSynth,
             string_params: StringSynthParams::default(),
             body_params: BodyResonatorParams::default(),
             drum_params: DrumKitParams::default(),
@@ -576,6 +739,7 @@ impl SynthPreset {
         Self {
             name: "Analog Brass".to_string(),
             author: "guitab".to_string(),
+            engine: PitchedEngine::FmSynth,
             string_params: StringSynthParams::default(),
             body_params: BodyResonatorParams::default(),
             drum_params: DrumKitParams::default(),
@@ -618,6 +782,7 @@ impl SynthPreset {
         out.push_str("{\n");
         out.push_str(&format!("  \"name\": \"{}\",\n", self.name));
         out.push_str(&format!("  \"author\": \"{}\",\n", self.author));
+        out.push_str(&format!("  \"engine\": \"{:?}\",\n", self.engine));
 
         // String params
         out.push_str("  \"string_params\": {\n");
@@ -654,18 +819,44 @@ impl SynthPreset {
         out.push_str(&format!("      \"pitch_start_hz\": {:.1},\n", self.drum_params.kick.pitch_start_hz));
         out.push_str(&format!("      \"pitch_end_hz\": {:.1},\n", self.drum_params.kick.pitch_end_hz));
         out.push_str(&format!("      \"pitch_decay_ms\": {:.1},\n", self.drum_params.kick.pitch_decay_ms));
-        out.push_str(&format!("      \"click_level\": {:.4}\n", self.drum_params.kick.click_level));
+        out.push_str(&format!("      \"click_level\": {:.4},\n", self.drum_params.kick.click_level));
+        out.push_str(&format!("      \"body_decay_ms\": {:.1}\n", self.drum_params.kick.body_decay_ms));
         out.push_str("    },\n");
         out.push_str("    \"snare\": {\n");
         out.push_str(&format!("      \"tone_freq_hz\": {:.1},\n", self.drum_params.snare.tone_freq_hz));
+        out.push_str(&format!("      \"mode2_freq_hz\": {:.1},\n", self.drum_params.snare.mode2_freq_hz));
+        out.push_str(&format!("      \"tone_decay_ms\": {:.1},\n", self.drum_params.snare.tone_decay_ms));
+        out.push_str(&format!("      \"wire_cutoff_hz\": {:.1},\n", self.drum_params.snare.wire_cutoff_hz));
         out.push_str(&format!("      \"noise_decay_ms\": {:.1},\n", self.drum_params.snare.noise_decay_ms));
-        out.push_str(&format!("      \"noise_mix\": {:.4}\n", self.drum_params.snare.noise_mix));
+        out.push_str(&format!("      \"noise_mix\": {:.4},\n", self.drum_params.snare.noise_mix));
+        out.push_str(&format!("      \"clap_spacing_ms\": {:.1}\n", self.drum_params.snare.clap_spacing_ms));
         out.push_str("    },\n");
-        out.push_str("    \"hats_cymbals\": {\n");
-        out.push_str(&format!("      \"spread\": {:.4},\n", self.drum_params.hats_cymbals.spread));
-        out.push_str(&format!("      \"highpass_cutoff_hz\": {:.1},\n", self.drum_params.hats_cymbals.highpass_cutoff_hz));
-        out.push_str(&format!("      \"closed_decay_ms\": {:.1},\n", self.drum_params.hats_cymbals.closed_decay_ms));
-        out.push_str(&format!("      \"open_decay_ms\": {:.1}\n", self.drum_params.hats_cymbals.open_decay_ms));
+        out.push_str("    \"toms\": {\n");
+        out.push_str(&format!("      \"pitch_scale\": {:.4},\n", self.drum_params.toms.pitch_scale));
+        out.push_str(&format!("      \"pitch_drop_ratio\": {:.4},\n", self.drum_params.toms.pitch_drop_ratio));
+        out.push_str(&format!("      \"decay_ms\": {:.1},\n", self.drum_params.toms.decay_ms));
+        out.push_str(&format!("      \"stick_attack\": {:.4}\n", self.drum_params.toms.stick_attack));
+        out.push_str("    },\n");
+        out.push_str("    \"hi_hats\": {\n");
+        out.push_str(&format!("      \"spread\": {:.4},\n", self.drum_params.hi_hats.spread));
+        out.push_str(&format!("      \"highpass_cutoff_hz\": {:.1},\n", self.drum_params.hi_hats.highpass_cutoff_hz));
+        out.push_str(&format!("      \"closed_decay_ms\": {:.1},\n", self.drum_params.hi_hats.closed_decay_ms));
+        out.push_str(&format!("      \"pedal_decay_ms\": {:.1},\n", self.drum_params.hi_hats.pedal_decay_ms));
+        out.push_str(&format!("      \"open_decay_ms\": {:.1}\n", self.drum_params.hi_hats.open_decay_ms));
+        out.push_str("    },\n");
+        out.push_str("    \"cymbals\": {\n");
+        out.push_str(&format!("      \"matrix_spread\": {:.4},\n", self.drum_params.cymbals.matrix_spread));
+        out.push_str(&format!("      \"cutoff_hz\": {:.1},\n", self.drum_params.cymbals.cutoff_hz));
+        out.push_str(&format!("      \"bell_peak_level\": {:.4},\n", self.drum_params.cymbals.bell_peak_level));
+        out.push_str(&format!("      \"crash_decay_ms\": {:.1},\n", self.drum_params.cymbals.crash_decay_ms));
+        out.push_str(&format!("      \"ride_decay_ms\": {:.1}\n", self.drum_params.cymbals.ride_decay_ms));
+        out.push_str("    },\n");
+        out.push_str("    \"aux\": {\n");
+        out.push_str(&format!("      \"freq1_hz\": {:.1},\n", self.drum_params.aux.freq1_hz));
+        out.push_str(&format!("      \"freq2_hz\": {:.1},\n", self.drum_params.aux.freq2_hz));
+        out.push_str(&format!("      \"detune\": {:.1},\n", self.drum_params.aux.detune));
+        out.push_str(&format!("      \"bandpass_q\": {:.4},\n", self.drum_params.aux.bandpass_q));
+        out.push_str(&format!("      \"decay_ms\": {:.1}\n", self.drum_params.aux.decay_ms));
         out.push_str("    }\n");
         out.push_str("  },\n");
 
@@ -691,6 +882,10 @@ impl SynthPreset {
 
         Ok(out)
     }
+
+
+
+
 
     /// Deserializes a preset from a JSON (or YAML) string.
     pub fn from_json_string(s: &str) -> Result<Self, String> {
@@ -725,9 +920,16 @@ mod tests {
             let deserialized = SynthPreset::from_json_string(&json).expect("JSON deserialization failed");
             assert_eq!(p.name, deserialized.name);
             assert_eq!(p.author, deserialized.author);
+            assert_eq!(p.engine, deserialized.engine);
             assert_eq!(p.body_params.profile_base, deserialized.body_params.profile_base);
             assert!((p.string_params.pluck_pos - deserialized.string_params.pluck_pos).abs() < 1e-3);
             assert!((p.drum_params.kick.pitch_start_hz - deserialized.drum_params.kick.pitch_start_hz).abs() < 1e-3);
+            assert!((p.drum_params.kick.body_decay_ms - deserialized.drum_params.kick.body_decay_ms).abs() < 1e-3);
+            assert!((p.drum_params.snare.mode2_freq_hz - deserialized.drum_params.snare.mode2_freq_hz).abs() < 1e-3);
+            assert!((p.drum_params.toms.pitch_drop_ratio - deserialized.drum_params.toms.pitch_drop_ratio).abs() < 1e-3);
+            assert!((p.drum_params.hi_hats.spread - deserialized.drum_params.hi_hats.spread).abs() < 1e-3);
+            assert!((p.drum_params.cymbals.cutoff_hz - deserialized.drum_params.cymbals.cutoff_hz).abs() < 1e-3);
+            assert!((p.drum_params.aux.freq1_hz - deserialized.drum_params.aux.freq1_hz).abs() < 1e-3);
             assert!((p.fm_params.mod_ratio - deserialized.fm_params.mod_ratio).abs() < 1e-3);
         }
     }
@@ -788,9 +990,105 @@ mod tests {
                 pitch_end_hz: 35.0,
                 pitch_decay_ms: 45.0,
                 click_level: 0.9,
+                body_decay_ms: 220.0,
             }),
         }));
         assert!(engine.send(SynthCommand::UpdateGmVoiceParams(FmVoiceParams::default())));
+        mixer.process_f32(&mut buf, 2);
+        assert!(buf.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn test_pitched_engine_switching_and_all_drum_roles() {
+        use crate::synth::{SynthCommand, SynthEngine};
+
+        let (mut engine, mut mixer) = SynthEngine::new_headless(48_000.0, 2);
+        let mut buf = [0.0_f32; 256];
+
+        // 1. Pitched engine switching
+        assert!(engine.send(SynthCommand::SetPitchedEngine(PitchedEngine::PhysicalString)));
+        assert!(engine.send(SynthCommand::TriggerString {
+            string_idx: 1,
+            freq_hz: 110.0,
+            velocity: 0.8,
+            pluck_pos: 0.2,
+            palm_mute: 0.0,
+            harmonic_node: None,
+        }));
+        mixer.process_f32(&mut buf, 2);
+        assert!(buf.iter().all(|s| s.is_finite()));
+
+        assert!(engine.send(SynthCommand::SetPitchedEngine(PitchedEngine::FmSynth)));
+        assert!(engine.send(SynthCommand::TriggerString {
+            string_idx: 1,
+            freq_hz: 220.0,
+            velocity: 0.8,
+            pluck_pos: 0.2,
+            palm_mute: 0.0,
+            harmonic_node: None,
+        }));
+        mixer.process_f32(&mut buf, 2);
+        assert!(buf.iter().all(|s| s.is_finite()));
+
+        // 2. Part engine assignments
+        assert!(engine.send(SynthCommand::SetPartEngine {
+            part_idx: 0,
+            engine: PitchedEngine::PhysicalString,
+        }));
+        assert!(engine.send(SynthCommand::SetPartEngine {
+            part_idx: 1,
+            engine: PitchedEngine::FmSynth,
+        }));
+
+        // 3. Update all 6 drum voice parameter variants
+        assert!(engine.send(SynthCommand::UpdateDrumParams {
+            drum_role: DrumRole::Kick,
+            params: DrumVoiceParams::Kick(KickParams::default()),
+        }));
+        assert!(engine.send(SynthCommand::UpdateDrumParams {
+            drum_role: DrumRole::Snare,
+            params: DrumVoiceParams::Snare(SnareParams::default()),
+        }));
+        assert!(engine.send(SynthCommand::UpdateDrumParams {
+            drum_role: DrumRole::Toms,
+            params: DrumVoiceParams::Toms(TomParams::default()),
+        }));
+        assert!(engine.send(SynthCommand::UpdateDrumParams {
+            drum_role: DrumRole::HiHats,
+            params: DrumVoiceParams::HiHats(HiHatParams::default()),
+        }));
+        assert!(engine.send(SynthCommand::UpdateDrumParams {
+            drum_role: DrumRole::Cymbals,
+            params: DrumVoiceParams::Cymbals(CymbalParams::default()),
+        }));
+        assert!(engine.send(SynthCommand::UpdateDrumParams {
+            drum_role: DrumRole::PercAux,
+            params: DrumVoiceParams::PercAux(PercAuxParams::default()),
+        }));
+
+        // 4. Trigger each GM drum note (35 through 59)
+        for note in 35..=59 {
+            assert!(engine.send(SynthCommand::TriggerDrum {
+                gm_drum_note: note,
+                velocity: 0.75,
+            }));
+            mixer.process_f32(&mut buf, 2);
+            assert!(buf.iter().all(|s| s.is_finite()));
+        }
+
+        // 5. Scoped part parameter updates
+        assert!(engine.send(SynthCommand::UpdatePartStringParams {
+            part_idx: 0,
+            params: StringSynthParams::default(),
+        }));
+        assert!(engine.send(SynthCommand::UpdatePartBodyParams {
+            part_idx: 0,
+            params: BodyResonatorParams::default(),
+        }));
+        assert!(engine.send(SynthCommand::UpdatePartFmParams {
+            part_idx: 1,
+            params: FmVoiceParams::default(),
+        }));
         mixer.process_f32(&mut buf, 2);
         assert!(buf.iter().all(|s| s.is_finite()));
     }
