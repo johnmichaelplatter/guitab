@@ -292,7 +292,11 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                     );
                 });
                 ui.add_space(4.0);
-                render_drum_kit_tab(ui, app, &mut commands_to_send);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        render_drum_kit_tab(ui, app, &mut commands_to_send);
+                    });
             } else {
                 // Pitched Mode: Hide Drums & Cymbals, show exclusive algorithm tabs
                 ui.horizontal(|ui| {
@@ -1639,6 +1643,46 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                         ui.label("Click Beater Level:");
                         let r5 = ui.add(egui::Slider::new(&mut k.click_level, 0.0..=1.0));
                         if r5.changed() { k_changed = true; }
+                        if r5.double_clicked() { k.click_level = 0.65; k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Head Tension Mod (Pitch Bend):")
+                            .on_hover_text("Non-linear circular membrane tension pitch stretch on hard hits (30–80 ms)");
+                        let r6 = ui.add(egui::Slider::new(&mut k.head_tension_mod, 0.0..=1.0));
+                        if r6.changed() { k_changed = true; }
+                        if r6.double_clicked() { k.head_tension_mod = 0.55; k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Strike Position (Center vs Edge):")
+                            .on_hover_text("0.0 = dead-center punch (1.00, 2.29 modes), 1.0 = rim/edge ring (1.59, 2.13, 2.65 modes)");
+                        let r7 = ui.add(egui::Slider::new(&mut k.strike_position, 0.0..=1.0));
+                        if r7.changed() { k_changed = true; }
+                        if r7.double_clicked() { k.strike_position = 0.15; k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Overtones Ring (Bessel Decay):")
+                            .on_hover_text("Controls how long upper Bessel membrane modes ring relative to the (0,1) fundamental");
+                        let r8 = ui.add(egui::Slider::new(&mut k.overtones_ring, 0.0..=1.0));
+                        if r8.changed() { k_changed = true; }
+                        if r8.double_clicked() { k.overtones_ring = 0.30; k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Shell Wood Cavity:")
+                            .on_hover_text("Cylindrical wooden drum shell air-cavity mode & < 1.5 ms 2-tap micro-reflection body");
+                        let r9 = ui.add(egui::Slider::new(&mut k.shell_wood_cavity, 0.0..=1.0));
+                        if r9.changed() { k_changed = true; }
+                        if r9.double_clicked() { k.shell_wood_cavity = 0.50; k_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Hit Variation (Vel & Strike):")
+                            .on_hover_text("Logarithmic humanization of hit velocity & strike position (0.0 = exact/identical, 1.0 = heavy variation)");
+                        let r10 = ui.add(
+                            egui::Slider::new(&mut k.hit_variation, 0.0..=1.0)
+                                .logarithmic(true)
+                                .smallest_positive(0.005),
+                        );
+                        if r10.changed() { k_changed = true; }
+                        if r10.double_clicked() { k.hit_variation = 0.10; k_changed = true; }
                         ui.end_row();
                     });
 
@@ -1695,6 +1739,53 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                         ui.label("Clap Burst Spacing:");
                         let r7 = ui.add(egui::Slider::new(&mut s.clap_spacing_ms, 5.0..=30.0).suffix(" ms"));
                         if r7.changed() { s_changed = true; }
+                        if r7.double_clicked() { s.clap_spacing_ms = 12.0; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Head Tension Mod (Pitch Bend):")
+                            .on_hover_text("Non-linear circular membrane tension pitch stretch on hard snare hits");
+                        let r8 = ui.add(egui::Slider::new(&mut s.head_tension_mod, 0.0..=1.0));
+                        if r8.changed() { s_changed = true; }
+                        if r8.double_clicked() { s.head_tension_mod = 0.40; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Strike Position (Center vs Edge):")
+                            .on_hover_text("0.0 = dead-center punch (1.00, 2.29 modes), 1.0 = rim/edge overtone ring (1.59, 2.13, 2.65)");
+                        let r9 = ui.add(egui::Slider::new(&mut s.strike_position, 0.0..=1.0));
+                        if r9.changed() { s_changed = true; }
+                        if r9.double_clicked() { s.strike_position = 0.32; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Overtones Ring (Bessel Decay):")
+                            .on_hover_text("Higher Bessel drumhead overtone ring duration relative to the fundamental");
+                        let r10 = ui.add(egui::Slider::new(&mut s.overtones_ring, 0.0..=1.0));
+                        if r10.changed() { s_changed = true; }
+                        if r10.double_clicked() { s.overtones_ring = 0.45; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Shell Wood Cavity:")
+                            .on_hover_text("Wooden snare shell air-cavity mode & < 1.5 ms 2-tap micro-reflection body");
+                        let r11 = ui.add(egui::Slider::new(&mut s.shell_wood_cavity, 0.0..=1.0));
+                        if r11.changed() { s_changed = true; }
+                        if r11.double_clicked() { s.shell_wood_cavity = 0.52; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Snare Wire Tension / Buzz:")
+                            .on_hover_text("Non-linear membrane-coupled snare strainer threshold (0.0 = loose buzz, 1.0 = tight snap)");
+                        let r12 = ui.add(egui::Slider::new(&mut s.wire_tension, 0.0..=1.0));
+                        if r12.changed() { s_changed = true; }
+                        if r12.double_clicked() { s.wire_tension = 0.55; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Hit Variation (Vel & Strike):")
+                            .on_hover_text("Logarithmic humanization of hit velocity & strike position (0.0 = exact/identical, 1.0 = heavy variation)");
+                        let r13 = ui.add(
+                            egui::Slider::new(&mut s.hit_variation, 0.0..=1.0)
+                                .logarithmic(true)
+                                .smallest_positive(0.005),
+                        );
+                        if r13.changed() { s_changed = true; }
+                        if r13.double_clicked() { s.hit_variation = 0.10; s_changed = true; }
                         ui.end_row();
                     });
 
@@ -1736,6 +1827,46 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                         ui.label("Stick Attack Level:");
                         let r4 = ui.add(egui::Slider::new(&mut t.stick_attack, 0.0..=1.0));
                         if r4.changed() { t_changed = true; }
+                        if r4.double_clicked() { t.stick_attack = 0.60; t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Head Tension Mod (Pitch Bend):")
+                            .on_hover_text("Non-linear circular membrane tension pitch stretch on hard tom hits (30–80 ms)");
+                        let r5 = ui.add(egui::Slider::new(&mut t.head_tension_mod, 0.0..=1.0));
+                        if r5.changed() { t_changed = true; }
+                        if r5.double_clicked() { t.head_tension_mod = 0.50; t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Strike Position (Center vs Edge):")
+                            .on_hover_text("0.0 = dead-center punch (1.00, 2.29 modes), 1.0 = rim/edge overtone ring (1.59, 2.13, 2.65)");
+                        let r6 = ui.add(egui::Slider::new(&mut t.strike_position, 0.0..=1.0));
+                        if r6.changed() { t_changed = true; }
+                        if r6.double_clicked() { t.strike_position = 0.28; t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Overtones Ring (Bessel Decay):")
+                            .on_hover_text("Higher Bessel drumhead overtone ring duration relative to the fundamental");
+                        let r7 = ui.add(egui::Slider::new(&mut t.overtones_ring, 0.0..=1.0));
+                        if r7.changed() { t_changed = true; }
+                        if r7.double_clicked() { t.overtones_ring = 0.50; t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Shell Wood Cavity:")
+                            .on_hover_text("Wooden tom shell air-cavity mode & < 1.5 ms 2-tap micro-reflection body");
+                        let r8 = ui.add(egui::Slider::new(&mut t.shell_wood_cavity, 0.0..=1.0));
+                        if r8.changed() { t_changed = true; }
+                        if r8.double_clicked() { t.shell_wood_cavity = 0.58; t_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Hit Variation (Vel & Strike):")
+                            .on_hover_text("Logarithmic humanization of hit velocity & strike position (0.0 = exact/identical, 1.0 = heavy variation)");
+                        let r9 = ui.add(
+                            egui::Slider::new(&mut t.hit_variation, 0.0..=1.0)
+                                .logarithmic(true)
+                                .smallest_positive(0.005),
+                        );
+                        if r9.changed() { t_changed = true; }
+                        if r9.double_clicked() { t.hit_variation = 0.10; t_changed = true; }
                         ui.end_row();
                     });
 
@@ -1782,6 +1913,53 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                         ui.label("Open Hat Decay:");
                         let r5 = ui.add(egui::Slider::new(&mut h.open_decay_ms, 100.0..=2000.0).suffix(" ms"));
                         if r5.changed() { h_changed = true; }
+                        if r5.double_clicked() { h.open_decay_ms = 650.0; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Bronze Size / Pitch:")
+                            .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning (0.5 = large/dark, 2.0 = small/bright)");
+                        let r6 = ui.add(egui::Slider::new(&mut h.bronze_size_pitch, 0.5..=2.0));
+                        if r6.changed() { h_changed = true; }
+                        if r6.double_clicked() { h.bronze_size_pitch = 1.0; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Plate Dispersion (Stick Ping):")
+                            .on_hover_text("1st-order all-pass plate dispersion depth inside the 4-line Hadamard waveguide mesh");
+                        let r7 = ui.add(egui::Slider::new(&mut h.plate_dispersion, 0.0..=1.0));
+                        if r7.changed() { h_changed = true; }
+                        if r7.double_clicked() { h.plate_dispersion = 0.48; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Non-Linear Shimmer Bloom:")
+                            .on_hover_text("Signal-modulated all-pass dispersion energy cascade into 4–15 kHz bronze shimmer");
+                        let r8 = ui.add(egui::Slider::new(&mut h.nonlin_shimmer, 0.0..=1.0));
+                        if r8.changed() { h_changed = true; }
+                        if r8.double_clicked() { h.nonlin_shimmer = 0.42; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Bell Level:")
+                            .on_hover_text("High-Q cast-bronze bell / cup modal resonance emphasis");
+                        let r9 = ui.add(egui::Slider::new(&mut h.bell_level, 0.0..=1.0));
+                        if r9.changed() { h_changed = true; }
+                        if r9.double_clicked() { h.bell_level = 0.35; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Stick Hardness:")
+                            .on_hover_text("Stick tip lowpass brightness (soft wood tip vs. bright nylon tip)");
+                        let r10 = ui.add(egui::Slider::new(&mut h.stick_hardness, 0.0..=1.0));
+                        if r10.changed() { h_changed = true; }
+                        if r10.double_clicked() { h.stick_hardness = 0.68; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Hit Variation (Vel & Strike):")
+                            .on_hover_text("Logarithmic humanization of hit velocity & stick strike character (0.0 = exact/identical, 1.0 = heavy variation)");
+                        let r11 = ui.add(
+                            egui::Slider::new(&mut h.hit_variation, 0.0..=1.0)
+                                .logarithmic(true)
+                                .smallest_positive(0.005),
+                        );
+                        if r11.changed() { h_changed = true; }
+                        if r11.double_clicked() { h.hit_variation = 0.10; h_changed = true; }
                         ui.end_row();
                     });
 
@@ -1815,19 +1993,62 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                         if r2.changed() { c_changed = true; }
                         ui.end_row();
 
-                        ui.label("Ride Bell Peak Level:");
+                        ui.label("Bell Level:")
+                            .on_hover_text("High-Q cast-bronze bell / cup modal resonance emphasis (accentuated on Ride Bell Note 53)");
                         let r3 = ui.add(egui::Slider::new(&mut c.bell_peak_level, 0.0..=1.0));
                         if r3.changed() { c_changed = true; }
+                        if r3.double_clicked() { c.bell_peak_level = 0.50; c_changed = true; }
                         ui.end_row();
 
                         ui.label("Crash Cymbal Decay:");
                         let r4 = ui.add(egui::Slider::new(&mut c.crash_decay_ms, 300.0..=3000.0).suffix(" ms"));
                         if r4.changed() { c_changed = true; }
+                        if r4.double_clicked() { c.crash_decay_ms = 1200.0; c_changed = true; }
                         ui.end_row();
 
                         ui.label("Ride Cymbal Decay:");
                         let r5 = ui.add(egui::Slider::new(&mut c.ride_decay_ms, 400.0..=3500.0).suffix(" ms"));
                         if r5.changed() { c_changed = true; }
+                        if r5.double_clicked() { c.ride_decay_ms = 1300.0; c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Bronze Size / Pitch:")
+                            .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning (0.5 = large/dark, 2.0 = small/bright)");
+                        let r6 = ui.add(egui::Slider::new(&mut c.bronze_size_pitch, 0.5..=2.0));
+                        if r6.changed() { c_changed = true; }
+                        if r6.double_clicked() { c.bronze_size_pitch = 1.0; c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Plate Dispersion (Stick Ping):")
+                            .on_hover_text("1st-order all-pass plate dispersion depth inside the 4-line Hadamard waveguide mesh");
+                        let r7 = ui.add(egui::Slider::new(&mut c.plate_dispersion, 0.0..=1.0));
+                        if r7.changed() { c_changed = true; }
+                        if r7.double_clicked() { c.plate_dispersion = 0.52; c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Non-Linear Shimmer Bloom:")
+                            .on_hover_text("Signal-modulated all-pass dispersion energy cascade into 4–15 kHz cast-bronze shimmer");
+                        let r8 = ui.add(egui::Slider::new(&mut c.nonlin_shimmer, 0.0..=1.0));
+                        if r8.changed() { c_changed = true; }
+                        if r8.double_clicked() { c.nonlin_shimmer = 0.58; c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Stick Hardness:")
+                            .on_hover_text("Stick tip lowpass brightness (soft felt/wood tip vs. crisp nylon tip)");
+                        let r9 = ui.add(egui::Slider::new(&mut c.stick_hardness, 0.0..=1.0));
+                        if r9.changed() { c_changed = true; }
+                        if r9.double_clicked() { c.stick_hardness = 0.62; c_changed = true; }
+                        ui.end_row();
+
+                        ui.label("Hit Variation (Vel & Strike):")
+                            .on_hover_text("Logarithmic humanization of hit velocity & stick strike character (0.0 = exact/identical, 1.0 = heavy variation)");
+                        let r10 = ui.add(
+                            egui::Slider::new(&mut c.hit_variation, 0.0..=1.0)
+                                .logarithmic(true)
+                                .smallest_positive(0.005),
+                        );
+                        if r10.changed() { c_changed = true; }
+                        if r10.double_clicked() { c.hit_variation = 0.10; c_changed = true; }
                         ui.end_row();
                     });
 

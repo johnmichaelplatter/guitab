@@ -190,6 +190,21 @@ pub enum DrumRole {
 fn default_kick_body_decay() -> f32 {
     240.0
 }
+fn default_kick_tension_mod() -> f32 {
+    0.55
+}
+fn default_kick_strike_pos() -> f32 {
+    0.15
+}
+fn default_kick_overtones_ring() -> f32 {
+    0.30
+}
+fn default_kick_shell_cavity() -> f32 {
+    0.50
+}
+fn default_drum_hit_variation() -> f32 {
+    0.10
+}
 
 /// Kick drum voice parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -205,6 +220,21 @@ pub struct KickParams {
     /// Main drum shell body resonant decay duration in milliseconds (50.0..=600.0 ms).
     #[serde(default = "default_kick_body_decay")]
     pub body_decay_ms: f32,
+    /// Non-linear drumhead tension pitch modulation depth on hard hits (0.0..=1.0).
+    #[serde(default = "default_kick_tension_mod")]
+    pub head_tension_mod: f32,
+    /// Strike position across the circular membrane (0.0 = dead center punch, 1.0 = rim/edge ring).
+    #[serde(default = "default_kick_strike_pos")]
+    pub strike_position: f32,
+    /// Higher Bessel overtone decay persistence relative to the (0,1) fundamental (0.0..=1.0).
+    #[serde(default = "default_kick_overtones_ring")]
+    pub overtones_ring: f32,
+    /// Wooden shell air-cavity mode & 2-tap micro-reflection body mix (0.0..=1.0).
+    #[serde(default = "default_kick_shell_cavity")]
+    pub shell_wood_cavity: f32,
+    /// Per-hit humanization amount varying velocity & strike position (0.0 = locked/identical, 1.0 = heavy variation).
+    #[serde(default = "default_drum_hit_variation")]
+    pub hit_variation: f32,
 }
 
 impl Default for KickParams {
@@ -215,6 +245,11 @@ impl Default for KickParams {
             pitch_decay_ms: 25.0,
             click_level: 0.65,
             body_decay_ms: 240.0,
+            head_tension_mod: default_kick_tension_mod(),
+            strike_position: default_kick_strike_pos(),
+            overtones_ring: default_kick_overtones_ring(),
+            shell_wood_cavity: default_kick_shell_cavity(),
+            hit_variation: default_drum_hit_variation(),
         }
     }
 }
@@ -230,6 +265,21 @@ fn default_snare_wire_cutoff() -> f32 {
 }
 fn default_snare_clap_spacing() -> f32 {
     12.0
+}
+fn default_snare_tension_mod() -> f32 {
+    0.40
+}
+fn default_snare_strike_pos() -> f32 {
+    0.32
+}
+fn default_snare_overtones_ring() -> f32 {
+    0.45
+}
+fn default_snare_shell_cavity() -> f32 {
+    0.52
+}
+fn default_snare_wire_tension() -> f32 {
+    0.55
 }
 
 /// Snare drum, rimshot, and hand clap voice parameters.
@@ -248,11 +298,29 @@ pub struct SnareParams {
     pub wire_cutoff_hz: f32,
     /// Snare wire noise decay duration in milliseconds (50.0..=400.0 ms).
     pub noise_decay_ms: f32,
-    /// Mix ratio between filtered noise wires and resonant sine body (0.0..=1.0).
+    /// Mix ratio between physically coupled snare wires and resonant membrane body (0.0..=1.0).
     pub noise_mix: f32,
     /// Burst repetition spacing for multi-clap transient in milliseconds (5.0..=30.0 ms).
     #[serde(default = "default_snare_clap_spacing")]
     pub clap_spacing_ms: f32,
+    /// Non-linear drumhead tension pitch modulation depth on hard hits (0.0..=1.0).
+    #[serde(default = "default_snare_tension_mod")]
+    pub head_tension_mod: f32,
+    /// Strike position across the circular membrane (0.0 = dead center punch, 1.0 = rim/edge ring).
+    #[serde(default = "default_snare_strike_pos")]
+    pub strike_position: f32,
+    /// Higher Bessel overtone decay persistence relative to the (0,1) fundamental (0.0..=1.0).
+    #[serde(default = "default_snare_overtones_ring")]
+    pub overtones_ring: f32,
+    /// Wooden shell air-cavity mode & 2-tap micro-reflection body mix (0.0..=1.0).
+    #[serde(default = "default_snare_shell_cavity")]
+    pub shell_wood_cavity: f32,
+    /// Snare wire strainer tension / rattle threshold (0.0 = loose buzz, 1.0 = tight snap).
+    #[serde(default = "default_snare_wire_tension")]
+    pub wire_tension: f32,
+    /// Per-hit humanization amount varying velocity & strike position (0.0 = locked/identical, 1.0 = heavy variation).
+    #[serde(default = "default_drum_hit_variation")]
+    pub hit_variation: f32,
 }
 
 impl Default for SnareParams {
@@ -265,8 +333,27 @@ impl Default for SnareParams {
             noise_decay_ms: 180.0,
             noise_mix: 0.55,
             clap_spacing_ms: 12.0,
+            head_tension_mod: default_snare_tension_mod(),
+            strike_position: default_snare_strike_pos(),
+            overtones_ring: default_snare_overtones_ring(),
+            shell_wood_cavity: default_snare_shell_cavity(),
+            wire_tension: default_snare_wire_tension(),
+            hit_variation: default_drum_hit_variation(),
         }
     }
+}
+
+fn default_tom_tension_mod() -> f32 {
+    0.50
+}
+fn default_tom_strike_pos() -> f32 {
+    0.28
+}
+fn default_tom_overtones_ring() -> f32 {
+    0.50
+}
+fn default_tom_shell_cavity() -> f32 {
+    0.58
 }
 
 /// Tuned tom-tom voice parameters across all 6 General MIDI toms.
@@ -280,6 +367,21 @@ pub struct TomParams {
     pub decay_ms: f32,
     /// Stick beater attack level (0.0..=1.0).
     pub stick_attack: f32,
+    /// Non-linear drumhead tension pitch modulation depth on hard hits (0.0..=1.0).
+    #[serde(default = "default_tom_tension_mod")]
+    pub head_tension_mod: f32,
+    /// Strike position across the circular membrane (0.0 = dead center punch, 1.0 = rim/edge ring).
+    #[serde(default = "default_tom_strike_pos")]
+    pub strike_position: f32,
+    /// Higher Bessel overtone decay persistence relative to the (0,1) fundamental (0.0..=1.0).
+    #[serde(default = "default_tom_overtones_ring")]
+    pub overtones_ring: f32,
+    /// Wooden shell air-cavity mode & 2-tap micro-reflection body mix (0.0..=1.0).
+    #[serde(default = "default_tom_shell_cavity")]
+    pub shell_wood_cavity: f32,
+    /// Per-hit humanization amount varying velocity & strike position (0.0 = locked/identical, 1.0 = heavy variation).
+    #[serde(default = "default_drum_hit_variation")]
+    pub hit_variation: f32,
 }
 
 impl Default for TomParams {
@@ -289,14 +391,35 @@ impl Default for TomParams {
             pitch_drop_ratio: 1.85,
             decay_ms: 240.0,
             stick_attack: 0.60,
+            head_tension_mod: default_tom_tension_mod(),
+            strike_position: default_tom_strike_pos(),
+            overtones_ring: default_tom_overtones_ring(),
+            shell_wood_cavity: default_tom_shell_cavity(),
+            hit_variation: default_drum_hit_variation(),
         }
     }
 }
 
-/// Metallic hi-hat parameters for closed, pedal, and open modes.
+fn default_bronze_size_pitch() -> f32 {
+    1.0
+}
+fn default_hat_plate_dispersion() -> f32 {
+    0.48
+}
+fn default_hat_nonlin_shimmer() -> f32 {
+    0.42
+}
+fn default_hat_bell_level() -> f32 {
+    0.35
+}
+fn default_hat_stick_hardness() -> f32 {
+    0.68
+}
+
+/// Cast B20 bronze hi-hat parameters for closed, pedal, and open modes.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HiHatParams {
-    /// Frequency spread multiplier on the 6 non-harmonic TR-808 metallic oscillators (0.5..=2.0).
+    /// Frequency spread multiplier on bronze modal spacing (0.5..=2.0).
     pub spread: f32,
     /// Highpass filter cutoff frequency in Hz (3000.0..=12000.0).
     pub highpass_cutoff_hz: f32,
@@ -306,6 +429,24 @@ pub struct HiHatParams {
     pub pedal_decay_ms: f32,
     /// Open hi-hat decay time in milliseconds (100.0..=2000.0 ms).
     pub open_decay_ms: f32,
+    /// Bronze plate diameter/pitch scaling multiplier (0.5 = large/dark, 2.0 = small/bright).
+    #[serde(default = "default_bronze_size_pitch")]
+    pub bronze_size_pitch: f32,
+    /// All-pass plate dispersion depth shaping initial stick ping character (0.0..=1.0).
+    #[serde(default = "default_hat_plate_dispersion")]
+    pub plate_dispersion: f32,
+    /// Signal-modulated non-linear all-pass shimmer cascade bloom (0.0..=1.0).
+    #[serde(default = "default_hat_nonlin_shimmer")]
+    pub nonlin_shimmer: f32,
+    /// High-Q bronze bell / cup modal resonance emphasis (0.0..=1.0).
+    #[serde(default = "default_hat_bell_level")]
+    pub bell_level: f32,
+    /// Drumstick tip hardness controlling excitation lowpass brightness (0.0..=1.0).
+    #[serde(default = "default_hat_stick_hardness")]
+    pub stick_hardness: f32,
+    /// Per-hit humanization amount varying velocity & stick strike character (0.0 = locked/identical, 1.0 = heavy variation).
+    #[serde(default = "default_drum_hit_variation")]
+    pub hit_variation: f32,
 }
 
 impl Default for HiHatParams {
@@ -316,14 +457,30 @@ impl Default for HiHatParams {
             closed_decay_ms: 45.0,
             pedal_decay_ms: 60.0,
             open_decay_ms: 650.0,
+            bronze_size_pitch: default_bronze_size_pitch(),
+            plate_dispersion: default_hat_plate_dispersion(),
+            nonlin_shimmer: default_hat_nonlin_shimmer(),
+            bell_level: default_hat_bell_level(),
+            stick_hardness: default_hat_stick_hardness(),
+            hit_variation: default_drum_hit_variation(),
         }
     }
 }
 
-/// Metallic crash and ride cymbal parameters.
+fn default_cymbal_plate_dispersion() -> f32 {
+    0.52
+}
+fn default_cymbal_nonlin_shimmer() -> f32 {
+    0.58
+}
+fn default_cymbal_stick_hardness() -> f32 {
+    0.62
+}
+
+/// Cast B20 bronze crash and ride cymbal parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CymbalParams {
-    /// Frequency spread multiplier on the metallic oscillator matrix (0.5..=2.0).
+    /// Frequency spread multiplier on bronze modal spacing (0.5..=2.0).
     pub matrix_spread: f32,
     /// Bandpass/highpass filter cutoff frequency in Hz (2000.0..=8000.0).
     pub cutoff_hz: f32,
@@ -333,6 +490,21 @@ pub struct CymbalParams {
     pub crash_decay_ms: f32,
     /// Ride cymbal decay time in milliseconds (400.0..=3500.0 ms).
     pub ride_decay_ms: f32,
+    /// Bronze plate diameter/pitch scaling multiplier (0.5 = large/dark, 2.0 = small/bright).
+    #[serde(default = "default_bronze_size_pitch")]
+    pub bronze_size_pitch: f32,
+    /// All-pass plate dispersion depth shaping initial stick ping character (0.0..=1.0).
+    #[serde(default = "default_cymbal_plate_dispersion")]
+    pub plate_dispersion: f32,
+    /// Signal-modulated non-linear all-pass shimmer cascade bloom (0.0..=1.0).
+    #[serde(default = "default_cymbal_nonlin_shimmer")]
+    pub nonlin_shimmer: f32,
+    /// Drumstick tip hardness controlling excitation lowpass brightness (0.0..=1.0).
+    #[serde(default = "default_cymbal_stick_hardness")]
+    pub stick_hardness: f32,
+    /// Per-hit humanization amount varying velocity & stick strike character (0.0 = locked/identical, 1.0 = heavy variation).
+    #[serde(default = "default_drum_hit_variation")]
+    pub hit_variation: f32,
 }
 
 impl Default for CymbalParams {
@@ -343,6 +515,11 @@ impl Default for CymbalParams {
             bell_peak_level: 0.50,
             crash_decay_ms: 1200.0,
             ride_decay_ms: 1300.0,
+            bronze_size_pitch: default_bronze_size_pitch(),
+            plate_dispersion: default_cymbal_plate_dispersion(),
+            nonlin_shimmer: default_cymbal_nonlin_shimmer(),
+            stick_hardness: default_cymbal_stick_hardness(),
+            hit_variation: default_drum_hit_variation(),
         }
     }
 }
@@ -748,6 +925,7 @@ impl SynthPreset {
                     pitch_decay_ms: 32.0,
                     click_level: 0.75,
                     body_decay_ms: 260.0,
+                    ..KickParams::default()
                 },
                 snare: SnareParams {
                     tone_freq_hz: 210.0,
@@ -757,6 +935,7 @@ impl SynthPreset {
                     noise_decay_ms: 220.0,
                     noise_mix: 0.65,
                     clap_spacing_ms: 12.0,
+                    ..SnareParams::default()
                 },
                 toms: TomParams::default(),
                 hi_hats: HiHatParams {
@@ -765,6 +944,7 @@ impl SynthPreset {
                     closed_decay_ms: 40.0,
                     pedal_decay_ms: 55.0,
                     open_decay_ms: 750.0,
+                    ..HiHatParams::default()
                 },
                 cymbals: CymbalParams::default(),
                 aux: PercAuxParams::default(),
@@ -894,7 +1074,12 @@ impl SynthPreset {
         out.push_str(&format!("      \"pitch_end_hz\": {:.1},\n", self.drum_params.kick.pitch_end_hz));
         out.push_str(&format!("      \"pitch_decay_ms\": {:.1},\n", self.drum_params.kick.pitch_decay_ms));
         out.push_str(&format!("      \"click_level\": {:.4},\n", self.drum_params.kick.click_level));
-        out.push_str(&format!("      \"body_decay_ms\": {:.1}\n", self.drum_params.kick.body_decay_ms));
+        out.push_str(&format!("      \"body_decay_ms\": {:.1},\n", self.drum_params.kick.body_decay_ms));
+        out.push_str(&format!("      \"head_tension_mod\": {:.4},\n", self.drum_params.kick.head_tension_mod));
+        out.push_str(&format!("      \"strike_position\": {:.4},\n", self.drum_params.kick.strike_position));
+        out.push_str(&format!("      \"overtones_ring\": {:.4},\n", self.drum_params.kick.overtones_ring));
+        out.push_str(&format!("      \"shell_wood_cavity\": {:.4},\n", self.drum_params.kick.shell_wood_cavity));
+        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.kick.hit_variation));
         out.push_str("    },\n");
         out.push_str("    \"snare\": {\n");
         out.push_str(&format!("      \"tone_freq_hz\": {:.1},\n", self.drum_params.snare.tone_freq_hz));
@@ -903,27 +1088,49 @@ impl SynthPreset {
         out.push_str(&format!("      \"wire_cutoff_hz\": {:.1},\n", self.drum_params.snare.wire_cutoff_hz));
         out.push_str(&format!("      \"noise_decay_ms\": {:.1},\n", self.drum_params.snare.noise_decay_ms));
         out.push_str(&format!("      \"noise_mix\": {:.4},\n", self.drum_params.snare.noise_mix));
-        out.push_str(&format!("      \"clap_spacing_ms\": {:.1}\n", self.drum_params.snare.clap_spacing_ms));
+        out.push_str(&format!("      \"clap_spacing_ms\": {:.1},\n", self.drum_params.snare.clap_spacing_ms));
+        out.push_str(&format!("      \"head_tension_mod\": {:.4},\n", self.drum_params.snare.head_tension_mod));
+        out.push_str(&format!("      \"strike_position\": {:.4},\n", self.drum_params.snare.strike_position));
+        out.push_str(&format!("      \"overtones_ring\": {:.4},\n", self.drum_params.snare.overtones_ring));
+        out.push_str(&format!("      \"shell_wood_cavity\": {:.4},\n", self.drum_params.snare.shell_wood_cavity));
+        out.push_str(&format!("      \"wire_tension\": {:.4},\n", self.drum_params.snare.wire_tension));
+        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.snare.hit_variation));
         out.push_str("    },\n");
         out.push_str("    \"toms\": {\n");
         out.push_str(&format!("      \"pitch_scale\": {:.4},\n", self.drum_params.toms.pitch_scale));
         out.push_str(&format!("      \"pitch_drop_ratio\": {:.4},\n", self.drum_params.toms.pitch_drop_ratio));
         out.push_str(&format!("      \"decay_ms\": {:.1},\n", self.drum_params.toms.decay_ms));
-        out.push_str(&format!("      \"stick_attack\": {:.4}\n", self.drum_params.toms.stick_attack));
+        out.push_str(&format!("      \"stick_attack\": {:.4},\n", self.drum_params.toms.stick_attack));
+        out.push_str(&format!("      \"head_tension_mod\": {:.4},\n", self.drum_params.toms.head_tension_mod));
+        out.push_str(&format!("      \"strike_position\": {:.4},\n", self.drum_params.toms.strike_position));
+        out.push_str(&format!("      \"overtones_ring\": {:.4},\n", self.drum_params.toms.overtones_ring));
+        out.push_str(&format!("      \"shell_wood_cavity\": {:.4},\n", self.drum_params.toms.shell_wood_cavity));
+        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.toms.hit_variation));
         out.push_str("    },\n");
         out.push_str("    \"hi_hats\": {\n");
         out.push_str(&format!("      \"spread\": {:.4},\n", self.drum_params.hi_hats.spread));
         out.push_str(&format!("      \"highpass_cutoff_hz\": {:.1},\n", self.drum_params.hi_hats.highpass_cutoff_hz));
         out.push_str(&format!("      \"closed_decay_ms\": {:.1},\n", self.drum_params.hi_hats.closed_decay_ms));
         out.push_str(&format!("      \"pedal_decay_ms\": {:.1},\n", self.drum_params.hi_hats.pedal_decay_ms));
-        out.push_str(&format!("      \"open_decay_ms\": {:.1}\n", self.drum_params.hi_hats.open_decay_ms));
+        out.push_str(&format!("      \"open_decay_ms\": {:.1},\n", self.drum_params.hi_hats.open_decay_ms));
+        out.push_str(&format!("      \"bronze_size_pitch\": {:.4},\n", self.drum_params.hi_hats.bronze_size_pitch));
+        out.push_str(&format!("      \"plate_dispersion\": {:.4},\n", self.drum_params.hi_hats.plate_dispersion));
+        out.push_str(&format!("      \"nonlin_shimmer\": {:.4},\n", self.drum_params.hi_hats.nonlin_shimmer));
+        out.push_str(&format!("      \"bell_level\": {:.4},\n", self.drum_params.hi_hats.bell_level));
+        out.push_str(&format!("      \"stick_hardness\": {:.4},\n", self.drum_params.hi_hats.stick_hardness));
+        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.hi_hats.hit_variation));
         out.push_str("    },\n");
         out.push_str("    \"cymbals\": {\n");
         out.push_str(&format!("      \"matrix_spread\": {:.4},\n", self.drum_params.cymbals.matrix_spread));
         out.push_str(&format!("      \"cutoff_hz\": {:.1},\n", self.drum_params.cymbals.cutoff_hz));
         out.push_str(&format!("      \"bell_peak_level\": {:.4},\n", self.drum_params.cymbals.bell_peak_level));
         out.push_str(&format!("      \"crash_decay_ms\": {:.1},\n", self.drum_params.cymbals.crash_decay_ms));
-        out.push_str(&format!("      \"ride_decay_ms\": {:.1}\n", self.drum_params.cymbals.ride_decay_ms));
+        out.push_str(&format!("      \"ride_decay_ms\": {:.1},\n", self.drum_params.cymbals.ride_decay_ms));
+        out.push_str(&format!("      \"bronze_size_pitch\": {:.4},\n", self.drum_params.cymbals.bronze_size_pitch));
+        out.push_str(&format!("      \"plate_dispersion\": {:.4},\n", self.drum_params.cymbals.plate_dispersion));
+        out.push_str(&format!("      \"nonlin_shimmer\": {:.4},\n", self.drum_params.cymbals.nonlin_shimmer));
+        out.push_str(&format!("      \"stick_hardness\": {:.4},\n", self.drum_params.cymbals.stick_hardness));
+        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.cymbals.hit_variation));
         out.push_str("    },\n");
         out.push_str("    \"aux\": {\n");
         out.push_str(&format!("      \"freq1_hz\": {:.1},\n", self.drum_params.aux.freq1_hz));
@@ -1005,10 +1212,17 @@ mod tests {
             assert!((p.body_params.modal_knock_air - deserialized.body_params.modal_knock_air).abs() < 1e-3);
             assert!((p.drum_params.kick.pitch_start_hz - deserialized.drum_params.kick.pitch_start_hz).abs() < 1e-3);
             assert!((p.drum_params.kick.body_decay_ms - deserialized.drum_params.kick.body_decay_ms).abs() < 1e-3);
+            assert!((p.drum_params.kick.head_tension_mod - deserialized.drum_params.kick.head_tension_mod).abs() < 1e-3);
+            assert!((p.drum_params.kick.strike_position - deserialized.drum_params.kick.strike_position).abs() < 1e-3);
             assert!((p.drum_params.snare.mode2_freq_hz - deserialized.drum_params.snare.mode2_freq_hz).abs() < 1e-3);
+            assert!((p.drum_params.snare.wire_tension - deserialized.drum_params.snare.wire_tension).abs() < 1e-3);
             assert!((p.drum_params.toms.pitch_drop_ratio - deserialized.drum_params.toms.pitch_drop_ratio).abs() < 1e-3);
+            assert!((p.drum_params.toms.shell_wood_cavity - deserialized.drum_params.toms.shell_wood_cavity).abs() < 1e-3);
             assert!((p.drum_params.hi_hats.spread - deserialized.drum_params.hi_hats.spread).abs() < 1e-3);
+            assert!((p.drum_params.hi_hats.nonlin_shimmer - deserialized.drum_params.hi_hats.nonlin_shimmer).abs() < 1e-3);
             assert!((p.drum_params.cymbals.cutoff_hz - deserialized.drum_params.cymbals.cutoff_hz).abs() < 1e-3);
+            assert!((p.drum_params.cymbals.bronze_size_pitch - deserialized.drum_params.cymbals.bronze_size_pitch).abs() < 1e-3);
+            assert!((p.drum_params.cymbals.stick_hardness - deserialized.drum_params.cymbals.stick_hardness).abs() < 1e-3);
             assert!((p.drum_params.aux.freq1_hz - deserialized.drum_params.aux.freq1_hz).abs() < 1e-3);
             assert!((p.fm_params.mod_ratio - deserialized.fm_params.mod_ratio).abs() < 1e-3);
         }
@@ -1071,6 +1285,7 @@ mod tests {
                 pitch_decay_ms: 45.0,
                 click_level: 0.9,
                 body_decay_ms: 220.0,
+                ..KickParams::default()
             }),
         }));
         assert!(engine.send(SynthCommand::UpdateGmVoiceParams(FmVoiceParams::default())));
@@ -1275,6 +1490,13 @@ mod tests {
       { "freq_hz": 410.0, "q": 4.5, "gain_db": 1.5, "enabled": true },
       { "freq_hz": 5200.0, "q": 0.85, "gain_db": -4.0, "enabled": true }
     ]
+  },
+  "drum_params": {
+    "kick": { "pitch_start_hz": 160.0, "pitch_end_hz": 48.0, "pitch_decay_ms": 25.0, "click_level": 0.65 },
+    "snare": { "tone_freq_hz": 185.0, "noise_decay_ms": 180.0, "noise_mix": 0.55 },
+    "toms": { "pitch_scale": 1.0, "pitch_drop_ratio": 1.85, "decay_ms": 240.0, "stick_attack": 0.60 },
+    "hi_hats": { "spread": 1.0, "highpass_cutoff_hz": 7000.0, "closed_decay_ms": 45.0, "pedal_decay_ms": 60.0, "open_decay_ms": 650.0 },
+    "cymbals": { "matrix_spread": 1.0, "cutoff_hz": 3500.0, "bell_peak_level": 0.50, "crash_decay_ms": 1200.0, "ride_decay_ms": 1300.0 }
   }
 }"#;
         let parsed = SynthPreset::from_json_string(legacy_json)
@@ -1285,5 +1507,15 @@ mod tests {
         assert!((parsed.string_params.fret_buzz_sizzle - 0.20).abs() < 1e-4);
         assert!((parsed.string_params.sympathetic_coupling - 0.0025).abs() < 1e-5);
         assert!((parsed.body_params.modal_knock_air - 0.55).abs() < 1e-4);
+        assert!((parsed.drum_params.kick.head_tension_mod - 0.55).abs() < 1e-4);
+        assert!((parsed.drum_params.kick.strike_position - 0.15).abs() < 1e-4);
+        assert!((parsed.drum_params.snare.wire_tension - 0.55).abs() < 1e-4);
+        assert!((parsed.drum_params.toms.shell_wood_cavity - 0.58).abs() < 1e-4);
+        assert!((parsed.drum_params.hi_hats.bronze_size_pitch - 1.0).abs() < 1e-4);
+        assert!((parsed.drum_params.cymbals.nonlin_shimmer - 0.58).abs() < 1e-4);
+        assert!((parsed.drum_params.cymbals.stick_hardness - 0.62).abs() < 1e-4);
+        assert!((parsed.drum_params.kick.hit_variation - 0.10).abs() < 1e-4);
+        assert!((parsed.drum_params.snare.hit_variation - 0.10).abs() < 1e-4);
+        assert!((parsed.drum_params.cymbals.hit_variation - 0.10).abs() < 1e-4);
     }
 }
