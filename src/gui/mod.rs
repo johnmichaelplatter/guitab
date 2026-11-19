@@ -554,6 +554,13 @@ impl MnxEditorApp {
 
 impl MnxEditorApp {
     pub fn get_part_synth_preset(&self, part_idx: usize) -> crate::synth::SynthPreset {
+        if let Some(doc) = &self.parsed_mnx {
+            if let Some(part) = doc.parts.get(part_idx) {
+                if let Some(preset) = &part.ext.synth_preset {
+                    return preset.clone();
+                }
+            }
+        }
         if let Some(preset) = self.part_synth_presets.get(&part_idx) {
             preset.clone()
         } else {
@@ -572,7 +579,94 @@ impl MnxEditorApp {
     }
 
     pub fn set_part_synth_preset(&mut self, part_idx: usize, preset: crate::synth::SynthPreset) {
-        self.part_synth_presets.insert(part_idx, preset);
+        self.part_synth_presets.insert(part_idx, preset.clone());
+        self.mutate_doc(|doc| {
+            let part = doc.parts.get_mut(part_idx)?;
+            part.ext.synth_preset = Some(preset.clone());
+            Some(())
+        });
+        self.sync_part_to_synth_engine(part_idx, &preset);
+    }
+
+    pub fn sync_part_to_synth_engine(
+        &mut self,
+        part_idx: usize,
+        preset: &crate::synth::SynthPreset,
+    ) {
+        use crate::synth::command::SynthCommand;
+        use crate::synth::patch::{DrumRole, DrumVoiceParams};
+
+        if let Some(eng) = self.synth_engine.as_mut() {
+            let p_u8 = part_idx as u8;
+            eng.send(SynthCommand::SetPartEngine {
+                part_idx: p_u8,
+                engine: preset.engine,
+            });
+            eng.send(SynthCommand::SetPartProfile {
+                part_idx: p_u8,
+                profile: preset.body_params.profile_base,
+            });
+            eng.send(SynthCommand::UpdatePartStringParams {
+                part_idx: p_u8,
+                params: preset.string_params,
+            });
+            eng.send(SynthCommand::UpdatePartBodyParams {
+                part_idx: p_u8,
+                params: preset.body_params,
+            });
+            eng.send(SynthCommand::UpdatePartFmParams {
+                part_idx: p_u8,
+                params: preset.fm_params,
+            });
+            eng.send(SynthCommand::UpdatePartDrumParams {
+                part_idx: p_u8,
+                drum_role: DrumRole::Kick,
+                params: DrumVoiceParams::Kick(preset.drum_params.kick),
+            });
+            eng.send(SynthCommand::UpdatePartDrumParams {
+                part_idx: p_u8,
+                drum_role: DrumRole::Snare,
+                params: DrumVoiceParams::Snare(preset.drum_params.snare),
+            });
+            eng.send(SynthCommand::UpdatePartDrumParams {
+                part_idx: p_u8,
+                drum_role: DrumRole::Toms,
+                params: DrumVoiceParams::Toms(preset.drum_params.toms),
+            });
+            eng.send(SynthCommand::UpdatePartDrumParams {
+                part_idx: p_u8,
+                drum_role: DrumRole::HiHats,
+                params: DrumVoiceParams::HiHats(preset.drum_params.hi_hats),
+            });
+            eng.send(SynthCommand::UpdatePartDrumParams {
+                part_idx: p_u8,
+                drum_role: DrumRole::Cymbals,
+                params: DrumVoiceParams::Cymbals(preset.drum_params.cymbals),
+            });
+            eng.send(SynthCommand::UpdatePartDrumParams {
+                part_idx: p_u8,
+                drum_role: DrumRole::PercAux,
+                params: DrumVoiceParams::PercAux(preset.drum_params.aux),
+            });
+        }
+    }
+
+    pub fn sync_all_parts_to_synth_engine(&mut self) {
+        let part_count = self
+            .parsed_mnx
+            .as_ref()
+            .map(|d| d.parts.len())
+            .unwrap_or(1)
+            .max(1);
+        for i in 0..part_count {
+            let preset = self.get_part_synth_preset(i);
+            self.sync_part_to_synth_engine(i, &preset);
+        }
+        if let Some(eng) = self.synth_engine.as_mut() {
+            eng.send(crate::synth::SynthCommand::SetActivePart(
+                self.selected_part_idx as u8,
+            ));
+        }
     }
 
     pub fn active_part(&self) -> Option<&crate::mnx::Part> {
@@ -610,6 +704,9 @@ impl MnxEditorApp {
             self.editing_fret_buf.clear();
             self.editing_string = None;
             self.pending_slur = None;
+            if let Some(eng) = self.synth_engine.as_mut() {
+                eng.send(crate::synth::SynthCommand::SetActivePart(new_idx as u8));
+            }
         }
 
         self.string_channel_map = self
@@ -854,6 +951,7 @@ impl MnxEditorApp {
 
         if self.use_internal_synth {
             let _ = self.ensure_synth_engine();
+            self.sync_all_parts_to_synth_engine();
         }
         let synth_tx = if self.use_internal_synth {
             self.synth_engine.as_ref().map(|e| e.sender())
@@ -1200,16 +1298,14 @@ impl MnxEditorApp {
     pub fn ensure_synth_engine(&mut self) -> Option<&mut crate::synth::SynthEngine> {
         if self.synth_engine.is_none() && !cfg!(test) {
             match crate::synth::SynthEngine::new() {
-                Ok(mut eng) => {
-                    let _ = eng.send(crate::synth::SynthCommand::SetInstrumentProfile(
-                        self.synth_lab.profile,
-                    ));
+                Ok(eng) => {
                     self.synth_lab.status_msg = Some(format!(
                         "Audio stream active ({:.0} Hz, {} ch)",
                         eng.sample_rate(),
                         eng.channels()
                     ));
                     self.synth_engine = Some(eng);
+                    self.sync_all_parts_to_synth_engine();
                 }
                 Err(e) => {
                     self.synth_lab.status_msg = Some(format!("Audio init error: {}", e));
@@ -1309,7 +1405,9 @@ impl MnxEditorApp {
                 });
             }
             if self.use_internal_synth || self.synth_lab.route_score_preview {
+                let active_p = self.selected_part_idx as u8;
                 if let Some(eng) = self.ensure_synth_engine() {
+                    eng.send(crate::synth::SynthCommand::SetActivePart(active_p));
                     for (gm_drum_note, velocity) in synth_drums {
                         eng.send(crate::synth::SynthCommand::TriggerDrum {
                             gm_drum_note,
@@ -1405,10 +1503,13 @@ impl MnxEditorApp {
         }
 
         if self.use_internal_synth || self.synth_lab.route_score_preview {
-            let pluck_pos = self.synth_lab.pluck_pos;
+            let active_p = self.selected_part_idx as u8;
+            let part_preset = self.get_part_synth_preset(self.selected_part_idx);
+            let pluck_pos = part_preset.string_params.pluck_pos;
             let palm_mute = self.synth_lab.palm_mute;
             let velocity = self.synth_lab.velocity;
             if let Some(eng) = self.synth_engine.as_mut() {
+                eng.send(crate::synth::SynthCommand::SetActivePart(active_p));
                 for (string_idx, freq_hz) in synth_notes {
                     eng.send(crate::synth::SynthCommand::TriggerString {
                         string_idx,
@@ -1789,7 +1890,7 @@ impl MnxEditorApp {
             }
         }
 
-        // Sync MPE mode and pitch bend range from YAML
+        // Sync MPE mode, pitch bend range, and per-part synth presets from YAML
         self.part_mpe_modes.clear();
         self.part_pitch_bend_ranges.clear();
         for (i, part) in doc.parts.iter().enumerate() {
@@ -1799,12 +1900,21 @@ impl MnxEditorApp {
             if let Some(pb) = part.pitch_bend_range {
                 self.part_pitch_bend_ranges.insert(i, pb.clamp(1, 48));
             }
+            if let Some(sp) = &part.ext.synth_preset {
+                self.part_synth_presets.insert(i, sp.clone());
+            }
         }
         self.is_mpe_mode = self.is_part_mpe_mode(self.selected_part_idx);
         self.pitch_bend_range = self.get_part_pitch_bend_range(self.selected_part_idx);
 
         self.parsed_errors = errors;
         self.parsed_mnx = Some(doc);
+        if self.synth_lab.target_part_idx >= num_parts {
+            self.synth_lab.target_part_idx = 0;
+        }
+        let target_preset = self.get_part_synth_preset(self.synth_lab.target_part_idx);
+        self.synth_lab.preset = target_preset.clone();
+        self.synth_lab.profile = target_preset.body_params.profile_base;
         self.cached_event_ranges =
             find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
     }
@@ -1880,6 +1990,9 @@ impl MnxEditorApp {
                     }
                 }
                 self.sync_from_parsed_doc(doc);
+                if self.synth_engine.is_some() {
+                    self.sync_all_parts_to_synth_engine();
+                }
             }
             Err(e) => {
                 self.cached_event_ranges =

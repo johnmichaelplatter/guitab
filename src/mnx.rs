@@ -1156,6 +1156,13 @@ pub struct PartExt {
         skip_serializing_if = "Option::is_none"
     )]
     pub midi_channel: Option<u8>,
+    #[serde(
+        rename = "synthPreset",
+        alias = "synth_preset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub synth_preset: Option<crate::synth::SynthPreset>,
 }
 
 impl PartExt {
@@ -1168,6 +1175,7 @@ impl PartExt {
             && self.custom_frets.is_none()
             && self.mpe.is_none()
             && self.midi_channel.is_none()
+            && self.synth_preset.is_none()
     }
 
     /// Detects if the tuning strings specify an EDO via fractional alterations (e.g. `"-1\\41"`).

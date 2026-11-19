@@ -24,6 +24,7 @@ rtrb = "0.3"
 
 [profile.dev]
 opt-level = 1
+incremental = false
 
 [profile.release]
 opt-level = 3

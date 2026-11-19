@@ -1023,6 +1023,93 @@ impl PercussionAndGmPool {
         }
     }
 
+    /// Triggers a monophonic-per-string FM voice for a string instrument track (`string_idx`).
+    #[inline(always)]
+    pub fn trigger_fm_string(&mut self, string_idx: u8, freq_hz: f64, velocity: f32) {
+        let tag = 200u8.wrapping_add(string_idx & 0x0F);
+        let slot = self.allocate_voice(tag, true);
+        if let Some(fmp) = &self.fm_params {
+            self.voices[slot].trigger_gm_fm_custom(string_idx, freq_hz, velocity, fmp, self.sample_rate);
+        } else {
+            self.voices[slot].trigger_gm_fm(string_idx, freq_hz, velocity, 0, self.sample_rate);
+        }
+    }
+
+    /// Hammer-on / pull-off (`SlurString`) on an FM voice for `string_idx`.
+    /// Updates the active FM voice's carrier and modulator frequencies with legato phase continuity,
+    /// or triggers a new FM voice if the string was silent.
+    #[inline(always)]
+    pub fn slur_fm_string(&mut self, string_idx: u8, new_freq_hz: f64, hammer_energy: f32) {
+        let tag = 200u8.wrapping_add(string_idx & 0x0F);
+        let sr = self.sample_rate.max(8_000.0);
+        let inv_sr = 1.0 / sr;
+        let carrier_hz = (new_freq_hz.clamp(15.0, (sr as f64) * 0.45)) as f32;
+        let energy = hammer_energy.clamp(0.05, 1.0);
+
+        for v in &mut self.voices {
+            if v.is_active() && v.voice_tag == tag {
+                let ratio = if let Some(fmp) = &self.fm_params {
+                    fmp.mod_ratio.clamp(0.1, 16.0)
+                } else if v.base_inc > 1.0e-7 {
+                    (v.sec_inc / v.base_inc).clamp(0.1, 16.0)
+                } else {
+                    1.0
+                };
+                v.base_inc = carrier_hz * inv_sr;
+                v.sec_inc = (carrier_hz * ratio).min(sr * 0.45) * inv_sr;
+                v.fast_env = v.fast_env.max(energy * 0.70);
+                v.slow_env = v.slow_env.max(energy * 0.85);
+                return;
+            }
+        }
+
+        // If no voice was active on this string, trigger a new FM note
+        self.trigger_fm_string(string_idx, new_freq_hz, energy);
+    }
+
+    /// Pitch bend / slide (`SlideString`) on an active FM voice for `string_idx`.
+    #[inline(always)]
+    pub fn slide_fm_string(&mut self, string_idx: u8, target_freq_hz: f64) {
+        let tag = 200u8.wrapping_add(string_idx & 0x0F);
+        let sr = self.sample_rate.max(8_000.0);
+        let inv_sr = 1.0 / sr;
+        let carrier_hz = (target_freq_hz.clamp(15.0, (sr as f64) * 0.45)) as f32;
+
+        for v in &mut self.voices {
+            if v.is_active() && v.voice_tag == tag {
+                let ratio = if let Some(fmp) = &self.fm_params {
+                    fmp.mod_ratio.clamp(0.1, 16.0)
+                } else if v.base_inc > 1.0e-7 {
+                    (v.sec_inc / v.base_inc).clamp(0.1, 16.0)
+                } else {
+                    1.0
+                };
+                v.base_inc = carrier_hz * inv_sr;
+                v.sec_inc = (carrier_hz * ratio).min(sr * 0.45) * inv_sr;
+            }
+        }
+    }
+
+    /// Releases / mutes (`MuteString`) any active FM voice on `string_idx`.
+    #[inline(always)]
+    pub fn mute_fm_string(&mut self, string_idx: u8, release_rate: f32) {
+        let tag = 200u8.wrapping_add(string_idx & 0x0F);
+        let rel = release_rate.clamp(0.90, 0.9995);
+        for v in &mut self.voices {
+            if v.is_active() && v.voice_tag == tag {
+                v.in_attack = false;
+                v.fast_decay = v.fast_decay.min(rel);
+                v.slow_decay = v.slow_decay.min(rel);
+            }
+        }
+    }
+
+    /// Returns `true` if any voice in this pool is currently active.
+    #[inline(always)]
+    pub fn has_active_voices(&self) -> bool {
+        self.voices.iter().any(|v| v.is_active())
+    }
+
     /// Immediately silences all 16 voices.
     #[inline(always)]
     pub fn all_notes_off(&mut self) {

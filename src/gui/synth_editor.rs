@@ -46,6 +46,11 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
         app.synth_lab.target_part_idx = 0;
     }
 
+    // Always bind the editor state to the active target part's persisted preset
+    let bound_preset = app.get_part_synth_preset(app.synth_lab.target_part_idx);
+    app.synth_lab.preset = bound_preset.clone();
+    app.synth_lab.profile = bound_preset.body_params.profile_base;
+
     let is_target_percussion = app
         .parsed_mnx
         .as_ref()
@@ -105,66 +110,96 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Target Instrument / Track:").strong());
 
-                let current_label = if let Some(doc) = &app.parsed_mnx {
-                    if let Some(part) = doc.parts.get(app.synth_lab.target_part_idx) {
+                let format_part_synth_label =
+                    |idx: usize, part: &crate::mnx::Part, preset: &SynthPreset| -> String {
                         if part.is_percussion() {
                             format!(
-                                "{}: {} (Percussion, Ch {})",
-                                app.synth_lab.target_part_idx + 1,
-                                part.display_name(app.synth_lab.target_part_idx),
+                                "{}: {} — {} (Drum Kit, Ch {})",
+                                idx + 1,
+                                part.display_name(idx),
+                                preset.name,
                                 part.percussion_midi_channel()
                             )
                         } else {
+                            let engine_desc = match preset.engine {
+                                PitchedEngine::PhysicalString => {
+                                    preset.body_params.profile_base.label()
+                                }
+                                PitchedEngine::FmSynth => "FM Synth",
+                            };
                             format!(
-                                "{}: {} (Pitched)",
-                                app.synth_lab.target_part_idx + 1,
-                                part.display_name(app.synth_lab.target_part_idx)
+                                "{}: {} — {} [{}]",
+                                idx + 1,
+                                part.display_name(idx),
+                                preset.name,
+                                engine_desc
                             )
                         }
+                    };
+
+                let current_label = if let Some(doc) = &app.parsed_mnx {
+                    if let Some(part) = doc.parts.get(app.synth_lab.target_part_idx) {
+                        format_part_synth_label(
+                            app.synth_lab.target_part_idx,
+                            part,
+                            &app.synth_lab.preset,
+                        )
                     } else {
-                        format!("{}: Track {}", app.synth_lab.target_part_idx + 1, app.synth_lab.target_part_idx + 1)
+                        format!(
+                            "{}: Track {} — {}",
+                            app.synth_lab.target_part_idx + 1,
+                            app.synth_lab.target_part_idx + 1,
+                            app.synth_lab.preset.name
+                        )
                     }
                 } else {
-                    "1: Default Track (Pitched)".to_string()
+                    format!("1: Default Track — {}", app.synth_lab.preset.name)
                 };
 
                 let mut target_switched = false;
-                let old_target = app.synth_lab.target_part_idx;
 
                 egui::ComboBox::from_id_salt("synth_target_part_selector")
                     .selected_text(current_label)
-                    .width(280.0)
+                    .width(340.0)
                     .show_ui(ui, |ui| {
-                        if let Some(doc) = &app.parsed_mnx {
-                            for (idx, part) in doc.parts.iter().enumerate() {
-                                let label = if part.is_percussion() {
-                                    format!(
-                                        "{}: {} (Percussion, Ch {})",
-                                        idx + 1,
-                                        part.display_name(idx),
-                                        part.percussion_midi_channel()
-                                    )
-                                } else {
-                                    format!("{}: {} (Pitched)", idx + 1, part.display_name(idx))
-                                };
-                                if ui.selectable_label(app.synth_lab.target_part_idx == idx, label).clicked() {
+                        let part_entries: Vec<(usize, String)> = if let Some(doc) = &app.parsed_mnx
+                        {
+                            doc.parts
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, part)| {
+                                    let p_preset = app.get_part_synth_preset(idx);
+                                    (idx, format_part_synth_label(idx, part, &p_preset))
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                        if !part_entries.is_empty() {
+                            for (idx, label) in part_entries {
+                                if ui
+                                    .selectable_label(app.synth_lab.target_part_idx == idx, label)
+                                    .clicked()
+                                {
                                     if app.synth_lab.target_part_idx != idx {
                                         app.synth_lab.target_part_idx = idx;
                                         target_switched = true;
                                     }
                                 }
                             }
-                        } else {
-                            if ui.selectable_label(app.synth_lab.target_part_idx == 0, "1: Default Track (Pitched)").clicked() {
-                                app.synth_lab.target_part_idx = 0;
-                            }
+                        } else if ui
+                            .selectable_label(
+                                app.synth_lab.target_part_idx == 0,
+                                "1: Default Track (Pitched)",
+                            )
+                            .clicked()
+                        {
+                            app.synth_lab.target_part_idx = 0;
                         }
                     });
 
                 if target_switched {
-                    // Save old target state
-                    app.set_part_synth_preset(old_target, app.synth_lab.preset.clone());
-
                     // Load new target state
                     let new_p = app.get_part_synth_preset(app.synth_lab.target_part_idx);
                     app.synth_lab.preset = new_p.clone();
@@ -186,44 +221,17 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                         };
                     }
 
-                    // Push full state update to audio thread
-                    commands_to_send.push(SynthCommand::SetInstrumentProfile(new_p.body_params.profile_base));
-                    commands_to_send.push(SynthCommand::SetPitchedEngine(new_p.engine));
-                    commands_to_send.push(SynthCommand::SetPartEngine {
-                        part_idx: app.synth_lab.target_part_idx as u8,
-                        engine: new_p.engine,
-                    });
-                    commands_to_send.push(SynthCommand::UpdateStringParams(new_p.string_params));
-                    commands_to_send.push(SynthCommand::UpdateBodyParams(new_p.body_params));
-                    commands_to_send.push(SynthCommand::UpdateDrumParams {
-                        drum_role: DrumRole::Kick,
-                        params: DrumVoiceParams::Kick(new_p.drum_params.kick),
-                    });
-                    commands_to_send.push(SynthCommand::UpdateDrumParams {
-                        drum_role: DrumRole::Snare,
-                        params: DrumVoiceParams::Snare(new_p.drum_params.snare),
-                    });
-                    commands_to_send.push(SynthCommand::UpdateDrumParams {
-                        drum_role: DrumRole::Toms,
-                        params: DrumVoiceParams::Toms(new_p.drum_params.toms),
-                    });
-                    commands_to_send.push(SynthCommand::UpdateDrumParams {
-                        drum_role: DrumRole::HiHats,
-                        params: DrumVoiceParams::HiHats(new_p.drum_params.hi_hats),
-                    });
-                    commands_to_send.push(SynthCommand::UpdateDrumParams {
-                        drum_role: DrumRole::Cymbals,
-                        params: DrumVoiceParams::Cymbals(new_p.drum_params.cymbals),
-                    });
-                    commands_to_send.push(SynthCommand::UpdateDrumParams {
-                        drum_role: DrumRole::PercAux,
-                        params: DrumVoiceParams::PercAux(new_p.drum_params.aux),
-                    });
-                    commands_to_send.push(SynthCommand::UpdateGmVoiceParams(new_p.fm_params));
+                    app.sync_part_to_synth_engine(app.synth_lab.target_part_idx, &new_p);
 
                     app.synth_lab.status_msg = Some(format!(
-                        "Bound patch to Track {}",
-                        app.synth_lab.target_part_idx + 1
+                        "Editing Track {}: '{}' ({})",
+                        app.synth_lab.target_part_idx + 1,
+                        new_p.name,
+                        match (is_perc, new_p.engine) {
+                            (true, _) => "Drum Kit",
+                            (false, PitchedEngine::PhysicalString) => "Physical String",
+                            (false, PitchedEngine::FmSynth) => "FM Synth",
+                        }
                     ));
                 }
             });
@@ -342,12 +350,18 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
 
     app.synth_lab.open = open;
 
-    // Dispatch accumulated lock-free commands
+    // Dispatch accumulated lock-free commands scoped to the target part
     if !commands_to_send.is_empty() {
         let _ = app.ensure_synth_engine();
+        let target_p = app.synth_lab.target_part_idx as u8;
+        let active_p = app.selected_part_idx as u8;
         if let Some(engine) = &mut app.synth_engine {
+            engine.send(SynthCommand::SetActivePart(target_p));
             for cmd in commands_to_send {
                 engine.send(cmd);
+            }
+            if target_p != active_p {
+                engine.send(SynthCommand::SetActivePart(active_p));
             }
         }
     }
@@ -456,24 +470,15 @@ fn render_preset_bar(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Preset:").strong());
 
-        let current_name = if app.synth_lab.selected_preset_idx < factory_presets.len() {
-            factory_presets[app.synth_lab.selected_preset_idx].name.clone()
-        } else {
-            let u_idx = app.synth_lab.selected_preset_idx - factory_presets.len();
-            app.synth_lab
-                .user_presets
-                .get(u_idx)
-                .map(|p| p.name.clone())
-                .unwrap_or_else(|| app.synth_lab.preset.name.clone())
-        };
+        let current_name = app.synth_lab.preset.name.clone();
 
         egui::ComboBox::from_id_salt("synth_preset_combo")
-            .selected_text(current_name)
+            .selected_text(&current_name)
             .width(180.0)
             .show_ui(ui, |ui| {
                 ui.label(egui::RichText::new("— Factory Presets —").italics().weak());
                 for (i, p) in factory_presets.iter().enumerate() {
-                    if ui.selectable_label(app.synth_lab.selected_preset_idx == i, &p.name).clicked() {
+                    if ui.selectable_label(current_name == p.name, &p.name).clicked() {
                         app.synth_lab.selected_preset_idx = i;
                         app.synth_lab.preset = p.clone();
                         app.synth_lab.profile = p.body_params.profile_base;
@@ -739,23 +744,14 @@ fn render_scoped_audition_strip(
             let is_fm = app.synth_lab.preset.engine == PitchedEngine::FmSynth;
 
             let trigger_pitch = |cmds: &mut Vec<SynthCommand>, string_idx: u8, freq_hz: f64, vel: f32, pluck_p: f32| {
-                if is_fm {
-                    cmds.push(SynthCommand::TriggerGmVoice {
-                        channel: 1,
-                        freq_hz,
-                        velocity: vel,
-                        program: 0,
-                    });
-                } else {
-                    cmds.push(SynthCommand::TriggerString {
-                        string_idx,
-                        freq_hz,
-                        velocity: vel,
-                        pluck_pos: pluck_p,
-                        palm_mute: 0.0,
-                        harmonic_node: None,
-                    });
-                }
+                cmds.push(SynthCommand::TriggerString {
+                    string_idx,
+                    freq_hz,
+                    velocity: vel,
+                    pluck_pos: pluck_p,
+                    palm_mute: 0.0,
+                    harmonic_node: None,
+                });
             };
 
             if ui
@@ -788,6 +784,18 @@ fn render_scoped_audition_strip(
                 .clicked()
             {
                 trigger_pitch(commands, 6, 329.6276, app.synth_lab.velocity, app.synth_lab.preset.string_params.pluck_pos);
+            }
+
+            if ui
+                .button("Hammer-On Slur")
+                .on_hover_text("Slur string 2 to C3 (130.81 Hz) using the active engine (Physical String or FM Synth)")
+                .clicked()
+            {
+                commands.push(SynthCommand::SlurString {
+                    string_idx: 2,
+                    new_freq_hz: 130.8128,
+                    hammer_energy: app.synth_lab.velocity * 0.85,
+                });
             }
 
             if ui
@@ -1889,6 +1897,8 @@ fn render_fm_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut Vec<S
 /// Helper to strum the open strings of the active tab part using microtonal tuning.
 fn strum_current_part_open_strings(app: &mut MnxEditorApp) {
     let _ = app.ensure_synth_engine();
+    let target_p = app.synth_lab.target_part_idx as u8;
+    let active_p = app.selected_part_idx as u8;
 
     if let Some(doc) = &app.parsed_mnx {
         if let Some(part) = doc
@@ -1898,12 +1908,16 @@ fn strum_current_part_open_strings(app: &mut MnxEditorApp) {
         {
             if part.is_percussion() {
                 if let Some(engine) = &mut app.synth_engine {
+                    engine.send(SynthCommand::SetActivePart(target_p));
                     for (line, _id, comp) in part.ordered_kit_lines() {
                         engine.send(SynthCommand::TriggerDrum {
                             gm_drum_note: comp.sound.unwrap_or(38).min(127),
                             velocity: app.synth_lab.velocity,
                         });
                         let _ = line;
+                    }
+                    if target_p != active_p {
+                        engine.send(SynthCommand::SetActivePart(active_p));
                     }
                 }
             } else {
@@ -1912,29 +1926,23 @@ fn strum_current_part_open_strings(app: &mut MnxEditorApp) {
                 let pluck_pos = app.synth_lab.preset.string_params.pluck_pos;
                 let palm_mute = app.synth_lab.palm_mute;
                 let velocity = app.synth_lab.velocity;
-                let is_fm = app.synth_lab.preset.engine == PitchedEngine::FmSynth;
 
                 if let Some(engine) = &mut app.synth_engine {
+                    engine.send(SynthCommand::SetActivePart(target_p));
                     for s in (1..=n_str).rev() {
                         if let Some(hz) = table.string_fret_to_frequency_hz(part, s, 0) {
-                            if is_fm {
-                                engine.send(SynthCommand::TriggerGmVoice {
-                                    channel: 1,
-                                    freq_hz: hz,
-                                    velocity,
-                                    program: 0,
-                                });
-                            } else {
-                                engine.send(SynthCommand::TriggerString {
-                                    string_idx: s,
-                                    freq_hz: hz,
-                                    velocity,
-                                    pluck_pos,
-                                    palm_mute,
-                                    harmonic_node: app.synth_lab.harmonic_node,
-                                });
-                            }
+                            engine.send(SynthCommand::TriggerString {
+                                string_idx: s,
+                                freq_hz: hz,
+                                velocity,
+                                pluck_pos,
+                                palm_mute,
+                                harmonic_node: app.synth_lab.harmonic_node,
+                            });
                         }
+                    }
+                    if target_p != active_p {
+                        engine.send(SynthCommand::SetActivePart(active_p));
                     }
                 }
             }

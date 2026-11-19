@@ -2315,6 +2315,10 @@ impl MnxEditorApp {
                     {
                         self.synth_lab.open = !self.synth_lab.open;
                         if self.synth_lab.open {
+                            self.synth_lab.target_part_idx = self.selected_part_idx;
+                            let target_preset = self.get_part_synth_preset(self.synth_lab.target_part_idx);
+                            self.synth_lab.preset = target_preset.clone();
+                            self.synth_lab.profile = target_preset.body_params.profile_base;
                             let _ = self.ensure_synth_engine();
                         }
                     }

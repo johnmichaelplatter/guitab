@@ -56,8 +56,15 @@ pub enum SynthCommand {
         velocity: f32,
         program: u8,
     },
+    /// Select the active part index (`0..MAX_SYNTH_PARTS`) for subsequent note/articulation commands.
+    SetActivePart(u8),
     /// Switch the active physical instrument & body resonator profile (`AcousticGuitar`, `ElectricClean`, etc.).
     SetInstrumentProfile(crate::synth::body::InstrumentProfile),
+    /// Switch the physical instrument & body resonator profile for a specific part/track.
+    SetPartProfile {
+        part_idx: u8,
+        profile: crate::synth::body::InstrumentProfile,
+    },
     /// Switch the active pitched synthesis engine (`PhysicalString` vs `FmSynth`).
     SetPitchedEngine(PitchedEngine),
     /// Assign the active pitched synthesis engine for a specific part/track.
@@ -94,6 +101,12 @@ pub enum SynthCommand {
     UpdatePartFmParams {
         part_idx: u8,
         params: FmVoiceParams,
+    },
+    /// Scoped real-time parameter updates for procedural drum kit voices on a specific part.
+    UpdatePartDrumParams {
+        part_idx: u8,
+        drum_role: DrumRole,
+        params: DrumVoiceParams,
     },
 }
 

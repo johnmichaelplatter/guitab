@@ -3617,6 +3617,69 @@ parts:
     }
 
     #[test]
+    fn test_per_instrument_synth_preset_isolation_and_yaml_persistence() {
+        use crate::synth::patch::{PitchedEngine, SynthPreset};
+
+        let mut app = MnxEditorApp::default();
+        let tunings = vec![
+            crate::mnx::StringTuning { string: 1, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 4, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 2, pitch: crate::mnx::Pitch { step: "B".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 3, pitch: crate::mnx::Pitch { step: "G".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 4, pitch: crate::mnx::Pitch { step: "D".to_string(), alter: None, octave: 3, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 5, pitch: crate::mnx::Pitch { step: "A".to_string(), alter: None, octave: 2, ext: Default::default() } },
+            crate::mnx::StringTuning { string: 6, pitch: crate::mnx::Pitch { step: "E".to_string(), alter: None, octave: 2, ext: Default::default() } },
+        ];
+        app.start_new_tab(6, 12, 1, tunings.clone());
+        // Add a second pitched guitar part of the same kind
+        app.add_new_instrument_part("Rhythm Guitar".to_string(), 6, 12, 1, tunings, None);
+
+        assert_eq!(app.parsed_mnx.as_ref().unwrap().parts.len(), 2);
+
+        // Edit Part 0 to Heavy Lead (PhysicalString + ElectricOverdrive) with custom decay
+        let mut lead_preset = SynthPreset::heavy_lead();
+        lead_preset.string_params.t60_decay_sec = 6.25;
+        app.set_part_synth_preset(0, lead_preset.clone());
+
+        // Edit Part 1 to FM DX Electric Piano (FmSynth) with custom mod ratio
+        let mut fm_preset = SynthPreset::fm_dx_electric_piano();
+        fm_preset.fm_params.mod_ratio = 3.5;
+        app.set_part_synth_preset(1, fm_preset.clone());
+
+        // Verify Part 0 and Part 1 presets are completely independent
+        let p0 = app.get_part_synth_preset(0);
+        let p1 = app.get_part_synth_preset(1);
+        assert_eq!(p0.name, "Heavy Lead");
+        assert_eq!(p0.engine, PitchedEngine::PhysicalString);
+        assert!((p0.string_params.t60_decay_sec - 6.25).abs() < 1e-4);
+
+        assert_eq!(p1.name, "FM DX Electric Piano");
+        assert_eq!(p1.engine, PitchedEngine::FmSynth);
+        assert!((p1.fm_params.mod_ratio - 3.5).abs() < 1e-4);
+
+        // Verify both presets are persisted in the serialized YAML document text
+        let saved_yaml = app.yaml_text.clone();
+        assert!(
+            saved_yaml.contains("synthPreset"),
+            "Serialized YAML must persist synthPreset inside each part's _x block"
+        );
+
+        // Reload the YAML into a brand-new MnxEditorApp instance and verify persistence
+        let mut reloaded_app = MnxEditorApp::default();
+        reloaded_app.update_yaml(saved_yaml);
+        reloaded_app.process_and_render();
+
+        let loaded_p0 = reloaded_app.get_part_synth_preset(0);
+        let loaded_p1 = reloaded_app.get_part_synth_preset(1);
+        assert_eq!(loaded_p0.name, "Heavy Lead");
+        assert_eq!(loaded_p0.engine, PitchedEngine::PhysicalString);
+        assert!((loaded_p0.string_params.t60_decay_sec - 6.25).abs() < 1e-4);
+
+        assert_eq!(loaded_p1.name, "FM DX Electric Piano");
+        assert_eq!(loaded_p1.engine, PitchedEngine::FmSynth);
+        assert!((loaded_p1.fm_params.mod_ratio - 3.5).abs() < 1e-4);
+    }
+
+    #[test]
     fn test_phase_2b_custom_fretboard_ratio_and_decimal_fretlet_end_to_end() {
         let mut app = MnxEditorApp::default();
         let doc = app.parsed_mnx.as_ref().unwrap().clone();

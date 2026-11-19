@@ -435,6 +435,7 @@ impl Default for FmVoiceParams {
 
 /// Complete synthesizer patch capturing the entire physical-modeling, resonator, drum, and FM state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SynthPreset {
     pub name: String,
     pub author: String,
@@ -1091,5 +1092,81 @@ mod tests {
         }));
         mixer.process_f32(&mut buf, 2);
         assert!(buf.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn test_per_part_isolation_and_fm_slur_does_not_trigger_waveguide() {
+        use crate::synth::{SynthCommand, SynthEngine};
+
+        let (mut engine, mut mixer) = SynthEngine::new_headless(48_000.0, 2);
+        let mut buf = [0.0_f32; 256];
+
+        // Configure Part 0 as PhysicalString (ElectricOverdrive) and Part 1 as FmSynth
+        assert!(engine.send(SynthCommand::SetPartEngine {
+            part_idx: 0,
+            engine: PitchedEngine::PhysicalString,
+        }));
+        assert!(engine.send(SynthCommand::SetPartProfile {
+            part_idx: 0,
+            profile: InstrumentProfile::ElectricOverdrive,
+        }));
+        assert!(engine.send(SynthCommand::SetPartEngine {
+            part_idx: 1,
+            engine: PitchedEngine::FmSynth,
+        }));
+        assert!(engine.send(SynthCommand::SetPartProfile {
+            part_idx: 1,
+            profile: InstrumentProfile::AcousticGuitar,
+        }));
+        mixer.drain_commands();
+
+        // Verify Part 0 and Part 1 have completely independent engine and profile states
+        assert_eq!(mixer.parts[0].engine, PitchedEngine::PhysicalString);
+        assert_eq!(mixer.parts[0].body.profile(), InstrumentProfile::ElectricOverdrive);
+        assert_eq!(mixer.parts[1].engine, PitchedEngine::FmSynth);
+        assert_eq!(mixer.parts[1].body.profile(), InstrumentProfile::AcousticGuitar);
+
+        // Select Part 1 (FM Synth) and trigger a note followed by a hammer-on/pull-off slur and a slide
+        assert!(engine.send(SynthCommand::SetActivePart(1)));
+        assert!(engine.send(SynthCommand::TriggerString {
+            string_idx: 1,
+            freq_hz: 220.0,
+            velocity: 0.85,
+            pluck_pos: 0.18,
+            palm_mute: 0.0,
+            harmonic_node: None,
+        }));
+        mixer.process_f32(&mut buf, 2);
+        assert!(
+            mixer.parts[1].percussion.has_active_voices(),
+            "FM Synth part must have active FM voices after TriggerString"
+        );
+        assert!(
+            mixer.parts[1].strings.iter().all(|s| !s.active),
+            "FM Synth part must NOT activate physical string waveguides on TriggerString"
+        );
+
+        // Now send SlurString (hammer-on / pull-off) and SlideString on Part 1
+        assert!(engine.send(SynthCommand::SlurString {
+            string_idx: 1,
+            new_freq_hz: 246.94,
+            hammer_energy: 0.75,
+        }));
+        assert!(engine.send(SynthCommand::SlideString {
+            string_idx: 1,
+            target_freq_hz: 261.63,
+            glide_samples: 128,
+        }));
+        mixer.process_f32(&mut buf, 2);
+
+        // Physical string waveguides on Part 1 MUST remain completely inactive!
+        assert!(
+            mixer.parts[1].strings.iter().all(|s| !s.active),
+            "Hammer-ons/pull-offs (SlurString) and slides on an FM Synth part must NEVER revert to physical string waveguides"
+        );
+        assert!(
+            mixer.parts[1].percussion.has_active_voices(),
+            "FM Synth voice must remain active during hammer-on/pull-off slur"
+        );
     }
 }

@@ -28,37 +28,119 @@ pub fn flush_denormal(x: f32) -> f32 {
     }
 }
 
+/// Maximum number of independent instrument parts/tracks supported simultaneously by the real-time mixer.
+pub const MAX_SYNTH_PARTS: usize = 16;
+
+/// Independent per-instrument synthesis state (own string waveguides, body resonator, FM synth, and drum kit).
+pub struct PartSynthState {
+    pub engine: PitchedEngine,
+    pub strings: Box<[StringWaveguide; MAX_STRINGS]>,
+    pub body: BodyResonator,
+    pub percussion: PercussionAndGmPool,
+    /// Number of tail samples remaining for the body resonator after all strings go silent.
+    pub body_tail_samples: u32,
+}
+
+impl PartSynthState {
+    pub fn new(sample_rate: f32) -> Self {
+        let sr = sample_rate.max(8_000.0);
+        // Allocate each StringWaveguide onto a heap Vec one at a time so we never place
+        // a 12 x 41 KB (~493 KB) array on the stack during initialization.
+        let mut str_vec = Vec::with_capacity(MAX_STRINGS);
+        for i in 0..MAX_STRINGS {
+            str_vec.push(StringWaveguide::new(sr, (i + 1) as u8));
+        }
+        let strings: Box<[StringWaveguide; MAX_STRINGS]> =
+            match str_vec.into_boxed_slice().try_into() {
+                Ok(arr) => arr,
+                Err(_) => unreachable!(),
+            };
+        Self {
+            engine: PitchedEngine::PhysicalString,
+            strings,
+            body: BodyResonator::new(sr, InstrumentProfile::AcousticGuitar),
+            percussion: PercussionAndGmPool::new(sr),
+            body_tail_samples: 0,
+        }
+    }
+
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        for s in self.strings.iter_mut() {
+            s.clear();
+        }
+        self.body.reset();
+        self.percussion.all_notes_off();
+        self.body_tail_samples = 0;
+    }
+
+    #[inline(always)]
+    pub fn next_stereo_frame(&mut self) -> (f32, f32) {
+        let mut str_left = 0.0_f32;
+        let mut str_right = 0.0_f32;
+        let mut any_string_active = false;
+
+        for s in self.strings.iter_mut() {
+            if s.active {
+                any_string_active = true;
+                let (l, r) = s.next_frame();
+                str_left += l;
+                str_right += r;
+            }
+        }
+
+        if any_string_active {
+            self.body_tail_samples = 2048;
+        }
+
+        let (mut left, mut right) = if any_string_active || self.body_tail_samples > 0 {
+            if !any_string_active {
+                self.body_tail_samples -= 1;
+            }
+            self.body.process_stereo(str_left, str_right)
+        } else {
+            (0.0, 0.0)
+        };
+
+        if self.percussion.has_active_voices() {
+            let (perc_l, perc_r) = self.percussion.next_stereo_frame();
+            left += perc_l;
+            right += perc_r;
+        }
+
+        (left, right)
+    }
+}
+
 /// Pre-allocated, real-time audio mixer owned exclusively by the `cpal` audio callback thread.
 pub struct SynthMixer {
     sample_rate: f32,
     consumer: rtrb::Consumer<SynthCommand>,
-    /// Pre-allocated bank of 12 Extended Karplus-Strong physical string waveguides.
-    strings: Box<[StringWaveguide; MAX_STRINGS]>,
-    /// Post-string acoustic body / electric pickup + cabinet resonator.
-    body: BodyResonator,
-    /// Fixed 16-voice polyphonic pool for GM percussion (kick, snare, 808 hats/cymbals) and 2-op FM GM backing.
-    percussion: PercussionAndGmPool,
-    /// Global or default pitched synthesis engine.
-    pub pitched_engine: PitchedEngine,
-    /// Per-part pitched synthesis engine (indexed 0..15).
-    pub part_engines: [PitchedEngine; 16],
+    /// Pre-allocated bank of 16 independent instrument part synthesizers.
+    pub parts: Box<[PartSynthState; MAX_SYNTH_PARTS]>,
+    /// Currently targeted part index (`0..MAX_SYNTH_PARTS`) for subsequent note/articulation commands.
+    pub active_part_idx: usize,
 }
 
 impl SynthMixer {
     /// Pre-allocates all mixer, waveguide, body resonator, and percussion/GM voice state prior to starting the `cpal` stream.
     pub fn new(sample_rate: f32, consumer: rtrb::Consumer<SynthCommand>) -> Self {
         let sr = sample_rate.max(8_000.0);
-        let strings = Box::new(std::array::from_fn(|i| {
-            StringWaveguide::new(sr, (i + 1) as u8)
-        }));
+        // Allocate each PartSynthState directly on the heap via Vec -> Box<[PartSynthState; MAX_SYNTH_PARTS]>
+        // to avoid large stack frames during initialization.
+        let mut part_vec = Vec::with_capacity(MAX_SYNTH_PARTS);
+        for _ in 0..MAX_SYNTH_PARTS {
+            part_vec.push(PartSynthState::new(sr));
+        }
+        let parts: Box<[PartSynthState; MAX_SYNTH_PARTS]> = match part_vec.into_boxed_slice().try_into() {
+            Ok(arr) => arr,
+            Err(_) => unreachable!(),
+        };
         Self {
             sample_rate: sr,
             consumer,
-            strings,
-            body: BodyResonator::new(sr, InstrumentProfile::AcousticGuitar),
-            percussion: PercussionAndGmPool::new(sr),
-            pitched_engine: PitchedEngine::PhysicalString,
-            part_engines: [PitchedEngine::PhysicalString; 16],
+            parts,
+            active_part_idx: 0,
         }
     }
 
@@ -67,12 +149,17 @@ impl SynthMixer {
     }
 
     pub fn profile(&self) -> InstrumentProfile {
-        self.body.profile()
+        self.parts[self.active_part_idx].body.profile()
     }
 
     #[inline(always)]
     fn map_string_slot(string_idx: u8) -> usize {
         (string_idx.saturating_sub(1) as usize) % MAX_STRINGS
+    }
+
+    #[inline(always)]
+    fn map_part_slot(part_idx: u8) -> usize {
+        (part_idx as usize) % MAX_SYNTH_PARTS
     }
 
     /// Drains all pending `SynthCommand` messages from the lock-free SPSC queue.
@@ -93,6 +180,9 @@ impl SynthMixer {
     #[inline(always)]
     pub fn dispatch_command(&mut self, cmd: SynthCommand) {
         match cmd {
+            SynthCommand::SetActivePart(part_idx) => {
+                self.active_part_idx = Self::map_part_slot(part_idx);
+            }
             SynthCommand::TriggerString {
                 string_idx,
                 freq_hz,
@@ -101,11 +191,12 @@ impl SynthMixer {
                 palm_mute,
                 harmonic_node,
             } => {
-                if self.pitched_engine == PitchedEngine::FmSynth {
-                    self.percussion.trigger_gm_voice(1, freq_hz, velocity, 0);
+                let part = &mut self.parts[self.active_part_idx];
+                if part.engine == PitchedEngine::FmSynth {
+                    part.percussion.trigger_fm_string(string_idx, freq_hz, velocity);
                 } else {
                     let slot = Self::map_string_slot(string_idx);
-                    self.strings[slot].trigger(
+                    part.strings[slot].trigger(
                         string_idx,
                         freq_hz,
                         velocity,
@@ -120,29 +211,45 @@ impl SynthMixer {
                 target_freq_hz,
                 glide_samples,
             } => {
-                let slot = Self::map_string_slot(string_idx);
-                self.strings[slot].slide(target_freq_hz, glide_samples);
+                let part = &mut self.parts[self.active_part_idx];
+                if part.engine == PitchedEngine::FmSynth {
+                    part.percussion.slide_fm_string(string_idx, target_freq_hz);
+                } else {
+                    let slot = Self::map_string_slot(string_idx);
+                    part.strings[slot].slide(target_freq_hz, glide_samples);
+                }
             }
             SynthCommand::SlurString {
                 string_idx,
                 new_freq_hz,
                 hammer_energy,
             } => {
-                let slot = Self::map_string_slot(string_idx);
-                self.strings[slot].slur(new_freq_hz, hammer_energy);
+                let part = &mut self.parts[self.active_part_idx];
+                if part.engine == PitchedEngine::FmSynth {
+                    part.percussion.slur_fm_string(string_idx, new_freq_hz, hammer_energy);
+                } else {
+                    let slot = Self::map_string_slot(string_idx);
+                    part.strings[slot].slur(new_freq_hz, hammer_energy);
+                }
             }
             SynthCommand::MuteString {
                 string_idx,
                 release_rate,
             } => {
+                let part = &mut self.parts[self.active_part_idx];
+                if part.engine == PitchedEngine::FmSynth {
+                    part.percussion.mute_fm_string(string_idx, release_rate);
+                }
                 let slot = Self::map_string_slot(string_idx);
-                self.strings[slot].mute(release_rate);
+                part.strings[slot].mute(release_rate);
             }
             SynthCommand::TriggerDrum {
                 gm_drum_note,
                 velocity,
             } => {
-                self.percussion.trigger_drum(gm_drum_note, velocity);
+                self.parts[self.active_part_idx]
+                    .percussion
+                    .trigger_drum(gm_drum_note, velocity);
             }
             SynthCommand::TriggerGmVoice {
                 channel,
@@ -150,78 +257,98 @@ impl SynthMixer {
                 velocity,
                 program,
             } => {
-                self.percussion
+                self.parts[self.active_part_idx]
+                    .percussion
                     .trigger_gm_voice(channel, freq_hz, velocity, program);
             }
             SynthCommand::SetInstrumentProfile(profile) => {
-                self.body.set_profile(profile);
-                for s in self.strings.iter_mut() {
+                let part = &mut self.parts[self.active_part_idx];
+                part.body.set_profile(profile);
+                for s in part.strings.iter_mut() {
+                    s.set_profile(profile);
+                }
+            }
+            SynthCommand::SetPartProfile { part_idx, profile } => {
+                let part = &mut self.parts[Self::map_part_slot(part_idx)];
+                part.body.set_profile(profile);
+                for s in part.strings.iter_mut() {
                     s.set_profile(profile);
                 }
             }
             SynthCommand::SetPitchedEngine(engine) => {
-                self.pitched_engine = engine;
+                let part = &mut self.parts[self.active_part_idx];
+                if part.engine != engine {
+                    part.clear();
+                    part.engine = engine;
+                }
             }
             SynthCommand::SetPartEngine { part_idx, engine } => {
-                self.part_engines[(part_idx as usize) % 16] = engine;
-                self.pitched_engine = engine;
+                let part = &mut self.parts[Self::map_part_slot(part_idx)];
+                if part.engine != engine {
+                    part.clear();
+                    part.engine = engine;
+                }
             }
             SynthCommand::UpdateStringParams(params) => {
-                for s in self.strings.iter_mut() {
+                let part = &mut self.parts[self.active_part_idx];
+                for s in part.strings.iter_mut() {
                     s.update_params(&params);
                 }
             }
             SynthCommand::UpdateBodyParams(params) => {
-                self.body.update_params(&params);
+                self.parts[self.active_part_idx].body.update_params(&params);
             }
             SynthCommand::UpdateDrumParams { drum_role, params } => {
-                self.percussion.update_drum_params(drum_role, params);
+                self.parts[self.active_part_idx]
+                    .percussion
+                    .update_drum_params(drum_role, params);
             }
             SynthCommand::UpdateGmVoiceParams(params) => {
-                self.percussion.update_fm_params(params);
+                self.parts[self.active_part_idx]
+                    .percussion
+                    .update_fm_params(params);
             }
-            SynthCommand::UpdatePartStringParams { part_idx: _, params } => {
-                for s in self.strings.iter_mut() {
+            SynthCommand::UpdatePartStringParams { part_idx, params } => {
+                let part = &mut self.parts[Self::map_part_slot(part_idx)];
+                for s in part.strings.iter_mut() {
                     s.update_params(&params);
                 }
             }
-            SynthCommand::UpdatePartBodyParams { part_idx: _, params } => {
-                self.body.update_params(&params);
+            SynthCommand::UpdatePartBodyParams { part_idx, params } => {
+                let part = &mut self.parts[Self::map_part_slot(part_idx)];
+                part.body.update_params(&params);
             }
-            SynthCommand::UpdatePartFmParams { part_idx: _, params } => {
-                self.percussion.update_fm_params(params);
+            SynthCommand::UpdatePartFmParams { part_idx, params } => {
+                let part = &mut self.parts[Self::map_part_slot(part_idx)];
+                part.percussion.update_fm_params(params);
+            }
+            SynthCommand::UpdatePartDrumParams {
+                part_idx,
+                drum_role,
+                params,
+            } => {
+                let part = &mut self.parts[Self::map_part_slot(part_idx)];
+                part.percussion.update_drum_params(drum_role, params);
             }
             SynthCommand::AllNotesOff => {
-                for s in self.strings.iter_mut() {
-                    s.clear();
+                for part in self.parts.iter_mut() {
+                    part.clear();
                 }
-                self.body.reset();
-                self.percussion.all_notes_off();
             }
         }
     }
 
-    /// Renders the next stereo frame `(left, right)` in `[-1.0, 1.0]`.
+    /// Renders the next stereo frame `(left, right)` in `[-1.0, 1.0]`, summing all active instrument parts.
     #[inline(always)]
     pub fn next_stereo_frame(&mut self) -> (f32, f32) {
-        let mut str_left = 0.0_f32;
-        let mut str_right = 0.0_f32;
+        let mut left = 0.0_f32;
+        let mut right = 0.0_f32;
 
-        for s in self.strings.iter_mut() {
-            if s.active {
-                let (l, r) = s.next_frame();
-                str_left += l;
-                str_right += r;
-            }
+        for part in self.parts.iter_mut() {
+            let (pl, pr) = part.next_stereo_frame();
+            left += pl;
+            right += pr;
         }
-
-        // Route summed string waveguides through the active acoustic body / electric cab resonator
-        let (mut left, mut right) = self.body.process_stereo(str_left, str_right);
-
-        // Sum 16-voice polyphonic percussion & 2-op FM GM backing pool
-        let (perc_l, perc_r) = self.percussion.next_stereo_frame();
-        left += perc_l;
-        right += perc_r;
 
         // Smooth rational soft-clipper + hard clamp to prevent digital overs
         let soft_l = left / (1.0 + left.abs() * 0.25);

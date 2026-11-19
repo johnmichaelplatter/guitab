@@ -831,6 +831,12 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                         } else {
                                             (exact_freq_hz, None)
                                         };
+                                        let pluck_pos = part
+                                            .ext
+                                            .synth_preset
+                                            .as_ref()
+                                            .map(|p| p.string_params.pluck_pos)
+                                            .unwrap_or(0.18);
                                         self.abs_events.push(InternalAbsoluteEvent {
                                             time_ticks: note_start_ticks,
                                             kind: InternalEventKind::Synth(
@@ -838,7 +844,7 @@ impl<'a> PlaybackTrackGenerator<'a> {
                                                     string_idx: string,
                                                     freq_hz: trig_freq_hz,
                                                     velocity: vel_norm,
-                                                    pluck_pos: 0.18,
+                                                    pluck_pos,
                                                     palm_mute,
                                                     harmonic_node: harm_node,
                                                 },
@@ -1415,6 +1421,7 @@ pub fn generate_multi_part_playback_track(
     #[derive(Clone)]
     struct TaggedAbsEvent {
         time_ticks: u32,
+        part_idx: usize,
         kind: MultiPartPlaybackEventKind,
     }
 
@@ -1445,6 +1452,7 @@ pub fn generate_multi_part_playback_track(
                     if cfg_i == 0 {
                         combined_abs.push(TaggedAbsEvent {
                             time_ticks: ev.time_ticks,
+                            part_idx: cfg.part_idx,
                             kind: MultiPartPlaybackEventKind::Tempo(mpb),
                         });
                     }
@@ -1452,6 +1460,7 @@ pub fn generate_multi_part_playback_track(
                 InternalEventKind::Midi { channel, message } => {
                     combined_abs.push(TaggedAbsEvent {
                         time_ticks: ev.time_ticks,
+                        part_idx: cfg.part_idx,
                         kind: MultiPartPlaybackEventKind::Midi {
                             port_index: cfg.port_index,
                             channel,
@@ -1462,12 +1471,14 @@ pub fn generate_multi_part_playback_track(
                 InternalEventKind::Synth(cmd) => {
                     combined_abs.push(TaggedAbsEvent {
                         time_ticks: ev.time_ticks,
+                        part_idx: cfg.part_idx,
                         kind: MultiPartPlaybackEventKind::Synth(cmd),
                     });
                 }
                 InternalEventKind::EventMarker(idx) => {
                     combined_abs.push(TaggedAbsEvent {
                         time_ticks: ev.time_ticks,
+                        part_idx: cfg.part_idx,
                         kind: MultiPartPlaybackEventKind::PartEventMarker {
                             part_idx: cfg.part_idx,
                             event_idx: idx,
@@ -1484,6 +1495,7 @@ pub fn generate_multi_part_playback_track(
     if max_end_tick > 0 {
         combined_abs.push(TaggedAbsEvent {
             time_ticks: max_end_tick,
+            part_idx: 0,
             kind: MultiPartPlaybackEventKind::EndOfTrack,
         });
     }
@@ -1492,9 +1504,22 @@ pub fn generate_multi_part_playback_track(
 
     let mut playback_events = Vec::with_capacity(combined_abs.len());
     let mut last_time = 0u32;
+    let mut current_synth_part: Option<usize> = None;
     for abs_e in combined_abs {
-        let delta = abs_e.time_ticks.saturating_sub(last_time);
+        let mut delta = abs_e.time_ticks.saturating_sub(last_time);
         last_time = abs_e.time_ticks;
+        if matches!(abs_e.kind, MultiPartPlaybackEventKind::Synth(_)) {
+            if current_synth_part != Some(abs_e.part_idx) {
+                current_synth_part = Some(abs_e.part_idx);
+                playback_events.push(MultiPartPlaybackEvent {
+                    delta_ticks: delta,
+                    kind: MultiPartPlaybackEventKind::Synth(
+                        crate::synth::SynthCommand::SetActivePart(abs_e.part_idx as u8),
+                    ),
+                });
+                delta = 0;
+            }
+        }
         playback_events.push(MultiPartPlaybackEvent {
             delta_ticks: delta,
             kind: abs_e.kind,
