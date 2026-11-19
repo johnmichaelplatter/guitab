@@ -17,6 +17,25 @@ pub enum PitchedEngine {
     FmSynth,
 }
 
+fn default_polarization_detune_cents() -> f32 {
+    0.7
+}
+fn default_polarization_coupling() -> f32 {
+    0.012
+}
+fn default_tension_mod_amount() -> f32 {
+    0.30
+}
+fn default_fret_buzz_sizzle() -> f32 {
+    0.20
+}
+fn default_sympathetic_coupling() -> f32 {
+    0.0025
+}
+fn default_modal_knock_air() -> f32 {
+    0.55
+}
+
 /// Extended Karplus-Strong physical string waveguide parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StringSynthParams {
@@ -24,7 +43,7 @@ pub struct StringSynthParams {
     pub pluck_pos: f32,
     /// Pick hardness / lowpass cutoff frequency on initial excitation burst in Hz (500.0..=16000.0).
     pub pick_hardness: f32,
-    /// Ratio of transient white noise vs. rounded triangle pluck impulse in `[0.0, 1.0]`.
+    /// Ratio of transient winding-scrape noise vs. raised-cosine pluck displacement pulse in `[0.0, 1.0]`.
     pub noise_mix: f32,
     /// Target $T_{60}$ loop decay sustain time in seconds (0.1..=10.0 s).
     pub t60_decay_sec: f32,
@@ -36,6 +55,21 @@ pub struct StringSynthParams {
     pub palm_mute_damping: f32,
     /// Duration of harmonic node isolation tap coupling in milliseconds (10.0..=500.0 ms).
     pub harmonic_damping_ms: f32,
+    /// Detuning of the vertical polarization delay line relative to horizontal in cents (0.0..=3.0 cents, default ~0.7).
+    #[serde(default = "default_polarization_detune_cents")]
+    pub polarization_detune_cents: f32,
+    /// Bridge $2 \times 2$ orthogonal mixing angle between horizontal and vertical polarizations (0.0..=0.05, default 0.012).
+    #[serde(default = "default_polarization_coupling")]
+    pub polarization_coupling: f32,
+    /// Strength of energy-driven tension modulation pitch drop on hard plucks (`0.0..=1.0`).
+    #[serde(default = "default_tension_mod_amount")]
+    pub tension_mod_amount: f32,
+    /// Acoustic fret buzz / sizzle sensitivity controlling the asymmetric `fret_clearance` barrier (`0.0..=1.0`).
+    #[serde(default = "default_fret_buzz_sizzle")]
+    pub fret_buzz_sizzle: f32,
+    /// Fraction of summed bridge force coupled back into unmuted waveguides for sympathetic resonance (`0.0..=0.015`, default `0.0025`).
+    #[serde(default = "default_sympathetic_coupling")]
+    pub sympathetic_coupling: f32,
 }
 
 impl Default for StringSynthParams {
@@ -49,6 +83,11 @@ impl Default for StringSynthParams {
             inharmonicity_dispersion: 0.12,
             palm_mute_damping: 0.22,
             harmonic_damping_ms: 30.0,
+            polarization_detune_cents: default_polarization_detune_cents(),
+            polarization_coupling: default_polarization_coupling(),
+            tension_mod_amount: default_tension_mod_amount(),
+            fret_buzz_sizzle: default_fret_buzz_sizzle(),
+            sympathetic_coupling: default_sympathetic_coupling(),
         }
     }
 }
@@ -88,6 +127,9 @@ pub struct BodyResonatorParams {
     pub pre_drive: f32,
     /// Output makeup gain in dB (-18.0..=+12.0 dB).
     pub post_gain_db: f32,
+    /// Intensity of the 12-mode wooden body resonant bank + 4-tap Householder micro soundboard diffusion (`0.0..=1.0`).
+    #[serde(default = "default_modal_knock_air")]
+    pub modal_knock_air: f32,
     /// 4 parametric biquad bands:
     /// - `bands[0]`: Helmholtz / air cavity resonance (~98 Hz)
     /// - `bands[1]`: Top plate / wood mode dipole (~205 Hz)
@@ -103,6 +145,7 @@ impl Default for BodyResonatorParams {
             body_wet_mix: 0.35,
             pre_drive: 1.0,
             post_gain_db: 0.0,
+            modal_knock_air: default_modal_knock_air(),
             bands: [
                 BiquadBandParams {
                     freq_hz: 98.0,
@@ -469,12 +512,18 @@ impl SynthPreset {
                 inharmonicity_dispersion: 0.15,
                 palm_mute_damping: 0.22,
                 harmonic_damping_ms: 30.0,
+                polarization_detune_cents: 0.75,
+                polarization_coupling: 0.013,
+                tension_mod_amount: 0.30,
+                fret_buzz_sizzle: 0.22,
+                sympathetic_coupling: 0.0030,
             },
             body_params: BodyResonatorParams {
                 profile_base: InstrumentProfile::AcousticGuitar,
                 body_wet_mix: 0.35,
                 pre_drive: 1.0,
                 post_gain_db: 0.0,
+                modal_knock_air: 0.72,
                 bands: [
                     BiquadBandParams {
                         freq_hz: 98.0,
@@ -522,12 +571,18 @@ impl SynthPreset {
                 inharmonicity_dispersion: 0.10,
                 palm_mute_damping: 0.25,
                 harmonic_damping_ms: 25.0,
+                polarization_detune_cents: 0.60,
+                polarization_coupling: 0.010,
+                tension_mod_amount: 0.25,
+                fret_buzz_sizzle: 0.18,
+                sympathetic_coupling: 0.0020,
             },
             body_params: BodyResonatorParams {
                 profile_base: InstrumentProfile::ElectricClean,
                 body_wet_mix: 1.0,
                 pre_drive: 1.35,
                 post_gain_db: -1.0,
+                modal_knock_air: 0.38,
                 bands: [
                     BiquadBandParams {
                         freq_hz: 85.0,
@@ -575,12 +630,18 @@ impl SynthPreset {
                 inharmonicity_dispersion: 0.08,
                 palm_mute_damping: 0.32,
                 harmonic_damping_ms: 20.0,
+                polarization_detune_cents: 0.50,
+                polarization_coupling: 0.009,
+                tension_mod_amount: 0.35,
+                fret_buzz_sizzle: 0.15,
+                sympathetic_coupling: 0.0018,
             },
             body_params: BodyResonatorParams {
                 profile_base: InstrumentProfile::ElectricOverdrive,
                 body_wet_mix: 1.0,
                 pre_drive: 3.8,
                 post_gain_db: -2.5,
+                modal_knock_air: 0.42,
                 bands: [
                     BiquadBandParams {
                         freq_hz: 85.0,
@@ -628,12 +689,18 @@ impl SynthPreset {
                 inharmonicity_dispersion: 0.35,
                 palm_mute_damping: 0.18,
                 harmonic_damping_ms: 35.0,
+                polarization_detune_cents: 0.85,
+                polarization_coupling: 0.015,
+                tension_mod_amount: 0.45,
+                fret_buzz_sizzle: 0.30,
+                sympathetic_coupling: 0.0025,
             },
             body_params: BodyResonatorParams {
                 profile_base: InstrumentProfile::FingeredBass,
                 body_wet_mix: 0.90,
                 pre_drive: 1.2,
                 post_gain_db: 1.5,
+                modal_knock_air: 0.68,
                 bands: [
                     BiquadBandParams {
                         freq_hz: 38.0,
@@ -794,7 +861,12 @@ impl SynthPreset {
         out.push_str(&format!("    \"brightness_s\": {:.4},\n", self.string_params.brightness_s));
         out.push_str(&format!("    \"inharmonicity_dispersion\": {:.4},\n", self.string_params.inharmonicity_dispersion));
         out.push_str(&format!("    \"palm_mute_damping\": {:.4},\n", self.string_params.palm_mute_damping));
-        out.push_str(&format!("    \"harmonic_damping_ms\": {:.1}\n", self.string_params.harmonic_damping_ms));
+        out.push_str(&format!("    \"harmonic_damping_ms\": {:.1},\n", self.string_params.harmonic_damping_ms));
+        out.push_str(&format!("    \"polarization_detune_cents\": {:.4},\n", self.string_params.polarization_detune_cents));
+        out.push_str(&format!("    \"polarization_coupling\": {:.5},\n", self.string_params.polarization_coupling));
+        out.push_str(&format!("    \"tension_mod_amount\": {:.4},\n", self.string_params.tension_mod_amount));
+        out.push_str(&format!("    \"fret_buzz_sizzle\": {:.4},\n", self.string_params.fret_buzz_sizzle));
+        out.push_str(&format!("    \"sympathetic_coupling\": {:.5}\n", self.string_params.sympathetic_coupling));
         out.push_str("  },\n");
 
         // Body params
@@ -803,6 +875,7 @@ impl SynthPreset {
         out.push_str(&format!("    \"body_wet_mix\": {:.4},\n", self.body_params.body_wet_mix));
         out.push_str(&format!("    \"pre_drive\": {:.4},\n", self.body_params.pre_drive));
         out.push_str(&format!("    \"post_gain_db\": {:.2},\n", self.body_params.post_gain_db));
+        out.push_str(&format!("    \"modal_knock_air\": {:.4},\n", self.body_params.modal_knock_air));
         out.push_str("    \"bands\": [\n");
         for (i, b) in self.body_params.bands.iter().enumerate() {
             let comma = if i + 1 < self.body_params.bands.len() { "," } else { "" };
@@ -924,6 +997,12 @@ mod tests {
             assert_eq!(p.engine, deserialized.engine);
             assert_eq!(p.body_params.profile_base, deserialized.body_params.profile_base);
             assert!((p.string_params.pluck_pos - deserialized.string_params.pluck_pos).abs() < 1e-3);
+            assert!((p.string_params.polarization_detune_cents - deserialized.string_params.polarization_detune_cents).abs() < 1e-3);
+            assert!((p.string_params.polarization_coupling - deserialized.string_params.polarization_coupling).abs() < 1e-4);
+            assert!((p.string_params.tension_mod_amount - deserialized.string_params.tension_mod_amount).abs() < 1e-3);
+            assert!((p.string_params.fret_buzz_sizzle - deserialized.string_params.fret_buzz_sizzle).abs() < 1e-3);
+            assert!((p.string_params.sympathetic_coupling - deserialized.string_params.sympathetic_coupling).abs() < 1e-4);
+            assert!((p.body_params.modal_knock_air - deserialized.body_params.modal_knock_air).abs() < 1e-3);
             assert!((p.drum_params.kick.pitch_start_hz - deserialized.drum_params.kick.pitch_start_hz).abs() < 1e-3);
             assert!((p.drum_params.kick.body_decay_ms - deserialized.drum_params.kick.body_decay_ms).abs() < 1e-3);
             assert!((p.drum_params.snare.mode2_freq_hz - deserialized.drum_params.snare.mode2_freq_hz).abs() < 1e-3);
@@ -1168,5 +1247,43 @@ mod tests {
             mixer.parts[1].percussion.has_active_voices(),
             "FM Synth voice must remain active during hammer-on/pull-off slur"
         );
+    }
+
+    #[test]
+    fn test_legacy_preset_json_deserializes_with_realism_defaults() {
+        let legacy_json = r#"{
+  "name": "Legacy Acoustic",
+  "author": "user",
+  "string_params": {
+    "pluck_pos": 0.2,
+    "pick_hardness": 8000.0,
+    "noise_mix": 0.5,
+    "t60_decay_sec": 3.5,
+    "brightness_s": 0.16,
+    "inharmonicity_dispersion": 0.12,
+    "palm_mute_damping": 0.22,
+    "harmonic_damping_ms": 30.0
+  },
+  "body_params": {
+    "profile_base": "AcousticGuitar",
+    "body_wet_mix": 0.35,
+    "pre_drive": 1.0,
+    "post_gain_db": 0.0,
+    "bands": [
+      { "freq_hz": 98.0, "q": 6.0, "gain_db": 3.0, "enabled": true },
+      { "freq_hz": 205.0, "q": 5.2, "gain_db": 2.0, "enabled": true },
+      { "freq_hz": 410.0, "q": 4.5, "gain_db": 1.5, "enabled": true },
+      { "freq_hz": 5200.0, "q": 0.85, "gain_db": -4.0, "enabled": true }
+    ]
+  }
+}"#;
+        let parsed = SynthPreset::from_json_string(legacy_json)
+            .expect("Legacy preset without realism fields must deserialize cleanly");
+        assert!((parsed.string_params.polarization_detune_cents - 0.7).abs() < 1e-4);
+        assert!((parsed.string_params.polarization_coupling - 0.012).abs() < 1e-5);
+        assert!((parsed.string_params.tension_mod_amount - 0.30).abs() < 1e-4);
+        assert!((parsed.string_params.fret_buzz_sizzle - 0.20).abs() < 1e-4);
+        assert!((parsed.string_params.sympathetic_coupling - 0.0025).abs() < 1e-5);
+        assert!((parsed.body_params.modal_knock_air - 0.55).abs() < 1e-4);
     }
 }

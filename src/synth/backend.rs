@@ -37,15 +37,19 @@ pub struct PartSynthState {
     pub strings: Box<[StringWaveguide; MAX_STRINGS]>,
     pub body: BodyResonator,
     pub percussion: PercussionAndGmPool,
+    /// Shared scalar bridge vibration bus summed across all strings each sample frame
+    /// for passive sympathetic resonance coupling.
+    pub bridge_bus: f32,
     /// Number of tail samples remaining for the body resonator after all strings go silent.
     pub body_tail_samples: u32,
+    /// Sample-rate scaled duration of the body resonator tail (~250 ms for high-Q wood modes).
+    body_tail_len: u32,
 }
 
 impl PartSynthState {
     pub fn new(sample_rate: f32) -> Self {
         let sr = sample_rate.max(8_000.0);
-        // Allocate each StringWaveguide onto a heap Vec one at a time so we never place
-        // a 12 x 41 KB (~493 KB) array on the stack during initialization.
+        // Allocate each StringWaveguide onto a heap Vec one at a time so stack usage remains minimal.
         let mut str_vec = Vec::with_capacity(MAX_STRINGS);
         for i in 0..MAX_STRINGS {
             str_vec.push(StringWaveguide::new(sr, (i + 1) as u8));
@@ -55,12 +59,15 @@ impl PartSynthState {
                 Ok(arr) => arr,
                 Err(_) => unreachable!(),
             };
+        let body_tail_len = (0.25 * sr).round().clamp(2048.0, 24_000.0) as u32;
         Self {
             engine: PitchedEngine::PhysicalString,
             strings,
             body: BodyResonator::new(sr, InstrumentProfile::AcousticGuitar),
             percussion: PercussionAndGmPool::new(sr),
+            bridge_bus: 0.0,
             body_tail_samples: 0,
+            body_tail_len,
         }
     }
 
@@ -71,27 +78,56 @@ impl PartSynthState {
         }
         self.body.reset();
         self.percussion.all_notes_off();
+        self.bridge_bus = 0.0;
         self.body_tail_samples = 0;
     }
 
     #[inline(always)]
     pub fn next_stereo_frame(&mut self) -> (f32, f32) {
-        let mut str_left = 0.0_f32;
-        let mut str_right = 0.0_f32;
+        let prev_bridge = self.bridge_bus;
+        let mut coupled_count = 0usize;
         let mut any_string_active = false;
 
-        for s in self.strings.iter_mut() {
-            if s.active {
-                any_string_active = true;
-                let (l, r) = s.next_frame();
-                str_left += l;
-                str_right += r;
+        // Wake any already-tuned, unmuted silent strings when sympathetic bridge energy is present
+        if prev_bridge.abs() > 2.0e-4 {
+            for s in self.strings.iter_mut() {
+                if !s.active {
+                    s.try_sympathetic_wake(prev_bridge);
+                }
+                if s.active {
+                    any_string_active = true;
+                    if s.is_sympathetically_coupled() {
+                        coupled_count += 1;
+                    }
+                }
+            }
+        } else {
+            for s in self.strings.iter() {
+                if s.active {
+                    any_string_active = true;
+                    if s.is_sympathetically_coupled() {
+                        coupled_count += 1;
+                    }
+                }
             }
         }
 
+        let mut str_left = 0.0_f32;
+        let mut str_right = 0.0_f32;
+        let mut next_bridge_bus = 0.0_f32;
+
         if any_string_active {
-            self.body_tail_samples = 2048;
+            for s in self.strings.iter_mut() {
+                if s.active {
+                    let (l, r, bridge_force) = s.next_frame_with_bridge(prev_bridge, coupled_count);
+                    str_left += l;
+                    str_right += r;
+                    next_bridge_bus += bridge_force;
+                }
+            }
+            self.body_tail_samples = self.body_tail_len;
         }
+        self.bridge_bus = flush_denormal(next_bridge_bus.clamp(-4.0, 4.0));
 
         let (mut left, mut right) = if any_string_active || self.body_tail_samples > 0 {
             if !any_string_active {
@@ -531,4 +567,65 @@ fn build_stream_for_format(
     };
 
     res.map_err(|e| format!("Failed to build cpal output stream: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::synth::{SynthCommand, SynthEngine};
+
+    #[test]
+    fn test_mixer_sympathetic_bridge_bus_and_12_string_unison_stability() {
+        let (mut engine, mut mixer) = SynthEngine::new_headless(48_000.0, 2);
+
+        // Configure max sympathetic resonance & high sustain on Part 0
+        let mut sp = crate::synth::patch::StringSynthParams::default();
+        sp.t60_decay_sec = 9.0;
+        sp.sympathetic_coupling = 0.012;
+        sp.polarization_coupling = 0.024;
+        sp.polarization_detune_cents = 1.2;
+        assert!(engine.send(SynthCommand::UpdatePartStringParams {
+            part_idx: 0,
+            params: sp,
+        }));
+
+        // Worst-case stability stress test: trigger all 12 strings simultaneously at exact unison (220 Hz)
+        for s_idx in 1..=(MAX_STRINGS as u8) {
+            assert!(engine.send(SynthCommand::TriggerString {
+                string_idx: s_idx,
+                freq_hz: 220.0,
+                velocity: 1.0,
+                pluck_pos: 0.18,
+                palm_mute: 0.0,
+                harmonic_node: None,
+            }));
+        }
+
+        // Process 1 second (48,000 stereo frames) in 256-frame blocks
+        let mut buf = [0.0_f32; 512];
+        let mut first_half_rms = 0.0_f32;
+        let mut second_half_rms = 0.0_f32;
+        for block in 0..188 {
+            mixer.process_f32(&mut buf, 2);
+            for &s in &buf {
+                assert!(
+                    s.is_finite() && s.abs() <= 1.0,
+                    "12-string unison sympathetic stress test produced invalid sample: {}",
+                    s
+                );
+            }
+            let e: f32 = buf.iter().map(|s| s * s).sum();
+            if block < 94 {
+                first_half_rms += e;
+            } else {
+                second_half_rms += e;
+            }
+        }
+        assert!(
+            first_half_rms > second_half_rms && second_half_rms > 1.0e-3,
+            "12-string unison sympathetic bridge bus must decay stably without runaway (first={}, second={})",
+            first_half_rms,
+            second_half_rms
+        );
+    }
 }

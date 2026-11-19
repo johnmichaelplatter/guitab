@@ -61,8 +61,8 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
     egui::Window::new("Sound Design & Patch Editor (Synth Lab)")
         .open(&mut open)
         .resizable(true)
-        .default_width(580.0)
-        .default_height(720.0)
+        .default_width(640.0)
+        .default_height(780.0)
         .show(ctx, |ui| {
             // -------------------------------------------------------------
             // Top Audio Status & Panic Bar
@@ -335,16 +335,18 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
 
                 ui.add_space(4.0);
 
-                match app.synth_lab.preset.engine {
-                    PitchedEngine::PhysicalString => {
-                        app.synth_lab.active_tab = SynthEditorTab::PhysicalString;
-                        render_unified_string_and_body_panel(ui, app, &mut commands_to_send);
-                    }
-                    PitchedEngine::FmSynth => {
-                        app.synth_lab.active_tab = SynthEditorTab::FmSynth;
-                        render_fm_tab(ui, app, &mut commands_to_send);
-                    }
-                }
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| match app.synth_lab.preset.engine {
+                        PitchedEngine::PhysicalString => {
+                            app.synth_lab.active_tab = SynthEditorTab::PhysicalString;
+                            render_unified_string_and_body_panel(ui, app, &mut commands_to_send);
+                        }
+                        PitchedEngine::FmSynth => {
+                            app.synth_lab.active_tab = SynthEditorTab::FmSynth;
+                            render_fm_tab(ui, app, &mut commands_to_send);
+                        }
+                    });
             }
         });
 
@@ -1303,6 +1305,66 @@ fn render_unified_string_and_body_panel(
                     if resp.double_clicked() { p.harmonic_damping_ms = 30.0; str_changed = true; }
                     ui.end_row();
                 });
+
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Physical Modeling Realism:").strong());
+            ui.add_space(2.0);
+
+            egui::Grid::new("unified_string_realism_grid")
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Dual-Polarization Bloom:")
+                        .on_hover_text(format!(
+                            "Coupled H/V waveguides with two-stage decay & harmonic bloom (detune {:.2} cents, coupling {:.4})",
+                            p.polarization_detune_cents, p.polarization_coupling
+                        ));
+                    let mut bloom = (p.polarization_coupling / 0.024).clamp(0.0, 1.0);
+                    let resp = ui.add(egui::Slider::new(&mut bloom, 0.0..=1.0));
+                    if resp.changed() {
+                        p.polarization_coupling = bloom * 0.024;
+                        p.polarization_detune_cents = bloom * 1.4;
+                        str_changed = true;
+                    }
+                    if resp.double_clicked() {
+                        p.polarization_coupling = 0.012;
+                        p.polarization_detune_cents = 0.7;
+                        str_changed = true;
+                    }
+                    ui.end_row();
+
+                    ui.label("Tension Pitch Bend:")
+                        .on_hover_text("Energy-driven string tension pitch drop over the first 50–100 ms on hard plucks");
+                    let resp = ui.add(egui::Slider::new(&mut p.tension_mod_amount, 0.0..=1.0));
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.tension_mod_amount = 0.30; str_changed = true; }
+                    ui.end_row();
+
+                    ui.label("Fret Buzz Sizzle:")
+                        .on_hover_text("Asymmetric fret-clearance soft-clipping barrier triggered only on high-velocity plucks");
+                    let resp = ui.add(egui::Slider::new(&mut p.fret_buzz_sizzle, 0.0..=1.0));
+                    if resp.changed() { str_changed = true; }
+                    if resp.double_clicked() { p.fret_buzz_sizzle = 0.20; str_changed = true; }
+                    ui.end_row();
+
+                    ui.label("Sympathetic Resonance:")
+                        .on_hover_text(format!(
+                            "Passive bridge-bus coupling across unmuted strings for natural chord & open-string bloom (coupling {:.4})",
+                            p.sympathetic_coupling
+                        ));
+                    let mut symp_norm = (p.sympathetic_coupling / 0.010).clamp(0.0, 1.0);
+                    let resp = ui.add(egui::Slider::new(&mut symp_norm, 0.0..=1.0));
+                    if resp.changed() {
+                        p.sympathetic_coupling = symp_norm * 0.010;
+                        str_changed = true;
+                    }
+                    if resp.double_clicked() {
+                        p.sympathetic_coupling = 0.0025;
+                        str_changed = true;
+                    }
+                    ui.end_row();
+                });
         });
 
         // ---------------------------------------------------------
@@ -1319,11 +1381,20 @@ fn render_unified_string_and_body_panel(
                     ui.label("Wet/Dry Mix:");
                     let resp = ui.add(egui::Slider::new(&mut bp.body_wet_mix, 0.0..=1.0));
                     if resp.changed() { body_changed = true; }
+                    if resp.double_clicked() { bp.body_wet_mix = 0.35; body_changed = true; }
+                    ui.end_row();
+
+                    ui.label("Wood Modal Knock / Air:")
+                        .on_hover_text("12-mode high-Q wood/cabinet resonant bank + 4-tap Householder micro soundboard diffusion (< 2.5 ms)");
+                    let resp = ui.add(egui::Slider::new(&mut bp.modal_knock_air, 0.0..=1.0));
+                    if resp.changed() { body_changed = true; }
+                    if resp.double_clicked() { bp.modal_knock_air = 0.55; body_changed = true; }
                     ui.end_row();
 
                     ui.label("Overdrive Drive:");
                     let resp = ui.add(egui::Slider::new(&mut bp.pre_drive, 0.0..=5.0));
                     if resp.changed() { body_changed = true; }
+                    if resp.double_clicked() { bp.pre_drive = 1.0; body_changed = true; }
                     ui.end_row();
 
                     ui.label("Makeup Gain:");
@@ -1332,6 +1403,7 @@ fn render_unified_string_and_body_panel(
                             .suffix(" dB"),
                     );
                     if resp.changed() { body_changed = true; }
+                    if resp.double_clicked() { bp.post_gain_db = 0.0; body_changed = true; }
                     ui.end_row();
                 });
 
