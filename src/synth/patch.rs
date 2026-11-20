@@ -205,6 +205,9 @@ fn default_kick_shell_cavity() -> f32 {
 fn default_drum_hit_variation() -> f32 {
     0.10
 }
+fn default_zero_db() -> f32 {
+    0.0
+}
 
 /// Kick drum voice parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -235,6 +238,9 @@ pub struct KickParams {
     /// Per-hit humanization amount varying velocity & strike position (0.0 = locked/identical, 1.0 = heavy variation).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Absolute output volume in dB (`-48.0..=+12.0 dB`; `-48.0 dB` = silent mute).
+    #[serde(default = "default_zero_db")]
+    pub volume_db: f32,
 }
 
 impl Default for KickParams {
@@ -250,6 +256,7 @@ impl Default for KickParams {
             overtones_ring: default_kick_overtones_ring(),
             shell_wood_cavity: default_kick_shell_cavity(),
             hit_variation: default_drum_hit_variation(),
+            volume_db: default_zero_db(),
         }
     }
 }
@@ -321,6 +328,15 @@ pub struct SnareParams {
     /// Per-hit humanization amount varying velocity & strike position (0.0 = locked/identical, 1.0 = heavy variation).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Absolute Acoustic/Electric Snare (GM 38, 40) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub volume_db: f32,
+    /// Absolute Side Stick / Rimshot (GM 37) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub rim_volume_db: f32,
+    /// Absolute Hand Clap (GM 39) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub clap_volume_db: f32,
 }
 
 impl Default for SnareParams {
@@ -339,6 +355,9 @@ impl Default for SnareParams {
             shell_wood_cavity: default_snare_shell_cavity(),
             wire_tension: default_snare_wire_tension(),
             hit_variation: default_drum_hit_variation(),
+            volume_db: default_zero_db(),
+            rim_volume_db: default_zero_db(),
+            clap_volume_db: default_zero_db(),
         }
     }
 }
@@ -382,6 +401,9 @@ pub struct TomParams {
     /// Per-hit humanization amount varying velocity & strike position (0.0 = locked/identical, 1.0 = heavy variation).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Absolute Toms (GM 41–50) output volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub volume_db: f32,
 }
 
 impl Default for TomParams {
@@ -396,6 +418,7 @@ impl Default for TomParams {
             overtones_ring: default_tom_overtones_ring(),
             shell_wood_cavity: default_tom_shell_cavity(),
             hit_variation: default_drum_hit_variation(),
+            volume_db: default_zero_db(),
         }
     }
 }
@@ -447,6 +470,15 @@ pub struct HiHatParams {
     /// Per-hit humanization amount varying velocity & stick strike character (0.0 = locked/identical, 1.0 = heavy variation).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Absolute Closed Hi-Hat (GM 42) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub closed_volume_db: f32,
+    /// Absolute Pedal Hi-Hat (GM 44) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub pedal_volume_db: f32,
+    /// Absolute Open Hi-Hat (GM 46) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub open_volume_db: f32,
 }
 
 impl Default for HiHatParams {
@@ -463,6 +495,9 @@ impl Default for HiHatParams {
             bell_level: default_hat_bell_level(),
             stick_hardness: default_hat_stick_hardness(),
             hit_variation: default_drum_hit_variation(),
+            closed_volume_db: default_zero_db(),
+            pedal_volume_db: default_zero_db(),
+            open_volume_db: default_zero_db(),
         }
     }
 }
@@ -505,6 +540,15 @@ pub struct CymbalParams {
     /// Per-hit humanization amount varying velocity & stick strike character (0.0 = locked/identical, 1.0 = heavy variation).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Absolute Crash / Splash / China (GM 49, 52, 55, 57) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub crash_volume_db: f32,
+    /// Absolute Ride Bow (GM 51, 59) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub ride_volume_db: f32,
+    /// Absolute Ride Bell (GM 53) volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub bell_volume_db: f32,
 }
 
 impl Default for CymbalParams {
@@ -520,6 +564,9 @@ impl Default for CymbalParams {
             nonlin_shimmer: default_cymbal_nonlin_shimmer(),
             stick_hardness: default_cymbal_stick_hardness(),
             hit_variation: default_drum_hit_variation(),
+            crash_volume_db: default_zero_db(),
+            ride_volume_db: default_zero_db(),
+            bell_volume_db: default_zero_db(),
         }
     }
 }
@@ -537,6 +584,9 @@ pub struct PercAuxParams {
     pub bandpass_q: f32,
     /// Resonant metallic ring decay in milliseconds (20.0..=500.0 ms).
     pub decay_ms: f32,
+    /// Absolute Cowbell / Aux output volume in dB (`-48.0..=+12.0 dB`).
+    #[serde(default = "default_zero_db")]
+    pub volume_db: f32,
 }
 
 impl Default for PercAuxParams {
@@ -547,6 +597,7 @@ impl Default for PercAuxParams {
             detune: 0.0,
             bandpass_q: 2.0,
             decay_ms: 85.0,
+            volume_db: default_zero_db(),
         }
     }
 }
@@ -1079,7 +1130,8 @@ impl SynthPreset {
         out.push_str(&format!("      \"strike_position\": {:.4},\n", self.drum_params.kick.strike_position));
         out.push_str(&format!("      \"overtones_ring\": {:.4},\n", self.drum_params.kick.overtones_ring));
         out.push_str(&format!("      \"shell_wood_cavity\": {:.4},\n", self.drum_params.kick.shell_wood_cavity));
-        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.kick.hit_variation));
+        out.push_str(&format!("      \"hit_variation\": {:.4},\n", self.drum_params.kick.hit_variation));
+        out.push_str(&format!("      \"volume_db\": {:.2}\n", self.drum_params.kick.volume_db));
         out.push_str("    },\n");
         out.push_str("    \"snare\": {\n");
         out.push_str(&format!("      \"tone_freq_hz\": {:.1},\n", self.drum_params.snare.tone_freq_hz));
@@ -1094,7 +1146,10 @@ impl SynthPreset {
         out.push_str(&format!("      \"overtones_ring\": {:.4},\n", self.drum_params.snare.overtones_ring));
         out.push_str(&format!("      \"shell_wood_cavity\": {:.4},\n", self.drum_params.snare.shell_wood_cavity));
         out.push_str(&format!("      \"wire_tension\": {:.4},\n", self.drum_params.snare.wire_tension));
-        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.snare.hit_variation));
+        out.push_str(&format!("      \"hit_variation\": {:.4},\n", self.drum_params.snare.hit_variation));
+        out.push_str(&format!("      \"volume_db\": {:.2},\n", self.drum_params.snare.volume_db));
+        out.push_str(&format!("      \"rim_volume_db\": {:.2},\n", self.drum_params.snare.rim_volume_db));
+        out.push_str(&format!("      \"clap_volume_db\": {:.2}\n", self.drum_params.snare.clap_volume_db));
         out.push_str("    },\n");
         out.push_str("    \"toms\": {\n");
         out.push_str(&format!("      \"pitch_scale\": {:.4},\n", self.drum_params.toms.pitch_scale));
@@ -1105,7 +1160,8 @@ impl SynthPreset {
         out.push_str(&format!("      \"strike_position\": {:.4},\n", self.drum_params.toms.strike_position));
         out.push_str(&format!("      \"overtones_ring\": {:.4},\n", self.drum_params.toms.overtones_ring));
         out.push_str(&format!("      \"shell_wood_cavity\": {:.4},\n", self.drum_params.toms.shell_wood_cavity));
-        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.toms.hit_variation));
+        out.push_str(&format!("      \"hit_variation\": {:.4},\n", self.drum_params.toms.hit_variation));
+        out.push_str(&format!("      \"volume_db\": {:.2}\n", self.drum_params.toms.volume_db));
         out.push_str("    },\n");
         out.push_str("    \"hi_hats\": {\n");
         out.push_str(&format!("      \"spread\": {:.4},\n", self.drum_params.hi_hats.spread));
@@ -1118,7 +1174,10 @@ impl SynthPreset {
         out.push_str(&format!("      \"nonlin_shimmer\": {:.4},\n", self.drum_params.hi_hats.nonlin_shimmer));
         out.push_str(&format!("      \"bell_level\": {:.4},\n", self.drum_params.hi_hats.bell_level));
         out.push_str(&format!("      \"stick_hardness\": {:.4},\n", self.drum_params.hi_hats.stick_hardness));
-        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.hi_hats.hit_variation));
+        out.push_str(&format!("      \"hit_variation\": {:.4},\n", self.drum_params.hi_hats.hit_variation));
+        out.push_str(&format!("      \"closed_volume_db\": {:.2},\n", self.drum_params.hi_hats.closed_volume_db));
+        out.push_str(&format!("      \"pedal_volume_db\": {:.2},\n", self.drum_params.hi_hats.pedal_volume_db));
+        out.push_str(&format!("      \"open_volume_db\": {:.2}\n", self.drum_params.hi_hats.open_volume_db));
         out.push_str("    },\n");
         out.push_str("    \"cymbals\": {\n");
         out.push_str(&format!("      \"matrix_spread\": {:.4},\n", self.drum_params.cymbals.matrix_spread));
@@ -1130,14 +1189,18 @@ impl SynthPreset {
         out.push_str(&format!("      \"plate_dispersion\": {:.4},\n", self.drum_params.cymbals.plate_dispersion));
         out.push_str(&format!("      \"nonlin_shimmer\": {:.4},\n", self.drum_params.cymbals.nonlin_shimmer));
         out.push_str(&format!("      \"stick_hardness\": {:.4},\n", self.drum_params.cymbals.stick_hardness));
-        out.push_str(&format!("      \"hit_variation\": {:.4}\n", self.drum_params.cymbals.hit_variation));
+        out.push_str(&format!("      \"hit_variation\": {:.4},\n", self.drum_params.cymbals.hit_variation));
+        out.push_str(&format!("      \"crash_volume_db\": {:.2},\n", self.drum_params.cymbals.crash_volume_db));
+        out.push_str(&format!("      \"ride_volume_db\": {:.2},\n", self.drum_params.cymbals.ride_volume_db));
+        out.push_str(&format!("      \"bell_volume_db\": {:.2}\n", self.drum_params.cymbals.bell_volume_db));
         out.push_str("    },\n");
         out.push_str("    \"aux\": {\n");
         out.push_str(&format!("      \"freq1_hz\": {:.1},\n", self.drum_params.aux.freq1_hz));
         out.push_str(&format!("      \"freq2_hz\": {:.1},\n", self.drum_params.aux.freq2_hz));
         out.push_str(&format!("      \"detune\": {:.1},\n", self.drum_params.aux.detune));
         out.push_str(&format!("      \"bandpass_q\": {:.4},\n", self.drum_params.aux.bandpass_q));
-        out.push_str(&format!("      \"decay_ms\": {:.1}\n", self.drum_params.aux.decay_ms));
+        out.push_str(&format!("      \"decay_ms\": {:.1},\n", self.drum_params.aux.decay_ms));
+        out.push_str(&format!("      \"volume_db\": {:.2}\n", self.drum_params.aux.volume_db));
         out.push_str("    }\n");
         out.push_str("  },\n");
 
@@ -1224,8 +1287,43 @@ mod tests {
             assert!((p.drum_params.cymbals.bronze_size_pitch - deserialized.drum_params.cymbals.bronze_size_pitch).abs() < 1e-3);
             assert!((p.drum_params.cymbals.stick_hardness - deserialized.drum_params.cymbals.stick_hardness).abs() < 1e-3);
             assert!((p.drum_params.aux.freq1_hz - deserialized.drum_params.aux.freq1_hz).abs() < 1e-3);
+            assert!((p.drum_params.kick.volume_db - deserialized.drum_params.kick.volume_db).abs() < 1e-2);
+            assert!((p.drum_params.snare.volume_db - deserialized.drum_params.snare.volume_db).abs() < 1e-2);
+            assert!((p.drum_params.snare.rim_volume_db - deserialized.drum_params.snare.rim_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.snare.clap_volume_db - deserialized.drum_params.snare.clap_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.toms.volume_db - deserialized.drum_params.toms.volume_db).abs() < 1e-2);
+            assert!((p.drum_params.hi_hats.closed_volume_db - deserialized.drum_params.hi_hats.closed_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.hi_hats.pedal_volume_db - deserialized.drum_params.hi_hats.pedal_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.hi_hats.open_volume_db - deserialized.drum_params.hi_hats.open_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.cymbals.crash_volume_db - deserialized.drum_params.cymbals.crash_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.cymbals.ride_volume_db - deserialized.drum_params.cymbals.ride_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.cymbals.bell_volume_db - deserialized.drum_params.cymbals.bell_volume_db).abs() < 1e-2);
+            assert!((p.drum_params.aux.volume_db - deserialized.drum_params.aux.volume_db).abs() < 1e-2);
             assert!((p.fm_params.mod_ratio - deserialized.fm_params.mod_ratio).abs() < 1e-3);
         }
+
+        // Also verify custom non-zero drum volumes roundtrip cleanly
+        let mut custom = SynthPreset::linn_808_kit();
+        custom.drum_params.kick.volume_db = 3.5;
+        custom.drum_params.snare.volume_db = -2.0;
+        custom.drum_params.snare.rim_volume_db = -6.5;
+        custom.drum_params.snare.clap_volume_db = -48.0;
+        custom.drum_params.toms.volume_db = 1.5;
+        custom.drum_params.hi_hats.closed_volume_db = -3.0;
+        custom.drum_params.hi_hats.pedal_volume_db = -4.0;
+        custom.drum_params.hi_hats.open_volume_db = -5.0;
+        custom.drum_params.cymbals.crash_volume_db = -1.5;
+        custom.drum_params.cymbals.ride_volume_db = 2.0;
+        custom.drum_params.cymbals.bell_volume_db = -3.5;
+        custom.drum_params.aux.volume_db = -8.0;
+        let json = custom.to_json_string().expect("custom JSON serialization failed");
+        let parsed = SynthPreset::from_json_string(&json).expect("custom JSON deserialization failed");
+        assert!((parsed.drum_params.kick.volume_db - 3.5).abs() < 1e-2);
+        assert!((parsed.drum_params.snare.rim_volume_db + 6.5).abs() < 1e-2);
+        assert!((parsed.drum_params.snare.clap_volume_db + 48.0).abs() < 1e-2);
+        assert!((parsed.drum_params.hi_hats.open_volume_db + 5.0).abs() < 1e-2);
+        assert!((parsed.drum_params.cymbals.bell_volume_db + 3.5).abs() < 1e-2);
+        assert!((parsed.drum_params.aux.volume_db + 8.0).abs() < 1e-2);
     }
 
     #[test]
@@ -1517,5 +1615,17 @@ mod tests {
         assert!((parsed.drum_params.kick.hit_variation - 0.10).abs() < 1e-4);
         assert!((parsed.drum_params.snare.hit_variation - 0.10).abs() < 1e-4);
         assert!((parsed.drum_params.cymbals.hit_variation - 0.10).abs() < 1e-4);
+        assert!((parsed.drum_params.kick.volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.snare.volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.snare.rim_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.snare.clap_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.toms.volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.hi_hats.closed_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.hi_hats.pedal_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.hi_hats.open_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.cymbals.crash_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.cymbals.ride_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.cymbals.bell_volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.aux.volume_db - 0.0).abs() < 1e-4);
     }
 }

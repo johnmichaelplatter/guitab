@@ -1620,6 +1620,18 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                     .num_columns(2)
                     .spacing([12.0, 4.0])
                     .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Kick Volume:").strong())
+                            .on_hover_text("Absolute output level for Kick (GM 35, 36). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv = ui.add(
+                            egui::Slider::new(&mut k.volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv.changed() { k_changed = true; }
+                        if rv.double_clicked() { k.volume_db = 0.0; k_changed = true; }
+                        ui.end_row();
+
                         ui.label("Pitch Envelope Start:");
                         let r1 = ui.add(egui::Slider::new(&mut k.pitch_start_hz, 80.0..=250.0).suffix(" Hz"));
                         if r1.changed() { k_changed = true; }
@@ -1706,6 +1718,42 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                     .num_columns(2)
                     .spacing([12.0, 4.0])
                     .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Snare Volume:").strong())
+                            .on_hover_text("Absolute output level for Acoustic/Electric Snare (GM 38, 40). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv1 = ui.add(
+                            egui::Slider::new(&mut s.volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv1.changed() { s_changed = true; }
+                        if rv1.double_clicked() { s.volume_db = 0.0; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Side Stick Volume:").strong())
+                            .on_hover_text("Absolute output level for Side Stick / Rimshot (GM 37). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv2 = ui.add(
+                            egui::Slider::new(&mut s.rim_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv2.changed() { s_changed = true; }
+                        if rv2.double_clicked() { s.rim_volume_db = 0.0; s_changed = true; }
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Hand Clap Volume:").strong())
+                            .on_hover_text("Absolute output level for Hand Clap (GM 39). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv3 = ui.add(
+                            egui::Slider::new(&mut s.clap_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv3.changed() { s_changed = true; }
+                        if rv3.double_clicked() { s.clap_volume_db = 0.0; s_changed = true; }
+                        ui.end_row();
+
                         ui.label("Mode 1 Tone Freq:");
                         let r1 = ui.add(egui::Slider::new(&mut s.tone_freq_hz, 120.0..=350.0).suffix(" Hz"));
                         if r1.changed() { s_changed = true; }
@@ -1809,6 +1857,18 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                     .num_columns(2)
                     .spacing([12.0, 4.0])
                     .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Toms Volume:").strong())
+                            .on_hover_text("Absolute output level for Toms (GM 41–50). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv = ui.add(
+                            egui::Slider::new(&mut t.volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv.changed() { t_changed = true; }
+                        if rv.double_clicked() { t.volume_db = 0.0; t_changed = true; }
+                        ui.end_row();
+
                         ui.label("Pitch Scaling Multiplier:");
                         let r1 = ui.add(egui::Slider::new(&mut t.pitch_scale, 0.5..=2.0));
                         if r1.changed() { t_changed = true; }
@@ -1890,6 +1950,42 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                     .num_columns(2)
                     .spacing([12.0, 4.0])
                     .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Closed Hat Volume:").strong())
+                            .on_hover_text("Absolute output level for Closed Hi-Hat (GM 42). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv1 = ui.add(
+                            egui::Slider::new(&mut h.closed_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv1.changed() { h_changed = true; }
+                        if rv1.double_clicked() { h.closed_volume_db = 0.0; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Pedal Hat Volume:").strong())
+                            .on_hover_text("Absolute output level for Pedal Hi-Hat (GM 44). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv2 = ui.add(
+                            egui::Slider::new(&mut h.pedal_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv2.changed() { h_changed = true; }
+                        if rv2.double_clicked() { h.pedal_volume_db = 0.0; h_changed = true; }
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Open Hat Volume:").strong())
+                            .on_hover_text("Absolute output level for Open Hi-Hat (GM 46). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv3 = ui.add(
+                            egui::Slider::new(&mut h.open_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv3.changed() { h_changed = true; }
+                        if rv3.double_clicked() { h.open_volume_db = 0.0; h_changed = true; }
+                        ui.end_row();
+
                         ui.label("Metallic Matrix Spread:");
                         let r1 = ui.add(egui::Slider::new(&mut h.spread, 0.5..=2.0));
                         if r1.changed() { h_changed = true; }
@@ -1983,6 +2079,42 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                     .num_columns(2)
                     .spacing([12.0, 4.0])
                     .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Crash / Splash / China Volume:").strong())
+                            .on_hover_text("Absolute output level for Crash, Splash & China cymbals (GM 49, 52, 55, 57). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv1 = ui.add(
+                            egui::Slider::new(&mut c.crash_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv1.changed() { c_changed = true; }
+                        if rv1.double_clicked() { c.crash_volume_db = 0.0; c_changed = true; }
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Ride Bow Volume:").strong())
+                            .on_hover_text("Absolute output level for Ride Cymbal bow (GM 51, 59). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv2 = ui.add(
+                            egui::Slider::new(&mut c.ride_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv2.changed() { c_changed = true; }
+                        if rv2.double_clicked() { c.ride_volume_db = 0.0; c_changed = true; }
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Ride Bell Volume:").strong())
+                            .on_hover_text("Absolute output level for Ride Bell (GM 53). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv3 = ui.add(
+                            egui::Slider::new(&mut c.bell_volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv3.changed() { c_changed = true; }
+                        if rv3.double_clicked() { c.bell_volume_db = 0.0; c_changed = true; }
+                        ui.end_row();
+
                         ui.label("Shimmer Matrix Spread:");
                         let r1 = ui.add(egui::Slider::new(&mut c.matrix_spread, 0.5..=2.0));
                         if r1.changed() { c_changed = true; }
@@ -2072,6 +2204,18 @@ fn render_drum_kit_tab(ui: &mut egui::Ui, app: &mut MnxEditorApp, commands: &mut
                     .num_columns(2)
                     .spacing([12.0, 4.0])
                     .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Cowbell / Aux Volume:").strong())
+                            .on_hover_text("Absolute output level for Cowbell & auxiliary percussion (GM 56+). -48 dB = Mute, double-click resets to 0 dB.");
+                        let rv = ui.add(
+                            egui::Slider::new(&mut a.volume_db, -48.0..=12.0)
+                                .suffix(" dB")
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Always),
+                        );
+                        if rv.changed() { a_changed = true; }
+                        if rv.double_clicked() { a.volume_db = 0.0; a_changed = true; }
+                        ui.end_row();
+
                         ui.label("Fundamental Mode 1:");
                         let r1 = ui.add(egui::Slider::new(&mut a.freq1_hz, 300.0..=1000.0).suffix(" Hz"));
                         if r1.changed() { a_changed = true; }

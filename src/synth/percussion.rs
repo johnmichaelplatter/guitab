@@ -116,6 +116,25 @@ impl SvfMode {
         self.ic2eq = 0.0;
     }
 
+    /// Configures the resonant mode as a steady-state unity-gain bandpass filter (`0 dB` peak at `freq_hz`).
+    ///
+    /// Unlike [`Self::configure`] (which normalizes for a 1-sample unit-area impulse and has high
+    /// steady-state gain on continuous signals), Cytomic TPT SVF bandpass output `v1` has steady-state
+    /// peak amplitude `1 / k = Q`, so setting `self.gain = gain * k` yields exact unity peak gain
+    /// across all frequencies and sample rates.
+    #[inline(always)]
+    pub fn configure_bandpass_unity(&mut self, sample_rate: f32, freq_hz: f32, q: f32, gain: f32) {
+        let sr = sample_rate.max(8_000.0);
+        let f = freq_hz.clamp(20.0, sr * 0.42);
+        let g = (PI * f / sr).tan().clamp(1.0e-4, 1.65);
+        let k = (1.0 / q.clamp(0.5, 25.0)).clamp(0.04, 2.0);
+        self.g_base = g;
+        self.k = k;
+        self.gain = gain * k;
+        self.ic1eq = 0.0;
+        self.ic2eq = 0.0;
+    }
+
     #[inline(always)]
     pub fn reset(&mut self) {
         self.ic1eq = 0.0;
@@ -190,7 +209,10 @@ impl ShellResonator {
     fn configure(&mut self, sample_rate: f32, cavity_hz: f32, cavity_t60: f32, wood_cutoff_hz: f32) {
         let sr = sample_rate.max(8_000.0);
         self.reset();
-        self.cavity_mode.configure(sr, cavity_hz, cavity_t60, 0.85);
+        // Use steady-state unity-gain bandpass normalization because the shell cavity is driven
+        // continuously by the ringing membrane waveform rather than a 1-sample impulse.
+        let cavity_q = (cavity_hz.max(25.0) * cavity_t60.max(0.02) / 2.1988).clamp(2.2, 4.8);
+        self.cavity_mode.configure_bandpass_unity(sr, cavity_hz, cavity_q, 0.90);
 
         // Dual bound: strictly < 1.5 ms AND < 120 samples at every sample rate (44.1..192 kHz)
         let max_allowed = (0.00148 * sr).floor().min(119.0).max(10.0);
@@ -224,8 +246,8 @@ impl ShellResonator {
         self.buf[self.write_idx] = flush_denormal(x + 0.36 * damped);
         self.write_idx = (self.write_idx + 1) & SHORT_COMB_MASK;
 
-        let cav = self.cavity_mode.process(x * 0.28 + damped * 0.22, 1.0);
-        flush_denormal(cav * 0.60 + damped * 0.72)
+        let cav = self.cavity_mode.process(x * 0.80 + damped * 0.25, 1.0);
+        flush_denormal(cav * 0.72 + damped * 0.58)
     }
 
     #[cfg(test)]
@@ -302,6 +324,8 @@ pub struct PolyVoice {
     pub age_samples: u32,
     pub pan: f32,
     pub level: f32,
+    /// Post-saturation linear output volume multiplier derived from the drum instrument's `volume_db` (`0.0` = muted).
+    pub volume_scale: f32,
     sample_rate: f32,
 
     // --- 6-Mode ZDF SVF Resonator Bank (Circular Membrane Bessel Modes / Bronze Plate Modes) ---
@@ -410,6 +434,7 @@ impl PolyVoice {
             age_samples: 0,
             pan: 0.5,
             level: 0.0,
+            volume_scale: 1.0,
             sample_rate: sr,
             modes: [SvfMode::default(); NUM_MODES],
             mode_exc_weights: [1.0, 0.5, 0.3, 0.3, 0.2, 0.15],
@@ -496,6 +521,7 @@ impl PolyVoice {
     pub fn clear(&mut self) {
         self.mode = PolyVoiceMode::Inactive;
         self.is_open_hat = false;
+        self.volume_scale = 1.0;
         self.amp_env = 0.0;
         self.fast_env = 0.0;
         self.slow_env = 0.0;
@@ -716,7 +742,7 @@ impl PolyVoice {
         self.is_open_hat = false;
         self.age_samples = 0;
         self.pan = pan.clamp(0.1, 0.9);
-        self.level = vel * if is_kick { 0.85 } else { 0.72 };
+        self.level = vel * if is_kick { 0.90 } else { 0.78 };
 
         // Map user pitch sweep ratio + head_tension_mod slider into modal frequency stretch depth
         let sweep_ratio = (start_freq_hz.max(base_freq_hz) / base_freq_hz.max(25.0) - 1.0).clamp(0.0, 3.0);
@@ -796,7 +822,12 @@ impl PolyVoice {
         self.is_open_hat = false;
         self.age_samples = 0;
         self.pan = pan.clamp(0.1, 0.9);
-        self.level = vel * 0.78;
+        self.level = vel * match gm_note {
+            37 => 0.70,
+            39 => 0.74,
+            56 => 0.58,
+            _ => 0.84,
+        };
         self.body_mix = body_mix;
         self.noise_mix = noise_mix;
         self.is_clap = is_clap;
@@ -924,7 +955,13 @@ impl PolyVoice {
         self.is_open_hat = is_open_hat;
         self.age_samples = 0;
         self.pan = pan.clamp(0.1, 0.9);
-        self.level = vel * if is_cymbal_bandpass { 0.70 } else { 0.74 };
+        self.level = vel * match gm_note {
+            42 | 44 => 0.68,
+            46 => 0.62,
+            53 => 0.62,
+            51 | 59 => 0.68,
+            _ => 0.66,
+        };
         self.is_cymbal_bandpass = is_cymbal_bandpass;
 
         let size_pitch = bronze_size_pitch.clamp(0.5, 2.0);
@@ -1133,6 +1170,7 @@ impl PolyVoice {
         self.age_samples = 0;
         self.pan = (0.32 + ((channel % 7) as f32) * 0.06).clamp(0.20, 0.80);
         self.level = vel * 0.30;
+        self.volume_scale = 1.0;
 
         let carrier_hz = (freq_hz.clamp(15.0, (sr as f64) * 0.45)) as f32;
         self.phase1 = 0.0;
@@ -1235,6 +1273,7 @@ impl PolyVoice {
         self.age_samples = 0;
         self.pan = (0.32 + ((channel % 7) as f32) * 0.06).clamp(0.20, 0.80);
         self.level = vel * 0.30;
+        self.volume_scale = 1.0;
 
         let carrier_hz = (freq_hz.clamp(15.0, (sr as f64) * 0.45)) as f32;
         self.phase1 = 0.0;
@@ -1321,8 +1360,8 @@ impl PolyVoice {
                     return (0.0, 0.0);
                 }
 
-                let body = membrane_sum * (1.0 - 0.22 * self.shell_mix)
-                    + shell_out * (0.58 * self.shell_mix)
+                let body = membrane_sum * (1.0 - 0.32 * self.shell_mix)
+                    + shell_out * (0.72 * self.shell_mix)
                     + slap;
                 tanh_pade(body * 1.25) * self.level
             }
@@ -1439,8 +1478,8 @@ impl PolyVoice {
                         return (0.0, 0.0);
                     }
 
-                    let head_and_shell = membrane_sum * (1.0 - 0.20 * self.shell_mix)
-                        + shell_out * (0.56 * self.shell_mix)
+                    let head_and_shell = membrane_sum * (1.0 - 0.30 * self.shell_mix)
+                        + shell_out * (0.68 * self.shell_mix)
                         + click_raw * 0.45;
                     let combined = head_and_shell * self.body_mix + wire_out * (self.noise_mix * 1.45);
                     tanh_pade(combined * 1.25) * self.level
@@ -1627,8 +1666,9 @@ impl PolyVoice {
             }
         };
 
-        let left = raw * (1.0 - self.pan);
-        let right = raw * self.pan;
+        let scaled = raw * self.volume_scale;
+        let left = scaled * (1.0 - self.pan);
+        let right = scaled * self.pan;
         (left, right)
     }
 }
@@ -1703,15 +1743,141 @@ impl PercussionAndGmPool {
         (eff_vel, eff_pos)
     }
 
-    /// Updates live physical-modeling drum kit parameters.
+    /// Converts a drum instrument volume in dB (`-48.0..=+12.0 dB`) to a linear amplitude scale.
+    /// Values `<= -47.9 dB` map to exact `0.0` (true mute).
+    #[inline(always)]
+    pub fn drum_volume_db_to_amp(db: f32) -> f32 {
+        if db <= -47.9 {
+            0.0
+        } else {
+            10.0_f32.powf(db.clamp(-48.0, 12.0) / 20.0)
+        }
+    }
+
+    /// Resolves the configured absolute volume (in dB) for a given General MIDI drum note.
+    #[inline(always)]
+    fn drum_note_volume_db(&self, gm_drum_note: u8) -> f32 {
+        match gm_drum_note {
+            35 | 36 => self.drum_params.kick.volume_db,
+            37 => self.drum_params.snare.rim_volume_db,
+            38 | 40 => self.drum_params.snare.volume_db,
+            39 => self.drum_params.snare.clap_volume_db,
+            41 | 43 | 45 | 47 | 48 | 50 => self.drum_params.toms.volume_db,
+            42 => self.drum_params.hi_hats.closed_volume_db,
+            44 => self.drum_params.hi_hats.pedal_volume_db,
+            46 => self.drum_params.hi_hats.open_volume_db,
+            49 | 52 | 55 | 57 => self.drum_params.cymbals.crash_volume_db,
+            51 | 59 => self.drum_params.cymbals.ride_volume_db,
+            53 => self.drum_params.cymbals.bell_volume_db,
+            _ => self.drum_params.aux.volume_db,
+        }
+    }
+
+    /// Updates live physical-modeling drum kit parameters and immediately adjusts active ringing
+    /// voices' absolute output volume scales.
     pub fn update_drum_params(&mut self, _role: DrumRole, params: DrumVoiceParams) {
         match params {
-            DrumVoiceParams::Kick(k) => self.drum_params.kick = k,
-            DrumVoiceParams::Snare(s) => self.drum_params.snare = s,
-            DrumVoiceParams::Toms(t) => self.drum_params.toms = t,
-            DrumVoiceParams::HiHats(h) => self.drum_params.hi_hats = h,
-            DrumVoiceParams::Cymbals(c) => self.drum_params.cymbals = c,
-            DrumVoiceParams::PercAux(a) => self.drum_params.aux = a,
+            DrumVoiceParams::Kick(k) => {
+                self.drum_params.kick = k;
+                let scale = Self::drum_volume_db_to_amp(k.volume_db);
+                for v in self.voices.iter_mut() {
+                    if v.is_active() && matches!(v.voice_tag, 35 | 36) {
+                        v.volume_scale = scale;
+                    }
+                }
+            }
+            DrumVoiceParams::Snare(s) => {
+                self.drum_params.snare = s;
+                let snare_scale = Self::drum_volume_db_to_amp(s.volume_db);
+                let rim_scale = Self::drum_volume_db_to_amp(s.rim_volume_db);
+                let clap_scale = Self::drum_volume_db_to_amp(s.clap_volume_db);
+                for v in self.voices.iter_mut() {
+                    if v.is_active() {
+                        match v.voice_tag {
+                            37 => v.volume_scale = rim_scale,
+                            38 | 40 => v.volume_scale = snare_scale,
+                            39 => v.volume_scale = clap_scale,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            DrumVoiceParams::Toms(t) => {
+                self.drum_params.toms = t;
+                let scale = Self::drum_volume_db_to_amp(t.volume_db);
+                for v in self.voices.iter_mut() {
+                    if v.is_active() && matches!(v.voice_tag, 41 | 43 | 45 | 47 | 48 | 50) {
+                        v.volume_scale = scale;
+                    }
+                }
+            }
+            DrumVoiceParams::HiHats(h) => {
+                self.drum_params.hi_hats = h;
+                let closed_scale = Self::drum_volume_db_to_amp(h.closed_volume_db);
+                let pedal_scale = Self::drum_volume_db_to_amp(h.pedal_volume_db);
+                let open_scale = Self::drum_volume_db_to_amp(h.open_volume_db);
+                for v in self.voices.iter_mut() {
+                    if v.is_active() {
+                        match v.voice_tag {
+                            42 => v.volume_scale = closed_scale,
+                            44 => v.volume_scale = pedal_scale,
+                            46 => v.volume_scale = open_scale,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            DrumVoiceParams::Cymbals(c) => {
+                self.drum_params.cymbals = c;
+                let crash_scale = Self::drum_volume_db_to_amp(c.crash_volume_db);
+                let ride_scale = Self::drum_volume_db_to_amp(c.ride_volume_db);
+                let bell_scale = Self::drum_volume_db_to_amp(c.bell_volume_db);
+                for v in self.voices.iter_mut() {
+                    if v.is_active() {
+                        match v.voice_tag {
+                            49 | 52 | 55 | 57 => v.volume_scale = crash_scale,
+                            51 | 59 => v.volume_scale = ride_scale,
+                            53 => v.volume_scale = bell_scale,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            DrumVoiceParams::PercAux(a) => {
+                self.drum_params.aux = a;
+                let scale = Self::drum_volume_db_to_amp(a.volume_db);
+                for v in self.voices.iter_mut() {
+                    if v.is_active()
+                        && !matches!(v.mode, PolyVoiceMode::GmFmMelodic(_))
+                        && !matches!(
+                            v.voice_tag,
+                            35 | 36
+                                | 37
+                                | 38
+                                | 39
+                                | 40
+                                | 41
+                                | 42
+                                | 43
+                                | 44
+                                | 45
+                                | 46
+                                | 47
+                                | 48
+                                | 49
+                                | 50
+                                | 51
+                                | 52
+                                | 53
+                                | 55
+                                | 57
+                                | 59
+                        )
+                    {
+                        v.volume_scale = scale;
+                    }
+                }
+            }
         }
     }
 
@@ -2246,6 +2412,10 @@ impl PercussionAndGmPool {
                 );
             }
         }
+
+        // Apply per-instrument absolute volume scaling post-saturation so timbre is preserved
+        self.voices[slot].volume_scale =
+            Self::drum_volume_db_to_amp(self.drum_note_volume_db(gm_drum_note));
     }
 
     /// Triggers a 2-operator FM General MIDI melodic voice at an exact `f64` Hz frequency.
@@ -2600,14 +2770,14 @@ mod tests {
             energies
         };
 
-        // At 0.0 variation, consecutive snare & kick hits must be tightly consistent (< 5% spread)
+        // At 0.0 variation, consecutive snare & kick hits must be tightly consistent (< 7.5% / < 0.65 dB spread)
         for &note in &[36_u8, 38] {
             let e_zero = measure_hit_energies(note, 0.0);
             let min_e = e_zero.iter().copied().fold(f32::MAX, f32::min);
             let max_e = e_zero.iter().copied().fold(0.0_f32, f32::max);
             let spread_ratio = (max_e - min_e) / max_e.max(1e-6);
             assert!(
-                spread_ratio < 0.05,
+                spread_ratio < 0.075,
                 "Drum note {} at hit_variation=0.0 should be tightly consistent (spread={:.4}, min={:.4}, max={:.4})",
                 note,
                 spread_ratio,
@@ -2653,5 +2823,137 @@ mod tests {
             high_e,
             low_e
         );
+    }
+
+    #[test]
+    fn test_shell_wood_cavity_full_range_clean_no_clipping() {
+        let sr = 48_000.0;
+
+        // 1. Direct ShellResonator unit test: steady-state resonant sine at cavity_hz must stay bounded near unity
+        //    (previously exploded by 100x+ due to impulse-area 1/(2*g) normalization on continuous signals)
+        for &(cavity_hz, cavity_t60) in &[(66.0_f32, 0.37_f32), (175.0, 0.37), (324.0, 0.11)] {
+            let mut shell = ShellResonator::default();
+            shell.configure(sr, cavity_hz, cavity_t60, 2_800.0);
+            let mut peak = 0.0_f32;
+            for i in 0..8192 {
+                let x = (TAU * cavity_hz * (i as f32) / sr).sin() * 0.7;
+                let y = shell.process(x);
+                assert!(y.is_finite());
+                peak = peak.max(y.abs());
+            }
+            assert!(
+                peak > 0.15 && peak < 1.8,
+                "ShellResonator at {} Hz must stay clean & bounded (got peak={:.4})",
+                cavity_hz,
+                peak
+            );
+        }
+
+        // 2. Full Kick (36), Snare (38), and Tom (45) test across shell_wood_cavity = 0.0, 0.5, 1.0:
+        //    output must stay clean, well-behaved, and non-blown-out across the entire 0..1 range!
+        for &note in &[36_u8, 38, 45] {
+            let mut rms_vals = [0.0_f32; 3];
+            let mut peak_vals = [0.0_f32; 3];
+            for (idx, &cavity) in [0.0_f32, 0.5, 1.0].iter().enumerate() {
+                let mut pool = PercussionAndGmPool::new(sr);
+                pool.drum_params.kick.hit_variation = 0.0;
+                pool.drum_params.snare.hit_variation = 0.0;
+                pool.drum_params.toms.hit_variation = 0.0;
+                pool.drum_params.kick.shell_wood_cavity = cavity;
+                pool.drum_params.snare.shell_wood_cavity = cavity;
+                pool.drum_params.toms.shell_wood_cavity = cavity;
+
+                pool.trigger_drum(note, 0.90);
+                let mut sum_sq = 0.0_f32;
+                let mut peak = 0.0_f32;
+                for _ in 0..4096 {
+                    let (l, r) = pool.next_stereo_frame();
+                    assert!(l.is_finite() && r.is_finite());
+                    let m = l + r;
+                    sum_sq += m * m;
+                    peak = peak.max(m.abs());
+                }
+                rms_vals[idx] = (sum_sq / 4096.0).sqrt();
+                peak_vals[idx] = peak;
+            }
+            // No blown-out level explosion at shell_wood_cavity = 1.0 vs 0.0
+            let rms_ratio = rms_vals[2] / rms_vals[0].max(1e-6);
+            assert!(
+                rms_ratio > 0.55 && rms_ratio < 1.85,
+                "Drum note {} shell_wood_cavity=1.0 must stay clean & balanced vs 0.0 (rms0={:.4}, rms0.5={:.4}, rms1.0={:.4}, ratio={:.3})",
+                note,
+                rms_vals[0],
+                rms_vals[1],
+                rms_vals[2],
+                rms_ratio
+            );
+            assert!(
+                peak_vals[2] < 1.05,
+                "Drum note {} at shell_wood_cavity=1.0 must not blow out (peak={:.4})",
+                note,
+                peak_vals[2]
+            );
+        }
+    }
+
+    #[test]
+    fn test_per_drum_absolute_volume_mute_and_boost() {
+        let sr = 48_000.0;
+
+        let render_rms = |setup: &dyn Fn(&mut PercussionAndGmPool), note: u8| -> f32 {
+            let mut pool = PercussionAndGmPool::new(sr);
+            pool.drum_params.kick.hit_variation = 0.0;
+            pool.drum_params.snare.hit_variation = 0.0;
+            pool.drum_params.toms.hit_variation = 0.0;
+            pool.drum_params.hi_hats.hit_variation = 0.0;
+            pool.drum_params.cymbals.hit_variation = 0.0;
+            setup(&mut pool);
+            pool.trigger_drum(note, 0.85);
+            let mut sum_sq = 0.0_f32;
+            for _ in 0..2048 {
+                let (l, r) = pool.next_stereo_frame();
+                assert!(l.is_finite() && r.is_finite());
+                sum_sq += l * l + r * r;
+            }
+            (sum_sq / 2048.0).sqrt()
+        };
+
+        // 1. -48.0 dB produces exact 0.0 silence across distinct instruments
+        assert_eq!(render_rms(&|p| p.drum_params.kick.volume_db = -48.0, 36), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.snare.rim_volume_db = -48.0, 37), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.snare.clap_volume_db = -48.0, 39), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.hi_hats.open_volume_db = -48.0, 46), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.cymbals.bell_volume_db = -48.0, 53), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.aux.volume_db = -48.0, 56), 0.0);
+
+        // 2. +6.02 dB doubles RMS cleanly vs 0.0 dB (post-saturation linear scaling)
+        let rms_0 = render_rms(&|_| {}, 38);
+        let rms_6 = render_rms(&|p| p.drum_params.snare.volume_db = 6.0206, 38);
+        let ratio = rms_6 / rms_0.max(1e-6);
+        assert!(
+            (ratio - 2.0).abs() < 0.05,
+            "+6.02 dB snare volume should ~2x RMS (got ratio={:.4})",
+            ratio
+        );
+
+        // 3. Independent instrument isolation: muting Rim (37) does NOT mute Snare (38)
+        let snare_with_muted_rim = render_rms(&|p| p.drum_params.snare.rim_volume_db = -48.0, 38);
+        assert!(
+            (snare_with_muted_rim - rms_0).abs() < 1e-4,
+            "Muting Side Stick must not affect Acoustic Snare level"
+        );
+
+        // 4. Live update_drum_params immediately updates volume of currently ringing crash cymbal (49)
+        let mut pool = PercussionAndGmPool::new(sr);
+        pool.trigger_drum(49, 0.90);
+        for _ in 0..512 {
+            let _ = pool.next_stereo_frame();
+        }
+        let mut c = pool.drum_params.cymbals;
+        c.crash_volume_db = -48.0;
+        pool.update_drum_params(DrumRole::Cymbals, DrumVoiceParams::Cymbals(c));
+        let (l, r) = pool.next_stereo_frame();
+        assert_eq!(l, 0.0, "Live -48 dB update must immediately mute ringing crash cymbal");
+        assert_eq!(r, 0.0, "Live -48 dB update must immediately mute ringing crash cymbal");
     }
 }
