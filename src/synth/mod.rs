@@ -93,6 +93,12 @@ pub struct SynthTestLabState {
     pub target_part_idx: usize,
     pub active_drum_role: DrumRole,
     pub active_drum_note: u8,
+    /// When `false` (default), the Drum Tone Editor shows only GM roles present in the active
+    /// percussion part's tab kit mapping. When `true`, all 28 GM roles (`35..=81`) are exposed.
+    pub drum_show_all_gm: bool,
+    /// When `true` (default), stepping with `< Prev` / `Next >` or selecting a drum voice in the
+    /// left kit rail automatically triggers a live audition hit.
+    pub drum_auto_audition_on_step: bool,
 
     // Sound Design & Patch Editor state
     pub active_tab: SynthEditorTab,
@@ -125,6 +131,8 @@ impl Default for SynthTestLabState {
             target_part_idx: 0,
             active_drum_role: DrumRole::Kick,
             active_drum_note: 36,
+            drum_show_all_gm: false,
+            drum_auto_audition_on_step: true,
 
             active_tab: SynthEditorTab::PhysicalString,
             preset,

@@ -594,7 +594,7 @@ impl MnxEditorApp {
         preset: &crate::synth::SynthPreset,
     ) {
         use crate::synth::command::SynthCommand;
-        use crate::synth::patch::{DrumRole, DrumVoiceParams};
+        use crate::synth::patch::DrumRole;
 
         if let Some(eng) = self.synth_engine.as_mut() {
             let p_u8 = part_idx as u8;
@@ -618,36 +618,13 @@ impl MnxEditorApp {
                 part_idx: p_u8,
                 params: preset.fm_params,
             });
-            eng.send(SynthCommand::UpdatePartDrumParams {
-                part_idx: p_u8,
-                drum_role: DrumRole::Kick,
-                params: DrumVoiceParams::Kick(preset.drum_params.kick),
-            });
-            eng.send(SynthCommand::UpdatePartDrumParams {
-                part_idx: p_u8,
-                drum_role: DrumRole::Snare,
-                params: DrumVoiceParams::Snare(preset.drum_params.snare),
-            });
-            eng.send(SynthCommand::UpdatePartDrumParams {
-                part_idx: p_u8,
-                drum_role: DrumRole::Toms,
-                params: DrumVoiceParams::Toms(preset.drum_params.toms),
-            });
-            eng.send(SynthCommand::UpdatePartDrumParams {
-                part_idx: p_u8,
-                drum_role: DrumRole::HiHats,
-                params: DrumVoiceParams::HiHats(preset.drum_params.hi_hats),
-            });
-            eng.send(SynthCommand::UpdatePartDrumParams {
-                part_idx: p_u8,
-                drum_role: DrumRole::Cymbals,
-                params: DrumVoiceParams::Cymbals(preset.drum_params.cymbals),
-            });
-            eng.send(SynthCommand::UpdatePartDrumParams {
-                part_idx: p_u8,
-                drum_role: DrumRole::PercAux,
-                params: DrumVoiceParams::PercAux(preset.drum_params.aux),
-            });
+            for &role in DrumRole::all() {
+                eng.send(SynthCommand::UpdatePartDrumParams {
+                    part_idx: p_u8,
+                    drum_role: role,
+                    params: preset.drum_params.params_for_role(role),
+                });
+            }
         }
     }
 

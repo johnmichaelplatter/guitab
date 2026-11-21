@@ -40,7 +40,9 @@
 
 use crate::synth::backend::flush_denormal;
 use crate::synth::body::{tanh_pade, BiquadFilter};
-use crate::synth::patch::{DrumKitParams, DrumRole, DrumVoiceParams, FmVoiceParams};
+use crate::synth::patch::{
+    DrumKitParams, DrumRole, DrumVoiceParams, FmVoiceParams, ShakerAndEffectParams, TomParams,
+};
 use std::f32::consts::{PI, TAU};
 
 /// Fixed polyphonic voice count for percussion and GM melodic backing.
@@ -309,6 +311,10 @@ pub enum PolyVoiceMode {
     SnareOrClap,
     /// 4-line Hadamard dispersive non-linear bronze plate waveguide + 6 high-Q bronze modes (Hats & Cymbals).
     HatOrCymbal,
+    /// Tuned metallic / hardwood modal percussion (Cowbell, Agogo, Triangle, Claves, Wood Blocks).
+    ModalPerc,
+    /// Acoustic shaker, ratchet, whistle, or friction-drum voice keyed by GM percussion note.
+    ShakerOrEffect(u8),
     /// 2-operator microtonal FM voice for GM melodic backing.
     GmFmMelodic(GmFmPreset),
 }
@@ -840,10 +846,10 @@ impl PolyVoice {
             self.fast_decay = (-inv_sr / body_tau_sec.max(0.012)).exp();
             self.slow_env = 1.0;
             self.slow_decay = (-inv_sr / noise_tau_sec.max(0.030)).exp();
-            self.filter1 = BiquadFilter::bandpass_peak(sr, noise_bp_hz.clamp(800.0, 4000.0), noise_bp_q);
+            self.filter1 = BiquadFilter::bandpass_peak(sr, noise_bp_hz.clamp(600.0, 4000.0), noise_bp_q);
             self.filter2 = BiquadFilter::highpass(sr, 650.0, 0.707);
             self.shell.configure(sr, 420.0, 0.06, 3_600.0);
-            self.shell_mix = 0.25;
+            self.shell_mix = shell_wood_cavity.clamp(0.0, 1.0);
             return;
         }
 
@@ -1148,6 +1154,253 @@ impl PolyVoice {
         self.cym_quiet_samples = 0;
     }
 
+    /// Triggers a tuned metallic or hardwood modal percussion voice
+    /// (Cowbell 56, Agogo 67/68, Triangle 80/81, Claves 75, Wood Blocks 76/77).
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn trigger_modal_perc(
+        &mut self,
+        gm_note: u8,
+        freq1_hz: f32,
+        freq2_hz: f32,
+        bandpass_q: f32,
+        decay_sec: f32,
+        pan: f32,
+        velocity: f32,
+        sample_rate: f32,
+    ) {
+        let sr = sample_rate.max(8_000.0);
+        let inv_sr = 1.0 / sr;
+        let vel = velocity.clamp(0.05, 1.0);
+
+        self.clear();
+        self.mode = PolyVoiceMode::ModalPerc;
+        self.sample_rate = sr;
+        self.voice_tag = gm_note;
+        self.is_open_hat = false;
+        self.age_samples = 0;
+        self.pan = pan.clamp(0.1, 0.9);
+        self.level = vel * match gm_note {
+            80 | 81 => 0.48, // Steel triangle: high-Q modes carry strongly
+            75 => 0.62,      // Claves
+            76 | 77 => 0.68, // Wood blocks
+            67 | 68 => 0.56, // Agogo bells
+            _ => 0.58,       // Cowbell
+        };
+
+        let f1 = freq1_hz.clamp(120.0, sr * 0.40);
+        let f2 = freq2_hz.clamp(160.0, sr * 0.42);
+        let t60 = (decay_sec * 2.8).clamp(0.025, 3.2);
+
+        // Configure 6 resonant modes matched to instrument acoustics (steel bell/bar vs. hollow wood)
+        let (ratios, gains, decay_scales): ([f32; NUM_MODES], [f32; NUM_MODES], [f32; NUM_MODES]) =
+            match gm_note {
+                80 | 81 => (
+                    // Steel triangle: bright inharmonic bar partials
+                    [1.0, f2 / f1, 2.26, 3.18, 4.24, 5.42],
+                    [0.75, 0.85, 0.62, 0.52, 0.36, 0.24],
+                    [1.0, 0.94, 0.78, 0.64, 0.48, 0.34],
+                ),
+                75 => (
+                    // Rosewood claves: tight resonant primary wood cavity + brief crisp click overtones
+                    [1.0, f2 / f1, 1.94, 2.75, 3.40, 4.10],
+                    [1.00, 0.46, 0.22, 0.14, 0.08, 0.05],
+                    [1.0, 0.55, 0.32, 0.22, 0.16, 0.12],
+                ),
+                76 | 77 => (
+                    // Hollow hardwood wood blocks: warm cavity fundamental + woody upper resonance
+                    [1.0, f2 / f1, 2.42, 3.18, 4.05, 4.90],
+                    [1.00, 0.58, 0.28, 0.16, 0.10, 0.06],
+                    [1.0, 0.68, 0.38, 0.24, 0.18, 0.12],
+                ),
+                67 | 68 => (
+                    // Agogo bells: singing open cone-bell harmonics
+                    [1.0, f2 / f1, 2.15, 2.96, 3.85, 4.72],
+                    [1.00, 0.82, 0.44, 0.28, 0.18, 0.12],
+                    [1.0, 0.88, 0.58, 0.42, 0.30, 0.22],
+                ),
+                _ => (
+                    // Cowbell: classic two-mode damped steel bell
+                    [1.0, f2 / f1, 1.85, 2.46, 3.12, 3.90],
+                    [1.00, 0.94, 0.24, 0.16, 0.10, 0.06],
+                    [1.0, 0.92, 0.35, 0.24, 0.18, 0.12],
+                ),
+            };
+
+        for i in 0..NUM_MODES {
+            let mf = (f1 * ratios[i]).clamp(120.0, sr * 0.43);
+            let mt60 = (t60 * decay_scales[i]).clamp(0.012, 3.2);
+            self.modes[i].configure(sr, mf, mt60, gains[i]);
+            self.mode_exc_weights[i] = 1.0;
+        }
+
+        // Crisp hard-stick / steel-beater contact pulse
+        let pulse_ms = match gm_note {
+            80 | 81 => 0.22,
+            75 | 76 | 77 => 0.35,
+            _ => 0.42,
+        };
+        let pulse_samples = ((pulse_ms * 0.001) * sr).round().clamp(3.0, 96.0) as u32;
+        self.exc_samples_elapsed = 0;
+        self.exc_total_samples = pulse_samples;
+        self.exc_area_norm = (2.0 / (pulse_samples as f32)) * (0.55 + 0.45 * vel);
+        self.exc_click_mix = 0.55;
+        self.exc_lp_z1 = 0.0;
+        let stick_cut = if matches!(gm_note, 80 | 81) {
+            14_000.0_f32
+        } else {
+            7_500.0_f32
+        }
+        .min(sr * 0.44);
+        self.exc_lp_coeff = (-TAU * stick_cut / sr).exp().clamp(0.04, 0.90);
+
+        let bp_center = (0.5 * (f1 + f2)).clamp(200.0, sr * 0.42);
+        self.filter1 = BiquadFilter::bandpass_peak(sr, bp_center, bandpass_q.clamp(0.5, 14.0));
+        self.shell.configure(
+            sr,
+            (f1 * 0.92).clamp(120.0, sr * 0.38),
+            (decay_sec * 0.6).clamp(0.02, 0.4),
+            4_500.0,
+        );
+        self.shell_mix = if matches!(gm_note, 75 | 76 | 77) { 0.45 } else { 0.18 };
+
+        self.fast_env = 1.0;
+        self.fast_decay = (-inv_sr / decay_sec.max(0.015)).exp();
+        self.slow_env = 1.0;
+        self.slow_decay = (-inv_sr / (decay_sec * 1.4).max(0.02)).exp();
+    }
+
+    /// Triggers an acoustic shaker, ratchet, whistle, or friction-drum voice
+    /// (Tambourine 54, Vibraslap 58, Cabasa 69, Maracas 70, Whistle 71/72, Guiro 73/74, Cuica 78/79).
+    #[inline(always)]
+    pub fn trigger_shaker_or_effect(
+        &mut self,
+        gm_note: u8,
+        params: &ShakerAndEffectParams,
+        pan: f32,
+        velocity: f32,
+        sample_rate: f32,
+    ) {
+        let sr = sample_rate.max(8_000.0);
+        let inv_sr = 1.0 / sr;
+        let vel = velocity.clamp(0.05, 1.0);
+        let pitch = params.pitch_scale.clamp(0.5, 2.0);
+        let bright = params.brightness_hz.clamp(400.0, sr * 0.43);
+        let tex = params.texture_rate.clamp(0.0, 1.0);
+        let q = params.resonance_q.clamp(0.5, 12.0);
+
+        self.clear();
+        self.mode = PolyVoiceMode::ShakerOrEffect(gm_note);
+        self.sample_rate = sr;
+        self.voice_tag = gm_note;
+        self.is_open_hat = false;
+        self.age_samples = 0;
+        self.pan = pan.clamp(0.1, 0.9);
+        self.phase1 = 0.0;
+        self.phase2 = 0.0;
+
+        // Note-specific duration scaling (short vs. long Guiro / Whistle; mute vs. open Cuica)
+        let dur_scale = match gm_note {
+            71 => 0.36, // Short Whistle
+            73 => 0.42, // Short Guiro
+            78 => 0.52, // Mute Cuica
+            _ => 1.0,
+        };
+        let decay_sec = ((params.decay_ms * 0.001) * dur_scale).clamp(0.020, 1.6);
+
+        self.level = vel * match gm_note {
+            71 | 72 => 0.44, // Samba whistle cuts loudly
+            78 | 79 => 0.66, // Cuica
+            58 => 0.72,      // Vibraslap
+            73 | 74 => 0.70, // Guiro
+            54 => 0.64,      // Tambourine
+            _ => 0.62,       // Cabasa / Maracas
+        };
+
+        self.in_attack = true;
+        self.amp_env = 0.0;
+        let atk_sec = match gm_note {
+            70 => 0.014,     // Maracas: softer seed swish ramp-in
+            69 => 0.007,     // Cabasa: tighter bead scrape
+            71 | 72 => 0.009,
+            78 | 79 => 0.012,
+            _ => 0.0025,
+        };
+        self.amp_attack_inc = 1.0 / (atk_sec * sr).max(1.0);
+        self.fast_env = 1.0;
+        self.fast_decay = (-inv_sr / (decay_sec * 0.35).max(0.012)).exp();
+        self.slow_env = 1.0;
+        self.slow_decay = (-inv_sr / decay_sec).exp();
+        self.pitch_env = 1.0;
+        self.pitch_decay = (-inv_sr / (decay_sec * 0.55).max(0.02)).exp();
+        self.body_mix = tex;
+
+        match gm_note {
+            54 => {
+                // Tambourine: bright jingle flutter + small wooden frame tap mode
+                let jingle_hz = (26.0 + 34.0 * tex) * pitch;
+                self.base_inc = jingle_hz * inv_sr;
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(2_500.0, sr * 0.43), q.clamp(0.6, 4.0));
+                self.filter2 = BiquadFilter::highpass(sr, 4_200.0_f32.min(sr * 0.40), 0.75);
+                self.modes[0].configure(sr, (230.0_f32 * pitch).clamp(110.0, 600.0), 0.045, 0.55);
+                self.exc_samples_elapsed = 0;
+                self.exc_total_samples = ((0.0008 * sr).round().clamp(4.0, 64.0)) as u32;
+                self.exc_area_norm = 2.0 / (self.exc_total_samples as f32);
+                self.exc_click_mix = 0.35;
+                self.exc_lp_coeff = 0.4;
+            }
+            69 | 70 => {
+                // Cabasa (69) / Maracas (70): granular high-frequency bead/seed burst
+                let grain_hz = if gm_note == 69 {
+                    (58.0 + 62.0 * tex) * pitch
+                } else {
+                    (32.0 + 36.0 * tex) * pitch
+                };
+                self.base_inc = grain_hz * inv_sr;
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(2_000.0, sr * 0.43), q.clamp(0.7, 5.0));
+                self.filter2 = BiquadFilter::highpass(sr, (bright * 0.48).clamp(1_800.0, sr * 0.40), 0.75);
+            }
+            73 | 74 => {
+                // Guiro (73 Short, 74 Long): notched gourd ratchet scrape
+                let ratchet_hz = (24.0 + 44.0 * tex) * pitch;
+                self.base_inc = ratchet_hz * inv_sr;
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(700.0, sr * 0.42), q.clamp(1.2, 8.0));
+                self.filter2 = BiquadFilter::highpass(sr, 480.0, 0.72);
+                self.shell.configure(sr, (bright * 0.42 * pitch).clamp(220.0, 1_800.0), 0.08, 4_200.0);
+            }
+            58 => {
+                // Vibraslap: spring strike + decaying wood-box rattle
+                let rattle_hz = (28.0 + 26.0 * tex) * pitch;
+                self.base_inc = rattle_hz * inv_sr;
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(550.0, sr * 0.40), q.clamp(1.2, 7.0));
+                self.filter2 = BiquadFilter::highpass(sr, 360.0, 0.75);
+                self.modes[0].configure(sr, (480.0_f32 * pitch).clamp(180.0, 1_600.0), 0.14, 0.75);
+                self.shell.configure(sr, (bright * 0.55 * pitch).clamp(260.0, 2_200.0), 0.12, 3_600.0);
+                self.exc_samples_elapsed = 0;
+                self.exc_total_samples = ((0.0012 * sr).round().clamp(4.0, 80.0)) as u32;
+                self.exc_area_norm = 2.0 / (self.exc_total_samples as f32);
+                self.exc_click_mix = 0.50;
+                self.exc_lp_coeff = 0.35;
+            }
+            71 | 72 => {
+                // Samba Whistle: pure high pea-trill whistle + breath air
+                let base_f = (bright * pitch).clamp(1_200.0, (sr * 0.42).min(6_500.0));
+                let trill_hz = 22.0 + 26.0 * tex;
+                self.base_inc = base_f * inv_sr;
+                self.sec_inc = trill_hz * inv_sr;
+                self.filter1 = BiquadFilter::bandpass_peak(sr, base_f, q.clamp(1.5, 10.0));
+            }
+            _ => {
+                // Cuica (78 Mute, 79 Open): pitched friction-stick drumhead resonance sweep
+                let target_f = (bright * pitch).clamp(180.0, 1_400.0);
+                self.base_inc = target_f * inv_sr;
+                self.sec_inc = if gm_note == 78 { -0.28 } else { 0.48 } * (0.35 + 0.65 * tex);
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (target_f * 1.35).clamp(240.0, sr * 0.40), q.clamp(1.5, 9.0));
+                self.shell.configure(sr, (target_f * 0.85).clamp(120.0, 900.0), 0.14, 2_800.0);
+            }
+        }
+    }
+
     /// Configures this voice as a 2-operator microtonal FM voice for General MIDI melodic backing.
     #[inline(always)]
     pub fn trigger_gm_fm(
@@ -1385,7 +1638,7 @@ impl PolyVoice {
                         self.clear();
                         return (0.0, 0.0);
                     }
-                    tanh_pade((shaped * env * 0.85 + room * 0.35) * 1.35) * self.level
+                    tanh_pade((shaped * env * (1.0 - 0.25 * self.shell_mix) + room * (0.65 * self.shell_mix)) * 1.35) * self.level
                 } else {
                     // 1. Hickory drumstick impulse into 6-mode Bessel circular snare membrane
                     let (exc, click_raw) = self.next_drum_excitation();
@@ -1623,6 +1876,147 @@ impl PolyVoice {
                 tanh_pade(shaped * 1.35) * self.level
             }
 
+            PolyVoiceMode::ModalPerc => {
+                let (exc, click_raw) = self.next_drum_excitation();
+                let mut modal_sum = 0.0_f32;
+                let mut total_modal_e = 0.0_f32;
+                for i in 0..NUM_MODES {
+                    let y_i = self.modes[i].process(exc * self.mode_exc_weights[i], 1.0);
+                    modal_sum += y_i;
+                    total_modal_e += self.modes[i].energy();
+                }
+
+                let bp = self.filter1.process(modal_sum);
+                let shell_out = self.shell.process(modal_sum * 0.65 + exc * 0.30);
+                self.fast_env = flush_denormal(self.fast_env * self.fast_decay);
+                self.slow_env = flush_denormal(self.slow_env * self.slow_decay);
+
+                if self.exc_samples_elapsed >= self.exc_total_samples
+                    && total_modal_e < 1.0e-10
+                    && self.age_samples > 192
+                {
+                    self.clear();
+                    return (0.0, 0.0);
+                }
+
+                let body = modal_sum * 0.62
+                    + bp * 0.48
+                    + shell_out * (0.55 * self.shell_mix)
+                    + click_raw * 0.35;
+                tanh_pade(body * 1.15) * self.level
+            }
+
+            PolyVoiceMode::ShakerOrEffect(gm_note) => {
+                if self.in_attack {
+                    self.amp_env += self.amp_attack_inc;
+                    if self.amp_env >= 1.0 {
+                        self.amp_env = 1.0;
+                        self.in_attack = false;
+                    }
+                }
+
+                let sig = match gm_note {
+                    54 => {
+                        // Tambourine: rapid jingle-pair flutter + brief frame tap
+                        let (exc, _) = self.next_drum_excitation();
+                        let frame = self.modes[0].process(exc, 1.0);
+                        self.phase1 += self.base_inc;
+                        if self.phase1 >= 1.0 {
+                            self.phase1 -= 1.0;
+                        }
+                        let flutter = 0.45 + 0.55 * (self.phase1 * TAU).sin().abs();
+                        let wn = self.next_white_noise();
+                        let jingle = self.filter2.process(self.filter1.process(wn));
+                        let env = self.amp_env * self.slow_env;
+                        (jingle * flutter * env * 1.65) + (frame * 0.45)
+                    }
+                    69 | 70 => {
+                        // Cabasa (69) / Maracas (70): high-passed granular bead/seed envelope
+                        self.phase1 += self.base_inc;
+                        if self.phase1 >= 1.0 {
+                            self.phase1 -= 1.0;
+                        }
+                        let grain = 0.55 + 0.45 * (self.phase1 * TAU).cos().abs();
+                        let wn = self.next_white_noise();
+                        let shaped = self.filter2.process(self.filter1.process(wn));
+                        let env = self.amp_env * (0.35 * self.fast_env + 0.65 * self.slow_env);
+                        shaped * grain * env * 1.55
+                    }
+                    73 | 74 => {
+                        // Guiro (Short 73 / Long 74): notched-gourd ratchet pulse modulation
+                        self.phase1 += self.base_inc * (0.78 + 0.35 * self.pitch_env);
+                        if self.phase1 >= 1.0 {
+                            self.phase1 -= 1.0;
+                        }
+                        // Sharp tooth impact per notch crossing
+                        let tooth = (1.0 - self.phase1).powf(4.0);
+                        let wn = self.next_white_noise();
+                        let scrape = self.filter2.process(self.filter1.process(wn * (0.18 + 1.45 * tooth)));
+                        let gourd = self.shell.process(scrape * 0.85);
+                        let env = self.amp_env * self.slow_env;
+                        (scrape * 0.72 + gourd * 0.55) * env * 1.45
+                    }
+                    58 => {
+                        // Vibraslap: spring strike + decaying wood-box rattle
+                        let (exc, _) = self.next_drum_excitation();
+                        let spring = self.modes[0].process(exc, 1.0);
+                        self.phase1 += self.base_inc * (0.55 + 0.55 * self.pitch_env);
+                        if self.phase1 >= 1.0 {
+                            self.phase1 -= 1.0;
+                        }
+                        let clack = (1.0 - self.phase1).powf(5.0);
+                        let wn = self.next_white_noise();
+                        let box_rattle = self.filter2.process(self.filter1.process(wn * (0.12 + 1.55 * clack)));
+                        let wood = self.shell.process(box_rattle);
+                        let env = self.amp_env * self.slow_env;
+                        (box_rattle * 0.68 + wood * 0.58) * env * 1.45 + spring * 0.38
+                    }
+                    71 | 72 => {
+                        // Samba Whistle (Short 71 / Long 72): pea-trill sine + breath air
+                        self.phase2 += self.sec_inc;
+                        if self.phase2 >= 1.0 {
+                            self.phase2 -= 1.0;
+                        }
+                        let trill = (self.phase2 * TAU).sin();
+                        let freq_mod = 1.0 + 0.032 * self.body_mix * trill;
+                        self.phase1 += self.base_inc * freq_mod;
+                        if self.phase1 >= 1.0 {
+                            self.phase1 -= 1.0;
+                        }
+                        let tone = (self.phase1 * TAU).sin() * (0.72 + 0.28 * self.body_mix * trill);
+                        let wn = self.next_white_noise();
+                        let breath = self.filter1.process(wn) * 0.14;
+                        let env = self.amp_env * self.slow_env;
+                        (tone + breath) * env * 0.95
+                    }
+                    _ => {
+                        // Cuica (Mute 78 / Open 79): friction-drum pitched sweep + skin formant
+                        let sweep_mult = (1.0 + self.sec_inc * (1.0 - self.pitch_env)).clamp(0.45, 2.2);
+                        self.phase1 += self.base_inc * sweep_mult;
+                        if self.phase1 >= 1.0 {
+                            self.phase1 -= 1.0;
+                        }
+                        let raw_osc = (self.phase1 * TAU).sin() + 0.32 * (self.phase1 * 2.0 * TAU).sin();
+                        let friction = tanh_pade(raw_osc * 1.45) + self.next_white_noise() * 0.05;
+                        let skin = self.filter1.process(friction);
+                        let body = self.shell.process(skin * 0.75);
+                        let env = self.amp_env * self.slow_env;
+                        (skin * 0.72 + body * 0.45) * env * 1.25
+                    }
+                };
+
+                self.fast_env = flush_denormal(self.fast_env * self.fast_decay);
+                self.slow_env = flush_denormal(self.slow_env * self.slow_decay);
+                self.pitch_env = flush_denormal(self.pitch_env * self.pitch_decay);
+
+                if !self.in_attack && self.slow_env < 1.0e-5 && self.fast_env < 1.0e-5 {
+                    self.clear();
+                    return (0.0, 0.0);
+                }
+
+                tanh_pade(sig * 1.20) * self.level
+            }
+
             PolyVoiceMode::GmFmMelodic(_preset) => {
                 if self.in_attack {
                     self.amp_env += self.amp_attack_inc;
@@ -1754,129 +2148,58 @@ impl PercussionAndGmPool {
         }
     }
 
-    /// Resolves the configured absolute volume (in dB) for a given General MIDI drum note.
+    /// Resolves the configured absolute volume (in dB) for any General MIDI drum note (`35..=81`).
     #[inline(always)]
-    fn drum_note_volume_db(&self, gm_drum_note: u8) -> f32 {
+    fn drum_note_volume_db_from(dp: &DrumKitParams, gm_drum_note: u8) -> f32 {
         match gm_drum_note {
-            35 | 36 => self.drum_params.kick.volume_db,
-            37 => self.drum_params.snare.rim_volume_db,
-            38 | 40 => self.drum_params.snare.volume_db,
-            39 => self.drum_params.snare.clap_volume_db,
-            41 | 43 | 45 | 47 | 48 | 50 => self.drum_params.toms.volume_db,
-            42 => self.drum_params.hi_hats.closed_volume_db,
-            44 => self.drum_params.hi_hats.pedal_volume_db,
-            46 => self.drum_params.hi_hats.open_volume_db,
-            49 | 52 | 55 | 57 => self.drum_params.cymbals.crash_volume_db,
-            51 | 59 => self.drum_params.cymbals.ride_volume_db,
-            53 => self.drum_params.cymbals.bell_volume_db,
-            _ => self.drum_params.aux.volume_db,
+            35 => dp.acoustic_kick.volume_db,
+            36 => dp.kick.volume_db,
+            37 => dp.snare.rim_volume_db,
+            38 => dp.snare.volume_db,
+            39 => dp.hand_clap.volume_db,
+            40 => dp.electric_snare.volume_db,
+            41 | 43 | 45 | 47 | 48 | 50 => dp.toms.volume_db,
+            42 => dp.hi_hats.closed_volume_db,
+            44 => dp.hi_hats.pedal_volume_db,
+            46 => dp.hi_hats.open_volume_db,
+            49 => dp.crash1.volume_db,
+            57 => dp.crash2.volume_db,
+            51 => dp.ride1_and_bell.bow_volume_db,
+            53 => dp.ride1_and_bell.bell_volume_db,
+            59 => dp.ride2.volume_db,
+            55 => dp.splash.volume_db,
+            52 => dp.china.volume_db,
+            60 | 61 => dp.bongos.volume_db,
+            62 | 63 | 64 => dp.congas.volume_db,
+            65 | 66 => dp.timbales.volume_db,
+            78 | 79 => dp.cuica.volume_db,
+            56 => dp.cowbell.volume_db,
+            67 | 68 => dp.agogo.volume_db,
+            80 | 81 => dp.triangle.volume_db,
+            75 => dp.claves.volume_db,
+            76 | 77 => dp.wood_blocks.volume_db,
+            54 => dp.tambourine.volume_db,
+            69 => dp.cabasa.volume_db,
+            70 => dp.maracas.volume_db,
+            73 | 74 => dp.guiro.volume_db,
+            71 | 72 => dp.whistle.volume_db,
+            58 => dp.vibraslap.volume_db,
+            _ => dp.cowbell.volume_db,
         }
     }
 
     /// Updates live physical-modeling drum kit parameters and immediately adjusts active ringing
     /// voices' absolute output volume scales.
-    pub fn update_drum_params(&mut self, _role: DrumRole, params: DrumVoiceParams) {
-        match params {
-            DrumVoiceParams::Kick(k) => {
-                self.drum_params.kick = k;
-                let scale = Self::drum_volume_db_to_amp(k.volume_db);
-                for v in self.voices.iter_mut() {
-                    if v.is_active() && matches!(v.voice_tag, 35 | 36) {
-                        v.volume_scale = scale;
-                    }
-                }
-            }
-            DrumVoiceParams::Snare(s) => {
-                self.drum_params.snare = s;
-                let snare_scale = Self::drum_volume_db_to_amp(s.volume_db);
-                let rim_scale = Self::drum_volume_db_to_amp(s.rim_volume_db);
-                let clap_scale = Self::drum_volume_db_to_amp(s.clap_volume_db);
-                for v in self.voices.iter_mut() {
-                    if v.is_active() {
-                        match v.voice_tag {
-                            37 => v.volume_scale = rim_scale,
-                            38 | 40 => v.volume_scale = snare_scale,
-                            39 => v.volume_scale = clap_scale,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            DrumVoiceParams::Toms(t) => {
-                self.drum_params.toms = t;
-                let scale = Self::drum_volume_db_to_amp(t.volume_db);
-                for v in self.voices.iter_mut() {
-                    if v.is_active() && matches!(v.voice_tag, 41 | 43 | 45 | 47 | 48 | 50) {
-                        v.volume_scale = scale;
-                    }
-                }
-            }
-            DrumVoiceParams::HiHats(h) => {
-                self.drum_params.hi_hats = h;
-                let closed_scale = Self::drum_volume_db_to_amp(h.closed_volume_db);
-                let pedal_scale = Self::drum_volume_db_to_amp(h.pedal_volume_db);
-                let open_scale = Self::drum_volume_db_to_amp(h.open_volume_db);
-                for v in self.voices.iter_mut() {
-                    if v.is_active() {
-                        match v.voice_tag {
-                            42 => v.volume_scale = closed_scale,
-                            44 => v.volume_scale = pedal_scale,
-                            46 => v.volume_scale = open_scale,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            DrumVoiceParams::Cymbals(c) => {
-                self.drum_params.cymbals = c;
-                let crash_scale = Self::drum_volume_db_to_amp(c.crash_volume_db);
-                let ride_scale = Self::drum_volume_db_to_amp(c.ride_volume_db);
-                let bell_scale = Self::drum_volume_db_to_amp(c.bell_volume_db);
-                for v in self.voices.iter_mut() {
-                    if v.is_active() {
-                        match v.voice_tag {
-                            49 | 52 | 55 | 57 => v.volume_scale = crash_scale,
-                            51 | 59 => v.volume_scale = ride_scale,
-                            53 => v.volume_scale = bell_scale,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            DrumVoiceParams::PercAux(a) => {
-                self.drum_params.aux = a;
-                let scale = Self::drum_volume_db_to_amp(a.volume_db);
-                for v in self.voices.iter_mut() {
-                    if v.is_active()
-                        && !matches!(v.mode, PolyVoiceMode::GmFmMelodic(_))
-                        && !matches!(
-                            v.voice_tag,
-                            35 | 36
-                                | 37
-                                | 38
-                                | 39
-                                | 40
-                                | 41
-                                | 42
-                                | 43
-                                | 44
-                                | 45
-                                | 46
-                                | 47
-                                | 48
-                                | 49
-                                | 50
-                                | 51
-                                | 52
-                                | 53
-                                | 55
-                                | 57
-                                | 59
-                        )
-                    {
-                        v.volume_scale = scale;
-                    }
-                }
+    pub fn update_drum_params(&mut self, role: DrumRole, params: DrumVoiceParams) {
+        self.drum_params.set_params_for_role(role, params);
+        let dp = &self.drum_params;
+        for v in self.voices.iter_mut() {
+            if v.is_active()
+                && !matches!(v.mode, PolyVoiceMode::GmFmMelodic(_))
+                && DrumRole::from_gm_note(v.voice_tag) == role
+            {
+                v.volume_scale =
+                    Self::drum_volume_db_to_amp(Self::drum_note_volume_db_from(dp, v.voice_tag));
             }
         }
     }
@@ -1933,20 +2256,19 @@ impl PercussionAndGmPool {
         let slot = self.allocate_voice(gm_drum_note, false);
 
         match gm_drum_note {
-            // 1. Kick & Toms (Notes 35, 36, 41–50): 6-mode Bessel circular membrane + wooden shell
+            // 1. Separated Bass Drums: Acoustic Bass Drum (35) & Bass Drum 1 (36)
             35 | 36 => {
-                let k = self.drum_params.kick;
+                let k = if gm_drum_note == 35 {
+                    self.drum_params.acoustic_kick
+                } else {
+                    self.drum_params.kick
+                };
                 let (eff_vel, eff_pos) =
                     self.apply_hit_variation(velocity, k.strike_position, k.hit_variation);
                 let body_decay = (k.body_decay_ms * 0.001).clamp(0.04, 0.80);
-                let base_hz = if gm_note_is_acoustic_kick(gm_drum_note) {
-                    k.pitch_end_hz * 0.96
-                } else {
-                    k.pitch_end_hz
-                };
                 self.voices[slot].trigger_kick_or_tom(
                     gm_drum_note,
-                    base_hz,
+                    k.pitch_end_hz,
                     k.pitch_start_hz,
                     (k.pitch_decay_ms * 0.001).clamp(0.015, 0.12),
                     body_decay,
@@ -1961,6 +2283,7 @@ impl PercussionAndGmPool {
                 );
             }
             // Floor Toms (41, 43), Low & Low-Mid Toms (45, 47), Hi-Mid & High Toms (48, 50)
+            // Grouped with individual per-tom semitone tuning offsets!
             41 | 43 | 45 | 47 | 48 | 50 => {
                 let t = self.drum_params.toms;
                 let (eff_vel, eff_pos) =
@@ -1983,7 +2306,11 @@ impl PercussionAndGmPool {
                     50 => 0.32,
                     _ => 0.50,
                 };
-                let base_hz = (std_freq * t.pitch_scale).clamp(35.0, sr * 0.25);
+                let tune_st = TomParams::tuning_slot_for_note(gm_drum_note)
+                    .map(|idx| t.tom_tuning_semitones[idx].clamp(-12.0, 12.0))
+                    .unwrap_or(0.0);
+                let tune_mult = 2.0_f32.powf(tune_st / 12.0);
+                let base_hz = (std_freq * t.pitch_scale * tune_mult).clamp(35.0, sr * 0.25);
                 let start_hz = (base_hz * t.pitch_drop_ratio).clamp(base_hz, sr * 0.42);
                 let decay_tau = (t.decay_ms * 0.001).clamp(0.04, 1.20);
                 self.voices[slot].trigger_kick_or_tom(
@@ -2003,17 +2330,20 @@ impl PercussionAndGmPool {
                 );
             }
 
-            // 2. Snare, Rimshot & Claps (Notes 37, 38, 39, 40)
-            // Side Stick / Rimshot (37): edge strike + woody shell crack + delicate wire buzz
+            // 2. Acoustic Snare (38) + Side Stick (37) grouped on same resonating snare shell;
+            //    Electric Snare (40) and Hand Clap (39) independently shaped!
             37 => {
+                // Side Stick / Cross-Stick shares Acoustic Snare's shell size & cavity
                 let s = self.drum_params.snare;
                 let (eff_vel, eff_pos) = self.apply_hit_variation(velocity, 0.92, s.hit_variation);
+                let shell_m1 = (s.tone_freq_hz * 1.68).clamp(200.0, 620.0);
+                let shell_m2 = (s.mode2_freq_hz * 1.70).clamp(340.0, 1_100.0);
                 self.voices[slot].trigger_snare_or_clap(
                     37,
-                    310.0,
-                    560.0,
-                    0.025,
-                    0.035,
+                    shell_m1,
+                    shell_m2,
+                    (s.tone_decay_ms * 0.001 * 0.45).clamp(0.015, 0.08),
+                    (s.noise_decay_ms * 0.001 * 0.22).clamp(0.018, 0.09),
                     s.wire_cutoff_hz.max(2_200.0),
                     2.0,
                     0.88,
@@ -2021,31 +2351,29 @@ impl PercussionAndGmPool {
                     s.head_tension_mod * 0.5,
                     eff_pos,
                     (s.overtones_ring + 0.25).min(1.0),
-                    (s.shell_wood_cavity + 0.25).min(1.0),
+                    (s.shell_wood_cavity + 0.22).min(1.0),
                     (s.wire_tension + 0.2).min(1.0),
                     false,
-                    s.clap_spacing_ms,
+                    12.0,
                     0.46,
                     eff_vel,
                     sr,
                 );
             }
-            // Acoustic Snare (38) & Electric/Rimshot Snare (40):
             38 | 40 => {
-                let s = self.drum_params.snare;
+                let s = if gm_drum_note == 40 {
+                    self.drum_params.electric_snare
+                } else {
+                    self.drum_params.snare
+                };
                 let body_hz = s.tone_freq_hz.clamp(100.0, 450.0);
                 let mode2_hz = s.mode2_freq_hz.clamp(150.0, 800.0);
                 let tone_decay = (s.tone_decay_ms * 0.001).clamp(0.015, 0.40);
                 let wire_decay = (s.noise_decay_ms * 0.001).clamp(0.02, 0.80);
                 let noise_m = s.noise_mix.clamp(0.05, 0.95);
                 let body_m = (1.0 - noise_m).clamp(0.15, 0.95);
-                let base_strike_p = if gm_drum_note == 40 {
-                    (s.strike_position + 0.28).min(1.0)
-                } else {
-                    s.strike_position
-                };
                 let (eff_vel, eff_pos) =
-                    self.apply_hit_variation(velocity, base_strike_p, s.hit_variation);
+                    self.apply_hit_variation(velocity, s.strike_position, s.hit_variation);
                 self.voices[slot].trigger_snare_or_clap(
                     gm_drum_note,
                     body_hz,
@@ -2062,41 +2390,40 @@ impl PercussionAndGmPool {
                     s.shell_wood_cavity,
                     s.wire_tension,
                     false,
-                    s.clap_spacing_ms,
+                    12.0,
                     0.46,
                     eff_vel,
                     sr,
                 );
             }
-            // Hand Clap (39): multi-burst acoustic hand clap
+            // Dedicated Hand Clap (39)
             39 => {
-                let s = self.drum_params.snare;
-                let (eff_vel, _) = self.apply_hit_variation(velocity, 0.5, s.hit_variation);
+                let c = self.drum_params.hand_clap;
+                let (eff_vel, _) = self.apply_hit_variation(velocity, 0.5, c.hit_variation);
                 self.voices[slot].trigger_snare_or_clap(
                     39,
                     185.0,
                     330.0,
                     0.028,
-                    0.170,
-                    1_350.0,
-                    1.5,
+                    (c.tail_decay_ms * 0.001).clamp(0.035, 0.60),
+                    c.bandpass_hz.clamp(600.0, 3_600.0),
+                    c.bandpass_q.clamp(0.6, 4.5),
                     0.18,
                     0.90,
                     0.0,
                     0.5,
                     0.3,
-                    0.3,
+                    c.room_mix.clamp(0.0, 1.0),
                     0.5,
                     true,
-                    s.clap_spacing_ms,
+                    c.clap_spacing_ms.clamp(4.0, 35.0),
                     0.54,
                     eff_vel,
                     sr,
                 );
             }
 
-            // 3. Cast B20 Bronze Hi-Hats & Cymbals (Notes 42, 44, 46, 49, 51, 52, 53, 55, 57, 59)
-            // Closed Hi-Hat (42):
+            // 3. Cast B20 Bronze Hi-Hats (42, 44, 46 — grouped & choke-coupled)
             42 => {
                 let h = self.drum_params.hi_hats;
                 let (eff_vel, eff_hard) =
@@ -2120,7 +2447,6 @@ impl PercussionAndGmPool {
                     sr,
                 );
             }
-            // Pedal Hi-Hat (44):
             44 => {
                 let h = self.drum_params.hi_hats;
                 let (eff_vel, eff_hard) =
@@ -2144,7 +2470,6 @@ impl PercussionAndGmPool {
                     sr,
                 );
             }
-            // Open Hi-Hat (46):
             46 => {
                 let h = self.drum_params.hi_hats;
                 let (eff_vel, eff_hard) =
@@ -2168,239 +2493,181 @@ impl PercussionAndGmPool {
                     sr,
                 );
             }
-            // Crash Cymbal 1 (49):
-            49 => {
-                let c = self.drum_params.cymbals;
+
+            // 4. Individually Shapeable Cymbals (Crash 1, Crash 2, Ride 2, Splash, China)
+            //    + Grouped Ride 1 & Ride Bell (51, 53)
+            49 | 52 | 55 | 57 | 59 => {
+                let (c, fast_tau, pan) = match gm_drum_note {
+                    49 => (self.drum_params.crash1, 0.090, 0.30),
+                    57 => (self.drum_params.crash2, 0.095, 0.64),
+                    59 => (self.drum_params.ride2, 0.060, 0.66),
+                    55 => (self.drum_params.splash, 0.050, 0.38),
+                    _ => (self.drum_params.china, 0.110, 0.72),
+                };
                 let (eff_vel, eff_hard) =
                     self.apply_hit_variation(velocity, c.stick_hardness, c.hit_variation);
-                let decay = (c.crash_decay_ms * 0.001).clamp(0.2, 4.0);
+                let decay = (c.decay_ms * 0.001).clamp(0.15, 4.0);
                 self.voices[slot].trigger_hat_or_cymbal(
-                    49,
-                    c.bronze_size_pitch * 0.95,
-                    c.matrix_spread * 0.94,
+                    gm_drum_note,
+                    c.bronze_size_pitch,
+                    c.matrix_spread,
                     c.plate_dispersion,
                     c.nonlin_shimmer,
-                    c.bell_peak_level * 0.65,
+                    c.bell_level,
                     eff_hard,
                     true,
                     false,
-                    0.090,
+                    fast_tau,
                     decay,
                     c.cutoff_hz,
-                    0.30,
+                    pan,
                     eff_vel,
                     sr,
                 );
             }
-            // Ride Cymbal 1 (51 — Ride Bow):
             51 => {
-                let c = self.drum_params.cymbals;
-                let (eff_vel, eff_hard) = self.apply_hit_variation(
-                    velocity,
-                    (c.stick_hardness + 0.12).min(1.0),
-                    c.hit_variation,
-                );
-                let decay = (c.ride_decay_ms * 0.001).clamp(0.2, 4.0);
+                let r = self.drum_params.ride1_and_bell;
+                let (eff_vel, eff_hard) =
+                    self.apply_hit_variation(velocity, r.stick_hardness, r.hit_variation);
+                let decay = (r.bow_decay_ms * 0.001).clamp(0.2, 4.0);
                 self.voices[slot].trigger_hat_or_cymbal(
                     51,
-                    c.bronze_size_pitch * 1.04,
-                    c.matrix_spread * 1.08,
-                    c.plate_dispersion,
-                    c.nonlin_shimmer,
-                    c.bell_peak_level,
+                    r.bronze_size_pitch,
+                    r.matrix_spread,
+                    r.plate_dispersion,
+                    r.nonlin_shimmer,
+                    r.bell_peak_level,
                     eff_hard,
                     true,
                     false,
                     0.055,
                     decay,
-                    c.cutoff_hz,
+                    r.cutoff_hz,
                     0.68,
                     eff_vel,
                     sr,
                 );
             }
-            // Chinese Cymbal (52):
-            52 => {
-                let c = self.drum_params.cymbals;
-                let (eff_vel, eff_hard) =
-                    self.apply_hit_variation(velocity, c.stick_hardness, c.hit_variation);
-                let decay = (c.crash_decay_ms * 0.001 * 0.85).clamp(0.2, 3.5);
-                self.voices[slot].trigger_hat_or_cymbal(
-                    52,
-                    c.bronze_size_pitch * 0.88,
-                    c.matrix_spread * 0.84,
-                    c.plate_dispersion,
-                    (c.nonlin_shimmer + 0.18).min(1.0),
-                    c.bell_peak_level * 0.55,
-                    eff_hard,
-                    true,
-                    false,
-                    0.110,
-                    decay,
-                    c.cutoff_hz * 0.92,
-                    0.72,
-                    eff_vel,
-                    sr,
-                );
-            }
-            // Ride Bell (53): strong cast-bronze bell modal ping & crisp stick hardness
             53 => {
-                let c = self.drum_params.cymbals;
+                let r = self.drum_params.ride1_and_bell;
                 let (eff_vel, eff_hard) = self.apply_hit_variation(
                     velocity,
-                    (c.stick_hardness + 0.22).min(1.0),
-                    c.hit_variation,
+                    (r.stick_hardness + 0.18).min(1.0),
+                    r.hit_variation,
                 );
-                let decay = (c.ride_decay_ms * 0.001 * 0.80).clamp(0.2, 3.2);
+                let decay = (r.bell_decay_ms * 0.001).clamp(0.15, 3.5);
                 self.voices[slot].trigger_hat_or_cymbal(
                     53,
-                    c.bronze_size_pitch * 1.24,
-                    c.matrix_spread * 1.22,
-                    (c.plate_dispersion + 0.15).min(1.0),
-                    c.nonlin_shimmer * 0.70,
-                    (c.bell_peak_level * 1.65).min(2.0),
+                    r.bronze_size_pitch * 1.18,
+                    r.matrix_spread * 1.12,
+                    (r.plate_dispersion + 0.14).min(1.0),
+                    r.nonlin_shimmer * 0.70,
+                    (r.bell_peak_level * 1.65).min(2.0),
                     eff_hard,
                     true,
                     false,
                     0.070,
                     decay,
-                    c.cutoff_hz * 1.25,
+                    r.cutoff_hz * 1.22,
                     0.68,
                     eff_vel,
                     sr,
                 );
             }
-            // Splash Cymbal (55):
-            55 => {
-                let c = self.drum_params.cymbals;
-                let (eff_vel, eff_hard) =
-                    self.apply_hit_variation(velocity, c.stick_hardness, c.hit_variation);
-                let decay = (c.crash_decay_ms * 0.001 * 0.52).clamp(0.15, 2.0);
-                self.voices[slot].trigger_hat_or_cymbal(
-                    55,
-                    c.bronze_size_pitch * 1.25,
-                    c.matrix_spread * 1.15,
-                    c.plate_dispersion,
-                    c.nonlin_shimmer,
-                    c.bell_peak_level * 0.6,
-                    eff_hard,
-                    true,
-                    false,
-                    0.050,
-                    decay,
-                    c.cutoff_hz * 1.15,
-                    0.38,
-                    eff_vel,
-                    sr,
-                );
-            }
-            // Crash Cymbal 2 (57):
-            57 => {
-                let c = self.drum_params.cymbals;
-                let (eff_vel, eff_hard) =
-                    self.apply_hit_variation(velocity, c.stick_hardness, c.hit_variation);
-                let decay = (c.crash_decay_ms * 0.001 * 1.08).clamp(0.2, 4.0);
-                self.voices[slot].trigger_hat_or_cymbal(
-                    57,
-                    c.bronze_size_pitch * 1.03,
-                    c.matrix_spread * 0.98,
-                    c.plate_dispersion,
-                    c.nonlin_shimmer,
-                    c.bell_peak_level * 0.65,
-                    eff_hard,
-                    true,
-                    false,
-                    0.095,
-                    decay,
-                    c.cutoff_hz,
-                    0.64,
-                    eff_vel,
-                    sr,
-                );
-            }
-            // Ride Cymbal 2 (59):
-            59 => {
-                let c = self.drum_params.cymbals;
-                let (eff_vel, eff_hard) = self.apply_hit_variation(
-                    velocity,
-                    (c.stick_hardness + 0.10).min(1.0),
-                    c.hit_variation,
-                );
-                let decay = (c.ride_decay_ms * 0.001 * 0.95).clamp(0.2, 4.0);
-                self.voices[slot].trigger_hat_or_cymbal(
-                    59,
-                    c.bronze_size_pitch * 0.98,
-                    c.matrix_spread * 1.04,
-                    c.plate_dispersion,
-                    c.nonlin_shimmer,
-                    c.bell_peak_level,
-                    eff_hard,
-                    true,
-                    false,
-                    0.060,
-                    decay,
-                    c.cutoff_hz,
-                    0.66,
+
+            // 5. Latin & Hand Drum Membrane Groups: Bongos (60, 61), Congas (62, 63, 64), Timbales (65, 66)
+            60 | 61 | 62 | 63 | 64 | 65 | 66 => {
+                let (t, std_freq, decay_scale, pan) = match gm_drum_note {
+                    60 => (self.drum_params.bongos, 315.0, 0.90, 0.42),
+                    61 => (self.drum_params.bongos, 220.0, 1.05, 0.56),
+                    62 => (self.drum_params.congas, 245.0, 0.34, 0.44), // Mute High Conga (damped!)
+                    63 => (self.drum_params.congas, 235.0, 1.00, 0.46), // Open High Conga
+                    64 => (self.drum_params.congas, 165.0, 1.15, 0.58), // Low Conga
+                    65 => (self.drum_params.timbales, 290.0, 0.95, 0.40),
+                    _ => (self.drum_params.timbales, 212.0, 1.10, 0.60),
+                };
+                let (eff_vel, eff_pos) =
+                    self.apply_hit_variation(velocity, t.strike_position, t.hit_variation);
+                let tune_st = TomParams::tuning_slot_for_note(gm_drum_note)
+                    .map(|idx| t.tom_tuning_semitones[idx].clamp(-12.0, 12.0))
+                    .unwrap_or(0.0);
+                let tune_mult = 2.0_f32.powf(tune_st / 12.0);
+                let base_hz = (std_freq * t.pitch_scale * tune_mult).clamp(55.0, sr * 0.25);
+                let start_hz = (base_hz * t.pitch_drop_ratio).clamp(base_hz, sr * 0.42);
+                let decay_tau = ((t.decay_ms * 0.001) * decay_scale).clamp(0.025, 1.20);
+                self.voices[slot].trigger_kick_or_tom(
+                    gm_drum_note,
+                    base_hz,
+                    start_hz,
+                    0.026,
+                    decay_tau,
+                    t.head_tension_mod,
+                    eff_pos,
+                    if gm_drum_note == 62 { t.overtones_ring * 0.45 } else { t.overtones_ring },
+                    t.shell_wood_cavity,
+                    t.stick_attack,
+                    pan,
                     eff_vel,
                     sr,
                 );
             }
 
-            // Cowbell & Aux (56):
-            56 => {
-                let a = self.drum_params.aux;
-                let f1 = (a.freq1_hz + a.detune).clamp(100.0, 3_000.0);
-                let f2 = (a.freq2_hz - a.detune).clamp(150.0, 3_500.0);
-                let decay = (a.decay_ms * 0.001).clamp(0.015, 0.80);
-                self.voices[slot].trigger_snare_or_clap(
-                    56,
+            // 6. Metallic & Hardwood Modal Percussion: Cowbell (56), Agogo (67, 68),
+            //    Claves (75), Wood Blocks (76, 77), Triangle (80, 81)
+            56 | 67 | 68 | 75 | 76 | 77 | 80 | 81 => {
+                let (a, pitch_mult, decay_mult, pan) = match gm_drum_note {
+                    56 => (self.drum_params.cowbell, 1.0, 1.0, 0.58),
+                    67 => (self.drum_params.agogo, 1.0, 1.0, 0.42),
+                    68 => (self.drum_params.agogo, 0.76, 1.12, 0.58),
+                    75 => (self.drum_params.claves, 1.0, 1.0, 0.54),
+                    76 => (self.drum_params.wood_blocks, 1.0, 0.92, 0.44),
+                    77 => (self.drum_params.wood_blocks, 0.74, 1.08, 0.56),
+                    80 => (self.drum_params.triangle, 1.0, 0.06, 0.62), // Mute Triangle
+                    _ => (self.drum_params.triangle, 1.0, 1.0, 0.62),   // Open Triangle
+                };
+                let (eff_vel, _) = self.apply_hit_variation(velocity, 0.5, a.hit_variation);
+                let f1 = ((a.freq1_hz + a.detune) * pitch_mult).clamp(120.0, sr * 0.40);
+                let f2 = ((a.freq2_hz - a.detune) * pitch_mult).clamp(160.0, sr * 0.42);
+                let decay = ((a.decay_ms * 0.001) * decay_mult).clamp(0.015, 2.2);
+                self.voices[slot].trigger_modal_perc(
+                    gm_drum_note,
                     f1,
                     f2,
-                    decay,
-                    decay * 0.20,
-                    2_000.0,
                     a.bandpass_q,
-                    0.96,
-                    0.04,
-                    0.0,
-                    0.2,
-                    0.5,
-                    0.15,
-                    0.95,
-                    false,
-                    12.0,
-                    0.58,
-                    velocity,
+                    decay,
+                    pan,
+                    eff_vel,
                     sr,
                 );
             }
-            // Tambourine (54) / Cabasa (69) / Maracas (70)
-            54 | 69 | 70 => self.voices[slot].trigger_hat_or_cymbal(
-                gm_drum_note,
-                1.35,
-                1.25,
-                0.55,
-                0.60,
-                0.25,
-                0.80,
-                false,
-                false,
-                0.025,
-                0.095,
-                7_500.0,
-                0.60,
-                velocity,
-                sr,
-            ),
-            // Fallback for other GM Latin/aux percussion notes (congas, bongos, woodblocks)
+
+            // 7. Shakers, Ratchets, Whistle & Friction Drum:
+            //    Tambourine (54), Vibraslap (58), Cabasa (69), Maracas (70),
+            //    Whistle (71, 72), Guiro (73, 74), Cuica (78, 79)
+            54 | 58 | 69 | 70 | 71 | 72 | 73 | 74 | 78 | 79 => {
+                let (p, pan) = match gm_drum_note {
+                    54 => (self.drum_params.tambourine, 0.62),
+                    58 => (self.drum_params.vibraslap, 0.56),
+                    69 => (self.drum_params.cabasa, 0.38),
+                    70 => (self.drum_params.maracas, 0.64),
+                    71 | 72 => (self.drum_params.whistle, 0.50),
+                    73 | 74 => (self.drum_params.guiro, 0.42),
+                    _ => (self.drum_params.cuica, 0.54),
+                };
+                let (eff_vel, _) = self.apply_hit_variation(velocity, 0.5, p.hit_variation);
+                self.voices[slot].trigger_shaker_or_effect(gm_drum_note, &p, pan, eff_vel, sr);
+            }
+
+            // Fallback for any custom MIDI notes outside GM 35..=81
             other => {
+                let a = self.drum_params.cowbell;
                 let base_hz = (90.0 + ((other % 24) as f32) * 14.0).clamp(65.0, 420.0);
                 self.voices[slot].trigger_kick_or_tom(
                     other,
                     base_hz,
                     base_hz * 1.45,
                     0.024,
-                    0.14,
+                    (a.decay_ms * 0.001).clamp(0.04, 0.5),
                     0.45,
                     0.35,
                     0.40,
@@ -2414,8 +2681,9 @@ impl PercussionAndGmPool {
         }
 
         // Apply per-instrument absolute volume scaling post-saturation so timbre is preserved
-        self.voices[slot].volume_scale =
-            Self::drum_volume_db_to_amp(self.drum_note_volume_db(gm_drum_note));
+        self.voices[slot].volume_scale = Self::drum_volume_db_to_amp(
+            Self::drum_note_volume_db_from(&self.drum_params, gm_drum_note),
+        );
     }
 
     /// Triggers a 2-operator FM General MIDI melodic voice at an exact `f64` Hz frequency.
@@ -2536,11 +2804,6 @@ impl PercussionAndGmPool {
         }
         (left, right)
     }
-}
-
-#[inline(always)]
-const fn gm_note_is_acoustic_kick(note: u8) -> bool {
-    note == 35
 }
 
 #[cfg(test)]
@@ -2691,8 +2954,13 @@ mod tests {
         let sr = 48_000.0;
         let mut pool = PercussionAndGmPool::new(sr);
         // Stress-test max non-linear shimmer bloom across Ride Bow (51), Ride Bell (53), Crash (49/57), Hats (42/46)
-        pool.drum_params.cymbals.nonlin_shimmer = 1.0;
-        pool.drum_params.cymbals.plate_dispersion = 1.0;
+        pool.drum_params.crash1.nonlin_shimmer = 1.0;
+        pool.drum_params.crash1.plate_dispersion = 1.0;
+        pool.drum_params.crash2.nonlin_shimmer = 1.0;
+        pool.drum_params.ride1_and_bell.nonlin_shimmer = 1.0;
+        pool.drum_params.ride2.nonlin_shimmer = 1.0;
+        pool.drum_params.splash.nonlin_shimmer = 1.0;
+        pool.drum_params.china.nonlin_shimmer = 1.0;
         pool.drum_params.hi_hats.nonlin_shimmer = 1.0;
 
         for &note in &[42_u8, 44, 46, 49, 51, 52, 53, 55, 57, 59] {
@@ -2754,7 +3022,7 @@ mod tests {
             pool.drum_params.snare.hit_variation = hit_variation;
             pool.drum_params.toms.hit_variation = hit_variation;
             pool.drum_params.hi_hats.hit_variation = hit_variation;
-            pool.drum_params.cymbals.hit_variation = hit_variation;
+            pool.drum_params.crash1.hit_variation = hit_variation;
 
             let mut energies = Vec::new();
             for _ in 0..6 {
@@ -2906,7 +3174,13 @@ mod tests {
             pool.drum_params.snare.hit_variation = 0.0;
             pool.drum_params.toms.hit_variation = 0.0;
             pool.drum_params.hi_hats.hit_variation = 0.0;
-            pool.drum_params.cymbals.hit_variation = 0.0;
+            pool.drum_params.crash1.hit_variation = 0.0;
+            pool.drum_params.crash2.hit_variation = 0.0;
+            pool.drum_params.splash.hit_variation = 0.0;
+            pool.drum_params.china.hit_variation = 0.0;
+            pool.drum_params.ride1_and_bell.hit_variation = 0.0;
+            pool.drum_params.cowbell.hit_variation = 0.0;
+            pool.drum_params.hand_clap.hit_variation = 0.0;
             setup(&mut pool);
             pool.trigger_drum(note, 0.85);
             let mut sum_sq = 0.0_f32;
@@ -2920,11 +3194,13 @@ mod tests {
 
         // 1. -48.0 dB produces exact 0.0 silence across distinct instruments
         assert_eq!(render_rms(&|p| p.drum_params.kick.volume_db = -48.0, 36), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.acoustic_kick.volume_db = -48.0, 35), 0.0);
         assert_eq!(render_rms(&|p| p.drum_params.snare.rim_volume_db = -48.0, 37), 0.0);
-        assert_eq!(render_rms(&|p| p.drum_params.snare.clap_volume_db = -48.0, 39), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.hand_clap.volume_db = -48.0, 39), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.electric_snare.volume_db = -48.0, 40), 0.0);
         assert_eq!(render_rms(&|p| p.drum_params.hi_hats.open_volume_db = -48.0, 46), 0.0);
-        assert_eq!(render_rms(&|p| p.drum_params.cymbals.bell_volume_db = -48.0, 53), 0.0);
-        assert_eq!(render_rms(&|p| p.drum_params.aux.volume_db = -48.0, 56), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.ride1_and_bell.bell_volume_db = -48.0, 53), 0.0);
+        assert_eq!(render_rms(&|p| p.drum_params.cowbell.volume_db = -48.0, 56), 0.0);
 
         // 2. +6.02 dB doubles RMS cleanly vs 0.0 dB (post-saturation linear scaling)
         let rms_0 = render_rms(&|_| {}, 38);
@@ -2936,11 +3212,47 @@ mod tests {
             ratio
         );
 
-        // 3. Independent instrument isolation: muting Rim (37) does NOT mute Snare (38)
+        // 3. Independent instrument isolation:
+        //    - Muting Side Stick (37) does NOT mute Acoustic Snare (38)
+        //    - Muting Acoustic Snare (38) does NOT mute Electric Snare (40)
+        //    - Muting Kick 1 (36) does NOT mute Acoustic Kick (35)
+        //    - Muting Crash 1 (49) does NOT mute Crash 2 (57), Splash (55), or China (52)
         let snare_with_muted_rim = render_rms(&|p| p.drum_params.snare.rim_volume_db = -48.0, 38);
         assert!(
             (snare_with_muted_rim - rms_0).abs() < 1e-4,
             "Muting Side Stick must not affect Acoustic Snare level"
+        );
+        assert!(
+            render_rms(&|p| p.drum_params.snare.volume_db = -48.0, 40) > 0.05,
+            "Muting Acoustic Snare (38) must not mute Electric Snare (40)"
+        );
+        assert!(
+            render_rms(&|p| p.drum_params.kick.volume_db = -48.0, 35) > 0.05,
+            "Muting Bass Drum 1 (36) must not mute Acoustic Bass Drum (35)"
+        );
+        let crash2_base = render_rms(&|_| {}, 57);
+        let crash2_after = render_rms(&|p| p.drum_params.crash1.volume_db = -48.0, 57);
+        assert!(
+            crash2_base > 0.005 && (crash2_after - crash2_base).abs() < 1e-4,
+            "Muting Crash 1 (49) must not affect Crash 2 (57) (base={}, after={})",
+            crash2_base,
+            crash2_after
+        );
+        let splash_base = render_rms(&|_| {}, 55);
+        let splash_after = render_rms(&|p| p.drum_params.crash1.volume_db = -48.0, 55);
+        assert!(
+            splash_base > 0.005 && (splash_after - splash_base).abs() < 1e-4,
+            "Muting Crash 1 (49) must not affect Splash (55) (base={}, after={})",
+            splash_base,
+            splash_after
+        );
+        let china_base = render_rms(&|_| {}, 52);
+        let china_after = render_rms(&|p| p.drum_params.crash1.volume_db = -48.0, 52);
+        assert!(
+            china_base > 0.005 && (china_after - china_base).abs() < 1e-4,
+            "Muting Crash 1 (49) must not affect China (52) (base={}, after={})",
+            china_base,
+            china_after
         );
 
         // 4. Live update_drum_params immediately updates volume of currently ringing crash cymbal (49)
@@ -2949,11 +3261,109 @@ mod tests {
         for _ in 0..512 {
             let _ = pool.next_stereo_frame();
         }
-        let mut c = pool.drum_params.cymbals;
-        c.crash_volume_db = -48.0;
-        pool.update_drum_params(DrumRole::Cymbals, DrumVoiceParams::Cymbals(c));
+        let mut c = pool.drum_params.crash1;
+        c.volume_db = -48.0;
+        pool.update_drum_params(DrumRole::Crash1, DrumVoiceParams::SingleCymbal(c));
         let (l, r) = pool.next_stereo_frame();
         assert_eq!(l, 0.0, "Live -48 dB update must immediately mute ringing crash cymbal");
         assert_eq!(r, 0.0, "Live -48 dB update must immediately mute ringing crash cymbal");
+    }
+
+    #[test]
+    fn test_all_47_gm_percussion_notes_and_individual_tom_tuning() {
+        let sr = 48_000.0;
+        let mut pool = PercussionAndGmPool::new(sr);
+
+        // 1. Every standard GM percussion note (35..=81) must map to a valid role and render clean non-silent audio
+        for note in 35..=81_u8 {
+            let role = DrumRole::from_gm_note(note);
+            assert!(
+                role.gm_notes().contains(&note),
+                "GM note {} must belong to role {:?}'s gm_notes()",
+                note,
+                role
+            );
+            pool.all_notes_off();
+            pool.trigger_drum(note, 0.85);
+            let mut energy = 0.0_f32;
+            for _ in 0..2048 {
+                let (l, r) = pool.next_stereo_frame();
+                assert!(
+                    l.is_finite() && r.is_finite() && l.abs() <= 1.3 && r.abs() <= 1.3,
+                    "GM percussion note {} produced invalid sample ({}, {})",
+                    note,
+                    l,
+                    r
+                );
+                energy += l * l + r * r;
+            }
+            assert!(
+                energy > 1.0e-3,
+                "GM percussion note {} ({:?}) must produce audible audio (energy={})",
+                note,
+                role,
+                energy
+            );
+        }
+
+        // 2. Individual Tom tuning affects ONLY the targeted tom (e.g., High Floor Tom 43) without altering Hi-Mid Tom (48)
+        let mut p_base = PercussionAndGmPool::new(sr);
+        let mut p_tuned = PercussionAndGmPool::new(sr);
+        p_base.drum_params.toms.hit_variation = 0.0;
+        p_tuned.drum_params.toms.hit_variation = 0.0;
+        // Shift slot 1 (GM 43 High Floor Tom) up +7 semitones
+        p_tuned.drum_params.toms.tom_tuning_semitones[1] = 7.0;
+
+        p_base.trigger_drum(43, 0.9);
+        p_tuned.trigger_drum(43, 0.9);
+        let mut diff_43 = 0.0_f32;
+        for _ in 0..2048 {
+            let (l1, _) = p_base.next_stereo_frame();
+            let (l2, _) = p_tuned.next_stereo_frame();
+            diff_43 += (l1 - l2).abs();
+        }
+        assert!(
+            diff_43 > 5.0,
+            "Tuning Tom 43 by +7 st must visibly shift its waveform (diff={})",
+            diff_43
+        );
+
+        p_base.all_notes_off();
+        p_tuned.all_notes_off();
+        p_base.trigger_drum(48, 0.9);
+        p_tuned.trigger_drum(48, 0.9);
+        let mut diff_48 = 0.0_f32;
+        for _ in 0..2048 {
+            let (l1, _) = p_base.next_stereo_frame();
+            let (l2, _) = p_tuned.next_stereo_frame();
+            diff_48 += (l1 - l2).abs();
+        }
+        assert!(
+            diff_48 < 1.0e-3,
+            "Tuning Tom 43 must NOT alter untuned Tom 48 (diff={})",
+            diff_48
+        );
+
+        // 3. Congas (62 Mute High vs 63 Open High) decay distinctly while sharing Congas group
+        let mut p_mute = PercussionAndGmPool::new(sr);
+        let mut p_open = PercussionAndGmPool::new(sr);
+        p_mute.trigger_drum(62, 0.9);
+        p_open.trigger_drum(63, 0.9);
+        let mut tail_mute = 0.0_f32;
+        let mut tail_open = 0.0_f32;
+        for i in 0..8192 {
+            let (lm, _) = p_mute.next_stereo_frame();
+            let (lo, _) = p_open.next_stereo_frame();
+            if i >= 4096 {
+                tail_mute += lm * lm;
+                tail_open += lo * lo;
+            }
+        }
+        assert!(
+            tail_open > tail_mute * 2.5,
+            "Open High Conga (63) should sustain longer than Mute High Conga (62) (open={}, mute={})",
+            tail_open,
+            tail_mute
+        );
     }
 }
