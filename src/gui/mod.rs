@@ -1275,13 +1275,18 @@ impl MnxEditorApp {
     pub fn ensure_synth_engine(&mut self) -> Option<&mut crate::synth::SynthEngine> {
         if self.synth_engine.is_none() && !cfg!(test) {
             let preferred_dev = self.synth_lab.selected_output_device.clone();
-            match crate::synth::SynthEngine::new_with_device(preferred_dev.as_deref()) {
+            let preferred_buf = self.synth_lab.selected_buffer_size;
+            match crate::synth::SynthEngine::new_with_device_and_buffer(
+                preferred_dev.as_deref(),
+                preferred_buf,
+            ) {
                 Ok(eng) => {
                     self.synth_lab.status_msg = Some(format!(
-                        "Audio output active: {} ({:.0} Hz, {} ch)",
+                        "Audio output active: {} ({:.0} Hz, {} ch, {} buffer)",
                         eng.device_name(),
                         eng.sample_rate(),
-                        eng.channels()
+                        eng.channels(),
+                        eng.buffer_size_label()
                     ));
                     self.synth_engine = Some(eng);
                     self.sync_all_parts_to_synth_engine();

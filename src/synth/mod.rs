@@ -14,13 +14,14 @@ pub mod patch;
 pub mod percussion;
 pub mod waveguide;
 
-pub use backend::{flush_denormal, list_output_devices, SynthMixer};
+pub use backend::{flush_denormal, list_output_devices, AudioBufferSize, SynthMixer};
 pub use body::{BiquadFilter, BodyResonator, InstrumentProfile};
 pub use command::SynthCommand;
 pub use patch::*;
 pub use percussion::{GmFmPreset, PercussionAndGmPool, PolyVoice, MAX_POLY_VOICES};
 pub use waveguide::{StringWaveguide, MAX_STRINGS};
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Capacity of the lock-free SPSC command ringbuffer between UI/sequencer and audio threads.
@@ -89,8 +90,9 @@ pub struct SynthTestLabState {
     pub gm_program: u8,
     pub status_msg: Option<String>,
 
-    // Audio output device selection (None = System Default)
+    // Audio output device & buffer selection (None = System Default)
     pub selected_output_device: Option<String>,
+    pub selected_buffer_size: AudioBufferSize,
     pub available_output_devices: Vec<String>,
     pub output_devices_scanned: bool,
 
@@ -134,6 +136,7 @@ impl Default for SynthTestLabState {
             status_msg: None,
 
             selected_output_device: None,
+            selected_buffer_size: AudioBufferSize::platform_default(),
             available_output_devices: Vec::new(),
             output_devices_scanned: false,
 
@@ -163,19 +166,31 @@ pub struct SynthEngine {
     sample_rate: f32,
     channels: u16,
     device_name: String,
+    buffer_size_label: String,
+    stream_error_count: Arc<AtomicU64>,
 }
 
 impl SynthEngine {
     /// Initializes the real-time `cpal` audio output stream on the system default device.
     pub fn new() -> Result<Self, String> {
-        Self::new_with_device(None)
+        Self::new_with_device_and_buffer(None, AudioBufferSize::platform_default())
     }
 
     /// Initializes the real-time `cpal` audio output stream on `preferred_device` (or the system
-    /// default device when `None`) and pre-allocates the SPSC command queue.
+    /// default device when `None`) with the platform default buffer size.
     pub fn new_with_device(preferred_device: Option<&str>) -> Result<Self, String> {
+        Self::new_with_device_and_buffer(preferred_device, AudioBufferSize::platform_default())
+    }
+
+    /// Initializes the real-time `cpal` audio output stream on `preferred_device` with an explicit
+    /// [`AudioBufferSize`] preference and pre-allocates the SPSC command queue.
+    pub fn new_with_device_and_buffer(
+        preferred_device: Option<&str>,
+        buffer_size: AudioBufferSize,
+    ) -> Result<Self, String> {
         let (producer, consumer) = rtrb::RingBuffer::new(COMMAND_QUEUE_CAPACITY);
-        let active = backend::spawn_cpal_stream_for_device(consumer, preferred_device)?;
+        let active =
+            backend::spawn_cpal_stream_for_device_and_buffer(consumer, preferred_device, buffer_size)?;
         let sender = SynthSender {
             producer: Arc::new(Mutex::new(producer)),
             sample_rate: active.sample_rate,
@@ -186,6 +201,8 @@ impl SynthEngine {
             sample_rate: active.sample_rate,
             channels: active.channels,
             device_name: active.device_name,
+            buffer_size_label: active.buffer_size_label,
+            stream_error_count: active.stream_error_count,
         })
     }
 
@@ -204,6 +221,8 @@ impl SynthEngine {
             sample_rate,
             channels: channels.max(1),
             device_name: "Headless Test Output".to_string(),
+            buffer_size_label: "Headless".to_string(),
+            stream_error_count: Arc::new(AtomicU64::new(0)),
         };
         (engine, mixer)
     }
@@ -244,6 +263,18 @@ impl SynthEngine {
     #[inline]
     pub fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    /// Human-readable description of the active buffer size (e.g. `"Auto"` or `"1024 frames"`).
+    #[inline]
+    pub fn buffer_size_label(&self) -> &str {
+        &self.buffer_size_label
+    }
+
+    /// Cumulative count of `cpal::StreamError` callbacks observed since stream creation.
+    #[inline]
+    pub fn stream_error_count(&self) -> u64 {
+        self.stream_error_count.load(Ordering::Relaxed)
     }
 }
 

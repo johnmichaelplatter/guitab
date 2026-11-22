@@ -34,12 +34,17 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
         app.synth_lab.output_devices_scanned = true;
     }
 
-    let engine_info = app
-        .synth_engine
-        .as_ref()
-        .map(|e| (e.sample_rate(), e.channels(), e.device_name().to_string()));
+    let engine_info = app.synth_engine.as_ref().map(|e| {
+        (
+            e.sample_rate(),
+            e.channels(),
+            e.device_name().to_string(),
+            e.buffer_size_label().to_string(),
+            e.stream_error_count(),
+        )
+    });
 
-    let sample_rate = engine_info.as_ref().map(|(sr, _, _)| *sr).unwrap_or(48_000.0);
+    let sample_rate = engine_info.as_ref().map(|(sr, _, _, _, _)| *sr).unwrap_or(48_000.0);
 
     // Validate and clamp target_part_idx
     let part_count = app
@@ -79,7 +84,7 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                 let selected_dev_label = match &app.synth_lab.selected_output_device {
                     Some(name) => name.clone(),
                     None => {
-                        if let Some((_, _, active_dev)) = &engine_info {
+                        if let Some((_, _, active_dev, _, _)) = &engine_info {
                             format!("System Default ({})", active_dev)
                         } else {
                             "System Default".to_string()
@@ -89,7 +94,7 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
 
                 egui::ComboBox::from_id_salt("synth_audio_output_device_combo")
                     .selected_text(selected_dev_label)
-                    .width(245.0)
+                    .width(210.0)
                     .show_ui(ui, |ui| {
                         let is_def = app.synth_lab.selected_output_device.is_none();
                         if ui.selectable_label(is_def, "System Default").clicked() && !is_def {
@@ -113,6 +118,28 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                         }
                     });
 
+                ui.label("Buffer:");
+                egui::ComboBox::from_id_salt("synth_audio_buffer_size_combo")
+                    .selected_text(app.synth_lab.selected_buffer_size.short_label())
+                    .width(72.0)
+                    .show_ui(ui, |ui| {
+                        for preset_buf in crate::synth::AudioBufferSize::ALL_PRESETS {
+                            let is_sel = app.synth_lab.selected_buffer_size == preset_buf;
+                            if ui
+                                .selectable_label(is_sel, preset_buf.label())
+                                .clicked()
+                                && !is_sel
+                            {
+                                app.synth_lab.selected_buffer_size = preset_buf;
+                                reconnect_requested = true;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Audio output buffer size. Use 'Auto' or 1024–2048 frames on Linux if you experience underruns or crackling.",
+                    );
+
                 if ui
                     .small_button("Refresh")
                     .on_hover_text("Rescan available audio output devices on this machine")
@@ -126,11 +153,20 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                     ));
                 }
 
-                if let Some((sr, ch, _)) = &engine_info {
+                if let Some((sr, ch, _, buf_label, err_count)) = &engine_info {
                     ui.colored_label(
                         Color32::from_rgb(90, 230, 140),
-                        format!("{:.0} Hz, {} ch", sr, ch),
+                        format!("{:.0} Hz, {} ch ({})", sr, ch, buf_label),
                     );
+                    if *err_count > 0 {
+                        ui.colored_label(
+                            Color32::from_rgb(255, 175, 70),
+                            format!("⚠ {} err", err_count),
+                        )
+                        .on_hover_text(
+                            "Audio stream errors/underruns detected. Try selecting 'Auto' or a larger Buffer size (1024–2048 frames).",
+                        );
+                    }
                 } else {
                     ui.colored_label(
                         Color32::from_rgb(255, 190, 90),
