@@ -474,6 +474,24 @@ pub struct ActiveAudioStream {
     pub stream: cpal::Stream,
     pub sample_rate: f32,
     pub channels: u16,
+    pub device_name: String,
+}
+
+/// Enumerates the names of all available `cpal` audio output devices on the current host.
+pub fn list_output_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    let mut names = Vec::new();
+    if let Ok(devices) = host.output_devices() {
+        for dev in devices {
+            if let Ok(name) = dev.name() {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() && !names.iter().any(|n: &String| n == trimmed) {
+                    names.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    names
 }
 
 /// Initializes and starts the default `cpal` output stream with the lowest-latency viable configuration.
@@ -482,14 +500,43 @@ pub struct ActiveAudioStream {
 pub fn spawn_cpal_stream(
     consumer: rtrb::Consumer<SynthCommand>,
 ) -> Result<ActiveAudioStream, String> {
+    spawn_cpal_stream_for_device(consumer, None)
+}
+
+/// Initializes and starts a `cpal` output stream on `preferred_device` (or the system default
+/// output device when `preferred_device` is `None`).
+pub fn spawn_cpal_stream_for_device(
+    consumer: rtrb::Consumer<SynthCommand>,
+    preferred_device: Option<&str>,
+) -> Result<ActiveAudioStream, String> {
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| "No default audio output device found".to_string())?;
+    let device = match preferred_device.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(target_name) => {
+            let mut found = None;
+            if let Ok(devices) = host.output_devices() {
+                for dev in devices {
+                    if let Ok(name) = dev.name() {
+                        if name.trim() == target_name {
+                            found = Some(dev);
+                            break;
+                        }
+                    }
+                }
+            }
+            found.ok_or_else(|| format!("Audio output device '{}' not found", target_name))?
+        }
+        None => host
+            .default_output_device()
+            .ok_or_else(|| "No default audio output device found".to_string())?,
+    };
+
+    let device_name = device
+        .name()
+        .unwrap_or_else(|_| "Default Audio Output".to_string());
 
     let default_cfg = device
         .default_output_config()
-        .map_err(|e| format!("Failed to query default audio output config: {}", e))?;
+        .map_err(|e| format!("Failed to query audio output config for '{}': {}", device_name, e))?;
 
     let sample_format = default_cfg.sample_format();
     let channels = default_cfg.channels();
@@ -516,12 +563,13 @@ pub fn spawn_cpal_stream(
     let stream = build_stream_for_format(&device, &stream_config, sample_format, mixer, ch_usize)?;
     stream
         .play()
-        .map_err(|e| format!("Failed to start cpal output stream: {}", e))?;
+        .map_err(|e| format!("Failed to start cpal output stream on '{}': {}", device_name, e))?;
 
     Ok(ActiveAudioStream {
         stream,
         sample_rate,
         channels,
+        device_name,
     })
 }
 

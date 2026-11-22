@@ -1274,10 +1274,12 @@ impl MnxEditorApp {
     /// Ensures the internal real-time `cpal` synth engine is running and returns a mutable reference.
     pub fn ensure_synth_engine(&mut self) -> Option<&mut crate::synth::SynthEngine> {
         if self.synth_engine.is_none() && !cfg!(test) {
-            match crate::synth::SynthEngine::new() {
+            let preferred_dev = self.synth_lab.selected_output_device.clone();
+            match crate::synth::SynthEngine::new_with_device(preferred_dev.as_deref()) {
                 Ok(eng) => {
                     self.synth_lab.status_msg = Some(format!(
-                        "Audio stream active ({:.0} Hz, {} ch)",
+                        "Audio output active: {} ({:.0} Hz, {} ch)",
+                        eng.device_name(),
                         eng.sample_rate(),
                         eng.channels()
                     ));

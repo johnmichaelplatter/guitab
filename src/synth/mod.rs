@@ -14,7 +14,7 @@ pub mod patch;
 pub mod percussion;
 pub mod waveguide;
 
-pub use backend::{flush_denormal, SynthMixer};
+pub use backend::{flush_denormal, list_output_devices, SynthMixer};
 pub use body::{BiquadFilter, BodyResonator, InstrumentProfile};
 pub use command::SynthCommand;
 pub use patch::*;
@@ -89,6 +89,11 @@ pub struct SynthTestLabState {
     pub gm_program: u8,
     pub status_msg: Option<String>,
 
+    // Audio output device selection (None = System Default)
+    pub selected_output_device: Option<String>,
+    pub available_output_devices: Vec<String>,
+    pub output_devices_scanned: bool,
+
     // Context-aware target instrument / track selection
     pub target_part_idx: usize,
     pub active_drum_role: DrumRole,
@@ -128,6 +133,10 @@ impl Default for SynthTestLabState {
             gm_program: 0,
             status_msg: None,
 
+            selected_output_device: None,
+            available_output_devices: Vec::new(),
+            output_devices_scanned: false,
+
             target_part_idx: 0,
             active_drum_role: DrumRole::Kick,
             active_drum_note: 36,
@@ -153,13 +162,20 @@ pub struct SynthEngine {
     _stream: Option<cpal::Stream>,
     sample_rate: f32,
     channels: u16,
+    device_name: String,
 }
 
 impl SynthEngine {
-    /// Initializes the real-time `cpal` audio output stream and pre-allocates the SPSC command queue.
+    /// Initializes the real-time `cpal` audio output stream on the system default device.
     pub fn new() -> Result<Self, String> {
+        Self::new_with_device(None)
+    }
+
+    /// Initializes the real-time `cpal` audio output stream on `preferred_device` (or the system
+    /// default device when `None`) and pre-allocates the SPSC command queue.
+    pub fn new_with_device(preferred_device: Option<&str>) -> Result<Self, String> {
         let (producer, consumer) = rtrb::RingBuffer::new(COMMAND_QUEUE_CAPACITY);
-        let active = backend::spawn_cpal_stream(consumer)?;
+        let active = backend::spawn_cpal_stream_for_device(consumer, preferred_device)?;
         let sender = SynthSender {
             producer: Arc::new(Mutex::new(producer)),
             sample_rate: active.sample_rate,
@@ -169,6 +185,7 @@ impl SynthEngine {
             _stream: Some(active.stream),
             sample_rate: active.sample_rate,
             channels: active.channels,
+            device_name: active.device_name,
         })
     }
 
@@ -186,6 +203,7 @@ impl SynthEngine {
             _stream: None,
             sample_rate,
             channels: channels.max(1),
+            device_name: "Headless Test Output".to_string(),
         };
         (engine, mixer)
     }
@@ -220,6 +238,12 @@ impl SynthEngine {
     #[inline]
     pub fn channels(&self) -> u16 {
         self.channels
+    }
+
+    /// Human-readable name of the active audio output device.
+    #[inline]
+    pub fn device_name(&self) -> &str {
+        &self.device_name
     }
 }
 

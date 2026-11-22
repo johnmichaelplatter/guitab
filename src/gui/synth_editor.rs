@@ -29,12 +29,17 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
     let mut export_json_requested = false;
     let mut import_json_requested = false;
 
+    if !app.synth_lab.output_devices_scanned && !cfg!(test) {
+        app.synth_lab.available_output_devices = crate::synth::list_output_devices();
+        app.synth_lab.output_devices_scanned = true;
+    }
+
     let engine_info = app
         .synth_engine
         .as_ref()
-        .map(|e| (e.sample_rate(), e.channels()));
+        .map(|e| (e.sample_rate(), e.channels(), e.device_name().to_string()));
 
-    let sample_rate = engine_info.map(|(sr, _)| sr).unwrap_or(48_000.0);
+    let sample_rate = engine_info.as_ref().map(|(sr, _, _)| *sr).unwrap_or(48_000.0);
 
     // Validate and clamp target_part_idx
     let part_count = app
@@ -66,18 +71,70 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
         .default_height(780.0)
         .show(ctx, |ui| {
             // -------------------------------------------------------------
-            // Top Audio Status & Panic Bar
+            // Top Audio Setup, Output Device Selector, Status & Panic Bar
             // -------------------------------------------------------------
             ui.horizontal(|ui| {
-                if let Some((sr, ch)) = engine_info {
+                ui.label(egui::RichText::new("Audio Output:").strong());
+
+                let selected_dev_label = match &app.synth_lab.selected_output_device {
+                    Some(name) => name.clone(),
+                    None => {
+                        if let Some((_, _, active_dev)) = &engine_info {
+                            format!("System Default ({})", active_dev)
+                        } else {
+                            "System Default".to_string()
+                        }
+                    }
+                };
+
+                egui::ComboBox::from_id_salt("synth_audio_output_device_combo")
+                    .selected_text(selected_dev_label)
+                    .width(245.0)
+                    .show_ui(ui, |ui| {
+                        let is_def = app.synth_lab.selected_output_device.is_none();
+                        if ui.selectable_label(is_def, "System Default").clicked() && !is_def {
+                            app.synth_lab.selected_output_device = None;
+                            reconnect_requested = true;
+                        }
+                        if !app.synth_lab.available_output_devices.is_empty() {
+                            ui.separator();
+                            let devices = app.synth_lab.available_output_devices.clone();
+                            for dev_name in devices {
+                                let is_sel = app
+                                    .synth_lab
+                                    .selected_output_device
+                                    .as_deref()
+                                    == Some(dev_name.as_str());
+                                if ui.selectable_label(is_sel, &dev_name).clicked() && !is_sel {
+                                    app.synth_lab.selected_output_device = Some(dev_name);
+                                    reconnect_requested = true;
+                                }
+                            }
+                        }
+                    });
+
+                if ui
+                    .small_button("Refresh")
+                    .on_hover_text("Rescan available audio output devices on this machine")
+                    .clicked()
+                {
+                    app.synth_lab.available_output_devices = crate::synth::list_output_devices();
+                    app.synth_lab.output_devices_scanned = true;
+                    app.synth_lab.status_msg = Some(format!(
+                        "Found {} audio output device(s)",
+                        app.synth_lab.available_output_devices.len()
+                    ));
+                }
+
+                if let Some((sr, ch, _)) = &engine_info {
                     ui.colored_label(
                         Color32::from_rgb(90, 230, 140),
-                        format!("Audio Stream: {:.0} Hz, {} ch (Zero-Lock SPSC)", sr, ch),
+                        format!("{:.0} Hz, {} ch", sr, ch),
                     );
                 } else {
                     ui.colored_label(
                         Color32::from_rgb(255, 190, 90),
-                        "Audio stream inactive",
+                        "Inactive",
                     );
                 }
 
@@ -91,7 +148,7 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
                     }
                     if ui
                         .small_button("Init / Reconnect")
-                        .on_hover_text("Start or restart the real-time cpal stream")
+                        .on_hover_text("Start or restart the real-time cpal stream on the selected audio output")
                         .clicked()
                     {
                         reconnect_requested = true;
@@ -380,6 +437,7 @@ pub fn render_synth_editor_window(app: &mut MnxEditorApp, ctx: &egui::Context) {
     if reconnect_requested {
         app.synth_engine = None;
         let _ = app.ensure_synth_engine();
+        app.sync_live_play_config();
     }
 
     if export_json_requested {
