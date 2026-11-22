@@ -548,17 +548,17 @@ pub struct KickParams {
 impl Default for KickParams {
     fn default() -> Self {
         Self {
-            pitch_start_hz: 160.0,
-            pitch_end_hz: 48.0,
-            pitch_decay_ms: 25.0,
-            click_level: 0.65,
-            body_decay_ms: 240.0,
-            head_tension_mod: default_kick_tension_mod(),
-            strike_position: default_kick_strike_pos(),
-            overtones_ring: default_kick_overtones_ring(),
-            shell_wood_cavity: default_kick_shell_cavity(),
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
+            pitch_start_hz: 93.0,
+            pitch_end_hz: 43.5,
+            pitch_decay_ms: 55.5,
+            click_level: 0.28,
+            body_decay_ms: 210.0,
+            head_tension_mod: 0.30,
+            strike_position: 0.48,
+            overtones_ring: 0.89,
+            shell_wood_cavity: 0.43,
+            hit_variation: 0.14,
+            volume_db: 3.00,
         }
     }
 }
@@ -567,17 +567,17 @@ impl KickParams {
     /// Warmer, slightly deeper acoustic bass drum (GM 35) default voicing.
     pub fn acoustic_kick_default() -> Self {
         Self {
-            pitch_start_hz: 142.0,
-            pitch_end_hz: 44.0,
-            pitch_decay_ms: 30.0,
-            click_level: 0.50,
-            body_decay_ms: 280.0,
-            head_tension_mod: 0.50,
-            strike_position: 0.22,
-            overtones_ring: 0.36,
-            shell_wood_cavity: 0.62,
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
+            pitch_start_hz: 150.0,
+            pitch_end_hz: 40.5,
+            pitch_decay_ms: 58.0,
+            click_level: 0.13,
+            body_decay_ms: 415.0,
+            head_tension_mod: 0.68,
+            strike_position: 0.48,
+            overtones_ring: 0.00,
+            shell_wood_cavity: 0.00,
+            hit_variation: 0.10,
+            volume_db: 2.50,
         }
     }
 }
@@ -663,22 +663,22 @@ pub struct SnareParams {
 impl Default for SnareParams {
     fn default() -> Self {
         Self {
-            tone_freq_hz: 185.0,
-            mode2_freq_hz: 330.0,
-            tone_decay_ms: 55.0,
-            wire_cutoff_hz: 2400.0,
-            noise_decay_ms: 180.0,
-            noise_mix: 0.55,
-            clap_spacing_ms: 12.0,
-            head_tension_mod: default_snare_tension_mod(),
-            strike_position: default_snare_strike_pos(),
-            overtones_ring: default_snare_overtones_ring(),
-            shell_wood_cavity: default_snare_shell_cavity(),
-            wire_tension: default_snare_wire_tension(),
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
-            rim_volume_db: default_zero_db(),
-            clap_volume_db: default_zero_db(),
+            tone_freq_hz: 300.0,
+            mode2_freq_hz: 600.0,
+            tone_decay_ms: 45.0,
+            wire_cutoff_hz: 2850.0,
+            noise_decay_ms: 50.0,
+            noise_mix: 0.67,
+            clap_spacing_ms: 28.3,
+            head_tension_mod: 0.63,
+            strike_position: 1.00,
+            overtones_ring: 0.48,
+            shell_wood_cavity: 0.74,
+            wire_tension: 0.47,
+            hit_variation: 0.038,
+            volume_db: 0.00,
+            rim_volume_db: 5.50,
+            clap_volume_db: 0.00,
         }
     }
 }
@@ -687,22 +687,22 @@ impl SnareParams {
     /// Crisper, punchier Electric / Alt Snare (GM 40) default voicing.
     pub fn electric_snare_default() -> Self {
         Self {
-            tone_freq_hz: 215.0,
-            mode2_freq_hz: 380.0,
-            tone_decay_ms: 48.0,
-            wire_cutoff_hz: 2900.0,
-            noise_decay_ms: 165.0,
-            noise_mix: 0.62,
+            tone_freq_hz: 190.0,
+            mode2_freq_hz: 450.0,
+            tone_decay_ms: 97.0,
+            wire_cutoff_hz: 5000.0,
+            noise_decay_ms: 110.0,
+            noise_mix: 0.29,
             clap_spacing_ms: 12.0,
-            head_tension_mod: 0.48,
-            strike_position: 0.52,
-            overtones_ring: 0.52,
-            shell_wood_cavity: 0.44,
-            wire_tension: 0.68,
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
-            rim_volume_db: default_zero_db(),
-            clap_volume_db: default_zero_db(),
+            head_tension_mod: 0.25,
+            strike_position: 1.00,
+            overtones_ring: 0.00,
+            shell_wood_cavity: 0.00,
+            wire_tension: 1.00,
+            hit_variation: 0.00,
+            volume_db: 0.00,
+            rim_volume_db: 0.00,
+            clap_volume_db: 0.00,
         }
     }
 }
@@ -731,13 +731,13 @@ pub struct HandClapParams {
 impl Default for HandClapParams {
     fn default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            clap_spacing_ms: 12.0,
-            bandpass_hz: 1350.0,
-            bandpass_q: 1.5,
-            tail_decay_ms: 170.0,
-            room_mix: 0.32,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 0.00,
+            clap_spacing_ms: 35.0,
+            bandpass_hz: 1700.0,
+            bandpass_q: 2.17,
+            tail_decay_ms: 50.0,
+            room_mix: 0.00,
+            hit_variation: 1.00,
         }
     }
 }
@@ -796,16 +796,16 @@ pub struct TomParams {
 impl Default for TomParams {
     fn default() -> Self {
         Self {
-            pitch_scale: 1.0,
-            pitch_drop_ratio: 1.85,
-            decay_ms: 240.0,
-            stick_attack: 0.60,
-            head_tension_mod: default_tom_tension_mod(),
-            strike_position: default_tom_strike_pos(),
-            overtones_ring: default_tom_overtones_ring(),
-            shell_wood_cavity: default_tom_shell_cavity(),
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
+            pitch_scale: 0.75,
+            pitch_drop_ratio: 1.36,
+            decay_ms: 195.0,
+            stick_attack: 0.80,
+            head_tension_mod: 0.66,
+            strike_position: 0.00,
+            overtones_ring: 1.00,
+            shell_wood_cavity: 0.88,
+            hit_variation: 0.65,
+            volume_db: 3.00,
             tom_tuning_semitones: [0.0; 6],
         }
     }
@@ -815,51 +815,51 @@ impl TomParams {
     /// Matched wooden Bongo pair (GM 60 High, 61 Low) default voicing.
     pub fn bongos_default() -> Self {
         Self {
-            pitch_scale: 1.0,
-            pitch_drop_ratio: 1.48,
-            decay_ms: 135.0,
-            stick_attack: 0.72,
-            head_tension_mod: 0.45,
-            strike_position: 0.34,
-            overtones_ring: 0.42,
+            pitch_scale: 2.00,
+            pitch_drop_ratio: 1.05,
+            decay_ms: 160.0,
+            stick_attack: 1.24,
+            head_tension_mod: 0.93,
+            strike_position: 0.88,
+            overtones_ring: 0.22,
             shell_wood_cavity: 0.62,
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
-            tom_tuning_semitones: [0.0; 6],
+            hit_variation: 1.00,
+            volume_db: 0.00,
+            tom_tuning_semitones: [0.0, 3.80, 0.0, 0.0, 0.0, 0.0],
         }
     }
 
     /// Matched tall wooden Conga family (GM 62 Mute High, 63 Open High, 64 Low) default voicing.
     pub fn congas_default() -> Self {
         Self {
-            pitch_scale: 1.0,
-            pitch_drop_ratio: 1.55,
-            decay_ms: 215.0,
-            stick_attack: 0.56,
+            pitch_scale: 1.10,
+            pitch_drop_ratio: 1.26,
+            decay_ms: 250.0,
+            stick_attack: 1.00,
             head_tension_mod: 0.42,
-            strike_position: 0.25,
+            strike_position: 1.00,
             overtones_ring: 0.35,
             shell_wood_cavity: 0.78,
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
-            tom_tuning_semitones: [0.0; 6],
+            hit_variation: 1.00,
+            volume_db: 0.00,
+            tom_tuning_semitones: [12.00, -3.00, -3.10, 0.0, 0.0, 0.0],
         }
     }
 
     /// Matched shallow metal-shell Timbales (GM 65 High, 66 Low) default voicing.
     pub fn timbales_default() -> Self {
         Self {
-            pitch_scale: 1.0,
-            pitch_drop_ratio: 1.38,
-            decay_ms: 270.0,
-            stick_attack: 0.85,
-            head_tension_mod: 0.52,
-            strike_position: 0.58,
-            overtones_ring: 0.78,
-            shell_wood_cavity: 0.48,
-            hit_variation: default_drum_hit_variation(),
-            volume_db: default_zero_db(),
-            tom_tuning_semitones: [0.0; 6],
+            pitch_scale: 1.35,
+            pitch_drop_ratio: 1.02,
+            decay_ms: 600.0,
+            stick_attack: 1.00,
+            head_tension_mod: 1.00,
+            strike_position: 1.00,
+            overtones_ring: 1.00,
+            shell_wood_cavity: 1.00,
+            hit_variation: 0.35,
+            volume_db: 0.00,
+            tom_tuning_semitones: [1.70, -2.00, 0.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -939,20 +939,20 @@ pub struct HiHatParams {
 impl Default for HiHatParams {
     fn default() -> Self {
         Self {
-            spread: 1.0,
-            highpass_cutoff_hz: 7000.0,
-            closed_decay_ms: 45.0,
-            pedal_decay_ms: 60.0,
-            open_decay_ms: 650.0,
-            bronze_size_pitch: default_bronze_size_pitch(),
-            plate_dispersion: default_hat_plate_dispersion(),
-            nonlin_shimmer: default_hat_nonlin_shimmer(),
-            bell_level: default_hat_bell_level(),
-            stick_hardness: default_hat_stick_hardness(),
-            hit_variation: default_drum_hit_variation(),
-            closed_volume_db: default_zero_db(),
-            pedal_volume_db: default_zero_db(),
-            open_volume_db: default_zero_db(),
+            spread: 1.90,
+            highpass_cutoff_hz: 5400.0,
+            closed_decay_ms: 27.0,
+            pedal_decay_ms: 55.0,
+            open_decay_ms: 850.0,
+            bronze_size_pitch: 1.01,
+            plate_dispersion: 0.40,
+            nonlin_shimmer: 0.51,
+            bell_level: 0.44,
+            stick_hardness: 0.49,
+            hit_variation: 0.38,
+            closed_volume_db: -3.0,
+            pedal_volume_db: -3.0,
+            open_volume_db: -4.0,
         }
     }
 }
@@ -1008,80 +1008,80 @@ impl SingleCymbalParams {
     /// Thin flexible 18" Crash Cymbal 1 (GM 49) default voicing.
     pub fn crash1_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            decay_ms: 1200.0,
+            volume_db: 9.0,
+            decay_ms: 1800.0,
             cutoff_hz: 3500.0,
-            bronze_size_pitch: 0.95,
-            matrix_spread: 0.94,
-            plate_dispersion: 0.52,
-            nonlin_shimmer: 0.58,
-            bell_level: 0.32,
-            stick_hardness: 0.62,
-            hit_variation: default_drum_hit_variation(),
+            bronze_size_pitch: 1.71,
+            matrix_spread: 1.69,
+            plate_dispersion: 1.0,
+            nonlin_shimmer: 0.89,
+            bell_level: 0.0,
+            stick_hardness: 1.0,
+            hit_variation: 0.018,
         }
     }
 
     /// Slightly brighter 16"–17" Crash Cymbal 2 (GM 57) default voicing.
     pub fn crash2_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            decay_ms: 1300.0,
+            volume_db: 8.5,
+            decay_ms: 2600.0,
             cutoff_hz: 3650.0,
-            bronze_size_pitch: 1.04,
-            matrix_spread: 0.98,
-            plate_dispersion: 0.54,
-            nonlin_shimmer: 0.60,
-            bell_level: 0.32,
-            stick_hardness: 0.64,
-            hit_variation: default_drum_hit_variation(),
+            bronze_size_pitch: 0.60,
+            matrix_spread: 0.80,
+            plate_dispersion: 0.0,
+            nonlin_shimmer: 0.10,
+            bell_level: 0.83,
+            stick_hardness: 1.0,
+            hit_variation: 0.018,
         }
     }
 
     /// Secondary Ride Cymbal 2 (GM 59) default voicing (slightly darker/washier than Ride 1).
     pub fn ride2_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            decay_ms: 1250.0,
-            cutoff_hz: 3400.0,
-            bronze_size_pitch: 0.98,
-            matrix_spread: 1.04,
-            plate_dispersion: 0.50,
-            nonlin_shimmer: 0.55,
-            bell_level: 0.48,
-            stick_hardness: 0.72,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 6.5,
+            decay_ms: 770.0,
+            cutoff_hz: 1800.0,
+            bronze_size_pitch: 1.03,
+            matrix_spread: 2.0,
+            plate_dispersion: 1.0,
+            nonlin_shimmer: 1.0,
+            bell_level: 0.0,
+            stick_hardness: 0.0,
+            hit_variation: 0.03,
         }
     }
 
     /// Small, thin, fast-blooming 10" Splash Cymbal (GM 55) default voicing.
     pub fn splash_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            decay_ms: 620.0,
-            cutoff_hz: 4100.0,
-            bronze_size_pitch: 1.25,
-            matrix_spread: 1.15,
-            plate_dispersion: 0.50,
-            nonlin_shimmer: 0.62,
-            bell_level: 0.28,
-            stick_hardness: 0.65,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 9.0,
+            decay_ms: 750.0,
+            cutoff_hz: 5450.0,
+            bronze_size_pitch: 2.0,
+            matrix_spread: 0.50,
+            plate_dispersion: 1.0,
+            nonlin_shimmer: 1.0,
+            bell_level: 0.0,
+            stick_hardness: 1.0,
+            hit_variation: 0.10,
         }
     }
 
     /// Trashy, thin, high-shimmer Chinese Cymbal (GM 52) default voicing.
     pub fn china_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            decay_ms: 1020.0,
-            cutoff_hz: 3200.0,
-            bronze_size_pitch: 0.88,
-            matrix_spread: 0.84,
-            plate_dispersion: 0.56,
-            nonlin_shimmer: 0.76,
-            bell_level: 0.26,
-            stick_hardness: 0.68,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 12.0,
+            decay_ms: 650.0,
+            cutoff_hz: 3000.0,
+            bronze_size_pitch: 1.61,
+            matrix_spread: 2.0,
+            plate_dispersion: 1.0,
+            nonlin_shimmer: 0.91,
+            bell_level: 0.16,
+            stick_hardness: 1.0,
+            hit_variation: 0.80,
         }
     }
 }
@@ -1125,18 +1125,18 @@ pub struct RideCymbalParams {
 impl Default for RideCymbalParams {
     fn default() -> Self {
         Self {
-            bow_volume_db: default_zero_db(),
-            bell_volume_db: default_zero_db(),
-            bow_decay_ms: 1300.0,
-            bell_decay_ms: 1050.0,
-            cutoff_hz: 3500.0,
-            bronze_size_pitch: 1.04,
-            matrix_spread: 1.08,
-            plate_dispersion: 0.52,
-            nonlin_shimmer: 0.56,
-            bell_peak_level: 0.55,
-            stick_hardness: 0.72,
-            hit_variation: default_drum_hit_variation(),
+            bow_volume_db: 6.5,
+            bell_volume_db: 8.0,
+            bow_decay_ms: 3500.0,
+            bell_decay_ms: 1300.0,
+            cutoff_hz: 3450.0,
+            bronze_size_pitch: 1.68,
+            matrix_spread: 1.60,
+            plate_dispersion: 0.01,
+            nonlin_shimmer: 0.54,
+            bell_peak_level: 1.0,
+            stick_hardness: 1.0,
+            hit_variation: 0.0,
         }
     }
 }
@@ -1172,26 +1172,26 @@ impl PercAuxParams {
     /// Cowbell (GM 56) default voicing.
     pub fn cowbell_default() -> Self {
         Self {
-            freq1_hz: 540.0,
-            freq2_hz: 800.0,
-            detune: 0.0,
-            bandpass_q: 2.0,
-            decay_ms: 85.0,
-            volume_db: default_zero_db(),
-            hit_variation: default_drum_hit_variation(),
+            freq1_hz: 480.0,
+            freq2_hz: 1330.0,
+            detune: 9.0,
+            bandpass_q: 15.1,
+            decay_ms: 315.0,
+            volume_db: -8.0,
+            hit_variation: 1.0,
         }
     }
 
     /// Agogo Bells (GM 67 High, 68 Low) default voicing.
     pub fn agogo_default() -> Self {
         Self {
-            freq1_hz: 960.0,
-            freq2_hz: 1480.0,
-            detune: 0.0,
-            bandpass_q: 3.4,
-            decay_ms: 210.0,
-            volume_db: default_zero_db(),
-            hit_variation: default_drum_hit_variation(),
+            freq1_hz: 1150.0,
+            freq2_hz: 2080.0,
+            detune: 17.0,
+            bandpass_q: 11.2,
+            decay_ms: 375.0,
+            volume_db: -7.0,
+            hit_variation: 0.10,
         }
     }
 
@@ -1199,62 +1199,86 @@ impl PercAuxParams {
     pub fn triangle_default() -> Self {
         Self {
             freq1_hz: 2650.0,
-            freq2_hz: 4180.0,
+            freq2_hz: 4100.0,
             detune: 0.0,
-            bandpass_q: 5.5,
-            decay_ms: 1100.0,
-            volume_db: default_zero_db(),
-            hit_variation: default_drum_hit_variation(),
+            bandpass_q: 8.5,
+            decay_ms: 300.0,
+            volume_db: -9.0,
+            hit_variation: 1.0,
         }
     }
 
     /// Rosewood Claves (GM 75) default voicing.
     pub fn claves_default() -> Self {
         Self {
-            freq1_hz: 2320.0,
-            freq2_hz: 3480.0,
-            detune: 0.0,
-            bandpass_q: 6.0,
+            freq1_hz: 1520.0,
+            freq2_hz: 2700.0,
+            detune: 7.0,
+            bandpass_q: 7.8,
             decay_ms: 34.0,
-            volume_db: default_zero_db(),
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 6.5,
+            hit_variation: 1.0,
         }
     }
 
     /// Hollow Hardwood Wood Blocks (GM 76 High, 77 Low) default voicing.
     pub fn wood_blocks_default() -> Self {
         Self {
-            freq1_hz: 840.0,
-            freq2_hz: 1320.0,
-            detune: 0.0,
-            bandpass_q: 4.2,
-            decay_ms: 48.0,
-            volume_db: default_zero_db(),
-            hit_variation: default_drum_hit_variation(),
+            freq1_hz: 1160.0,
+            freq2_hz: 1530.0,
+            detune: -16.0,
+            bandpass_q: 12.0,
+            decay_ms: 88.0,
+            volume_db: 0.0,
+            hit_variation: 1.0,
         }
     }
+}
+
+fn default_shaker_aux_decay_ms() -> f32 {
+    50.0
+}
+
+fn default_shaker_aux_amount() -> f32 {
+    0.35
+}
+
+fn default_shaker_aux_volume_db() -> f32 {
+    6.50
 }
 
 /// Acoustic shaker, ratchet, whistle, and friction-drum parameters
 /// (Tambourine, Cabasa, Maracas, Guiro, Samba Whistle, Vibraslap, Cuica).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShakerAndEffectParams {
-    /// Absolute output volume in dB (`-48.0..=+12.0 dB`).
+    /// Absolute output volume in dB (`-48.0..=+18.0 dB`; for Guiro, controls Long Guiro 74 volume).
     #[serde(default = "default_zero_db")]
     pub volume_db: f32,
-    /// Pitch / frequency scaling multiplier (0.5..=2.0).
+    /// Pitch / frequency scaling multiplier (0.25..=3.5).
     pub pitch_scale: f32,
-    /// Spectral brightness / bandpass center cutoff in Hz (500.0..=12000.0).
+    /// Spectral brightness / bandpass center cutoff in Hz.
     pub brightness_hz: f32,
-    /// Envelope decay / gesture duration in milliseconds (25.0..=1200.0 ms).
+    /// Primary envelope decay / gesture duration in milliseconds
+    /// (for Guiro: Long Guiro 74 scrape duration; for Whistle: Long Whistle 72 duration).
     pub decay_ms: f32,
-    /// Instrument texture / modulation rate (0.0..=1.0: jingle density, scrape rate, rattle rate, trill depth, pitch sweep).
+    /// Instrument texture / modulation rate (jingle density, scrape rate, rattle rate, trill depth, pitch sweep).
     pub texture_rate: f32,
-    /// Resonator body Q factor (0.5..=12.0).
+    /// Resonator body Q factor.
     pub resonance_q: f32,
     /// Per-hit humanization (0.0..=1.0).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Secondary decay duration in milliseconds
+    /// (for Tambourine: drumhead decay; for Guiro: Short Guiro 73 scrape length; for Whistle: Short Whistle 71 duration).
+    #[serde(default = "default_shaker_aux_decay_ms")]
+    pub aux_decay_ms: f32,
+    /// Secondary physical modeling control
+    /// (for Maracas: random loose beads; for Whistle: velocity/accent pitch bend).
+    #[serde(default = "default_shaker_aux_amount")]
+    pub aux_amount: f32,
+    /// Secondary absolute output volume in dB (for Guiro: Short Guiro 73 volume independent of Long Guiro 74).
+    #[serde(default = "default_shaker_aux_volume_db")]
+    pub aux_volume_db: f32,
 }
 
 impl Default for ShakerAndEffectParams {
@@ -1266,85 +1290,106 @@ impl Default for ShakerAndEffectParams {
 impl ShakerAndEffectParams {
     pub fn tambourine_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            pitch_scale: 1.0,
-            brightness_hz: 7800.0,
-            decay_ms: 115.0,
-            texture_rate: 0.65,
-            resonance_q: 1.4,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: -3.0,
+            pitch_scale: 1.00,
+            brightness_hz: 7200.0,
+            decay_ms: 60.0,
+            texture_rate: 0.42,
+            resonance_q: 0.5,
+            hit_variation: 1.0,
+            aux_decay_ms: 160.0,
+            aux_amount: 0.35,
+            aux_volume_db: 6.5,
         }
     }
 
     pub fn cabasa_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            pitch_scale: 1.0,
-            brightness_hz: 6800.0,
-            decay_ms: 95.0,
-            texture_rate: 0.58,
-            resonance_q: 1.8,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 0.0,
+            pitch_scale: 1.47,
+            brightness_hz: 6200.0,
+            decay_ms: 85.0,
+            texture_rate: 0.52,
+            resonance_q: 1.5,
+            hit_variation: 1.0,
+            aux_decay_ms: 50.0,
+            aux_amount: 0.35,
+            aux_volume_db: 6.5,
         }
     }
 
     pub fn maracas_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            pitch_scale: 1.0,
-            brightness_hz: 6200.0,
-            decay_ms: 65.0,
-            texture_rate: 0.45,
-            resonance_q: 1.3,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 4.0,
+            pitch_scale: 0.40,
+            brightness_hz: 10500.0,
+            decay_ms: 20.0,
+            texture_rate: 0.43,
+            resonance_q: 6.0,
+            hit_variation: 0.45,
+            aux_decay_ms: 50.0,
+            aux_amount: 0.78,
+            aux_volume_db: 6.5,
         }
     }
 
     pub fn guiro_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            pitch_scale: 1.0,
-            brightness_hz: 2400.0,
-            decay_ms: 260.0,
-            texture_rate: 0.55,
-            resonance_q: 3.6,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 6.5,
+            pitch_scale: 0.75,
+            brightness_hz: 4750.0,
+            decay_ms: 370.0,
+            texture_rate: 0.97,
+            resonance_q: 8.7,
+            hit_variation: 1.0,
+            aux_decay_ms: 20.0,
+            aux_amount: 0.35,
+            aux_volume_db: 13.0,
         }
     }
 
     pub fn whistle_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            pitch_scale: 1.0,
-            brightness_hz: 2950.0,
-            decay_ms: 340.0,
-            texture_rate: 0.62,
-            resonance_q: 6.5,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: -3.0,
+            pitch_scale: 0.60,
+            brightness_hz: 3800.0,
+            decay_ms: 200.0,
+            texture_rate: 1.15,
+            resonance_q: 2.6,
+            hit_variation: 1.0,
+            aux_decay_ms: 50.0,
+            aux_amount: 0.87,
+            aux_volume_db: 6.5,
         }
     }
 
     pub fn vibraslap_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            pitch_scale: 1.0,
-            brightness_hz: 1650.0,
-            decay_ms: 520.0,
-            texture_rate: 0.60,
-            resonance_q: 3.2,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 0.0,
+            pitch_scale: 0.87,
+            brightness_hz: 3350.0,
+            decay_ms: 310.0,
+            texture_rate: 1.50,
+            resonance_q: 4.2,
+            hit_variation: 1.0,
+            aux_decay_ms: 50.0,
+            aux_amount: 0.35,
+            aux_volume_db: 6.5,
         }
     }
 
     pub fn cuica_default() -> Self {
         Self {
-            volume_db: default_zero_db(),
-            pitch_scale: 1.0,
-            brightness_hz: 520.0,
-            decay_ms: 220.0,
-            texture_rate: 0.55,
-            resonance_q: 4.8,
-            hit_variation: default_drum_hit_variation(),
+            volume_db: 0.0,
+            pitch_scale: 0.90,
+            brightness_hz: 420.0,
+            decay_ms: 75.0,
+            texture_rate: 0.75,
+            resonance_q: 2.9,
+            hit_variation: 1.0,
+            aux_decay_ms: 50.0,
+            aux_amount: 0.35,
+            aux_volume_db: 6.5,
         }
     }
 }
@@ -2009,36 +2054,7 @@ impl SynthPreset {
             engine: PitchedEngine::PhysicalString,
             string_params: StringSynthParams::default(),
             body_params: BodyResonatorParams::default(),
-            drum_params: DrumKitParams {
-                kick: KickParams {
-                    pitch_start_hz: 180.0,
-                    pitch_end_hz: 45.0,
-                    pitch_decay_ms: 32.0,
-                    click_level: 0.75,
-                    body_decay_ms: 260.0,
-                    ..KickParams::default()
-                },
-                snare: SnareParams {
-                    tone_freq_hz: 210.0,
-                    mode2_freq_hz: 340.0,
-                    tone_decay_ms: 60.0,
-                    wire_cutoff_hz: 2600.0,
-                    noise_decay_ms: 220.0,
-                    noise_mix: 0.65,
-                    clap_spacing_ms: 12.0,
-                    ..SnareParams::default()
-                },
-                toms: TomParams::default(),
-                hi_hats: HiHatParams {
-                    spread: 1.05,
-                    highpass_cutoff_hz: 7500.0,
-                    closed_decay_ms: 40.0,
-                    pedal_decay_ms: 55.0,
-                    open_decay_ms: 750.0,
-                    ..HiHatParams::default()
-                },
-                ..DrumKitParams::default()
-            },
+            drum_params: DrumKitParams::default(),
             fm_params: FmVoiceParams::default(),
         }
     }
@@ -2276,7 +2292,10 @@ impl SynthPreset {
             out.push_str(&format!("      \"decay_ms\": {:.1},\n", s.decay_ms));
             out.push_str(&format!("      \"texture_rate\": {:.4},\n", s.texture_rate));
             out.push_str(&format!("      \"resonance_q\": {:.3},\n", s.resonance_q));
-            out.push_str(&format!("      \"hit_variation\": {:.4}\n", s.hit_variation));
+            out.push_str(&format!("      \"hit_variation\": {:.4},\n", s.hit_variation));
+            out.push_str(&format!("      \"aux_decay_ms\": {:.1},\n", s.aux_decay_ms));
+            out.push_str(&format!("      \"aux_amount\": {:.4},\n", s.aux_amount));
+            out.push_str(&format!("      \"aux_volume_db\": {:.2}\n", s.aux_volume_db));
             out.push_str(if trailing_comma { "    },\n" } else { "    }\n" });
         };
 
@@ -2728,13 +2747,13 @@ mod tests {
         assert!((parsed.drum_params.toms.shell_wood_cavity - 0.58).abs() < 1e-4);
         assert_eq!(parsed.drum_params.toms.tom_tuning_semitones, [0.0; 6]);
         assert!((parsed.drum_params.hi_hats.bronze_size_pitch - 1.0).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.nonlin_shimmer - 0.58).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.stick_hardness - 0.62).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.nonlin_shimmer - 0.89).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.stick_hardness - 1.0).abs() < 1e-4);
         assert!((parsed.drum_params.kick.hit_variation - 0.10).abs() < 1e-4);
         assert!((parsed.drum_params.snare.hit_variation - 0.10).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.hit_variation - 0.10).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.hit_variation - 0.018).abs() < 1e-4);
         assert!((parsed.drum_params.kick.volume_db - 0.0).abs() < 1e-4);
-        assert!((parsed.drum_params.acoustic_kick.volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.acoustic_kick.volume_db - 2.5).abs() < 1e-4);
         assert!((parsed.drum_params.snare.volume_db - 0.0).abs() < 1e-4);
         assert!((parsed.drum_params.snare.rim_volume_db - 0.0).abs() < 1e-4);
         assert!((parsed.drum_params.electric_snare.volume_db - 0.0).abs() < 1e-4);
@@ -2743,9 +2762,17 @@ mod tests {
         assert!((parsed.drum_params.hi_hats.closed_volume_db - 0.0).abs() < 1e-4);
         assert!((parsed.drum_params.hi_hats.pedal_volume_db - 0.0).abs() < 1e-4);
         assert!((parsed.drum_params.hi_hats.open_volume_db - 0.0).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.volume_db - 0.0).abs() < 1e-4);
-        assert!((parsed.drum_params.ride1_and_bell.bow_volume_db - 0.0).abs() < 1e-4);
-        assert!((parsed.drum_params.ride1_and_bell.bell_volume_db - 0.0).abs() < 1e-4);
-        assert!((parsed.drum_params.cowbell.volume_db - 0.0).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.volume_db - 9.0).abs() < 1e-4);
+        assert!((parsed.drum_params.ride1_and_bell.bow_volume_db - 6.5).abs() < 1e-4);
+        assert!((parsed.drum_params.ride1_and_bell.bell_volume_db - 8.0).abs() < 1e-4);
+        assert!((parsed.drum_params.cowbell.volume_db - (-8.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_default_percussion_all_json_matches_drum_kit_params_default() {
+        let json_str = include_str!("../../context/default_percussion_all3.json");
+        let parsed = SynthPreset::from_json_string(json_str)
+            .expect("context/default_percussion_all3.json must deserialize cleanly");
+        assert_eq!(parsed.drum_params, DrumKitParams::default());
     }
 }

@@ -393,17 +393,19 @@ impl GridLivePlayState {
 
             if self.is_percussion {
                 let channel = midly::num::u4::from(self.percussion_channel.saturating_sub(1).min(15));
-                let sound = if fret <= 0 {
+                let sound_opt = if fret <= 0 {
                     self.percussion_lines
                         .get(&string_num)
                         .map(|(p, _)| *p)
-                        .unwrap_or(38)
                 } else {
                     let map_idx = (fret - 1) as usize;
                     self.percussion_lines
                         .get(&string_num)
                         .and_then(|(_, syms)| syms.get(map_idx).copied())
-                        .unwrap_or(38)
+                };
+                // Leave unmapped grid pads blank (no Note-On / no fallback snare)
+                let Some(sound) = sound_opt else {
+                    return true;
                 };
                 let key = midly::num::u7::from(sound.min(127));
                 let vel = midly::num::u7::from(velocity.clamp(1, 127));
@@ -1582,6 +1584,13 @@ mod tests {
         assert!(state.active_notes.contains_key(&(0, 77)));
         let (_, _, key_sym) = state.active_notes.get(&(0, 77)).copied().unwrap();
         assert_eq!(key_sym.as_int(), 46);
+
+        // Unmapped pad at String 1, Col 5 (Pad 81) -> Fret 5 (beyond 2 symbol overrides) must remain blank/silent!
+        assert!(state.handle_midi_event(0, 0x90, 81, 100));
+        assert!(
+            !state.active_notes.contains_key(&(0, 81)),
+            "Unmapped grid pad must NOT trigger a fallback snare Note-On"
+        );
 
         // Release pad 76
         assert!(state.handle_midi_event(0, 0x80, 76, 0));

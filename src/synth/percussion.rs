@@ -149,6 +149,14 @@ impl SvfMode {
         self.k = self.k.max(min_k).min(2.0);
     }
 
+    /// Smoothly absorbs stored modal energy (`ic1eq`, `ic2eq`) by `retain` (`0.0..1.0`) per sample
+    /// during physical hand/stick damping without jumping filter coefficient `k` (zero clicks/pops).
+    #[inline(always)]
+    pub fn absorb_energy(&mut self, retain: f32) {
+        self.ic1eq = flush_denormal(self.ic1eq * retain);
+        self.ic2eq = flush_denormal(self.ic2eq * retain);
+    }
+
     /// Steps one sample with audio-rate frequency multiplier `freq_mult` (`>= 1.0` for head stretch).
     #[inline(always)]
     pub fn process(&mut self, x: f32, freq_mult: f32) -> f32 {
@@ -418,6 +426,19 @@ pub struct PolyVoice {
     pub fm_feedback: f32,
     pub fm_last_mod: f32,
 
+    // --- 4-Stage Hand-Gesture ADSR & Auxiliary Shaker State (Cabasa, Guiro, Maracas, Whistle) ---
+    gesture_atk_end: u32,
+    gesture_dec_end: u32,
+    gesture_sus_end: u32,
+    gesture_rel_end: u32,
+    gesture_sustain_lvl: f32,
+    shaker_aux_amount: f32,
+
+    // --- Smooth Click-Free Physical Choke / Hand-Damping State ---
+    pub is_choking: bool,
+    pub choke_env: f32,
+    pub choke_decay: f32,
+
     // Per-voice pre-allocated biquad filters & PRNG
     pub filter1: BiquadFilter,
     pub filter2: BiquadFilter,
@@ -512,6 +533,15 @@ impl PolyVoice {
             fm_index_env_scale: 1.5,
             fm_feedback: 0.0,
             fm_last_mod: 0.0,
+            gesture_atk_end: 0,
+            gesture_dec_end: 0,
+            gesture_sus_end: 0,
+            gesture_rel_end: 0,
+            gesture_sustain_lvl: 0.8,
+            shaker_aux_amount: 0.0,
+            is_choking: false,
+            choke_env: 1.0,
+            choke_decay: 0.996,
             filter1: BiquadFilter::passthrough(),
             filter2: BiquadFilter::passthrough(),
             rng_state: if rng_seed == 0 { 0x6D2B_79F5 } else { rng_seed },
@@ -536,6 +566,15 @@ impl PolyVoice {
         self.head_energy_env = 0.0;
         self.wire_env = 0.0;
         self.fm_last_mod = 0.0;
+        self.gesture_atk_end = 0;
+        self.gesture_dec_end = 0;
+        self.gesture_sus_end = 0;
+        self.gesture_rel_end = 0;
+        self.gesture_sustain_lvl = 0.8;
+        self.shaker_aux_amount = 0.0;
+        self.is_choking = false;
+        self.choke_env = 1.0;
+        self.choke_decay = 0.996;
         self.exc_samples_elapsed = 0;
         self.exc_total_samples = 0;
         self.exc_lp_z1 = 0.0;
@@ -564,26 +603,91 @@ impl PolyVoice {
         self.filter2.reset();
     }
 
-    /// Dynamically chokes an active open hi-hat by clamping loop damping inside the bronze
-    /// Hadamard waveguide network and increasing modal damping across all 6 bronze modes.
+    /// Smoothly damps an active physical model (for choke groups and mono/one-shot re-triggers)
+    /// without hard-cutting resonator states or jumping SVF coefficients in a single sample (zero clicks/pops).
     #[inline(always)]
     pub fn choke(&mut self, sample_rate: f32) {
         if self.is_active() {
             let sr = sample_rate.max(8_000.0);
-            let fast = (-1.0 / (0.008 * sr)).exp();
-            self.fast_decay = self.fast_decay.min(fast);
-            self.slow_decay = self.slow_decay.min(fast);
+            // Smooth ~5.5 ms physical damping time constant (-60 dB in ~38 ms, 100% click-free)
+            let damp_per_sample = (-1.0 / (0.0055 * sr)).exp();
+            self.is_choking = true;
+            self.choke_decay = damp_per_sample;
+            self.fast_decay = self.fast_decay.min(damp_per_sample);
+            self.slow_decay = self.slow_decay.min(damp_per_sample);
             self.is_open_hat = false;
-            // Physical bronze plate clamping: strongly damp the 4 waveguide loops + 6 bronze modes
             if self.mode == PolyVoiceMode::HatOrCymbal {
-                self.cym_loop_gain = self.cym_loop_gain.min(0.68);
-                self.cym_lp_damp = self.cym_lp_damp.max(0.62);
+                self.cym_loop_gain = self.cym_loop_gain.min(0.76);
+                self.cym_lp_damp = self.cym_lp_damp.max(0.55);
                 self.cym_edge_sizzle = 0.0;
-                self.cym_wash_mix *= 0.25;
-                for m in &mut self.modes {
-                    m.damp_choke(0.22);
-                }
+                self.cym_wash_mix *= 0.45;
             }
+        }
+    }
+
+    /// Configures a 4-stage hand-moved ADSR contour (smooth attack -> fast decay -> high sustain -> fast release)
+    /// over `total_dur_sec` seconds (used for Cabasa 69 and Guiro 73/74).
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn configure_hand_gesture_adsr(
+        &mut self,
+        sample_rate: f32,
+        total_dur_sec: f32,
+        atk_frac: f32,
+        min_atk_sec: f32,
+        max_atk_sec: f32,
+        dec_frac: f32,
+        sustain_level: f32,
+        rel_frac: f32,
+    ) {
+        let sr = sample_rate.max(8_000.0);
+        let total_samples = (total_dur_sec.max(0.012) * sr).round().max(24.0) as u32;
+        let min_atk_samples = (min_atk_sec * sr).round() as u32;
+        let max_atk_samples = ((max_atk_sec * sr).round() as u32)
+            .max(min_atk_samples)
+            .min(total_samples / 2);
+        let atk_samples = ((total_samples as f32 * atk_frac).round() as u32)
+            .max(min_atk_samples)
+            .min(max_atk_samples);
+        let dec_samples = ((total_samples as f32 * dec_frac).round() as u32)
+            .max(6)
+            .min(total_samples / 5);
+        let rel_samples = ((total_samples as f32 * rel_frac).round() as u32)
+            .max(6)
+            .min(total_samples / 5);
+        let sus_samples = total_samples
+            .saturating_sub(atk_samples + dec_samples + rel_samples)
+            .max(6);
+
+        self.gesture_atk_end = atk_samples;
+        self.gesture_dec_end = atk_samples + dec_samples;
+        self.gesture_sus_end = atk_samples + dec_samples + sus_samples;
+        self.gesture_rel_end = atk_samples + dec_samples + sus_samples + rel_samples;
+        self.gesture_sustain_lvl = sustain_level.clamp(0.2, 1.0);
+    }
+
+    /// Evaluates the 4-stage hand-gesture ADSR envelope at `self.age_samples`, returning `(env, finished)`.
+    #[inline(always)]
+    fn eval_hand_gesture_adsr(&self) -> (f32, bool) {
+        let age = self.age_samples;
+        if age <= self.gesture_atk_end {
+            let u = (age as f32) / (self.gesture_atk_end.max(1) as f32);
+            let env = 0.5 * (1.0 - (PI * u).cos());
+            (env, false)
+        } else if age <= self.gesture_dec_end {
+            let span = (self.gesture_dec_end - self.gesture_atk_end).max(1) as f32;
+            let u = ((age - self.gesture_atk_end) as f32) / span;
+            let env = 1.0 - (1.0 - self.gesture_sustain_lvl) * u;
+            (env, false)
+        } else if age <= self.gesture_sus_end {
+            (self.gesture_sustain_lvl, false)
+        } else if age <= self.gesture_rel_end {
+            let span = (self.gesture_rel_end - self.gesture_sus_end).max(1) as f32;
+            let u = ((age - self.gesture_sus_end) as f32) / span;
+            let env = self.gesture_sustain_lvl * (1.0 - u);
+            (env, false)
+        } else {
+            (0.0, true)
         }
     }
 
@@ -970,12 +1074,12 @@ impl PolyVoice {
         };
         self.is_cymbal_bandpass = is_cymbal_bandpass;
 
-        let size_pitch = bronze_size_pitch.clamp(0.5, 2.0);
-        let spread = modal_spread.clamp(0.5, 2.0);
-        let disp = plate_dispersion.clamp(0.0, 1.0);
-        let shimmer = nonlin_shimmer.clamp(0.0, 1.0);
-        let bell = bell_level.clamp(0.0, 2.0);
-        let hardness = stick_hardness.clamp(0.0, 1.0);
+        let size_pitch = bronze_size_pitch.clamp(0.25, 3.5);
+        let spread = modal_spread.clamp(0.20, 3.5);
+        let disp = plate_dispersion.clamp(0.0, 1.5);
+        let shimmer = nonlin_shimmer.clamp(0.0, 1.5);
+        let bell = bell_level.clamp(0.0, 3.0);
+        let hardness = stick_hardness.clamp(0.0, 1.5);
 
         // 1. Mutually prime incommensurate waveguide delay lengths scaled by cymbal archetype and `bronze_size_pitch`
         let base_primes_48k: [f32; CYMBAL_LINES] = match gm_note {
@@ -1188,9 +1292,9 @@ impl PolyVoice {
             _ => 0.58,       // Cowbell
         };
 
-        let f1 = freq1_hz.clamp(120.0, sr * 0.40);
-        let f2 = freq2_hz.clamp(160.0, sr * 0.42);
-        let t60 = (decay_sec * 2.8).clamp(0.025, 3.2);
+        let f1 = freq1_hz.clamp(60.0, sr * 0.43);
+        let f2 = freq2_hz.clamp(80.0, sr * 0.44);
+        let t60 = (decay_sec * 2.8).clamp(0.012, 8.0);
 
         // Configure 6 resonant modes matched to instrument acoustics (steel bell/bar vs. hollow wood)
         let (ratios, gains, decay_scales): ([f32; NUM_MODES], [f32; NUM_MODES], [f32; NUM_MODES]) =
@@ -1220,16 +1324,16 @@ impl PolyVoice {
                     [1.0, 0.88, 0.58, 0.42, 0.30, 0.22],
                 ),
                 _ => (
-                    // Cowbell: classic two-mode damped steel bell
-                    [1.0, f2 / f1, 1.85, 2.46, 3.12, 3.90],
-                    [1.00, 0.94, 0.24, 0.16, 0.10, 0.06],
-                    [1.0, 0.92, 0.35, 0.24, 0.18, 0.12],
+                    // Cowbell: classic two-mode damped steel bell + upper metallic strike overtones
+                    [1.0, f2 / f1, 1.85, 2.46, 3.45, 4.65],
+                    [1.00, 0.94, 0.28, 0.20, 0.16, 0.12],
+                    [1.0, 0.92, 0.35, 0.24, 0.14, 0.08],
                 ),
             };
 
         for i in 0..NUM_MODES {
-            let mf = (f1 * ratios[i]).clamp(120.0, sr * 0.43);
-            let mt60 = (t60 * decay_scales[i]).clamp(0.012, 3.2);
+            let mf = (f1 * ratios[i]).clamp(60.0, sr * 0.43);
+            let mt60 = (t60 * decay_scales[i]).clamp(0.008, 8.0);
             self.modes[i].configure(sr, mf, mt60, gains[i]);
             self.mode_exc_weights[i] = 1.0;
         }
@@ -1237,6 +1341,7 @@ impl PolyVoice {
         // Crisp hard-stick / steel-beater contact pulse
         let pulse_ms = match gm_note {
             80 | 81 => 0.22,
+            56 => 0.32,
             75 | 76 | 77 => 0.35,
             _ => 0.42,
         };
@@ -1244,9 +1349,9 @@ impl PolyVoice {
         self.exc_samples_elapsed = 0;
         self.exc_total_samples = pulse_samples;
         self.exc_area_norm = (2.0 / (pulse_samples as f32)) * (0.55 + 0.45 * vel);
-        self.exc_click_mix = 0.55;
+        self.exc_click_mix = if gm_note == 56 { 0.90 } else { 0.55 };
         self.exc_lp_z1 = 0.0;
-        let stick_cut = if matches!(gm_note, 80 | 81) {
+        let stick_cut = if matches!(gm_note, 56 | 80 | 81) {
             14_000.0_f32
         } else {
             7_500.0_f32
@@ -1254,20 +1359,33 @@ impl PolyVoice {
         .min(sr * 0.44);
         self.exc_lp_coeff = (-TAU * stick_cut / sr).exp().clamp(0.04, 0.90);
 
-        let bp_center = (0.5 * (f1 + f2)).clamp(200.0, sr * 0.42);
-        self.filter1 = BiquadFilter::bandpass_peak(sr, bp_center, bandpass_q.clamp(0.5, 14.0));
+        let bp_center = (0.5 * (f1 + f2)).clamp(100.0, sr * 0.42);
+        self.filter1 = BiquadFilter::bandpass_peak(sr, bp_center, bandpass_q.clamp(0.25, 25.0));
+        // High-end metallic strike transient filter (especially for Cowbell 56 right on strike, dying off immediately)
+        let hp_transient_hz = if gm_note == 56 {
+            3_600.0_f32
+        } else {
+            2_400.0_f32
+        }
+        .min(sr * 0.40);
+        self.filter2 = BiquadFilter::highpass(sr, hp_transient_hz, 0.90);
+        self.click_env = 1.0;
+        // Immediate ~1.4 ms time constant so the high-end metallic strike snap dies off in ~3 ms
+        let click_tau = if gm_note == 56 { 0.0014 } else { 0.0010 };
+        self.click_decay = (-inv_sr / click_tau).exp();
+
         self.shell.configure(
             sr,
-            (f1 * 0.92).clamp(120.0, sr * 0.38),
-            (decay_sec * 0.6).clamp(0.02, 0.4),
+            (f1 * 0.92).clamp(90.0, sr * 0.38),
+            (decay_sec * 0.6).clamp(0.015, 0.6),
             4_500.0,
         );
         self.shell_mix = if matches!(gm_note, 75 | 76 | 77) { 0.45 } else { 0.18 };
 
         self.fast_env = 1.0;
-        self.fast_decay = (-inv_sr / decay_sec.max(0.015)).exp();
+        self.fast_decay = (-inv_sr / decay_sec.max(0.008)).exp();
         self.slow_env = 1.0;
-        self.slow_decay = (-inv_sr / (decay_sec * 1.4).max(0.02)).exp();
+        self.slow_decay = (-inv_sr / (decay_sec * 1.4).max(0.012)).exp();
     }
 
     /// Triggers an acoustic shaker, ratchet, whistle, or friction-drum voice
@@ -1284,10 +1402,12 @@ impl PolyVoice {
         let sr = sample_rate.max(8_000.0);
         let inv_sr = 1.0 / sr;
         let vel = velocity.clamp(0.05, 1.0);
-        let pitch = params.pitch_scale.clamp(0.5, 2.0);
-        let bright = params.brightness_hz.clamp(400.0, sr * 0.43);
-        let tex = params.texture_rate.clamp(0.0, 1.0);
-        let q = params.resonance_q.clamp(0.5, 12.0);
+        let pitch = params.pitch_scale.clamp(0.20, 4.0);
+        let bright = params.brightness_hz.clamp(120.0, sr * 0.43);
+        let tex = params.texture_rate.clamp(0.0, 2.0);
+        let q = params.resonance_q.clamp(0.25, 25.0);
+        let aux_decay_sec = (params.aux_decay_ms * 0.001).clamp(0.005, 4.0);
+        let aux_amt = params.aux_amount.clamp(0.0, 2.0);
 
         self.clear();
         self.mode = PolyVoiceMode::ShakerOrEffect(gm_note);
@@ -1298,84 +1418,175 @@ impl PolyVoice {
         self.pan = pan.clamp(0.1, 0.9);
         self.phase1 = 0.0;
         self.phase2 = 0.0;
+        self.shaker_aux_amount = aux_amt;
 
-        // Note-specific duration scaling (short vs. long Guiro / Whistle; mute vs. open Cuica)
-        let dur_scale = match gm_note {
-            71 => 0.36, // Short Whistle
-            73 => 0.42, // Short Guiro
-            78 => 0.52, // Mute Cuica
-            _ => 1.0,
+        // Note-specific duration scaling:
+        // - Guiro Short (73) uses `aux_decay_ms` independently from Guiro Long (74) (`decay_ms`)!
+        // - Whistle Short/High (71) uses `aux_decay_ms` independently from Whistle Long/Low (72) (`decay_ms`)!
+        // - Cuica Mute (78) scales from `decay_ms`.
+        let decay_sec = match gm_note {
+            73 => aux_decay_sec.clamp(0.008, 4.0),
+            74 => (params.decay_ms * 0.001).clamp(0.015, 4.0),
+            71 => aux_decay_sec.clamp(0.008, 4.0),
+            72 => (params.decay_ms * 0.001).clamp(0.012, 4.0),
+            78 => ((params.decay_ms * 0.001) * 0.52).clamp(0.010, 4.0),
+            _ => (params.decay_ms * 0.001).clamp(0.008, 4.0),
         };
-        let decay_sec = ((params.decay_ms * 0.001) * dur_scale).clamp(0.020, 1.6);
 
         self.level = vel * match gm_note {
             71 | 72 => 0.44, // Samba whistle cuts loudly
             78 | 79 => 0.66, // Cuica
             58 => 0.72,      // Vibraslap
-            73 | 74 => 0.70, // Guiro
-            54 => 0.64,      // Tambourine
-            _ => 0.62,       // Cabasa / Maracas
+            73 | 74 => 0.72, // Guiro
+            54 => 0.68,      // Tambourine
+            70 => 2.15,      // Maracas (linear post-tanh level; pre-tanh drive kept strictly < 0.55 so zero clipping)
+            _ => 0.66,       // Cabasa
         };
 
         self.in_attack = true;
         self.amp_env = 0.0;
         let atk_sec = match gm_note {
-            70 => 0.014,     // Maracas: softer seed swish ramp-in
-            69 => 0.007,     // Cabasa: tighter bead scrape
+            70 => 0.012,     // Maracas: seed throw ramp-in
             71 | 72 => 0.009,
             78 | 79 => 0.012,
             _ => 0.0025,
         };
         self.amp_attack_inc = 1.0 / (atk_sec * sr).max(1.0);
         self.fast_env = 1.0;
-        self.fast_decay = (-inv_sr / (decay_sec * 0.35).max(0.012)).exp();
+        self.fast_decay = (-inv_sr / (decay_sec * 0.35).max(0.008)).exp();
         self.slow_env = 1.0;
         self.slow_decay = (-inv_sr / decay_sec).exp();
         self.pitch_env = 1.0;
-        self.pitch_decay = (-inv_sr / (decay_sec * 0.55).max(0.02)).exp();
+        self.pitch_decay = (-inv_sr / (decay_sec * 0.55).max(0.012)).exp();
         self.body_mix = tex;
 
         match gm_note {
             54 => {
-                // Tambourine: bright jingle flutter + small wooden frame tap mode
-                let jingle_hz = (26.0 + 34.0 * tex) * pitch;
+                // Tambourine:
+                // 1. Slower jingle flutter rate range (3.5 Hz at tex=0 up to ~40+ Hz)
+                // 2. Tunable drumhead decay length via `aux_decay_ms` on modes[0]
+                // 3. 5 high-Q inharmonic stamped-metal zil resonators on modes[1..6] so jingles
+                //    sound genuinely metallic rather than bandpassed white noise.
+                let jingle_hz = (3.5 + 36.0 * tex) * pitch.clamp(0.25, 3.0);
                 self.base_inc = jingle_hz * inv_sr;
-                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(2_500.0, sr * 0.43), q.clamp(0.6, 4.0));
-                self.filter2 = BiquadFilter::highpass(sr, 4_200.0_f32.min(sr * 0.40), 0.75);
-                self.modes[0].configure(sr, (230.0_f32 * pitch).clamp(110.0, 600.0), 0.045, 0.55);
+                let zil_base = (bright * pitch).clamp(1_600.0, sr * 0.38);
+                self.filter1 = BiquadFilter::bandpass_peak(sr, zil_base, q.clamp(0.8, 16.0));
+                self.filter2 = BiquadFilter::highpass(sr, (zil_base * 0.72).clamp(2_400.0, sr * 0.40), 0.85);
+
+                // modes[0]: Tambourine frame drumhead with dedicated user decay `aux_decay_ms`
+                let head_t60 = aux_decay_sec.clamp(0.005, 2.5);
+                self.modes[0].configure(sr, (230.0_f32 * pitch).clamp(80.0, 900.0), head_t60, 0.75);
+                // Track drumhead decay in fast_decay so long drumhead settings never cut off early
+                self.fast_decay = (-inv_sr / (head_t60 * 0.55).max(0.005)).exp();
+
+                // modes[1..6]: 5 high-Q inharmonic stamped steel/brass zil pair modes
+                const ZIL_RATIOS: [f32; 5] = [0.74, 1.00, 1.31, 1.69, 2.14];
+                const ZIL_GAINS: [f32; 5] = [0.42, 0.54, 0.48, 0.38, 0.30];
+                let zil_t60 = (decay_sec * (0.48 + 0.10 * q.clamp(0.5, 12.0))).clamp(0.025, 0.65);
+                for idx in 0..5 {
+                    let zf = (zil_base * ZIL_RATIOS[idx]).clamp(1_400.0, sr * 0.43);
+                    let zt = (zil_t60 * (1.0 - 0.11 * (idx as f32))).clamp(0.018, 0.65);
+                    self.modes[idx + 1].configure(sr, zf, zt, ZIL_GAINS[idx]);
+                }
+
                 self.exc_samples_elapsed = 0;
-                self.exc_total_samples = ((0.0008 * sr).round().clamp(4.0, 64.0)) as u32;
+                self.exc_total_samples = ((0.0009 * sr).round().clamp(4.0, 64.0)) as u32;
                 self.exc_area_norm = 2.0 / (self.exc_total_samples as f32);
-                self.exc_click_mix = 0.35;
-                self.exc_lp_coeff = 0.4;
+                self.exc_click_mix = 0.45;
+                self.exc_lp_coeff = 0.35;
             }
-            69 | 70 => {
-                // Cabasa (69) / Maracas (70): granular high-frequency bead/seed burst
-                let grain_hz = if gm_note == 69 {
-                    (58.0 + 62.0 * tex) * pitch
-                } else {
-                    (32.0 + 36.0 * tex) * pitch
-                };
+            69 => {
+                // Cabasa (69):
+                // - Moved by hand, not struck: 4-stage ADSR contour (longer smooth attack ->
+                //   fast decay -> high sustain plateau -> very fast release).
+                // - Slower bead grain rate (6 Hz .. 42 Hz * pitch) with metallic cylinder ridge clicks.
+                self.in_attack = false;
+                self.amp_env = 1.0;
+                self.slow_env = 1.0;
+                // Keep slow_decay = 1.0 during normal gesture; choke() clamps slow_decay if choked
+                self.slow_decay = 1.0;
+                self.configure_hand_gesture_adsr(
+                    sr,
+                    decay_sec.max(0.020),
+                    0.22,  // ~22% smooth hand-twist attack
+                    0.010, // min 10 ms attack
+                    0.055, // max 55 ms attack
+                    0.13,  // fast ~13% decay after initial hand grip peak
+                    0.78,  // high sustain plateau (0.78)
+                    0.11,  // very fast ~11% release when hand stops
+                );
+
+                let grain_hz = (6.0 + 34.0 * tex) * pitch.clamp(0.25, 3.0);
                 self.base_inc = grain_hz * inv_sr;
-                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(2_000.0, sr * 0.43), q.clamp(0.7, 5.0));
-                self.filter2 = BiquadFilter::highpass(sr, (bright * 0.48).clamp(1_800.0, sr * 0.40), 0.75);
+                let center_hz = (bright * pitch).clamp(900.0, sr * 0.40);
+                self.filter1 = BiquadFilter::bandpass_peak(sr, center_hz, q.clamp(0.5, 16.0));
+                self.filter2 = BiquadFilter::highpass(sr, (center_hz * 0.52).clamp(1_000.0, sr * 0.38), 0.80);
+                // Subtle corrugated steel cylinder & wooden core modes (unity-normalized so continuous drive never clips)
+                self.modes[0].configure_bandpass_unity(sr, (center_hz * 0.78).clamp(800.0, sr * 0.38), 5.5, 0.32);
+                self.modes[1].configure_bandpass_unity(sr, (center_hz * 1.24).clamp(1_200.0, sr * 0.40), 6.5, 0.24);
+            }
+            70 => {
+                // Maracas (70):
+                // - Strong hollow small wooden shell / gourd resonance (ShellResonator + 3 unity-normalized wood cavity modes)
+                // - Random loose beads flying around inside the body controlled by `aux_amount` fader
+                let grain_hz = (14.0 + 34.0 * tex) * pitch.clamp(0.25, 3.0);
+                self.base_inc = grain_hz * inv_sr;
+                let seed_hz = (bright * pitch.clamp(0.25, 2.2)).clamp(1_200.0, (sr * 0.35).min(13_500.0));
+                self.filter1 = BiquadFilter::bandpass_peak(sr, seed_hz, q.clamp(0.5, 14.0));
+                self.filter2 = BiquadFilter::highpass(sr, (seed_hz * 0.42).clamp(900.0, sr * 0.34), 0.72);
+
+                // Small hollow wooden maraca shell cavity & hardwood wall modes:
+                // Use `configure_bandpass_unity` so continuous seed/bead excitation never overloads or clips!
+                let eff_wood_pitch = pitch.clamp(0.25, 2.4);
+                let wood_f1 = (680.0 * eff_wood_pitch).clamp(260.0, 2_200.0);
+                let wood_f2 = (1_180.0 * eff_wood_pitch).clamp(440.0, 3_400.0);
+                let wood_f3 = (1_880.0 * eff_wood_pitch).clamp(700.0, 5_200.0);
+                let wood_q = (2.0 + 1.5 * q.clamp(0.25, 12.0)).clamp(2.0, 14.0);
+                self.modes[0].configure_bandpass_unity(sr, wood_f1, wood_q, 0.58);
+                self.modes[1].configure_bandpass_unity(sr, wood_f2, wood_q * 0.9, 0.46);
+                self.modes[2].configure_bandpass_unity(sr, wood_f3, wood_q * 0.8, 0.35);
+                self.shell.configure(sr, (wood_f1 * 0.92).clamp(240.0, 2_000.0), 0.055, 4_200.0);
+
+                // Extend slow_decay slightly when loose beads are active so stray beads can bounce in the wake
+                let tail_mult = 1.0 + 0.85 * aux_amt;
+                self.slow_decay = (-inv_sr / (decay_sec * tail_mult).max(0.012)).exp();
+                self.click_env = 0.0;
+                self.click_decay = (-inv_sr / 0.0008).exp();
             }
             73 | 74 => {
-                // Guiro (73 Short, 74 Long): notched gourd ratchet scrape
-                let ratchet_hz = (24.0 + 44.0 * tex) * pitch;
+                // Guiro (73 Short, 74 Long):
+                // - Scraped by hand: 4-stage ADSR contour with a responsive smooth attack,
+                //   fast decay, high sustain plateau (0.82), and fast release.
+                // - Separate scrape length for Short Guiro (`aux_decay_ms`) vs Long Guiro (`decay_ms`).
+                self.in_attack = false;
+                self.amp_env = 1.0;
+                self.slow_env = 1.0;
+                self.slow_decay = 1.0;
+                self.configure_hand_gesture_adsr(
+                    sr,
+                    decay_sec.max(0.012),
+                    0.16,  // ~16% smooth hand-scrape attack (shorter, more responsive)
+                    0.004, // min 4 ms attack for short guiro strikes
+                    0.042, // max 42 ms attack cap so long guiro scrapes don't lag
+                    0.10,  // fast ~10% decay into high sustain
+                    0.82,  // high sustain plateau (0.82)
+                    0.10,  // fast ~10% release at end of scrape
+                );
+
+                let ratchet_hz = (12.0 + 46.0 * tex) * pitch.clamp(0.25, 3.0);
                 self.base_inc = ratchet_hz * inv_sr;
-                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(700.0, sr * 0.42), q.clamp(1.2, 8.0));
-                self.filter2 = BiquadFilter::highpass(sr, 480.0, 0.72);
-                self.shell.configure(sr, (bright * 0.42 * pitch).clamp(220.0, 1_800.0), 0.08, 4_200.0);
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(350.0, sr * 0.40), q.clamp(0.8, 20.0));
+                self.filter2 = BiquadFilter::highpass(sr, 420.0, 0.72);
+                self.shell.configure(sr, (bright * 0.42 * pitch).clamp(180.0, 2_200.0), 0.085, 4_200.0);
             }
             58 => {
                 // Vibraslap: spring strike + decaying wood-box rattle
-                let rattle_hz = (28.0 + 26.0 * tex) * pitch;
+                let rattle_hz = (16.0 + 36.0 * tex) * pitch;
                 self.base_inc = rattle_hz * inv_sr;
-                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(550.0, sr * 0.40), q.clamp(1.2, 7.0));
-                self.filter2 = BiquadFilter::highpass(sr, 360.0, 0.75);
-                self.modes[0].configure(sr, (480.0_f32 * pitch).clamp(180.0, 1_600.0), 0.14, 0.75);
-                self.shell.configure(sr, (bright * 0.55 * pitch).clamp(260.0, 2_200.0), 0.12, 3_600.0);
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (bright * pitch).clamp(350.0, sr * 0.40), q.clamp(0.8, 16.0));
+                self.filter2 = BiquadFilter::highpass(sr, 340.0, 0.75);
+                self.modes[0].configure(sr, (480.0_f32 * pitch).clamp(140.0, 2_200.0), 0.14, 0.75);
+                self.shell.configure(sr, (bright * 0.55 * pitch).clamp(220.0, 2_600.0), 0.12, 3_600.0);
                 self.exc_samples_elapsed = 0;
                 self.exc_total_samples = ((0.0012 * sr).round().clamp(4.0, 80.0)) as u32;
                 self.exc_area_norm = 2.0 / (self.exc_total_samples as f32);
@@ -1384,19 +1595,25 @@ impl PolyVoice {
             }
             71 | 72 => {
                 // Samba Whistle: pure high pea-trill whistle + breath air
-                let base_f = (bright * pitch).clamp(1_200.0, (sr * 0.42).min(6_500.0));
-                let trill_hz = 22.0 + 26.0 * tex;
-                self.base_inc = base_f * inv_sr;
+                // + Velocity/accent pitch bend (`aux_amount` slider: higher pitch when louder!)
+                let base_f = (bright * pitch).clamp(600.0, (sr * 0.42).min(9_000.0));
+                // Accent pitch lift: louder blows shift base pitch upward proportionally to `aux_amount`
+                let accent_lift = 1.0 + (vel - 0.35).max(0.0) * aux_amt * 0.18;
+                let accented_f = (base_f * accent_lift).min(sr * 0.43);
+                let trill_hz = 14.0 + 32.0 * tex;
+                self.base_inc = accented_f * inv_sr;
                 self.sec_inc = trill_hz * inv_sr;
-                self.filter1 = BiquadFilter::bandpass_peak(sr, base_f, q.clamp(1.5, 10.0));
+                // Store initial overblow breath-attack pitch burst in fm_index_env_scale
+                self.fm_index_env_scale = vel * aux_amt * 0.045;
+                self.filter1 = BiquadFilter::bandpass_peak(sr, accented_f, q.clamp(0.8, 20.0));
             }
             _ => {
                 // Cuica (78 Mute, 79 Open): pitched friction-stick drumhead resonance sweep
-                let target_f = (bright * pitch).clamp(180.0, 1_400.0);
+                let target_f = (bright * pitch).clamp(110.0, 2_200.0);
                 self.base_inc = target_f * inv_sr;
                 self.sec_inc = if gm_note == 78 { -0.28 } else { 0.48 } * (0.35 + 0.65 * tex);
-                self.filter1 = BiquadFilter::bandpass_peak(sr, (target_f * 1.35).clamp(240.0, sr * 0.40), q.clamp(1.5, 9.0));
-                self.shell.configure(sr, (target_f * 0.85).clamp(120.0, 900.0), 0.14, 2_800.0);
+                self.filter1 = BiquadFilter::bandpass_peak(sr, (target_f * 1.35).clamp(160.0, sr * 0.40), q.clamp(0.8, 18.0));
+                self.shell.configure(sr, (target_f * 0.85).clamp(90.0, 1_400.0), 0.14, 2_800.0);
             }
         }
     }
@@ -1560,6 +1777,19 @@ impl PolyVoice {
         }
 
         self.age_samples = self.age_samples.wrapping_add(1);
+
+        // If this voice is being physically choked/damped, smoothly absorb resonator energy
+        // each sample without jumping filter coefficients (100% click-free).
+        if self.is_choking {
+            self.choke_env = flush_denormal(self.choke_env * self.choke_decay);
+            for m in &mut self.modes {
+                m.absorb_energy(self.choke_decay);
+            }
+            if self.choke_env < 1.0e-4 {
+                self.clear();
+                return (0.0, 0.0);
+            }
+        }
 
         let raw = match self.mode {
             PolyVoiceMode::Inactive => return (0.0, 0.0),
@@ -1886,6 +2116,18 @@ impl PolyVoice {
                     total_modal_e += self.modes[i].energy();
                 }
 
+                // High-end metallic strike transient right as the instrument is struck that dies off immediately (~2-3 ms)
+                let strike_transient = if self.click_env > 1.0e-4 {
+                    let wn = self.next_white_noise();
+                    let snap_in = click_raw * 1.85 + wn * self.click_env * 0.65;
+                    let hp_snap = self.filter2.process(snap_in);
+                    let snap_gain = if self.voice_tag == 56 { 1.45 } else { 0.45 };
+                    hp_snap * self.click_env * snap_gain
+                } else {
+                    0.0
+                };
+                self.click_env = flush_denormal(self.click_env * self.click_decay);
+
                 let bp = self.filter1.process(modal_sum);
                 let shell_out = self.shell.process(modal_sum * 0.65 + exc * 0.30);
                 self.fast_env = flush_denormal(self.fast_env * self.fast_decay);
@@ -1893,6 +2135,7 @@ impl PolyVoice {
 
                 if self.exc_samples_elapsed >= self.exc_total_samples
                     && total_modal_e < 1.0e-10
+                    && self.click_env < 1.0e-5
                     && self.age_samples > 192
                 {
                     self.clear();
@@ -1902,7 +2145,8 @@ impl PolyVoice {
                 let body = modal_sum * 0.62
                     + bp * 0.48
                     + shell_out * (0.55 * self.shell_mix)
-                    + click_raw * 0.35;
+                    + click_raw * 0.35
+                    + strike_transient;
                 tanh_pade(body * 1.15) * self.level
             }
 
@@ -1915,46 +2159,118 @@ impl PolyVoice {
                     }
                 }
 
+                let mut gesture_done = false;
                 let sig = match gm_note {
                     54 => {
-                        // Tambourine: rapid jingle-pair flutter + brief frame tap
-                        let (exc, _) = self.next_drum_excitation();
+                        // Tambourine:
+                        // - Frame drumhead on modes[0] with dedicated decay `aux_decay_ms`
+                        // - 5 high-Q inharmonic stamped-metal zil modes on modes[1..6] excited on
+                        //   initial strike + each flutter clash peak so jingles sound metallic, not noisy
+                        let (exc, click_raw) = self.next_drum_excitation();
                         let frame = self.modes[0].process(exc, 1.0);
                         self.phase1 += self.base_inc;
                         if self.phase1 >= 1.0 {
                             self.phase1 -= 1.0;
                         }
-                        let flutter = 0.45 + 0.55 * (self.phase1 * TAU).sin().abs();
+                        let sin_w = (self.phase1 * TAU).sin().abs();
+                        // Crisp clash peak each time the jingle pair impacts on the shake cycle
+                        let clash_peak = sin_w.powf(5.0);
+                        let flutter = 0.35 + 0.65 * sin_w;
                         let wn = self.next_white_noise();
-                        let jingle = self.filter2.process(self.filter1.process(wn));
                         let env = self.amp_env * self.slow_env;
-                        (jingle * flutter * env * 1.65) + (frame * 0.45)
+
+                        // Drive the 5 high-Q metallic zil resonators with strike impulse + cyclic clash impulse
+                        let zil_drive = exc * 0.95 + (clash_peak * (0.35 + 0.65 * wn) + wn * 0.08) * env * 0.14;
+                        let mut zil_modal_sum = 0.0_f32;
+                        for idx in 1..NUM_MODES {
+                            let sign = if (idx & 1) == 1 { 1.0 } else { -0.85 };
+                            zil_modal_sum += self.modes[idx].process(zil_drive * sign, 1.0);
+                        }
+                        // Crisp high-frequency metallic air edge (> 4 kHz), kept subtle so tone is metallic, not white noise
+                        let edge_air = self.filter2.process(self.filter1.process(wn * (0.20 + 0.80 * clash_peak)));
+                        let metallic_jingles = (zil_modal_sum * 1.40 + edge_air * 0.32 * env) * (0.55 + 0.45 * flutter);
+                        metallic_jingles + frame * 0.68 + click_raw * 0.25
                     }
-                    69 | 70 => {
-                        // Cabasa (69) / Maracas (70): high-passed granular bead/seed envelope
+                    69 => {
+                        // Cabasa (69): hand-moved 4-stage ADSR envelope + slower corrugated steel bead grain
+                        let (adsr_env, done) = self.eval_hand_gesture_adsr();
+                        gesture_done = done;
+                        let env = adsr_env * self.slow_env;
+                        self.fast_env = env;
+
+                        self.phase1 += self.base_inc * (0.70 + 0.30 * adsr_env);
+                        if self.phase1 >= 1.0 {
+                            self.phase1 -= 1.0;
+                        }
+                        // Sharp ridge-crossing bead click + granular chain scrape
+                        let ridge = (self.phase1 * TAU).cos().abs().powf(3.5);
+                        let grain = 0.24 + 0.76 * ridge;
+                        let wn = self.next_white_noise();
+                        let shaped = self.filter2.process(self.filter1.process(wn));
+                        let cyl_ring = self.modes[0].process(shaped * ridge * 0.45, 1.0)
+                            + self.modes[1].process(shaped * ridge * 0.35, 1.0);
+                        (shaped * grain * 0.85 + cyl_ring * 0.65) * env
+                    }
+                    70 => {
+                        // Maracas (70):
+                        // - Strong small wooden shell / hollow gourd impact (unity-normalized modes[0..3] + ShellResonator)
+                        // - Random loose beads flying around inside the body controlled by `shaker_aux_amount`
+                        // - Strictly gain-staged below tanh_pade clipping threshold!
                         self.phase1 += self.base_inc;
                         if self.phase1 >= 1.0 {
                             self.phase1 -= 1.0;
                         }
-                        let grain = 0.55 + 0.45 * (self.phase1 * TAU).cos().abs();
+                        let grain = 0.45 + 0.55 * (self.phase1 * TAU).cos().abs();
                         let wn = self.next_white_noise();
-                        let shaped = self.filter2.process(self.filter1.process(wn));
-                        let env = self.amp_env * (0.35 * self.fast_env + 0.65 * self.slow_env);
-                        shaped * grain * env * 1.55
+                        let cluster_env = self.amp_env * (0.45 * self.fast_env + 0.55 * self.slow_env);
+
+                        // Stochastic flying loose beads knocking against the wooden maraca walls here and there
+                        if self.shaker_aux_amount > 1.0e-4 && self.slow_env > 0.015 {
+                            let rand_u = self.next_white_noise().abs();
+                            // ~20 to 110 random individual bead wall hits per second scaled by fader
+                            let hit_prob = (0.0005 + 0.0022 * self.shaker_aux_amount)
+                                * (0.35 + 0.65 * self.slow_env);
+                            if rand_u < hit_prob {
+                                let bead_vel = 0.35 + 0.45 * self.next_white_noise().abs();
+                                self.click_env = (self.click_env + bead_vel * self.shaker_aux_amount)
+                                    .min(0.65);
+                            }
+                        }
+                        let loose_bead_exc = self.click_env * (0.45 + 0.55 * wn);
+                        self.click_env = flush_denormal(self.click_env * self.click_decay);
+
+                        let seed_exc = (wn * grain * cluster_env + loose_bead_exc * 0.65) * 0.42;
+                        let seeds_hi = self.filter2.process(self.filter1.process(seed_exc));
+
+                        // Drive the 3 unity-normalized wooden maraca shell modes + 2-tap wooden gourd cavity
+                        let wood_drive = seed_exc * 0.55 + loose_bead_exc * 0.32;
+                        let wood_modes = self.modes[0].process(wood_drive, 1.0)
+                            + self.modes[1].process(wood_drive * 0.85, 1.0)
+                            + self.modes[2].process(wood_drive * 0.70, 1.0);
+                        let wood_shell = self.shell.process(seeds_hi * 0.35 + wood_modes * 0.55);
+
+                        seeds_hi * 0.50 + wood_modes * 0.55 + wood_shell * 0.45
                     }
                     73 | 74 => {
-                        // Guiro (Short 73 / Long 74): notched-gourd ratchet pulse modulation
-                        self.phase1 += self.base_inc * (0.78 + 0.35 * self.pitch_env);
+                        // Guiro (Short 73 / Long 74):
+                        // - Hand-scraped 4-stage ADSR envelope (longer attack than Cabasa, fast decay,
+                        //   high sustain plateau, fast release)
+                        // - Separate scrape length for Short 73 (`aux_decay_ms`) and Long 74 (`decay_ms`)
+                        let (adsr_env, done) = self.eval_hand_gesture_adsr();
+                        gesture_done = done;
+                        let env = adsr_env * self.slow_env;
+                        self.fast_env = env;
+
+                        self.phase1 += self.base_inc * (0.72 + 0.34 * adsr_env);
                         if self.phase1 >= 1.0 {
                             self.phase1 -= 1.0;
                         }
-                        // Sharp tooth impact per notch crossing
+                        // Sharp tooth impact per carved gourd notch crossing
                         let tooth = (1.0 - self.phase1).powf(4.0);
                         let wn = self.next_white_noise();
-                        let scrape = self.filter2.process(self.filter1.process(wn * (0.18 + 1.45 * tooth)));
-                        let gourd = self.shell.process(scrape * 0.85);
-                        let env = self.amp_env * self.slow_env;
-                        (scrape * 0.72 + gourd * 0.55) * env * 1.45
+                        let scrape = self.filter2.process(self.filter1.process(wn * (0.16 + 1.50 * tooth)));
+                        let gourd = self.shell.process(scrape * 0.90);
+                        (scrape * 0.72 + gourd * 0.58) * env * 1.45
                     }
                     58 => {
                         // Vibraslap: spring strike + decaying wood-box rattle
@@ -1973,12 +2289,14 @@ impl PolyVoice {
                     }
                     71 | 72 => {
                         // Samba Whistle (Short 71 / Long 72): pea-trill sine + breath air
+                        // + dynamic accent pitch crest on initial breath attack (`fm_index_env_scale`)
                         self.phase2 += self.sec_inc;
                         if self.phase2 >= 1.0 {
                             self.phase2 -= 1.0;
                         }
                         let trill = (self.phase2 * TAU).sin();
-                        let freq_mod = 1.0 + 0.032 * self.body_mix * trill;
+                        let accent_attack_bend = self.fm_index_env_scale * self.pitch_env;
+                        let freq_mod = 1.0 + accent_attack_bend + 0.032 * self.body_mix * trill;
                         self.phase1 += self.base_inc * freq_mod;
                         if self.phase1 >= 1.0 {
                             self.phase1 -= 1.0;
@@ -2005,11 +2323,16 @@ impl PolyVoice {
                     }
                 };
 
-                self.fast_env = flush_denormal(self.fast_env * self.fast_decay);
+                if !matches!(gm_note, 69 | 73 | 74) {
+                    self.fast_env = flush_denormal(self.fast_env * self.fast_decay);
+                }
                 self.slow_env = flush_denormal(self.slow_env * self.slow_decay);
                 self.pitch_env = flush_denormal(self.pitch_env * self.pitch_decay);
 
-                if !self.in_attack && self.slow_env < 1.0e-5 && self.fast_env < 1.0e-5 {
+                if gesture_done
+                    || (!self.in_attack && self.slow_env < 1.0e-5 && self.fast_env < 1.0e-5)
+                    || (matches!(gm_note, 69 | 73 | 74) && self.slow_env < 1.0e-5)
+                {
                     self.clear();
                     return (0.0, 0.0);
                 }
@@ -2060,7 +2383,7 @@ impl PolyVoice {
             }
         };
 
-        let scaled = raw * self.volume_scale;
+        let scaled = raw * self.choke_env * self.volume_scale;
         let left = scaled * (1.0 - self.pan);
         let right = scaled * self.pan;
         (left, right)
@@ -2137,14 +2460,14 @@ impl PercussionAndGmPool {
         (eff_vel, eff_pos)
     }
 
-    /// Converts a drum instrument volume in dB (`-48.0..=+12.0 dB`) to a linear amplitude scale.
+    /// Converts a drum instrument volume in dB (`-48.0..=+24.0 dB`) to a linear amplitude scale.
     /// Values `<= -47.9 dB` map to exact `0.0` (true mute).
     #[inline(always)]
     pub fn drum_volume_db_to_amp(db: f32) -> f32 {
         if db <= -47.9 {
             0.0
         } else {
-            10.0_f32.powf(db.clamp(-48.0, 12.0) / 20.0)
+            10.0_f32.powf(db.clamp(-48.0, 24.0) / 20.0)
         }
     }
 
@@ -2181,7 +2504,8 @@ impl PercussionAndGmPool {
             54 => dp.tambourine.volume_db,
             69 => dp.cabasa.volume_db,
             70 => dp.maracas.volume_db,
-            73 | 74 => dp.guiro.volume_db,
+            73 => dp.guiro.aux_volume_db,
+            74 => dp.guiro.volume_db,
             71 | 72 => dp.whistle.volume_db,
             58 => dp.vibraslap.volume_db,
             _ => dp.cowbell.volume_db,
@@ -2238,22 +2562,66 @@ impl PercussionAndGmPool {
         best_idx
     }
 
+    /// Allocates a voice slot for `gm_drum_note`.
+    /// Prefers an inactive voice slot so any physically damping (`is_choking`) voice from a
+    /// mono/one-shot re-trigger or choke group can finish its smooth ~5-15 ms damping curve
+    /// without being hard-cut (eliminating all clicks and pops).
+    #[inline(always)]
+    fn allocate_drum_voice(&mut self, gm_drum_note: u8) -> usize {
+        for (i, v) in self.voices.iter().enumerate() {
+            if !v.is_active() {
+                return i;
+            }
+        }
+        // If all 16 voices are active, prefer stealing an already-choking voice with lowest energy
+        let mut best_choking: Option<(usize, f32)> = None;
+        for (i, v) in self.voices.iter().enumerate() {
+            if v.is_choking {
+                let e = (v.fast_env + v.slow_env) * v.choke_env;
+                if best_choking.map_or(true, |(_, min_e)| e < min_e) {
+                    best_choking = Some((i, e));
+                }
+            }
+        }
+        if let Some((idx, _)) = best_choking {
+            return idx;
+        }
+        self.allocate_voice(gm_drum_note, false)
+    }
+
     /// Triggers a General MIDI Channel 10 percussion note (`gm_drum_note`) with zero allocations.
     #[inline(always)]
     pub fn trigger_drum(&mut self, gm_drum_note: u8, velocity: f32) {
         let sr = self.sample_rate;
 
-        // Closed (42) or Pedal (44) Hi-Hat chokes any active Open Hi-Hat (46) via dynamic loop damping
-        if gm_drum_note == 42 || gm_drum_note == 44 {
-            for v in self.voices.iter_mut() {
-                if v.is_active() && v.is_open_hat {
-                    v.choke(sr);
-                }
+        // 1. Mono / One-Shot instruments (Vibraslap 58, Cabasa 69, Whistle 71/72, Guiro 73/74, Cuica 78/79)
+        //    and Choke Groups (Open Hat 46 -> 42/44, Open High Conga 63 -> 62, Open Triangle 81 -> 80,
+        //    Long Whistle 72 -> 71, Long Guiro 74 -> 73, Open Cuica 79 -> 78):
+        //    Physically damp any currently ringing voice of that mono instrument or choked target via `v.choke(sr)`
+        //    and trigger the new note on a fresh voice slot so the old physical model damps smoothly without clicks!
+        let should_damp_voice = |active_tag: u8, is_open_hat: bool, trig_note: u8| -> bool {
+            match trig_note {
+                // Mono / One-Shot instruments damp any active voice of the same physical instrument
+                58 => active_tag == 58,
+                69 => active_tag == 69,
+                71 | 72 => active_tag == 71 || active_tag == 72,
+                73 | 74 => active_tag == 73 || active_tag == 74,
+                78 | 79 => active_tag == 78 || active_tag == 79,
+                // Polyphonic Choke Groups (2nd note damps 1st note)
+                42 | 44 => active_tag == 46 || is_open_hat,
+                62 => active_tag == 63,
+                80 => active_tag == 81,
+                _ => false,
+            }
+        };
+        for v in self.voices.iter_mut() {
+            if v.is_active() && should_damp_voice(v.voice_tag, v.is_open_hat, gm_drum_note) {
+                v.choke(sr);
             }
         }
 
-        // Allow polyphonic overlapping ring tails on fast 16th-note rolls (hi-hat choke handled above)
-        let slot = self.allocate_voice(gm_drum_note, false);
+        // Allocate a fresh voice slot for the new excitation so the damping voice decays click-free
+        let slot = self.allocate_drum_voice(gm_drum_note);
 
         match gm_drum_note {
             // 1. Separated Bass Drums: Acoustic Bass Drum (35) & Bass Drum 1 (36)
@@ -2265,12 +2633,12 @@ impl PercussionAndGmPool {
                 };
                 let (eff_vel, eff_pos) =
                     self.apply_hit_variation(velocity, k.strike_position, k.hit_variation);
-                let body_decay = (k.body_decay_ms * 0.001).clamp(0.04, 0.80);
+                let body_decay = (k.body_decay_ms * 0.001).clamp(0.015, 3.0);
                 self.voices[slot].trigger_kick_or_tom(
                     gm_drum_note,
                     k.pitch_end_hz,
                     k.pitch_start_hz,
-                    (k.pitch_decay_ms * 0.001).clamp(0.015, 0.12),
+                    (k.pitch_decay_ms * 0.001).clamp(0.003, 0.50),
                     body_decay,
                     k.head_tension_mod,
                     eff_pos,
@@ -2307,12 +2675,12 @@ impl PercussionAndGmPool {
                     _ => 0.50,
                 };
                 let tune_st = TomParams::tuning_slot_for_note(gm_drum_note)
-                    .map(|idx| t.tom_tuning_semitones[idx].clamp(-12.0, 12.0))
+                    .map(|idx| t.tom_tuning_semitones[idx].clamp(-24.0, 24.0))
                     .unwrap_or(0.0);
                 let tune_mult = 2.0_f32.powf(tune_st / 12.0);
-                let base_hz = (std_freq * t.pitch_scale * tune_mult).clamp(35.0, sr * 0.25);
-                let start_hz = (base_hz * t.pitch_drop_ratio).clamp(base_hz, sr * 0.42);
-                let decay_tau = (t.decay_ms * 0.001).clamp(0.04, 1.20);
+                let base_hz = (std_freq * t.pitch_scale.clamp(0.20, 4.5) * tune_mult).clamp(25.0, sr * 0.35);
+                let start_hz = (base_hz * t.pitch_drop_ratio.clamp(0.5, 5.0)).clamp(base_hz, sr * 0.43);
+                let decay_tau = (t.decay_ms * 0.001).clamp(0.015, 3.5);
                 self.voices[slot].trigger_kick_or_tom(
                     gm_drum_note,
                     base_hz,
@@ -2336,22 +2704,22 @@ impl PercussionAndGmPool {
                 // Side Stick / Cross-Stick shares Acoustic Snare's shell size & cavity
                 let s = self.drum_params.snare;
                 let (eff_vel, eff_pos) = self.apply_hit_variation(velocity, 0.92, s.hit_variation);
-                let shell_m1 = (s.tone_freq_hz * 1.68).clamp(200.0, 620.0);
-                let shell_m2 = (s.mode2_freq_hz * 1.70).clamp(340.0, 1_100.0);
+                let shell_m1 = (s.tone_freq_hz * 1.68).clamp(80.0, 1_400.0);
+                let shell_m2 = (s.mode2_freq_hz * 1.70).clamp(120.0, 2_400.0);
                 self.voices[slot].trigger_snare_or_clap(
                     37,
                     shell_m1,
                     shell_m2,
-                    (s.tone_decay_ms * 0.001 * 0.45).clamp(0.015, 0.08),
-                    (s.noise_decay_ms * 0.001 * 0.22).clamp(0.018, 0.09),
-                    s.wire_cutoff_hz.max(2_200.0),
+                    (s.tone_decay_ms * 0.001 * 0.45).clamp(0.008, 0.40),
+                    (s.noise_decay_ms * 0.001 * 0.22).clamp(0.008, 0.40),
+                    s.wire_cutoff_hz.max(1_200.0),
                     2.0,
                     0.88,
                     0.18,
                     s.head_tension_mod * 0.5,
                     eff_pos,
-                    (s.overtones_ring + 0.25).min(1.0),
-                    (s.shell_wood_cavity + 0.22).min(1.0),
+                    (s.overtones_ring + 0.25).min(1.5),
+                    (s.shell_wood_cavity + 0.22).min(1.5),
                     (s.wire_tension + 0.2).min(1.0),
                     false,
                     12.0,
@@ -2366,12 +2734,12 @@ impl PercussionAndGmPool {
                 } else {
                     self.drum_params.snare
                 };
-                let body_hz = s.tone_freq_hz.clamp(100.0, 450.0);
-                let mode2_hz = s.mode2_freq_hz.clamp(150.0, 800.0);
-                let tone_decay = (s.tone_decay_ms * 0.001).clamp(0.015, 0.40);
-                let wire_decay = (s.noise_decay_ms * 0.001).clamp(0.02, 0.80);
-                let noise_m = s.noise_mix.clamp(0.05, 0.95);
-                let body_m = (1.0 - noise_m).clamp(0.15, 0.95);
+                let body_hz = s.tone_freq_hz.clamp(45.0, 1_200.0);
+                let mode2_hz = s.mode2_freq_hz.clamp(70.0, 2_400.0);
+                let tone_decay = (s.tone_decay_ms * 0.001).clamp(0.008, 2.0);
+                let wire_decay = (s.noise_decay_ms * 0.001).clamp(0.008, 2.5);
+                let noise_m = s.noise_mix.clamp(0.0, 1.0);
+                let body_m = (1.0 - noise_m * 0.85).clamp(0.05, 1.2);
                 let (eff_vel, eff_pos) =
                     self.apply_hit_variation(velocity, s.strike_position, s.hit_variation);
                 self.voices[slot].trigger_snare_or_clap(
@@ -2380,7 +2748,7 @@ impl PercussionAndGmPool {
                     mode2_hz,
                     tone_decay,
                     wire_decay,
-                    s.wire_cutoff_hz.clamp(1_200.0, 8_000.0),
+                    s.wire_cutoff_hz.clamp(400.0, (sr * 0.42).min(14_000.0)),
                     1.15,
                     body_m,
                     noise_m,
@@ -2405,18 +2773,18 @@ impl PercussionAndGmPool {
                     185.0,
                     330.0,
                     0.028,
-                    (c.tail_decay_ms * 0.001).clamp(0.035, 0.60),
-                    c.bandpass_hz.clamp(600.0, 3_600.0),
-                    c.bandpass_q.clamp(0.6, 4.5),
+                    (c.tail_decay_ms * 0.001).clamp(0.010, 2.5),
+                    c.bandpass_hz.clamp(200.0, (sr * 0.42).min(10_000.0)),
+                    c.bandpass_q.clamp(0.25, 18.0),
                     0.18,
                     0.90,
                     0.0,
                     0.5,
                     0.3,
-                    c.room_mix.clamp(0.0, 1.0),
+                    c.room_mix.clamp(0.0, 1.5),
                     0.5,
                     true,
-                    c.clap_spacing_ms.clamp(4.0, 35.0),
+                    c.clap_spacing_ms.clamp(1.5, 120.0),
                     0.54,
                     eff_vel,
                     sr,
@@ -2428,7 +2796,7 @@ impl PercussionAndGmPool {
                 let h = self.drum_params.hi_hats;
                 let (eff_vel, eff_hard) =
                     self.apply_hit_variation(velocity, h.stick_hardness, h.hit_variation);
-                let decay = (h.closed_decay_ms * 0.001).clamp(0.015, 0.30);
+                let decay = (h.closed_decay_ms * 0.001).clamp(0.005, 1.5);
                 self.voices[slot].trigger_hat_or_cymbal(
                     42,
                     h.bronze_size_pitch,
@@ -2451,7 +2819,7 @@ impl PercussionAndGmPool {
                 let h = self.drum_params.hi_hats;
                 let (eff_vel, eff_hard) =
                     self.apply_hit_variation(velocity, h.stick_hardness * 0.75, h.hit_variation);
-                let decay = (h.pedal_decay_ms * 0.001).clamp(0.020, 0.35);
+                let decay = (h.pedal_decay_ms * 0.001).clamp(0.005, 1.5);
                 self.voices[slot].trigger_hat_or_cymbal(
                     44,
                     h.bronze_size_pitch * 0.96,
@@ -2474,7 +2842,7 @@ impl PercussionAndGmPool {
                 let h = self.drum_params.hi_hats;
                 let (eff_vel, eff_hard) =
                     self.apply_hit_variation(velocity, h.stick_hardness, h.hit_variation);
-                let decay = (h.open_decay_ms * 0.001).clamp(0.08, 2.5);
+                let decay = (h.open_decay_ms * 0.001).clamp(0.025, 6.0);
                 self.voices[slot].trigger_hat_or_cymbal(
                     46,
                     h.bronze_size_pitch,
@@ -2506,7 +2874,7 @@ impl PercussionAndGmPool {
                 };
                 let (eff_vel, eff_hard) =
                     self.apply_hit_variation(velocity, c.stick_hardness, c.hit_variation);
-                let decay = (c.decay_ms * 0.001).clamp(0.15, 4.0);
+                let decay = (c.decay_ms * 0.001).clamp(0.04, 8.0);
                 self.voices[slot].trigger_hat_or_cymbal(
                     gm_drum_note,
                     c.bronze_size_pitch,
@@ -2529,7 +2897,7 @@ impl PercussionAndGmPool {
                 let r = self.drum_params.ride1_and_bell;
                 let (eff_vel, eff_hard) =
                     self.apply_hit_variation(velocity, r.stick_hardness, r.hit_variation);
-                let decay = (r.bow_decay_ms * 0.001).clamp(0.2, 4.0);
+                let decay = (r.bow_decay_ms * 0.001).clamp(0.05, 8.0);
                 self.voices[slot].trigger_hat_or_cymbal(
                     51,
                     r.bronze_size_pitch,
@@ -2552,17 +2920,17 @@ impl PercussionAndGmPool {
                 let r = self.drum_params.ride1_and_bell;
                 let (eff_vel, eff_hard) = self.apply_hit_variation(
                     velocity,
-                    (r.stick_hardness + 0.18).min(1.0),
+                    (r.stick_hardness + 0.18).min(1.5),
                     r.hit_variation,
                 );
-                let decay = (r.bell_decay_ms * 0.001).clamp(0.15, 3.5);
+                let decay = (r.bell_decay_ms * 0.001).clamp(0.05, 8.0);
                 self.voices[slot].trigger_hat_or_cymbal(
                     53,
                     r.bronze_size_pitch * 1.18,
                     r.matrix_spread * 1.12,
-                    (r.plate_dispersion + 0.14).min(1.0),
+                    (r.plate_dispersion + 0.14).min(1.5),
                     r.nonlin_shimmer * 0.70,
-                    (r.bell_peak_level * 1.65).min(2.0),
+                    (r.bell_peak_level * 1.65).min(3.0),
                     eff_hard,
                     true,
                     false,
@@ -2589,12 +2957,12 @@ impl PercussionAndGmPool {
                 let (eff_vel, eff_pos) =
                     self.apply_hit_variation(velocity, t.strike_position, t.hit_variation);
                 let tune_st = TomParams::tuning_slot_for_note(gm_drum_note)
-                    .map(|idx| t.tom_tuning_semitones[idx].clamp(-12.0, 12.0))
+                    .map(|idx| t.tom_tuning_semitones[idx].clamp(-24.0, 24.0))
                     .unwrap_or(0.0);
                 let tune_mult = 2.0_f32.powf(tune_st / 12.0);
-                let base_hz = (std_freq * t.pitch_scale * tune_mult).clamp(55.0, sr * 0.25);
-                let start_hz = (base_hz * t.pitch_drop_ratio).clamp(base_hz, sr * 0.42);
-                let decay_tau = ((t.decay_ms * 0.001) * decay_scale).clamp(0.025, 1.20);
+                let base_hz = (std_freq * t.pitch_scale.clamp(0.20, 4.5) * tune_mult).clamp(35.0, sr * 0.35);
+                let start_hz = (base_hz * t.pitch_drop_ratio.clamp(0.5, 5.0)).clamp(base_hz, sr * 0.43);
+                let decay_tau = ((t.decay_ms * 0.001) * decay_scale).clamp(0.012, 3.5);
                 self.voices[slot].trigger_kick_or_tom(
                     gm_drum_note,
                     base_hz,
@@ -2626,9 +2994,9 @@ impl PercussionAndGmPool {
                     _ => (self.drum_params.triangle, 1.0, 1.0, 0.62),   // Open Triangle
                 };
                 let (eff_vel, _) = self.apply_hit_variation(velocity, 0.5, a.hit_variation);
-                let f1 = ((a.freq1_hz + a.detune) * pitch_mult).clamp(120.0, sr * 0.40);
-                let f2 = ((a.freq2_hz - a.detune) * pitch_mult).clamp(160.0, sr * 0.42);
-                let decay = ((a.decay_ms * 0.001) * decay_mult).clamp(0.015, 2.2);
+                let f1 = ((a.freq1_hz + a.detune) * pitch_mult).clamp(60.0, sr * 0.43);
+                let f2 = ((a.freq2_hz - a.detune) * pitch_mult).clamp(80.0, sr * 0.44);
+                let decay = ((a.decay_ms * 0.001) * decay_mult).clamp(0.005, 5.0);
                 self.voices[slot].trigger_modal_perc(
                     gm_drum_note,
                     f1,
@@ -3127,6 +3495,9 @@ mod tests {
                 pool.drum_params.kick.hit_variation = 0.0;
                 pool.drum_params.snare.hit_variation = 0.0;
                 pool.drum_params.toms.hit_variation = 0.0;
+                pool.drum_params.kick.volume_db = 0.0;
+                pool.drum_params.snare.volume_db = 0.0;
+                pool.drum_params.toms.volume_db = 0.0;
                 pool.drum_params.kick.shell_wood_cavity = cavity;
                 pool.drum_params.snare.shell_wood_cavity = cavity;
                 pool.drum_params.toms.shell_wood_cavity = cavity;
@@ -3203,7 +3574,7 @@ mod tests {
         assert_eq!(render_rms(&|p| p.drum_params.cowbell.volume_db = -48.0, 56), 0.0);
 
         // 2. +6.02 dB doubles RMS cleanly vs 0.0 dB (post-saturation linear scaling)
-        let rms_0 = render_rms(&|_| {}, 38);
+        let rms_0 = render_rms(&|p| p.drum_params.snare.volume_db = 0.0, 38);
         let rms_6 = render_rms(&|p| p.drum_params.snare.volume_db = 6.0206, 38);
         let ratio = rms_6 / rms_0.max(1e-6);
         assert!(
@@ -3217,7 +3588,13 @@ mod tests {
         //    - Muting Acoustic Snare (38) does NOT mute Electric Snare (40)
         //    - Muting Kick 1 (36) does NOT mute Acoustic Kick (35)
         //    - Muting Crash 1 (49) does NOT mute Crash 2 (57), Splash (55), or China (52)
-        let snare_with_muted_rim = render_rms(&|p| p.drum_params.snare.rim_volume_db = -48.0, 38);
+        let snare_with_muted_rim = render_rms(
+            &|p| {
+                p.drum_params.snare.volume_db = 0.0;
+                p.drum_params.snare.rim_volume_db = -48.0;
+            },
+            38,
+        );
         assert!(
             (snare_with_muted_rim - rms_0).abs() < 1e-4,
             "Muting Side Stick must not affect Acoustic Snare level"
@@ -3289,7 +3666,7 @@ mod tests {
             for _ in 0..2048 {
                 let (l, r) = pool.next_stereo_frame();
                 assert!(
-                    l.is_finite() && r.is_finite() && l.abs() <= 1.3 && r.abs() <= 1.3,
+                    l.is_finite() && r.is_finite() && l.abs() <= 2.5 && r.abs() <= 2.5,
                     "GM percussion note {} produced invalid sample ({}, {})",
                     note,
                     l,
@@ -3364,6 +3741,245 @@ mod tests {
             "Open High Conga (63) should sustain longer than Mute High Conga (62) (open={}, mute={})",
             tail_open,
             tail_mute
+        );
+    }
+
+    #[test]
+    fn test_mono_one_shot_choke_groups_and_shaker_physical_models() {
+        let sr = 48_000.0;
+
+        // 1. Mono / One-Shot instruments (Vibraslap 58, Cabasa 69, Whistle 71/72, Guiro 73/74, Cuica 78/79)
+        //    must physically damp the previous voice (`is_choking = true`) and start the new strike
+        //    on a fresh voice slot with zero hard-cut waveform discontinuity across the trigger boundary.
+        for &(note_a, note_b) in &[
+            (58_u8, 58_u8),
+            (69, 69),
+            (72, 72),
+            (72, 71),
+            (74, 74),
+            (74, 73),
+            (79, 79),
+            (79, 78),
+        ] {
+            let mut pool = PercussionAndGmPool::new(sr);
+            pool.trigger_drum(note_a, 0.90);
+            let mut prev_sample = 0.0_f32;
+            for _ in 0..512 {
+                let (l, r) = pool.next_stereo_frame();
+                prev_sample = l + r;
+            }
+            assert_eq!(
+                pool.voices.iter().filter(|v| v.is_active() && !v.is_choking).count(),
+                1,
+                "Initial trigger of {} should have 1 non-choking active voice",
+                note_a
+            );
+
+            // Re-trigger: old voice must enter smooth physical damping (`is_choking == true`)
+            // while new voice starts on a separate slot (`!v.is_choking`) with no hard-cut pop!
+            pool.trigger_drum(note_b, 0.90);
+            let non_choking: Vec<&PolyVoice> = pool
+                .voices
+                .iter()
+                .filter(|v| v.is_active() && !v.is_choking)
+                .collect();
+            let choking_count = pool
+                .voices
+                .iter()
+                .filter(|v| v.is_active() && v.is_choking)
+                .count();
+            assert_eq!(
+                non_choking.len(),
+                1,
+                "Mono instrument ({} -> {}) must have exactly 1 non-choking active voice",
+                note_a,
+                note_b
+            );
+            assert_eq!(
+                choking_count, 1,
+                "Previous voice of mono instrument ({} -> {}) must smoothly damp via is_choking rather than hard-cutting",
+                note_a, note_b
+            );
+            assert_eq!(non_choking[0].voice_tag, note_b);
+            assert_eq!(non_choking[0].age_samples, 0);
+
+            let (l_next, r_next) = pool.next_stereo_frame();
+            let boundary_jump = ((l_next + r_next) - prev_sample).abs();
+            assert!(
+                boundary_jump < 0.45,
+                "Re-triggering mono instrument ({} -> {}) must not produce a hard-cut click/pop (jump={})",
+                note_a,
+                note_b,
+                boundary_jump
+            );
+        }
+
+        // 2. Polyphonic choke groups:
+        //    - Open Triangle (81) -> Mute Triangle (80)
+        //    - Open High Conga (63) -> Mute High Conga (62)
+        //    Playing the mute note must rapidly damp the open note's ringing modes without clicks.
+        for &(open_note, mute_note) in &[(81_u8, 80_u8), (63, 62)] {
+            let mut pool_unchoked = PercussionAndGmPool::new(sr);
+            let mut pool_choked = PercussionAndGmPool::new(sr);
+            pool_unchoked.drum_params.triangle.hit_variation = 0.0;
+            pool_choked.drum_params.triangle.hit_variation = 0.0;
+            pool_unchoked.drum_params.congas.hit_variation = 0.0;
+            pool_choked.drum_params.congas.hit_variation = 0.0;
+
+            pool_unchoked.trigger_drum(open_note, 0.95);
+            pool_choked.trigger_drum(open_note, 0.95);
+            for _ in 0..512 {
+                let _ = pool_unchoked.next_stereo_frame();
+                let _ = pool_choked.next_stereo_frame();
+            }
+            // Trigger mute note (with muted volume so we measure ONLY the remaining tail of open_note!)
+            if mute_note == 80 {
+                pool_choked.drum_params.triangle.volume_db = -48.0;
+            } else {
+                pool_choked.drum_params.congas.volume_db = -48.0;
+            }
+            pool_choked.trigger_drum(mute_note, 0.90);
+            for v in pool_choked.voices.iter_mut() {
+                if v.is_active() && v.voice_tag == open_note {
+                    v.volume_scale = 1.0;
+                }
+            }
+            for v in pool_unchoked.voices.iter_mut() {
+                if v.is_active() && v.voice_tag == open_note {
+                    v.volume_scale = 1.0;
+                }
+            }
+
+            // Advance 25 ms (~1200 samples) for the ~5.5 ms smooth physical choke damping to take effect
+            for _ in 0..1200 {
+                let _ = pool_unchoked.next_stereo_frame();
+                let _ = pool_choked.next_stereo_frame();
+            }
+            let mut unchoked_tail = 0.0_f32;
+            let mut choked_tail = 0.0_f32;
+            for _ in 0..4096 {
+                let (lu, ru) = pool_unchoked.next_stereo_frame();
+                let (lc, rc) = pool_choked.next_stereo_frame();
+                unchoked_tail += lu * lu + ru * ru;
+                choked_tail += lc * lc + rc * rc;
+            }
+            assert!(
+                choked_tail < unchoked_tail * 0.05,
+                "Choke group ({} -> {}) must damp open voice tail by >95% (unchoked={}, choked={})",
+                open_note,
+                mute_note,
+                unchoked_tail,
+                choked_tail
+            );
+        }
+
+        // 3. Separate Short Guiro (73) and Long Guiro (74) scrape durations AND independent volumes
+        let mut pool = PercussionAndGmPool::new(sr);
+        pool.drum_params.guiro.hit_variation = 0.0;
+        pool.drum_params.guiro.aux_decay_ms = 40.0; // Short Guiro = 40 ms
+        pool.drum_params.guiro.decay_ms = 180.0;    // Long Guiro = 180 ms
+
+        pool.trigger_drum(73, 0.90);
+        let short_end = pool
+            .voices
+            .iter()
+            .find(|v| v.is_active() && !v.is_choking)
+            .unwrap()
+            .gesture_rel_end;
+        pool.trigger_drum(74, 0.90);
+        let long_end = pool
+            .voices
+            .iter()
+            .find(|v| v.is_active() && !v.is_choking)
+            .unwrap()
+            .gesture_rel_end;
+        assert!(
+            long_end > short_end * 3,
+            "Long Guiro (74) scrape length ({}) must be separately controllable from Short Guiro (73) ({})",
+            long_end,
+            short_end
+        );
+
+        // Verify independent Short Guiro (`aux_volume_db`) vs Long Guiro (`volume_db`) volume controls
+        pool.all_notes_off();
+        pool.drum_params.guiro.aux_volume_db = -48.0; // Mute Short Guiro (73)
+        pool.drum_params.guiro.volume_db = 6.5;       // Keep Long Guiro (74) audible
+        pool.trigger_drum(73, 0.90);
+        let (l73, r73) = pool.next_stereo_frame();
+        assert_eq!(l73 + r73, 0.0, "Muting Short Guiro (73) via aux_volume_db must silence note 73");
+        pool.all_notes_off();
+        pool.trigger_drum(74, 0.90);
+        let mut e74 = 0.0_f32;
+        for _ in 0..512 {
+            let (l, r) = pool.next_stereo_frame();
+            e74 += l * l + r * r;
+        }
+        assert!(e74 > 0.01, "Muting Short Guiro (73) must NOT silence Long Guiro (74)");
+
+        // 4. Separate Short Whistle (71, `aux_decay_ms`) and Long Whistle (72, `decay_ms`) durations
+        //    + velocity/accent pitch bend (`aux_amount` slider: louder = higher pitch)
+        let mut pool_w = PercussionAndGmPool::new(sr);
+        pool_w.drum_params.whistle.hit_variation = 0.0;
+        pool_w.drum_params.whistle.aux_decay_ms = 30.0; // Short Whistle 71 = 30 ms
+        pool_w.drum_params.whistle.decay_ms = 240.0;    // Long Whistle 72 = 240 ms
+        pool_w.trigger_drum(71, 0.90);
+        let decay_71 = pool_w
+            .voices
+            .iter()
+            .find(|v| v.is_active() && !v.is_choking)
+            .unwrap()
+            .slow_decay;
+        pool_w.trigger_drum(72, 0.90);
+        let decay_72 = pool_w
+            .voices
+            .iter()
+            .find(|v| v.is_active() && !v.is_choking)
+            .unwrap()
+            .slow_decay;
+        assert!(
+            decay_72 > decay_71,
+            "Long Whistle (72) decay coeff ({}) must be longer than Short Whistle (71) ({})",
+            decay_72,
+            decay_71
+        );
+
+        let mut pool_soft = PercussionAndGmPool::new(sr);
+        let mut pool_loud = PercussionAndGmPool::new(sr);
+        pool_soft.drum_params.whistle.hit_variation = 0.0;
+        pool_loud.drum_params.whistle.hit_variation = 0.0;
+        pool_soft.drum_params.whistle.aux_amount = 0.80;
+        pool_loud.drum_params.whistle.aux_amount = 0.80;
+
+        pool_soft.trigger_drum(72, 0.25);
+        pool_loud.trigger_drum(72, 1.00);
+        let inc_soft = pool_soft.voices.iter().find(|v| v.is_active()).unwrap().base_inc;
+        let inc_loud = pool_loud.voices.iter().find(|v| v.is_active()).unwrap().base_inc;
+        assert!(
+            inc_loud > inc_soft * 1.08,
+            "Accented whistle must have higher pitch increment than soft whistle when aux_amount > 0 (soft={}, loud={})",
+            inc_soft,
+            inc_loud
+        );
+
+        // 5. Maracas (70) must remain clean and unclipped (natural crest factor > 2.4, no flat-topping)
+        let mut pool_m = PercussionAndGmPool::new(sr);
+        pool_m.trigger_drum(70, 1.0);
+        let mut sum_sq = 0.0_f32;
+        let mut peak = 0.0_f32;
+        for _ in 0..2048 {
+            let (l, r) = pool_m.next_stereo_frame();
+            let m = l + r;
+            sum_sq += m * m;
+            peak = peak.max(m.abs());
+        }
+        let rms = (sum_sq / 2048.0).sqrt();
+        let crest = peak / rms.max(1.0e-6);
+        assert!(
+            crest > 2.4 && peak > 0.005,
+            "Maracas (70) must have natural unclipped crest factor > 2.4 (got crest={:.2}, peak={:.4}, rms={:.4})",
+            crest,
+            peak,
+            rms
         );
     }
 }

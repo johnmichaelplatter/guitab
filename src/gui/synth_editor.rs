@@ -1681,22 +1681,29 @@ fn drum_role_is_muted(dp: &DrumKitParams, role: DrumRole) -> bool {
         DrumVoiceParams::SingleCymbal(c) => c.volume_db <= -47.9,
         DrumVoiceParams::RideCymbal(r) => r.bow_volume_db <= -47.9 && r.bell_volume_db <= -47.9,
         DrumVoiceParams::PercAux(a) => a.volume_db <= -47.9,
-        DrumVoiceParams::ShakerEffect(s) => s.volume_db <= -47.9,
+        DrumVoiceParams::ShakerEffect(s) => {
+            if role == DrumRole::Guiro {
+                s.volume_db <= -47.9 && s.aux_volume_db <= -47.9
+            } else {
+                s.volume_db <= -47.9
+            }
+        }
     }
 }
 
-/// Compact helper for adding a `-48.0..=+12.0 dB` absolute volume slider row to an `egui::Grid`.
+/// Compact helper for adding a `-48.0..=+18.0 dB` absolute volume slider row to an `egui::Grid`.
 fn add_drum_volume_slider_row(
     ui: &mut egui::Ui,
     label: &str,
     tooltip: &str,
     value_db: &mut f32,
+    default_db: f32,
     changed: &mut bool,
 ) {
     ui.label(egui::RichText::new(label).strong())
         .on_hover_text(tooltip);
     let r = ui.add(
-        egui::Slider::new(value_db, -48.0..=12.0)
+        egui::Slider::new(value_db, -48.0..=18.0)
             .suffix(" dB")
             .fixed_decimals(1)
             .clamping(egui::SliderClamping::Always),
@@ -1705,7 +1712,7 @@ fn add_drum_volume_slider_row(
         *changed = true;
     }
     if r.double_clicked() {
-        *value_db = 0.0;
+        *value_db = default_db;
         *changed = true;
     }
     ui.end_row();
@@ -1715,6 +1722,7 @@ fn add_drum_volume_slider_row(
 fn add_hit_variation_slider_row(
     ui: &mut egui::Ui,
     value: &mut f32,
+    default_val: f32,
     tooltip: &str,
     changed: &mut bool,
 ) {
@@ -1728,7 +1736,7 @@ fn add_hit_variation_slider_row(
         *changed = true;
     }
     if r.double_clicked() {
-        *value = 0.10;
+        *value = default_val;
         *changed = true;
     }
     ui.end_row();
@@ -2161,44 +2169,67 @@ fn render_kick_params_grid(ui: &mut egui::Ui, role: DrumRole, k: &mut KickParams
                 add_drum_volume_slider_row(
                     ui,
                     &format!("{} Volume:", role.short_name()),
-                    "Absolute output level (-48 dB = Mute, double-click resets to 0 dB).",
+                    "Absolute output level (-48 dB = Mute, double-click resets to default).",
                     &mut k.volume_db,
+                    def.volume_db,
                     &mut changed,
                 );
 
                 ui.label("Pitch Envelope Start:");
-                let r1 = ui.add(egui::Slider::new(&mut k.pitch_start_hz, 80.0..=250.0).suffix(" Hz"));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut k.pitch_start_hz, 40.0..=500.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { k.pitch_start_hz = def.pitch_start_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Resting Sub-Bass Pitch:");
-                let r2 = ui.add(egui::Slider::new(&mut k.pitch_end_hz, 30.0..=65.0).suffix(" Hz"));
+                let r2 = ui.add(
+                    egui::Slider::new(&mut k.pitch_end_hz, 18.0..=140.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { k.pitch_end_hz = def.pitch_end_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Pitch Drop Time:");
-                let r3 = ui.add(egui::Slider::new(&mut k.pitch_decay_ms, 10.0..=80.0).suffix(" ms"));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut k.pitch_decay_ms, 3.0..=250.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { k.pitch_decay_ms = def.pitch_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Shell Body Decay:");
-                let r4 = ui.add(egui::Slider::new(&mut k.body_decay_ms, 50.0..=600.0).suffix(" ms"));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut k.body_decay_ms, 20.0..=2000.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { k.body_decay_ms = def.body_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Click Beater Level:");
-                let r5 = ui.add(egui::Slider::new(&mut k.click_level, 0.0..=1.0));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut k.click_level, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { k.click_level = def.click_level; changed = true; }
                 ui.end_row();
 
                 ui.label("Head Tension Mod (Pitch Bend):")
                     .on_hover_text("Non-linear circular membrane tension pitch stretch on hard hits (30–80 ms)");
-                let r6 = ui.add(egui::Slider::new(&mut k.head_tension_mod, 0.0..=1.0));
+                let r6 = ui.add(
+                    egui::Slider::new(&mut k.head_tension_mod, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r6.changed() { changed = true; }
                 if r6.double_clicked() { k.head_tension_mod = def.head_tension_mod; changed = true; }
                 ui.end_row();
@@ -2212,14 +2243,20 @@ fn render_kick_params_grid(ui: &mut egui::Ui, role: DrumRole, k: &mut KickParams
 
                 ui.label("Overtones Ring (Bessel Decay):")
                     .on_hover_text("Controls how long upper Bessel membrane modes ring relative to the (0,1) fundamental");
-                let r8 = ui.add(egui::Slider::new(&mut k.overtones_ring, 0.0..=1.0));
+                let r8 = ui.add(
+                    egui::Slider::new(&mut k.overtones_ring, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r8.changed() { changed = true; }
                 if r8.double_clicked() { k.overtones_ring = def.overtones_ring; changed = true; }
                 ui.end_row();
 
                 ui.label("Shell Wood Cavity:")
                     .on_hover_text("Cylindrical wooden drum shell air-cavity mode & < 1.5 ms 2-tap micro-reflection body");
-                let r9 = ui.add(egui::Slider::new(&mut k.shell_wood_cavity, 0.0..=1.0));
+                let r9 = ui.add(
+                    egui::Slider::new(&mut k.shell_wood_cavity, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r9.changed() { changed = true; }
                 if r9.double_clicked() { k.shell_wood_cavity = def.shell_wood_cavity; changed = true; }
                 ui.end_row();
@@ -2227,6 +2264,7 @@ fn render_kick_params_grid(ui: &mut egui::Ui, role: DrumRole, k: &mut KickParams
                 add_hit_variation_slider_row(
                     ui,
                     &mut k.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of hit velocity & strike position (0.0 = exact/identical, 1.0 = heavy variation)",
                     &mut changed,
                 );
@@ -2260,8 +2298,9 @@ fn render_snare_params_grid(
                     } else {
                         "Electric Snare Volume (40):"
                     },
-                    "Absolute output level (-48 dB = Mute, double-click resets to 0 dB).",
+                    "Absolute output level (-48 dB = Mute, double-click resets to default).",
                     &mut s.volume_db,
+                    def.volume_db,
                     &mut changed,
                 );
 
@@ -2271,36 +2310,57 @@ fn render_snare_params_grid(
                         "Side Stick Volume (37):",
                         "Absolute output level for Side Stick / Cross-Stick (GM 37), sharing this snare's shell size & wood cavity.",
                         &mut s.rim_volume_db,
+                        def.rim_volume_db,
                         &mut changed,
                     );
                 }
 
                 ui.label("Mode 1 Tone Freq:");
-                let r1 = ui.add(egui::Slider::new(&mut s.tone_freq_hz, 120.0..=350.0).suffix(" Hz"));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut s.tone_freq_hz, 60.0..=700.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { s.tone_freq_hz = def.tone_freq_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Mode 2 Resonance:");
-                let r2 = ui.add(egui::Slider::new(&mut s.mode2_freq_hz, 200.0..=600.0).suffix(" Hz"));
+                let r2 = ui.add(
+                    egui::Slider::new(&mut s.mode2_freq_hz, 100.0..=1400.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { s.mode2_freq_hz = def.mode2_freq_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Shell Tone Decay:");
-                let r3 = ui.add(egui::Slider::new(&mut s.tone_decay_ms, 20.0..=200.0).suffix(" ms"));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut s.tone_decay_ms, 10.0..=800.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { s.tone_decay_ms = def.tone_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Wire Noise Cutoff:");
-                let r4 = ui.add(egui::Slider::new(&mut s.wire_cutoff_hz, 1000.0..=5000.0).suffix(" Hz"));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut s.wire_cutoff_hz, 500.0..=11000.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { s.wire_cutoff_hz = def.wire_cutoff_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Wire Noise Decay:");
-                let r5 = ui.add(egui::Slider::new(&mut s.noise_decay_ms, 50.0..=400.0).suffix(" ms"));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut s.noise_decay_ms, 15.0..=1200.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { s.noise_decay_ms = def.noise_decay_ms; changed = true; }
                 ui.end_row();
@@ -2313,7 +2373,10 @@ fn render_snare_params_grid(
 
                 ui.label("Head Tension Mod (Pitch Bend):")
                     .on_hover_text("Non-linear circular membrane tension pitch stretch on hard snare hits");
-                let r8 = ui.add(egui::Slider::new(&mut s.head_tension_mod, 0.0..=1.0));
+                let r8 = ui.add(
+                    egui::Slider::new(&mut s.head_tension_mod, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r8.changed() { changed = true; }
                 if r8.double_clicked() { s.head_tension_mod = def.head_tension_mod; changed = true; }
                 ui.end_row();
@@ -2327,14 +2390,20 @@ fn render_snare_params_grid(
 
                 ui.label("Overtones Ring (Bessel Decay):")
                     .on_hover_text("Higher Bessel drumhead overtone ring duration relative to the fundamental");
-                let r10 = ui.add(egui::Slider::new(&mut s.overtones_ring, 0.0..=1.0));
+                let r10 = ui.add(
+                    egui::Slider::new(&mut s.overtones_ring, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r10.changed() { changed = true; }
                 if r10.double_clicked() { s.overtones_ring = def.overtones_ring; changed = true; }
                 ui.end_row();
 
                 ui.label("Shell Wood Cavity:")
                     .on_hover_text("Wooden snare shell air-cavity mode & < 1.5 ms 2-tap micro-reflection body (also shapes Side Stick)");
-                let r11 = ui.add(egui::Slider::new(&mut s.shell_wood_cavity, 0.0..=1.0));
+                let r11 = ui.add(
+                    egui::Slider::new(&mut s.shell_wood_cavity, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r11.changed() { changed = true; }
                 if r11.double_clicked() { s.shell_wood_cavity = def.shell_wood_cavity; changed = true; }
                 ui.end_row();
@@ -2349,6 +2418,7 @@ fn render_snare_params_grid(
                 add_hit_variation_slider_row(
                     ui,
                     &mut s.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of hit velocity & strike position (0.0 = exact/identical, 1.0 = heavy variation)",
                     &mut changed,
                 );
@@ -2369,39 +2439,58 @@ fn render_hand_clap_params_grid(ui: &mut egui::Ui, c: &mut HandClapParams) -> bo
                 add_drum_volume_slider_row(
                     ui,
                     "Hand Clap Volume (39):",
-                    "Absolute output level for Hand Clap (GM 39). -48 dB = Mute, double-click resets to 0 dB.",
+                    "Absolute output level for Hand Clap (GM 39). -48 dB = Mute, double-click resets to default.",
                     &mut c.volume_db,
+                    def.volume_db,
                     &mut changed,
                 );
 
                 ui.label("Multi-Clap Burst Spacing:")
-                    .on_hover_text("Timing stagger between layered hand-clap transients (4–35 ms)");
-                let r1 = ui.add(egui::Slider::new(&mut c.clap_spacing_ms, 4.0..=35.0).suffix(" ms"));
+                    .on_hover_text("Timing stagger between layered hand-clap transients");
+                let r1 = ui.add(
+                    egui::Slider::new(&mut c.clap_spacing_ms, 2.0..=80.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { c.clap_spacing_ms = def.clap_spacing_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Formant Bandpass Freq:")
-                    .on_hover_text("Center frequency of cupped-hand acoustic resonance (600–3600 Hz)");
-                let r2 = ui.add(egui::Slider::new(&mut c.bandpass_hz, 600.0..=3600.0).suffix(" Hz"));
+                    .on_hover_text("Center frequency of cupped-hand acoustic resonance");
+                let r2 = ui.add(
+                    egui::Slider::new(&mut c.bandpass_hz, 250.0..=7500.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { c.bandpass_hz = def.bandpass_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Formant Resonance Q:");
-                let r3 = ui.add(egui::Slider::new(&mut c.bandpass_q, 0.6..=4.5));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut c.bandpass_q, 0.3..=12.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { c.bandpass_q = def.bandpass_q; changed = true; }
                 ui.end_row();
 
                 ui.label("Clap Tail Decay:");
-                let r4 = ui.add(egui::Slider::new(&mut c.tail_decay_ms, 40.0..=500.0).suffix(" ms"));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut c.tail_decay_ms, 15.0..=1500.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { c.tail_decay_ms = def.tail_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Room Reflection Mix:");
-                let r5 = ui.add(egui::Slider::new(&mut c.room_mix, 0.0..=1.0));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut c.room_mix, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { c.room_mix = def.room_mix; changed = true; }
                 ui.end_row();
@@ -2409,6 +2498,7 @@ fn render_hand_clap_params_grid(ui: &mut egui::Ui, c: &mut HandClapParams) -> bo
                 add_hit_variation_slider_row(
                     ui,
                     &mut c.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of clap velocity (0.0 = identical, 1.0 = heavy variation)",
                     &mut changed,
                 );
@@ -2449,38 +2539,55 @@ fn render_membrane_group_params_grid(
                 add_drum_volume_slider_row(
                     ui,
                     &format!("{} Volume:", role.short_name()),
-                    "Absolute output level for this drum group (-48 dB = Mute, double-click resets to 0 dB).",
+                    "Absolute output level for this drum group (-48 dB = Mute, double-click resets to default).",
                     &mut t.volume_db,
+                    def.volume_db,
                     &mut changed,
                 );
 
                 ui.label("Master Pitch Scale:");
-                let r1 = ui.add(egui::Slider::new(&mut t.pitch_scale, 0.5..=2.0));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut t.pitch_scale, 0.25..=3.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { t.pitch_scale = def.pitch_scale; changed = true; }
                 ui.end_row();
 
                 ui.label("Pitch Drop Sweep Ratio:");
-                let r2 = ui.add(egui::Slider::new(&mut t.pitch_drop_ratio, 1.05..=3.0));
+                let r2 = ui.add(
+                    egui::Slider::new(&mut t.pitch_drop_ratio, 1.0..=4.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { t.pitch_drop_ratio = def.pitch_drop_ratio; changed = true; }
                 ui.end_row();
 
                 ui.label("Drumhead Decay Time:");
-                let r3 = ui.add(egui::Slider::new(&mut t.decay_ms, 50.0..=800.0).suffix(" ms"));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut t.decay_ms, 20.0..=2000.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { t.decay_ms = def.decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label(attack_label);
-                let r4 = ui.add(egui::Slider::new(&mut t.stick_attack, 0.0..=1.0));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut t.stick_attack, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { t.stick_attack = def.stick_attack; changed = true; }
                 ui.end_row();
 
                 ui.label("Head Tension Mod (Pitch Bend):")
                     .on_hover_text("Non-linear circular membrane tension pitch stretch on hard hits (30–80 ms)");
-                let r5 = ui.add(egui::Slider::new(&mut t.head_tension_mod, 0.0..=1.0));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut t.head_tension_mod, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { t.head_tension_mod = def.head_tension_mod; changed = true; }
                 ui.end_row();
@@ -2494,14 +2601,20 @@ fn render_membrane_group_params_grid(
 
                 ui.label("Overtones Ring (Bessel Decay):")
                     .on_hover_text("Higher Bessel drumhead overtone ring duration relative to the fundamental");
-                let r7 = ui.add(egui::Slider::new(&mut t.overtones_ring, 0.0..=1.0));
+                let r7 = ui.add(
+                    egui::Slider::new(&mut t.overtones_ring, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r7.changed() { changed = true; }
                 if r7.double_clicked() { t.overtones_ring = def.overtones_ring; changed = true; }
                 ui.end_row();
 
                 ui.label(shell_label)
                     .on_hover_text("Cylindrical drum shell air-cavity mode & < 1.5 ms 2-tap micro-reflection body");
-                let r8 = ui.add(egui::Slider::new(&mut t.shell_wood_cavity, 0.0..=1.0));
+                let r8 = ui.add(
+                    egui::Slider::new(&mut t.shell_wood_cavity, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r8.changed() { changed = true; }
                 if r8.double_clicked() { t.shell_wood_cavity = def.shell_wood_cavity; changed = true; }
                 ui.end_row();
@@ -2509,6 +2622,7 @@ fn render_membrane_group_params_grid(
                 add_hit_variation_slider_row(
                     ui,
                     &mut t.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of hit velocity & strike position (0.0 = exact/identical, 1.0 = heavy variation)",
                     &mut changed,
                 );
@@ -2562,15 +2676,16 @@ fn render_membrane_group_params_grid(
                             eff_hz
                         ));
                         let r = ui.add(
-                            egui::Slider::new(&mut t.tom_tuning_semitones[slot], -12.0..=12.0)
+                            egui::Slider::new(&mut t.tom_tuning_semitones[slot], -24.0..=24.0)
                                 .suffix(" st")
-                                .fixed_decimals(1),
+                                .fixed_decimals(1)
+                                .clamping(egui::SliderClamping::Never),
                         );
                         if r.changed() {
                             changed = true;
                         }
                         if r.double_clicked() {
-                            t.tom_tuning_semitones[slot] = 0.0;
+                            t.tom_tuning_semitones[slot] = def.tom_tuning_semitones[slot];
                             changed = true;
                         }
                         if ui
@@ -2604,86 +2719,123 @@ fn render_hihat_params_grid(ui: &mut egui::Ui, h: &mut HiHatParams) -> bool {
                 add_drum_volume_slider_row(
                     ui,
                     "Closed Hat Volume (42):",
-                    "Absolute output level for Closed Hi-Hat (GM 42). -48 dB = Mute, double-click resets to 0 dB.",
+                    "Absolute output level for Closed Hi-Hat (GM 42). -48 dB = Mute, double-click resets to default.",
                     &mut h.closed_volume_db,
+                    def.closed_volume_db,
                     &mut changed,
                 );
                 add_drum_volume_slider_row(
                     ui,
                     "Pedal Hat Volume (44):",
-                    "Absolute output level for Pedal Hi-Hat (GM 44). -48 dB = Mute, double-click resets to 0 dB.",
+                    "Absolute output level for Pedal Hi-Hat (GM 44). -48 dB = Mute, double-click resets to default.",
                     &mut h.pedal_volume_db,
+                    def.pedal_volume_db,
                     &mut changed,
                 );
                 add_drum_volume_slider_row(
                     ui,
                     "Open Hat Volume (46):",
-                    "Absolute output level for Open Hi-Hat (GM 46). -48 dB = Mute, double-click resets to 0 dB.",
+                    "Absolute output level for Open Hi-Hat (GM 46). -48 dB = Mute, double-click resets to default.",
                     &mut h.open_volume_db,
+                    def.open_volume_db,
                     &mut changed,
                 );
 
                 ui.label("Metallic Matrix Spread:");
-                let r1 = ui.add(egui::Slider::new(&mut h.spread, 0.5..=2.0));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut h.spread, 0.25..=3.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { h.spread = def.spread; changed = true; }
                 ui.end_row();
 
                 ui.label("Highpass Cutoff:");
-                let r2 = ui.add(egui::Slider::new(&mut h.highpass_cutoff_hz, 3000.0..=12000.0).suffix(" Hz"));
+                let r2 = ui.add(
+                    egui::Slider::new(&mut h.highpass_cutoff_hz, 1200.0..=15000.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { h.highpass_cutoff_hz = def.highpass_cutoff_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Closed Hat Decay:");
-                let r3 = ui.add(egui::Slider::new(&mut h.closed_decay_ms, 15.0..=150.0).suffix(" ms"));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut h.closed_decay_ms, 8.0..=500.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { h.closed_decay_ms = def.closed_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Pedal Hat Decay:");
-                let r4 = ui.add(egui::Slider::new(&mut h.pedal_decay_ms, 20.0..=200.0).suffix(" ms"));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut h.pedal_decay_ms, 10.0..=600.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { h.pedal_decay_ms = def.pedal_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Open Hat Decay:");
-                let r5 = ui.add(egui::Slider::new(&mut h.open_decay_ms, 100.0..=2000.0).suffix(" ms"));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut h.open_decay_ms, 50.0..=4500.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { h.open_decay_ms = def.open_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Bronze Size / Pitch:")
-                    .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning (0.5 = large/dark, 2.0 = small/bright)");
-                let r6 = ui.add(egui::Slider::new(&mut h.bronze_size_pitch, 0.5..=2.0));
+                    .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning");
+                let r6 = ui.add(
+                    egui::Slider::new(&mut h.bronze_size_pitch, 0.30..=3.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r6.changed() { changed = true; }
                 if r6.double_clicked() { h.bronze_size_pitch = def.bronze_size_pitch; changed = true; }
                 ui.end_row();
 
                 ui.label("Plate Dispersion (Stick Ping):")
                     .on_hover_text("1st-order all-pass plate dispersion depth inside the 4-line Hadamard waveguide mesh");
-                let r7 = ui.add(egui::Slider::new(&mut h.plate_dispersion, 0.0..=1.0));
+                let r7 = ui.add(
+                    egui::Slider::new(&mut h.plate_dispersion, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r7.changed() { changed = true; }
                 if r7.double_clicked() { h.plate_dispersion = def.plate_dispersion; changed = true; }
                 ui.end_row();
 
                 ui.label("Non-Linear Shimmer Bloom:")
                     .on_hover_text("Signal-modulated all-pass dispersion energy cascade into 4–15 kHz bronze shimmer");
-                let r8 = ui.add(egui::Slider::new(&mut h.nonlin_shimmer, 0.0..=1.0));
+                let r8 = ui.add(
+                    egui::Slider::new(&mut h.nonlin_shimmer, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r8.changed() { changed = true; }
                 if r8.double_clicked() { h.nonlin_shimmer = def.nonlin_shimmer; changed = true; }
                 ui.end_row();
 
                 ui.label("Bell Level:")
                     .on_hover_text("High-Q cast-bronze bell / cup modal resonance emphasis");
-                let r9 = ui.add(egui::Slider::new(&mut h.bell_level, 0.0..=1.0));
+                let r9 = ui.add(
+                    egui::Slider::new(&mut h.bell_level, 0.0..=2.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r9.changed() { changed = true; }
                 if r9.double_clicked() { h.bell_level = def.bell_level; changed = true; }
                 ui.end_row();
 
                 ui.label("Stick Hardness:")
                     .on_hover_text("Stick tip lowpass brightness (soft wood tip vs. bright nylon tip)");
-                let r10 = ui.add(egui::Slider::new(&mut h.stick_hardness, 0.0..=1.0));
+                let r10 = ui.add(
+                    egui::Slider::new(&mut h.stick_hardness, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r10.changed() { changed = true; }
                 if r10.double_clicked() { h.stick_hardness = def.stick_hardness; changed = true; }
                 ui.end_row();
@@ -2691,6 +2843,7 @@ fn render_hihat_params_grid(ui: &mut egui::Ui, h: &mut HiHatParams) -> bool {
                 add_hit_variation_slider_row(
                     ui,
                     &mut h.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of hit velocity & stick strike character (0.0 = exact/identical, 1.0 = heavy variation)",
                     &mut changed,
                 );
@@ -2721,59 +2874,86 @@ fn render_single_cymbal_params_grid(
                 add_drum_volume_slider_row(
                     ui,
                     &format!("{} Volume:", role.short_name()),
-                    "Absolute output level for this cymbal (-48 dB = Mute, double-click resets to 0 dB).",
+                    "Absolute output level for this cymbal (-48 dB = Mute, double-click resets to default).",
                     &mut c.volume_db,
+                    def.volume_db,
                     &mut changed,
                 );
 
                 ui.label("Ring / Wash Decay:");
-                let r1 = ui.add(egui::Slider::new(&mut c.decay_ms, 180.0..=3500.0).suffix(" ms"));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut c.decay_ms, 80.0..=6000.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { c.decay_ms = def.decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Bronze Size / Pitch:")
-                    .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning (0.5 = large/dark, 2.0 = small/bright)");
-                let r2 = ui.add(egui::Slider::new(&mut c.bronze_size_pitch, 0.5..=2.0));
+                    .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning");
+                let r2 = ui.add(
+                    egui::Slider::new(&mut c.bronze_size_pitch, 0.30..=3.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { c.bronze_size_pitch = def.bronze_size_pitch; changed = true; }
                 ui.end_row();
 
                 ui.label("Highpass / Brightness Cutoff:");
-                let r3 = ui.add(egui::Slider::new(&mut c.cutoff_hz, 1800.0..=8000.0).suffix(" Hz"));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut c.cutoff_hz, 800.0..=12000.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { c.cutoff_hz = def.cutoff_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Shimmer Matrix Spread:");
-                let r4 = ui.add(egui::Slider::new(&mut c.matrix_spread, 0.5..=2.0));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut c.matrix_spread, 0.25..=3.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { c.matrix_spread = def.matrix_spread; changed = true; }
                 ui.end_row();
 
                 ui.label("Plate Dispersion (Flex):")
                     .on_hover_text("1st-order all-pass plate dispersion depth inside the 4-line Hadamard waveguide mesh");
-                let r5 = ui.add(egui::Slider::new(&mut c.plate_dispersion, 0.0..=1.0));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut c.plate_dispersion, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { c.plate_dispersion = def.plate_dispersion; changed = true; }
                 ui.end_row();
 
                 ui.label("Non-Linear Shimmer Bloom:")
                     .on_hover_text("Signal-modulated all-pass dispersion energy cascade into 4–15 kHz cast-bronze shimmer");
-                let r6 = ui.add(egui::Slider::new(&mut c.nonlin_shimmer, 0.0..=1.0));
+                let r6 = ui.add(
+                    egui::Slider::new(&mut c.nonlin_shimmer, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r6.changed() { changed = true; }
                 if r6.double_clicked() { c.nonlin_shimmer = def.nonlin_shimmer; changed = true; }
                 ui.end_row();
 
                 ui.label("Bell / Cup Presence:");
-                let r7 = ui.add(egui::Slider::new(&mut c.bell_level, 0.0..=1.0));
+                let r7 = ui.add(
+                    egui::Slider::new(&mut c.bell_level, 0.0..=2.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r7.changed() { changed = true; }
                 if r7.double_clicked() { c.bell_level = def.bell_level; changed = true; }
                 ui.end_row();
 
                 ui.label("Stick Hardness:")
                     .on_hover_text("Stick tip lowpass brightness (soft felt/wood tip vs. crisp nylon tip)");
-                let r8 = ui.add(egui::Slider::new(&mut c.stick_hardness, 0.0..=1.0));
+                let r8 = ui.add(
+                    egui::Slider::new(&mut c.stick_hardness, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r8.changed() { changed = true; }
                 if r8.double_clicked() { c.stick_hardness = def.stick_hardness; changed = true; }
                 ui.end_row();
@@ -2781,6 +2961,7 @@ fn render_single_cymbal_params_grid(
                 add_hit_variation_slider_row(
                     ui,
                     &mut c.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of hit velocity & stick strike character (0.0 = exact/identical, 1.0 = heavy variation)",
                     &mut changed,
                 );
@@ -2801,70 +2982,102 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
                 add_drum_volume_slider_row(
                     ui,
                     "Ride Bow Volume (51):",
-                    "Absolute output level for Ride Cymbal 1 bow (GM 51). -48 dB = Mute, double-click resets to 0 dB.",
+                    "Absolute output level for Ride Cymbal 1 bow (GM 51). -48 dB = Mute, double-click resets to default.",
                     &mut r.bow_volume_db,
+                    def.bow_volume_db,
                     &mut changed,
                 );
                 add_drum_volume_slider_row(
                     ui,
                     "Ride Bell Volume (53):",
-                    "Absolute output level for Ride Bell cup (GM 53). -48 dB = Mute, double-click resets to 0 dB.",
+                    "Absolute output level for Ride Bell cup (GM 53). -48 dB = Mute, double-click resets to default.",
                     &mut r.bell_volume_db,
+                    def.bell_volume_db,
                     &mut changed,
                 );
 
                 ui.label("Ride Bow Decay:");
-                let r1 = ui.add(egui::Slider::new(&mut r.bow_decay_ms, 300.0..=3500.0).suffix(" ms"));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut r.bow_decay_ms, 100.0..=6000.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { r.bow_decay_ms = def.bow_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Ride Bell Decay:");
-                let r2 = ui.add(egui::Slider::new(&mut r.bell_decay_ms, 200.0..=3000.0).suffix(" ms"));
+                let r2 = ui.add(
+                    egui::Slider::new(&mut r.bell_decay_ms, 80.0..=5000.0)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { r.bell_decay_ms = def.bell_decay_ms; changed = true; }
                 ui.end_row();
 
                 ui.label("Bell Cup Presence:")
                     .on_hover_text("High-Q singing cast-bronze bell cup emphasis (accentuated on GM 53)");
-                let r3 = ui.add(egui::Slider::new(&mut r.bell_peak_level, 0.0..=1.0));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut r.bell_peak_level, 0.0..=2.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { r.bell_peak_level = def.bell_peak_level; changed = true; }
                 ui.end_row();
 
                 ui.label("Bronze Size / Pitch:")
                     .on_hover_text("Shared ride plate diameter & modal tuning (affects both bow 51 and bell 53)");
-                let r4 = ui.add(egui::Slider::new(&mut r.bronze_size_pitch, 0.5..=2.0));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut r.bronze_size_pitch, 0.30..=3.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { r.bronze_size_pitch = def.bronze_size_pitch; changed = true; }
                 ui.end_row();
 
                 ui.label("Highpass / Brightness Cutoff:");
-                let r5 = ui.add(egui::Slider::new(&mut r.cutoff_hz, 1800.0..=8000.0).suffix(" Hz"));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut r.cutoff_hz, 800.0..=12000.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { r.cutoff_hz = def.cutoff_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Shimmer Matrix Spread:");
-                let r6 = ui.add(egui::Slider::new(&mut r.matrix_spread, 0.5..=2.0));
+                let r6 = ui.add(
+                    egui::Slider::new(&mut r.matrix_spread, 0.25..=3.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r6.changed() { changed = true; }
                 if r6.double_clicked() { r.matrix_spread = def.matrix_spread; changed = true; }
                 ui.end_row();
 
                 ui.label("Plate Dispersion (Stick Ping):");
-                let r7 = ui.add(egui::Slider::new(&mut r.plate_dispersion, 0.0..=1.0));
+                let r7 = ui.add(
+                    egui::Slider::new(&mut r.plate_dispersion, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r7.changed() { changed = true; }
                 if r7.double_clicked() { r.plate_dispersion = def.plate_dispersion; changed = true; }
                 ui.end_row();
 
                 ui.label("Non-Linear Shimmer Wash:");
-                let r8 = ui.add(egui::Slider::new(&mut r.nonlin_shimmer, 0.0..=1.0));
+                let r8 = ui.add(
+                    egui::Slider::new(&mut r.nonlin_shimmer, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r8.changed() { changed = true; }
                 if r8.double_clicked() { r.nonlin_shimmer = def.nonlin_shimmer; changed = true; }
                 ui.end_row();
 
                 ui.label("Stick Hardness:");
-                let r9 = ui.add(egui::Slider::new(&mut r.stick_hardness, 0.0..=1.0));
+                let r9 = ui.add(
+                    egui::Slider::new(&mut r.stick_hardness, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r9.changed() { changed = true; }
                 if r9.double_clicked() { r.stick_hardness = def.stick_hardness; changed = true; }
                 ui.end_row();
@@ -2872,6 +3085,7 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
                 add_hit_variation_slider_row(
                     ui,
                     &mut r.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of hit velocity & stick strike character",
                     &mut changed,
                 );
@@ -2885,33 +3099,33 @@ fn render_perc_aux_params_grid(ui: &mut egui::Ui, role: DrumRole, a: &mut PercAu
     let (def, f1_range, f2_range, decay_range) = match role {
         DrumRole::Agogo => (
             PercAuxParams::agogo_default(),
-            400.0..=2200.0,
-            600.0..=3200.0,
-            40.0..=800.0,
+            200.0..=4000.0,
+            300.0..=6000.0,
+            15.0..=2000.0,
         ),
         DrumRole::Triangle => (
             PercAuxParams::triangle_default(),
-            1200.0..=4500.0,
-            1800.0..=6800.0,
-            100.0..=2000.0,
+            500.0..=8000.0,
+            800.0..=12000.0,
+            30.0..=4000.0,
         ),
         DrumRole::Claves => (
             PercAuxParams::claves_default(),
-            1200.0..=3800.0,
-            1800.0..=5200.0,
-            15.0..=200.0,
+            400.0..=6000.0,
+            600.0..=8500.0,
+            8.0..=600.0,
         ),
         DrumRole::WoodBlocks => (
             PercAuxParams::wood_blocks_default(),
-            350.0..=1800.0,
-            550.0..=2800.0,
-            15.0..=240.0,
+            180.0..=3600.0,
+            250.0..=5500.0,
+            8.0..=800.0,
         ),
         _ => (
             PercAuxParams::cowbell_default(),
-            300.0..=1200.0,
-            400.0..=1800.0,
-            20.0..=500.0,
+            150.0..=2800.0,
+            220.0..=4200.0,
+            10.0..=1500.0,
         ),
     };
 
@@ -2923,37 +3137,57 @@ fn render_perc_aux_params_grid(ui: &mut egui::Ui, role: DrumRole, a: &mut PercAu
                 add_drum_volume_slider_row(
                     ui,
                     &format!("{} Volume:", role.short_name()),
-                    "Absolute output level (-48 dB = Mute, double-click resets to 0 dB).",
+                    "Absolute output level (-48 dB = Mute, double-click resets to default).",
                     &mut a.volume_db,
+                    def.volume_db,
                     &mut changed,
                 );
 
                 ui.label("Fundamental Mode 1:");
-                let r1 = ui.add(egui::Slider::new(&mut a.freq1_hz, f1_range).suffix(" Hz"));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut a.freq1_hz, f1_range)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { a.freq1_hz = def.freq1_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Harmonic Mode 2:");
-                let r2 = ui.add(egui::Slider::new(&mut a.freq2_hz, f2_range).suffix(" Hz"));
+                let r2 = ui.add(
+                    egui::Slider::new(&mut a.freq2_hz, f2_range)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { a.freq2_hz = def.freq2_hz; changed = true; }
                 ui.end_row();
 
                 ui.label("Detune / Spread:");
-                let r3 = ui.add(egui::Slider::new(&mut a.detune, -80.0..=80.0).suffix(" Hz"));
+                let r3 = ui.add(
+                    egui::Slider::new(&mut a.detune, -250.0..=250.0)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { a.detune = def.detune; changed = true; }
                 ui.end_row();
 
                 ui.label("Resonator Bandpass Q:");
-                let r4 = ui.add(egui::Slider::new(&mut a.bandpass_q, 0.5..=12.0));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut a.bandpass_q, 0.3..=22.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { a.bandpass_q = def.bandpass_q; changed = true; }
                 ui.end_row();
 
                 ui.label("Ring Decay Time:");
-                let r5 = ui.add(egui::Slider::new(&mut a.decay_ms, decay_range).suffix(" ms"));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut a.decay_ms, decay_range)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { a.decay_ms = def.decay_ms; changed = true; }
                 ui.end_row();
@@ -2961,6 +3195,7 @@ fn render_perc_aux_params_grid(ui: &mut egui::Ui, role: DrumRole, a: &mut PercAu
                 add_hit_variation_slider_row(
                     ui,
                     &mut a.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of strike velocity",
                     &mut changed,
                 );
@@ -2975,55 +3210,62 @@ fn render_shaker_effect_params_grid(
     s: &mut ShakerAndEffectParams,
 ) -> bool {
     let mut changed = false;
-    let (def, bright_label, bright_range, texture_label, decay_range) = match role {
+    let (def, bright_label, bright_range, texture_label, decay_label, decay_range) = match role {
         DrumRole::Tambourine => (
             ShakerAndEffectParams::tambourine_default(),
-            "Jingle Brightness:",
-            3000.0..=12000.0,
+            "Jingle Metallic Pitch / Brightness:",
+            1500.0..=15000.0,
             "Jingle Flutter Rate:",
-            35.0..=500.0,
+            "Jingle Ring Decay:",
+            15.0..=1500.0,
         ),
         DrumRole::Cabasa => (
             ShakerAndEffectParams::cabasa_default(),
             "Steel Bead Brightness:",
-            2500.0..=11000.0,
+            1000.0..=14000.0,
             "Bead Grain Rate:",
-            30.0..=400.0,
+            "Hand Twist Scrape Duration:",
+            15.0..=1200.0,
         ),
         DrumRole::Maracas => (
             ShakerAndEffectParams::maracas_default(),
             "Seed Tone Cutoff:",
-            2000.0..=10500.0,
+            1000.0..=14000.0,
             "Seed Swish Density:",
-            25.0..=300.0,
+            "Main Cluster Decay:",
+            10.0..=1000.0,
         ),
         DrumRole::Guiro => (
             ShakerAndEffectParams::guiro_default(),
             "Gourd Resonance Freq:",
-            800.0..=5500.0,
+            400.0..=8000.0,
             "Notch Scrape Rate:",
-            60.0..=750.0,
+            "Long Guiro Scrape Length (74):",
+            20.0..=2500.0,
         ),
         DrumRole::Whistle => (
             ShakerAndEffectParams::whistle_default(),
             "Whistle Base Pitch:",
-            1500.0..=5200.0,
+            700.0..=8000.0,
             "Pea Trill Rate / Depth:",
-            80.0..=1000.0,
+            "Long / Low Whistle Duration (72):",
+            15.0..=2500.0,
         ),
         DrumRole::Vibraslap => (
             ShakerAndEffectParams::vibraslap_default(),
             "Wood Box Resonance:",
-            600.0..=4200.0,
+            350.0..=7000.0,
             "Wood Ball Rattle Rate:",
-            120.0..=1200.0,
+            "Rattle Decay Duration:",
+            40.0..=3000.0,
         ),
         _ => (
             ShakerAndEffectParams::cuica_default(),
             "Friction Pitch Center:",
-            220.0..=1200.0,
+            120.0..=2400.0,
             "Pitch Sweep Inflection:",
-            60.0..=600.0,
+            "Stroke Duration:",
+            20.0..=1800.0,
         ),
     };
 
@@ -3032,40 +3274,139 @@ fn render_shaker_effect_params_grid(
             .num_columns(2)
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
-                add_drum_volume_slider_row(
-                    ui,
-                    &format!("{} Volume:", role.short_name()),
-                    "Absolute output level (-48 dB = Mute, double-click resets to 0 dB).",
-                    &mut s.volume_db,
-                    &mut changed,
-                );
+                if role == DrumRole::Guiro {
+                    add_drum_volume_slider_row(
+                        ui,
+                        "Long Guiro Volume (74):",
+                        "Absolute output level for Long Guiro strike/scrape (GM 74). -48 dB = Mute, double-click resets to default.",
+                        &mut s.volume_db,
+                        def.volume_db,
+                        &mut changed,
+                    );
+                    add_drum_volume_slider_row(
+                        ui,
+                        "Short Guiro Volume (73):",
+                        "Absolute output level for Short Guiro strike/scrape (GM 73), independent of Long Guiro (GM 74).",
+                        &mut s.aux_volume_db,
+                        def.aux_volume_db,
+                        &mut changed,
+                    );
+                } else {
+                    add_drum_volume_slider_row(
+                        ui,
+                        &format!("{} Volume:", role.short_name()),
+                        "Absolute output level (-48 dB = Mute, double-click resets to default).",
+                        &mut s.volume_db,
+                        def.volume_db,
+                        &mut changed,
+                    );
+                }
 
                 ui.label("Pitch / Size Scale:");
-                let r1 = ui.add(egui::Slider::new(&mut s.pitch_scale, 0.5..=2.0));
+                let r1 = ui.add(
+                    egui::Slider::new(&mut s.pitch_scale, 0.25..=3.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r1.changed() { changed = true; }
                 if r1.double_clicked() { s.pitch_scale = def.pitch_scale; changed = true; }
                 ui.end_row();
 
                 ui.label(bright_label);
-                let r2 = ui.add(egui::Slider::new(&mut s.brightness_hz, bright_range).suffix(" Hz"));
+                let r2 = ui.add(
+                    egui::Slider::new(&mut s.brightness_hz, bright_range)
+                        .suffix(" Hz")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r2.changed() { changed = true; }
                 if r2.double_clicked() { s.brightness_hz = def.brightness_hz; changed = true; }
                 ui.end_row();
 
-                ui.label("Duration / Decay:");
-                let r3 = ui.add(egui::Slider::new(&mut s.decay_ms, decay_range).suffix(" ms"));
+                ui.label(decay_label);
+                let r3 = ui.add(
+                    egui::Slider::new(&mut s.decay_ms, decay_range)
+                        .suffix(" ms")
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r3.changed() { changed = true; }
                 if r3.double_clicked() { s.decay_ms = def.decay_ms; changed = true; }
                 ui.end_row();
 
+                // Role-specific auxiliary physical-modeling controls:
+                match role {
+                    DrumRole::Tambourine => {
+                        ui.label("Drumhead Decay:")
+                            .on_hover_text("Decay duration of the tambourine's frame drumhead mode independent of the metallic jingle tail");
+                        let ra = ui.add(
+                            egui::Slider::new(&mut s.aux_decay_ms, 5.0..=800.0)
+                                .suffix(" ms")
+                                .clamping(egui::SliderClamping::Never),
+                        );
+                        if ra.changed() { changed = true; }
+                        if ra.double_clicked() { s.aux_decay_ms = def.aux_decay_ms; changed = true; }
+                        ui.end_row();
+                    }
+                    DrumRole::Guiro => {
+                        ui.label("Short Guiro Scrape Length (73):")
+                            .on_hover_text("Independent scrape duration for Short Guiro (GM 73), separate from Long Guiro (GM 74)");
+                        let ra = ui.add(
+                            egui::Slider::new(&mut s.aux_decay_ms, 10.0..=1500.0)
+                                .suffix(" ms")
+                                .clamping(egui::SliderClamping::Never),
+                        );
+                        if ra.changed() { changed = true; }
+                        if ra.double_clicked() { s.aux_decay_ms = def.aux_decay_ms; changed = true; }
+                        ui.end_row();
+                    }
+                    DrumRole::Maracas => {
+                        ui.label("Random Loose Beads:")
+                            .on_hover_text("Stochastic individual beads flying around and knocking against the hollow wooden maraca shell walls");
+                        let ra = ui.add(
+                            egui::Slider::new(&mut s.aux_amount, 0.0..=1.5)
+                                .clamping(egui::SliderClamping::Never),
+                        );
+                        if ra.changed() { changed = true; }
+                        if ra.double_clicked() { s.aux_amount = def.aux_amount; changed = true; }
+                        ui.end_row();
+                    }
+                    DrumRole::Whistle => {
+                        ui.label("Short / High Whistle Duration (71):")
+                            .on_hover_text("Independent blow duration for Short Whistle (GM 71), separate from Long Whistle (GM 72)");
+                        let rd = ui.add(
+                            egui::Slider::new(&mut s.aux_decay_ms, 10.0..=1500.0)
+                                .suffix(" ms")
+                                .clamping(egui::SliderClamping::Never),
+                        );
+                        if rd.changed() { changed = true; }
+                        if rd.double_clicked() { s.aux_decay_ms = def.aux_decay_ms; changed = true; }
+                        ui.end_row();
+
+                        ui.label("Accent Pitch Bend (Louder = Higher):")
+                            .on_hover_text("Raises whistle pitch and initial overblow inflection on louder/accented hits");
+                        let ra = ui.add(
+                            egui::Slider::new(&mut s.aux_amount, 0.0..=1.5)
+                                .clamping(egui::SliderClamping::Never),
+                        );
+                        if ra.changed() { changed = true; }
+                        if ra.double_clicked() { s.aux_amount = def.aux_amount; changed = true; }
+                        ui.end_row();
+                    }
+                    _ => {}
+                }
+
                 ui.label(texture_label);
-                let r4 = ui.add(egui::Slider::new(&mut s.texture_rate, 0.0..=1.0));
+                let r4 = ui.add(
+                    egui::Slider::new(&mut s.texture_rate, 0.0..=1.5)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r4.changed() { changed = true; }
                 if r4.double_clicked() { s.texture_rate = def.texture_rate; changed = true; }
                 ui.end_row();
 
                 ui.label("Body Resonance Q:");
-                let r5 = ui.add(egui::Slider::new(&mut s.resonance_q, 0.5..=10.0));
+                let r5 = ui.add(
+                    egui::Slider::new(&mut s.resonance_q, 0.3..=20.0)
+                        .clamping(egui::SliderClamping::Never),
+                );
                 if r5.changed() { changed = true; }
                 if r5.double_clicked() { s.resonance_q = def.resonance_q; changed = true; }
                 ui.end_row();
@@ -3073,6 +3414,7 @@ fn render_shaker_effect_params_grid(
                 add_hit_variation_slider_row(
                     ui,
                     &mut s.hit_variation,
+                    def.hit_variation,
                     "Logarithmic humanization of hit velocity",
                     &mut changed,
                 );
