@@ -235,7 +235,7 @@ mod tests {
     fn test_element_offset_application() {
         use crate::mnx::Offset2D;
         use eframe::egui::{Pos2, Stroke, Color32};
-        use std::collections::HashMap;
+        use std::collections::BTreeMap;
 
         let mut list = DisplayList::new();
         list.push(DrawItem {
@@ -248,7 +248,7 @@ mod tests {
             z_index: 0,
         });
 
-        let mut offsets = HashMap::new();
+        let mut offsets = BTreeMap::new();
         offsets.insert("tempo_1".to_string(), Offset2D { dx: 15.0, dy: -5.0 });
 
         list.apply_offsets(&offsets);

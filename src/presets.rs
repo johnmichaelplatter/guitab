@@ -205,7 +205,7 @@ pub fn save_drum_presets_to_user_config(presets: &[DrumKitPreset]) -> Result<(),
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
         let yaml = serialize_drum_presets_list_to_yaml(presets)?;
-        fs::write(&path, yaml)
+        crate::rebar::atomic_write_file(&path, yaml.as_bytes())
             .map_err(|e| format!("Failed to write drum presets file: {}", e))?;
     }
     Ok(())
@@ -1053,7 +1053,8 @@ pub fn save_presets_to_user_config(presets: &[InstrumentPreset]) -> Result<(), S
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
         let yaml = serialize_presets_list_to_yaml(presets)?;
-        fs::write(&path, yaml).map_err(|e| format!("Failed to write presets file: {}", e))?;
+        crate::rebar::atomic_write_file(&path, yaml.as_bytes())
+            .map_err(|e| format!("Failed to write presets file: {}", e))?;
     }
     Ok(())
 }

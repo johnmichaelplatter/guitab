@@ -1,5 +1,5 @@
 use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct DrawItem {
@@ -177,7 +177,7 @@ impl DisplayList {
         self.items.push(item);
     }
 
-    pub fn apply_offsets(&mut self, offsets: &HashMap<String, crate::mnx::Offset2D>) {
+    pub fn apply_offsets(&mut self, offsets: &BTreeMap<String, crate::mnx::Offset2D>) {
         for item in &mut self.items {
             if let Some(id) = &item.id {
                 if let Some(offset) = offsets.get(id) {

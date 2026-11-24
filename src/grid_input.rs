@@ -261,7 +261,7 @@ pub fn save_grid_calibration_for_device(device_name: &str, cal: &GridCalibration
         let mut map = load_saved_grid_calibrations();
         map.insert(device_name.trim().to_string(), *cal);
         let yaml_str = serialize_grid_calibrations_to_yaml(&map)?;
-        std::fs::write(&path, yaml_str)
+        crate::rebar::atomic_write_file(&path, yaml_str.as_bytes())
             .map_err(|e| format!("Failed to write grid_controllers.yaml: {}", e))?;
         Ok(())
     } else {

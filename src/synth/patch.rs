@@ -2381,7 +2381,8 @@ impl SynthPreset {
     /// Saves this preset to a file on disk.
     pub fn save_to_json_file(&self, path: &Path) -> Result<(), String> {
         let json = self.to_json_string()?;
-        std::fs::write(path, json).map_err(|e| format!("Failed to write preset to {:?}: {}", path, e))
+        crate::rebar::atomic_write_file(path, json.as_bytes())
+            .map_err(|e| format!("Failed to write preset to {:?}: {}", path, e))
     }
 
     /// Loads a preset from a file on disk.
@@ -2389,6 +2390,616 @@ impl SynthPreset {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read preset from {:?}: {}", path, e))?;
         Self::from_json_string(&content)
+    }
+
+    /// Returns the canonical baseline preset for `name` (matching built-in factory presets when
+    /// named accordingly, or standard struct defaults for custom preset names).
+    pub fn baseline_for_name(name: &str, fallback_engine: PitchedEngine) -> Self {
+        match name.trim() {
+            "Acoustic Dreadnought" => Self::acoustic_dreadnought(),
+            "Tele Clean" => Self::tele_clean(),
+            "Heavy Lead" => Self::heavy_lead(),
+            "Upright Bass" => Self::upright_bass(),
+            "Linn-808 Kit" => Self::linn_808_kit(),
+            "FM DX Electric Piano" => Self::fm_dx_electric_piano(),
+            "Analog Brass" => Self::analog_brass(),
+            other => Self {
+                name: other.to_string(),
+                author: "guitab".to_string(),
+                engine: fallback_engine,
+                string_params: StringSynthParams::default(),
+                body_params: BodyResonatorParams::default(),
+                drum_params: DrumKitParams::default(),
+                fm_params: FmVoiceParams::default(),
+            },
+        }
+    }
+}
+
+/// Compact, engine-aware delta representation of [`SynthPreset`] for inline MNX YAML `_x.synthPreset`.
+///
+/// - Omits unused engine blocks completely (`drum_params` & `fm_params` omitted on `PhysicalString` parts;
+///   `drum_params`, `string_params`, & `body_params` omitted on `FmSynth` parts; `engine`, `string_params`,
+///   `body_params`, & `fm_params` omitted on percussion parts).
+/// - Skips all fields equal to the preset's baseline defaults while remaining 100% backwards-compatible
+///   when deserializing legacy full `SynthPreset` YAML blocks.
+pub mod compact_yaml {
+    use super::*;
+    use serde_saphyr::FlowMap;
+
+    #[inline]
+    fn diff_f32(val: f32, def: f32) -> Option<f32> {
+        if (val - def).abs() <= 1.0e-5 {
+            None
+        } else {
+            Some(val)
+        }
+    }
+
+    fn serialize_opt_flow<T: Serialize, S: serde::Serializer>(
+        val: &Option<T>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match val {
+            Some(v) => FlowMap(v).serialize(s),
+            None => s.serialize_none(),
+        }
+    }
+
+    macro_rules! define_f32_patch {
+        ($PatchName:ident for $Target:ty { $($field:ident),+ $(,)? }) => {
+            #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+            pub struct $PatchName {
+                $(
+                    #[serde(default, skip_serializing_if = "Option::is_none")]
+                    pub $field: Option<f32>,
+                )+
+            }
+
+            impl $PatchName {
+                pub fn from_diff(val: &$Target, def: &$Target) -> Option<Self> {
+                    let p = Self {
+                        $( $field: diff_f32(val.$field, def.$field), )+
+                    };
+                    if p == Self::default() {
+                        None
+                    } else {
+                        Some(p)
+                    }
+                }
+
+                pub fn apply_to(&self, out: &mut $Target) {
+                    $(
+                        if let Some(v) = self.$field {
+                            out.$field = v;
+                        }
+                    )+
+                }
+            }
+        };
+    }
+
+    define_f32_patch!(StringParamsPatch for StringSynthParams {
+        pluck_pos,
+        pick_hardness,
+        noise_mix,
+        t60_decay_sec,
+        brightness_s,
+        inharmonicity_dispersion,
+        palm_mute_damping,
+        harmonic_damping_ms,
+        polarization_detune_cents,
+        polarization_coupling,
+        tension_mod_amount,
+        fret_buzz_sizzle,
+        sympathetic_coupling,
+    });
+
+    define_f32_patch!(AdsrPatch for AdsrEnvelopeParams {
+        attack_ms,
+        decay_ms,
+        sustain,
+        release_ms,
+    });
+
+    define_f32_patch!(KickPatch for KickParams {
+        pitch_start_hz,
+        pitch_end_hz,
+        pitch_decay_ms,
+        click_level,
+        body_decay_ms,
+        head_tension_mod,
+        strike_position,
+        overtones_ring,
+        shell_wood_cavity,
+        hit_variation,
+        volume_db,
+    });
+
+    define_f32_patch!(SnarePatch for SnareParams {
+        tone_freq_hz,
+        mode2_freq_hz,
+        tone_decay_ms,
+        wire_cutoff_hz,
+        noise_decay_ms,
+        noise_mix,
+        clap_spacing_ms,
+        head_tension_mod,
+        strike_position,
+        overtones_ring,
+        shell_wood_cavity,
+        wire_tension,
+        hit_variation,
+        volume_db,
+        rim_volume_db,
+        clap_volume_db,
+    });
+
+    define_f32_patch!(HandClapPatch for HandClapParams {
+        volume_db,
+        clap_spacing_ms,
+        bandpass_hz,
+        bandpass_q,
+        tail_decay_ms,
+        room_mix,
+        hit_variation,
+    });
+
+    define_f32_patch!(HiHatPatch for HiHatParams {
+        spread,
+        highpass_cutoff_hz,
+        closed_decay_ms,
+        pedal_decay_ms,
+        open_decay_ms,
+        bronze_size_pitch,
+        plate_dispersion,
+        nonlin_shimmer,
+        bell_level,
+        stick_hardness,
+        hit_variation,
+        closed_volume_db,
+        pedal_volume_db,
+        open_volume_db,
+    });
+
+    define_f32_patch!(SingleCymbalPatch for SingleCymbalParams {
+        volume_db,
+        decay_ms,
+        cutoff_hz,
+        bronze_size_pitch,
+        matrix_spread,
+        plate_dispersion,
+        nonlin_shimmer,
+        bell_level,
+        stick_hardness,
+        hit_variation,
+    });
+
+    define_f32_patch!(RideCymbalPatch for RideCymbalParams {
+        bow_volume_db,
+        bell_volume_db,
+        bow_decay_ms,
+        bell_decay_ms,
+        cutoff_hz,
+        bronze_size_pitch,
+        matrix_spread,
+        plate_dispersion,
+        nonlin_shimmer,
+        bell_peak_level,
+        stick_hardness,
+        hit_variation,
+    });
+
+    define_f32_patch!(PercAuxPatch for PercAuxParams {
+        freq1_hz,
+        freq2_hz,
+        detune,
+        bandpass_q,
+        decay_ms,
+        volume_db,
+        hit_variation,
+    });
+
+    define_f32_patch!(ShakerPatch for ShakerAndEffectParams {
+        volume_db,
+        pitch_scale,
+        brightness_hz,
+        decay_ms,
+        texture_rate,
+        resonance_q,
+        hit_variation,
+        aux_decay_ms,
+        aux_amount,
+        aux_volume_db,
+    });
+
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct TomPatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pitch_scale: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pitch_drop_ratio: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub decay_ms: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub stick_attack: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub head_tension_mod: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub strike_position: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub overtones_ring: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub shell_wood_cavity: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub hit_variation: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub volume_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tom_tuning_semitones: Option<[f32; 6]>,
+    }
+
+    impl TomPatch {
+        pub fn from_diff(val: &TomParams, def: &TomParams) -> Option<Self> {
+            let tuning_diff = val
+                .tom_tuning_semitones
+                .iter()
+                .zip(def.tom_tuning_semitones.iter())
+                .any(|(a, b)| (a - b).abs() > 1.0e-5);
+            let p = Self {
+                pitch_scale: diff_f32(val.pitch_scale, def.pitch_scale),
+                pitch_drop_ratio: diff_f32(val.pitch_drop_ratio, def.pitch_drop_ratio),
+                decay_ms: diff_f32(val.decay_ms, def.decay_ms),
+                stick_attack: diff_f32(val.stick_attack, def.stick_attack),
+                head_tension_mod: diff_f32(val.head_tension_mod, def.head_tension_mod),
+                strike_position: diff_f32(val.strike_position, def.strike_position),
+                overtones_ring: diff_f32(val.overtones_ring, def.overtones_ring),
+                shell_wood_cavity: diff_f32(val.shell_wood_cavity, def.shell_wood_cavity),
+                hit_variation: diff_f32(val.hit_variation, def.hit_variation),
+                volume_db: diff_f32(val.volume_db, def.volume_db),
+                tom_tuning_semitones: if tuning_diff {
+                    Some(val.tom_tuning_semitones)
+                } else {
+                    None
+                },
+            };
+            if p == Self::default() {
+                None
+            } else {
+                Some(p)
+            }
+        }
+
+        pub fn apply_to(&self, out: &mut TomParams) {
+            if let Some(v) = self.pitch_scale {
+                out.pitch_scale = v;
+            }
+            if let Some(v) = self.pitch_drop_ratio {
+                out.pitch_drop_ratio = v;
+            }
+            if let Some(v) = self.decay_ms {
+                out.decay_ms = v;
+            }
+            if let Some(v) = self.stick_attack {
+                out.stick_attack = v;
+            }
+            if let Some(v) = self.head_tension_mod {
+                out.head_tension_mod = v;
+            }
+            if let Some(v) = self.strike_position {
+                out.strike_position = v;
+            }
+            if let Some(v) = self.overtones_ring {
+                out.overtones_ring = v;
+            }
+            if let Some(v) = self.shell_wood_cavity {
+                out.shell_wood_cavity = v;
+            }
+            if let Some(v) = self.hit_variation {
+                out.hit_variation = v;
+            }
+            if let Some(v) = self.volume_db {
+                out.volume_db = v;
+            }
+            if let Some(v) = self.tom_tuning_semitones {
+                out.tom_tuning_semitones = v;
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct BodyParamsPatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub profile_base: Option<InstrumentProfile>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub body_wet_mix: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pre_drive: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub post_gain_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub modal_knock_air: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bands: Option<[BiquadBandParams; 4]>,
+    }
+
+    impl BodyParamsPatch {
+        pub fn from_diff(val: &BodyResonatorParams, def: &BodyResonatorParams) -> Option<Self> {
+            let bands_diff = val.bands.iter().zip(def.bands.iter()).any(|(a, b)| {
+                a.enabled != b.enabled
+                    || (a.freq_hz - b.freq_hz).abs() > 1.0e-4
+                    || (a.q - b.q).abs() > 1.0e-4
+                    || (a.gain_db - b.gain_db).abs() > 1.0e-4
+            });
+            let p = Self {
+                profile_base: if val.profile_base != def.profile_base {
+                    Some(val.profile_base)
+                } else {
+                    None
+                },
+                body_wet_mix: diff_f32(val.body_wet_mix, def.body_wet_mix),
+                pre_drive: diff_f32(val.pre_drive, def.pre_drive),
+                post_gain_db: diff_f32(val.post_gain_db, def.post_gain_db),
+                modal_knock_air: diff_f32(val.modal_knock_air, def.modal_knock_air),
+                bands: if bands_diff { Some(val.bands) } else { None },
+            };
+            if p == Self::default() {
+                None
+            } else {
+                Some(p)
+            }
+        }
+
+        pub fn apply_to(&self, out: &mut BodyResonatorParams) {
+            if let Some(v) = self.profile_base {
+                out.profile_base = v;
+            }
+            if let Some(v) = self.body_wet_mix {
+                out.body_wet_mix = v;
+            }
+            if let Some(v) = self.pre_drive {
+                out.pre_drive = v;
+            }
+            if let Some(v) = self.post_gain_db {
+                out.post_gain_db = v;
+            }
+            if let Some(v) = self.modal_knock_air {
+                out.modal_knock_air = v;
+            }
+            if let Some(v) = self.bands {
+                out.bands = v;
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct FmParamsPatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mod_ratio: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mod_index: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub feedback: Option<f32>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_opt_flow"
+        )]
+        pub carrier_adsr: Option<AdsrPatch>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_opt_flow"
+        )]
+        pub mod_adsr: Option<AdsrPatch>,
+    }
+
+    impl FmParamsPatch {
+        pub fn from_diff(val: &FmVoiceParams, def: &FmVoiceParams) -> Option<Self> {
+            let p = Self {
+                mod_ratio: diff_f32(val.mod_ratio, def.mod_ratio),
+                mod_index: diff_f32(val.mod_index, def.mod_index),
+                feedback: diff_f32(val.feedback, def.feedback),
+                carrier_adsr: AdsrPatch::from_diff(&val.carrier_adsr, &def.carrier_adsr),
+                mod_adsr: AdsrPatch::from_diff(&val.mod_adsr, &def.mod_adsr),
+            };
+            if p == Self::default() {
+                None
+            } else {
+                Some(p)
+            }
+        }
+
+        pub fn apply_to(&self, out: &mut FmVoiceParams) {
+            if let Some(v) = self.mod_ratio {
+                out.mod_ratio = v;
+            }
+            if let Some(v) = self.mod_index {
+                out.mod_index = v;
+            }
+            if let Some(v) = self.feedback {
+                out.feedback = v;
+            }
+            if let Some(c) = &self.carrier_adsr {
+                c.apply_to(&mut out.carrier_adsr);
+            }
+            if let Some(m) = &self.mod_adsr {
+                m.apply_to(&mut out.mod_adsr);
+            }
+        }
+    }
+
+    macro_rules! define_drum_kit_patch {
+        ($( $role_field:ident : $PatchTy:ty ),+ $(,)?) => {
+            #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+            pub struct DrumKitPatch {
+                $(
+                    #[serde(
+                        default,
+                        skip_serializing_if = "Option::is_none",
+                        serialize_with = "serialize_opt_flow"
+                    )]
+                    pub $role_field: Option<$PatchTy>,
+                )+
+            }
+
+            impl DrumKitPatch {
+                pub fn from_diff(val: &DrumKitParams, def: &DrumKitParams) -> Option<Self> {
+                    let p = Self {
+                        $( $role_field: <$PatchTy>::from_diff(&val.$role_field, &def.$role_field), )+
+                    };
+                    if p == Self::default() {
+                        None
+                    } else {
+                        Some(p)
+                    }
+                }
+
+                pub fn apply_to(&self, out: &mut DrumKitParams) {
+                    $(
+                        if let Some(sub) = &self.$role_field {
+                            sub.apply_to(&mut out.$role_field);
+                        }
+                    )+
+                }
+            }
+        };
+    }
+
+    define_drum_kit_patch!(
+        kick: KickPatch,
+        acoustic_kick: KickPatch,
+        snare: SnarePatch,
+        electric_snare: SnarePatch,
+        hand_clap: HandClapPatch,
+        toms: TomPatch,
+        hi_hats: HiHatPatch,
+        crash1: SingleCymbalPatch,
+        crash2: SingleCymbalPatch,
+        ride1_and_bell: RideCymbalPatch,
+        ride2: SingleCymbalPatch,
+        splash: SingleCymbalPatch,
+        china: SingleCymbalPatch,
+        bongos: TomPatch,
+        congas: TomPatch,
+        timbales: TomPatch,
+        cuica: ShakerPatch,
+        cowbell: PercAuxPatch,
+        agogo: PercAuxPatch,
+        triangle: PercAuxPatch,
+        claves: PercAuxPatch,
+        wood_blocks: PercAuxPatch,
+        tambourine: ShakerPatch,
+        cabasa: ShakerPatch,
+        maracas: ShakerPatch,
+        guiro: ShakerPatch,
+        whistle: ShakerPatch,
+        vibraslap: ShakerPatch,
+    );
+
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct CompactSynthPreset {
+        pub name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub author: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub engine: Option<PitchedEngine>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_opt_flow"
+        )]
+        pub string_params: Option<StringParamsPatch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub body_params: Option<BodyParamsPatch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub drum_params: Option<DrumKitPatch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub fm_params: Option<FmParamsPatch>,
+    }
+
+    impl CompactSynthPreset {
+        pub fn from_preset(preset: &SynthPreset, is_percussion: bool) -> Self {
+            let base = SynthPreset::baseline_for_name(&preset.name, preset.engine);
+            let author = if preset.author.trim().is_empty() || preset.author == "guitab" {
+                None
+            } else {
+                Some(preset.author.clone())
+            };
+
+            if is_percussion {
+                Self {
+                    name: preset.name.clone(),
+                    author,
+                    engine: None,
+                    string_params: None,
+                    body_params: None,
+                    drum_params: DrumKitPatch::from_diff(&preset.drum_params, &base.drum_params),
+                    fm_params: None,
+                }
+            } else {
+                let engine = if preset.engine == base.engine {
+                    None
+                } else {
+                    Some(preset.engine)
+                };
+                match preset.engine {
+                    PitchedEngine::PhysicalString => Self {
+                        name: preset.name.clone(),
+                        author,
+                        engine,
+                        string_params: StringParamsPatch::from_diff(
+                            &preset.string_params,
+                            &base.string_params,
+                        ),
+                        body_params: BodyParamsPatch::from_diff(
+                            &preset.body_params,
+                            &base.body_params,
+                        ),
+                        drum_params: None,
+                        fm_params: None,
+                    },
+                    PitchedEngine::FmSynth => Self {
+                        name: preset.name.clone(),
+                        author,
+                        engine,
+                        string_params: None,
+                        body_params: None,
+                        drum_params: None,
+                        fm_params: FmParamsPatch::from_diff(&preset.fm_params, &base.fm_params),
+                    },
+                }
+            }
+        }
+
+        pub fn is_single_line_flow_candidate(&self) -> bool {
+            self.body_params.is_none() && self.drum_params.is_none() && self.fm_params.is_none()
+        }
+
+        pub fn into_preset(self) -> SynthPreset {
+            let inferred_engine = self.engine.unwrap_or_else(|| match self.name.trim() {
+                "FM DX Electric Piano" | "Analog Brass" => PitchedEngine::FmSynth,
+                _ => PitchedEngine::PhysicalString,
+            });
+            let mut out = SynthPreset::baseline_for_name(&self.name, inferred_engine);
+            out.engine = inferred_engine;
+            if let Some(a) = self.author {
+                out.author = a;
+            }
+            if let Some(sp) = &self.string_params {
+                sp.apply_to(&mut out.string_params);
+            }
+            if let Some(bp) = &self.body_params {
+                bp.apply_to(&mut out.body_params);
+            }
+            if let Some(dp) = &self.drum_params {
+                dp.apply_to(&mut out.drum_params);
+            }
+            if let Some(fp) = &self.fm_params {
+                fp.apply_to(&mut out.fm_params);
+            }
+            out
+        }
     }
 }
 

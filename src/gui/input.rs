@@ -287,7 +287,7 @@ impl MnxEditorApp {
                 })
                 .is_some()
             {
-                let new_total = self.cached_event_ranges.len();
+                let new_total = self.active_part_event_count();
                 return Some(new_total.saturating_sub(1));
             }
         } else {
@@ -351,7 +351,7 @@ impl MnxEditorApp {
                         added_idx.unwrap_or(e_idx)
                     } else if info.is_last_measure {
                         self.add_measure_to_end();
-                        let new_total = self.cached_event_ranges.len();
+                        let new_total = self.active_part_event_count();
                         if new_total > 0 {
                             added_idx = Some(new_total - 1);
                         }
@@ -370,7 +370,7 @@ impl MnxEditorApp {
                                 }
                             });
                         }
-                        let new_total = self.cached_event_ranges.len();
+                        let new_total = self.active_part_event_count();
                         (e_idx + 1).min(new_total.saturating_sub(1))
                     }
                 } else {
@@ -1185,7 +1185,7 @@ impl MnxEditorApp {
                         })
                         .is_some()
                     {
-                        let new_total = self.cached_event_ranges.len();
+                        let new_total = self.active_part_event_count();
                         if new_total > 0 {
                             let prior_idx = e_idx.saturating_sub(1).min(new_total - 1);
                             let prior_str =
@@ -1347,7 +1347,7 @@ impl MnxEditorApp {
                                 })
                                 .is_some()
                             {
-                                let new_total = self.cached_event_ranges.len();
+                                let new_total = self.active_part_event_count();
                                 if new_total > 0 {
                                     self.selected_event_idx =
                                         Some(e_i.saturating_sub(1).min(new_total - 1));
@@ -1438,7 +1438,7 @@ impl MnxEditorApp {
                                             }
                                         });
                                     }
-                                    let new_total = self.cached_event_ranges.len();
+                                    let new_total = self.active_part_event_count();
                                     self.selected_event_idx =
                                         Some((e_i + 1).min(new_total.saturating_sub(1)));
                                     self.selected_note_idx_in_event = None;

@@ -23,7 +23,8 @@ pub fn export_score_to_pdf_for_parts<P: AsRef<Path>>(
     active_parts: &[usize],
 ) -> Result<(), String> {
     let pdf_bytes = generate_score_pdf_bytes_for_parts(doc, pages, active_parts)?;
-    std::fs::write(output_path, pdf_bytes).map_err(|e| format!("Failed to write PDF: {}", e))?;
+    crate::rebar::atomic_write_file(output_path.as_ref(), &pdf_bytes)
+        .map_err(|e| format!("Failed to write PDF: {}", e))?;
     Ok(())
 }
 
@@ -2337,7 +2338,7 @@ parts:
         assert_eq!(hit_ending, Some("ending_0".to_string()), "Ending hook should be hit testable");
 
         // 4. Test translation of all components when offset is applied
-        let mut offsets = std::collections::HashMap::new();
+        let mut offsets = std::collections::BTreeMap::new();
         offsets.insert("tuplet_0_1".to_string(), crate::mnx::Offset2D { dx: 10.0, dy: -15.0 });
         offsets.insert("slur_1_e2".to_string(), crate::mnx::Offset2D { dx: 5.0, dy: 7.0 });
 
@@ -2770,7 +2771,7 @@ parts:
             "Text marking should be hit-testable for dragging in Layout Mode"
         );
 
-        let mut offsets = std::collections::HashMap::new();
+        let mut offsets = std::collections::BTreeMap::new();
         offsets.insert(
             "text_0_0_0".to_string(),
             crate::mnx::Offset2D {

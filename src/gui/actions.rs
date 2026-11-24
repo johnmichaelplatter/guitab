@@ -112,7 +112,7 @@ impl MnxEditorApp {
             }
 
             // Create target tempo object
-            let tempo_id = format!("tempo{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            let tempo_id = crate::rebar::generate_tempo_id();
             
             // Wait, we need to know what 'duration_value' is for the end_bpm.
             // We can just use "quarter" as a standard default for the target tempo.
@@ -674,7 +674,7 @@ impl MnxEditorApp {
         if let Some(e_idx) = self.selected_event_idx {
             let was_editing_fret = self.is_editing_fret;
             let cur_str = self.editing_string;
-            let total_events = self.cached_event_ranges.len();
+            let total_events = self.active_part_event_count();
             self.mutate_doc_and_clean_ties(|doc| {
                 if crate::yaml_editor::convert_event_to_rest_in_doc_part(doc, p_idx, e_idx) {
                     Some(())
@@ -902,7 +902,7 @@ impl MnxEditorApp {
             })
             .is_some()
         {
-            let total_events = self.cached_event_ranges.len();
+            let total_events = self.active_part_event_count();
             if total_events > 0 {
                 self.selected_event_idx = Some(total_events - 1);
             }
@@ -2562,7 +2562,7 @@ impl crate::gui::MnxEditorApp {
 
         self.apply_mutated_doc_and_clean_ties(doc);
 
-        let total_events = self.cached_event_ranges.len();
+        let total_events = self.active_part_event_count();
         if total_events == 0 {
             self.selected_event_idx = None;
         } else if e_idx < total_events {
@@ -2769,6 +2769,27 @@ impl crate::gui::MnxEditorApp {
                 layout.offsets.insert(element_id.to_string(), crate::mnx::Offset2D { dx, dy });
             }
             Some(())
+        });
+    }
+
+    /// Updates layout element offsets during continuous mouse dragging without re-serializing
+    /// YAML or pushing per-frame undo snapshots on every mouse-move frame.
+    pub(crate) fn action_set_element_offset_interactive(
+        &mut self,
+        element_id: &str,
+        dx: f32,
+        dy: f32,
+    ) {
+        self.mutate_doc_interactive(|doc| {
+            let layout = doc.layout.get_or_insert_with(Default::default);
+            if dx.abs() < 0.1 && dy.abs() < 0.1 {
+                layout.offsets.remove(element_id);
+            } else {
+                layout
+                    .offsets
+                    .insert(element_id.to_string(), crate::mnx::Offset2D { dx, dy });
+            }
+            true
         });
     }
 

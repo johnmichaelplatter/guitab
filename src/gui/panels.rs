@@ -233,6 +233,10 @@ impl MnxEditorApp {
                     };
                     if ui.button(yaml_toggle_label).clicked() {
                         self.show_yaml_panel = !self.show_yaml_panel;
+                        if self.show_yaml_panel {
+                            self.ensure_yaml_synced();
+                            self.refresh_cached_event_ranges();
+                        }
                         ui.close();
                     }
 
@@ -1174,13 +1178,15 @@ impl MnxEditorApp {
                         ui.painter().text(rstart_rect.center(), egui::Align2::CENTER_CENTER, "\u{E040}", bravura_font.clone(), color);
                     }
                     if rstart_resp.on_hover_text("Start Repeat").clicked() {
-                        let new_yaml = if is_repeat_start {
-                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatStart", "")
-                        } else {
-                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatStart", "{}")
-                        };
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
+                        self.mutate_doc(|doc| {
+                            Self::ensure_global_measure_up_to(doc, m_idx);
+                            doc.global.measures[m_idx].repeat_start = if is_repeat_start {
+                                None
+                            } else {
+                                Some(crate::mnx::RepeatStart {})
+                            };
+                            Some(())
+                        });
                     }
 
                     let is_repeat_end = self.parsed_mnx.as_ref()
@@ -1195,13 +1201,15 @@ impl MnxEditorApp {
                         ui.painter().text(rend_rect.center(), egui::Align2::CENTER_CENTER, "\u{E041}", bravura_font.clone(), color);
                     }
                     if rend_resp.on_hover_text("End Repeat").clicked() {
-                        let new_yaml = if is_repeat_end {
-                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatEnd", "")
-                        } else {
-                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "repeatEnd", "{ times: 2 }")
-                        };
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
+                        self.mutate_doc(|doc| {
+                            Self::ensure_global_measure_up_to(doc, m_idx);
+                            doc.global.measures[m_idx].repeat_end = if is_repeat_end {
+                                None
+                            } else {
+                                Some(crate::mnx::RepeatEnd { times: 2 })
+                            };
+                            Some(())
+                        });
                     }
 
                     let is_already_double = self.parsed_mnx.as_ref()
@@ -1217,18 +1225,17 @@ impl MnxEditorApp {
                         ui.painter().text(dbar_rect.center(), egui::Align2::CENTER_CENTER, "\u{E031}", bravura_font.clone(), color);
                     }
                     if dbar_resp.on_hover_text("Double Barline").clicked() {
-                        let new_yaml = if is_already_double {
-                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
-                        } else {
-                            crate::yaml_editor::set_global_measure_property(
-                                &self.yaml_text,
-                                m_idx,
-                                "barline",
-                                "{ type: double }"
-                            )
-                        };
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
+                        self.mutate_doc(|doc| {
+                            Self::ensure_global_measure_up_to(doc, m_idx);
+                            doc.global.measures[m_idx].barline = if is_already_double {
+                                None
+                            } else {
+                                Some(crate::mnx::Barline {
+                                    barline_type: "double".to_string(),
+                                })
+                            };
+                            Some(())
+                        });
                     }
 
                     let is_already_final = self.parsed_mnx.as_ref()
@@ -1244,18 +1251,17 @@ impl MnxEditorApp {
                         ui.painter().text(fbar_rect.center(), egui::Align2::CENTER_CENTER, "\u{E032}", bravura_font.clone(), color);
                     }
                     if fbar_resp.on_hover_text("Ending Barline").clicked() {
-                        let new_yaml = if is_already_final {
-                            crate::yaml_editor::set_global_measure_property(&self.yaml_text, m_idx, "barline", "")
-                        } else {
-                            crate::yaml_editor::set_global_measure_property(
-                                &self.yaml_text,
-                                m_idx,
-                                "barline",
-                                "{ type: final }"
-                            )
-                        };
-                        self.update_yaml(new_yaml);
-                        self.process_and_render();
+                        self.mutate_doc(|doc| {
+                            Self::ensure_global_measure_up_to(doc, m_idx);
+                            doc.global.measures[m_idx].barline = if is_already_final {
+                                None
+                            } else {
+                                Some(crate::mnx::Barline {
+                                    barline_type: "final".to_string(),
+                                })
+                            };
+                            Some(())
+                        });
                     }
 
                     let (start_m, end_m) = self.get_selected_measure_range();
@@ -1288,9 +1294,11 @@ impl MnxEditorApp {
                         .clicked()
                     {
                         if has_closed_ending {
-                            let yaml = crate::yaml_editor::set_global_measure_property(&self.yaml_text, start_m, "ending", "");
-                            self.update_yaml(yaml);
-                            self.process_and_render();
+                            self.mutate_doc(|doc| {
+                                Self::ensure_global_measure_up_to(doc, start_m);
+                                doc.global.measures[start_m].ending = None;
+                                Some(())
+                            });
                         } else {
                             self.active_dialog = ActiveDialog::InsertEnding {
                                 start_m,
@@ -1309,9 +1317,11 @@ impl MnxEditorApp {
                         .clicked()
                     {
                         if has_open_ending {
-                            let yaml = crate::yaml_editor::set_global_measure_property(&self.yaml_text, start_m, "ending", "");
-                            self.update_yaml(yaml);
-                            self.process_and_render();
+                            self.mutate_doc(|doc| {
+                                Self::ensure_global_measure_up_to(doc, start_m);
+                                doc.global.measures[start_m].ending = None;
+                                Some(())
+                            });
                         } else {
                             let prev_max = if let Some(doc) = &self.parsed_mnx {
                                 doc.get_prior_ending_max(start_m)
@@ -1321,15 +1331,15 @@ impl MnxEditorApp {
                             let start_num = prev_max + 1;
                             let numbers = vec![start_num];
                             let duration = (end_m - start_m + 1) as u32;
-                            let ending_val = format!("{{ duration: {}, numbers: {:?}, open: true }}", duration, numbers);
-                            let yaml = crate::yaml_editor::set_global_measure_property(
-                                &self.yaml_text,
-                                start_m,
-                                "ending",
-                                &ending_val,
-                            );
-                            self.update_yaml(yaml);
-                            self.process_and_render();
+                            self.mutate_doc(|doc| {
+                                Self::ensure_global_measure_up_to(doc, start_m);
+                                doc.global.measures[start_m].ending = Some(crate::mnx::Ending {
+                                    duration,
+                                    numbers,
+                                    open: Some(true),
+                                });
+                                Some(())
+                            });
                         }
                     }
 
@@ -2381,6 +2391,7 @@ impl MnxEditorApp {
             .resizable(true)
             .min_size(350.0)
             .show(ui, |ui| {
+                self.ensure_yaml_synced();
                 ui.heading("MNX Source (YAML)");
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -2470,6 +2481,12 @@ impl MnxEditorApp {
                             ui.fonts_mut(|f| f.layout_job(job))
                         };
 
+                    let pre_edit_snapshot = if !self.yaml_edit_session_active {
+                        Some(self.current_undo_snapshot())
+                    } else {
+                        None
+                    };
+
                     let response = ui.add(
                         egui::TextEdit::multiline(&mut self.yaml_text)
                             .id(text_edit_id)
@@ -2479,8 +2496,18 @@ impl MnxEditorApp {
                             .layouter(&mut layouter),
                     );
 
-                    // Trigger real-time re-render on any keystroke
+                    // Trigger real-time re-render on any keystroke without overwriting cursor text,
+                    // coalescing continuous typing into a single undo snapshot.
                     if response.changed() {
+                        if let Some(snap) = pre_edit_snapshot {
+                            self.push_undo_snapshot(snap);
+                            self.yaml_edit_session_active = true;
+                        }
+                        self.yaml_dirty = false;
+                        self.parse_yaml_from_editor();
+                    }
+                    if response.lost_focus() && self.yaml_edit_session_active {
+                        self.yaml_edit_session_active = false;
                         self.process_and_render();
                     }
                 });
@@ -2697,7 +2724,7 @@ impl MnxEditorApp {
                                     if let Some(info) = self.find_event_measure_end_info(old_e_idx) {
                                         if info.is_last_in_measure && info.is_blank {
                                             let m_idx = info.measure_idx;
-                                            let old_total = self.cached_event_ranges.len();
+                                            let old_total = self.active_part_event_count();
                                             let removed = self.mutate_doc(|doc| {
                                                 if remove_blank_event_at_end_of_measure_in_doc_part(
                                                     doc,
@@ -2709,7 +2736,7 @@ impl MnxEditorApp {
                                                     None
                                                 }
                                             });
-                                            let new_total = self.cached_event_ranges.len();
+                                            let new_total = self.active_part_event_count();
                                             if removed.is_some()
                                                 && !switching_part
                                                 && new_total < old_total
@@ -3218,7 +3245,7 @@ impl MnxEditorApp {
                                 let ids: Vec<String> = self.selected_layout_element_ids.iter().cloned().collect();
                                 for id in ids {
                                     let cur_off = offsets.get(&id).copied().unwrap_or(crate::mnx::Offset2D { dx: 0.0, dy: 0.0 });
-                                    offsets_to_apply.push((id, cur_off.dx + drag_delta.x, cur_off.dy + drag_delta.y));
+                                    offsets_to_apply.push((id, cur_off.dx + drag_delta.x, cur_off.dy + cur_off.dy * 0.0 + drag_delta.y));
                                 }
                             }
                         } else {
@@ -3234,7 +3261,10 @@ impl MnxEditorApp {
         });
 
         for (id, ox, oy) in offsets_to_apply {
-            self.action_set_element_offset(&id, ox, oy);
+            self.action_set_element_offset_interactive(&id, ox, oy);
+        }
+        if !self.is_dragging_layout_element && self.interactive_gesture_active {
+            self.end_interactive_gesture();
         }
 
         if arrow_nudge != egui::vec2(0.0, 0.0) {

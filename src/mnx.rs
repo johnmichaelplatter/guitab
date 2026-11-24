@@ -693,8 +693,8 @@ pub struct ScoreLayout {
     pub subtitle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composer: Option<String>,
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub offsets: std::collections::HashMap<String, Offset2D>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub offsets: std::collections::BTreeMap<String, Offset2D>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "lockedSystems")]
     pub locked_systems: Vec<[usize; 2]>,
 }
@@ -709,7 +709,7 @@ impl Default for ScoreLayout {
             title: None,
             subtitle: None,
             composer: None,
-            offsets: std::collections::HashMap::new(),
+            offsets: std::collections::BTreeMap::new(),
             locked_systems: Vec::new(),
         }
     }
@@ -1118,7 +1118,7 @@ impl KitComponent {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Default)]
 pub struct PartExt {
     #[serde(
         rename = "microFretDivisions",
@@ -1160,9 +1160,70 @@ pub struct PartExt {
         rename = "synthPreset",
         alias = "synth_preset",
         default,
-        skip_serializing_if = "Option::is_none"
+        deserialize_with = "deserialize_part_synth_preset"
     )]
     pub synth_preset: Option<crate::synth::SynthPreset>,
+    #[serde(skip)]
+    pub is_percussion_part: bool,
+}
+
+fn deserialize_part_synth_preset<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<crate::synth::SynthPreset>, D::Error> {
+    let opt = Option::<crate::synth::patch::compact_yaml::CompactSynthPreset>::deserialize(d)?;
+    Ok(opt.map(|c| c.into_preset()))
+}
+
+impl Serialize for PartExt {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let is_perc = self.is_percussion_part
+            || (self.midi_channel == Some(10)
+                && self.tuning.is_none()
+                && self.micro_fret_divisions.is_none()
+                && self.custom_frets.is_none());
+
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(v) = &self.micro_fret_divisions {
+            map.serialize_entry("microFretDivisions", v)?;
+        }
+        if let Some(v) = &self.fret_step_multiplier {
+            map.serialize_entry("fretStepMultiplier", v)?;
+        }
+        if let Some(v) = &self.pitch_bend_range {
+            map.serialize_entry("pitchBendRange", v)?;
+        }
+        if let Some(v) = &self.capo {
+            map.serialize_entry("capo", v)?;
+        }
+        if let Some(v) = &self.tuning {
+            map.serialize_entry("tuning", v)?;
+        }
+        if let Some(v) = &self.custom_frets {
+            map.serialize_entry("customFrets", v)?;
+        }
+        if let Some(v) = &self.mpe {
+            map.serialize_entry("mpe", v)?;
+        }
+        if let Some(v) = &self.midi_channel {
+            map.serialize_entry("midiChannel", v)?;
+        }
+        if let Some(preset) = &self.synth_preset {
+            let compact =
+                crate::synth::patch::compact_yaml::CompactSynthPreset::from_preset(preset, is_perc);
+            if compact.is_single_line_flow_candidate()
+                && compact.string_params.is_none()
+                && compact.author.is_none()
+                && compact.engine.is_none()
+            {
+                map.serialize_entry("synthPreset", &FlowMap(&compact))?;
+            } else {
+                map.serialize_entry("synthPreset", &compact)?;
+            }
+        }
+        map.end()
+    }
 }
 
 impl PartExt {
@@ -2210,7 +2271,9 @@ impl Part {
     }
 
     pub fn clean_unneeded_fret_fields(&mut self) {
-        if self.is_percussion() {
+        let is_perc = self.is_percussion();
+        self.ext.is_percussion_part = is_perc;
+        if is_perc {
             self.ext.micro_fret_divisions = None;
             self.ext.fret_step_multiplier = None;
             self.ext.tuning = None;
@@ -2263,6 +2326,15 @@ impl Part {
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("Part {}", idx + 1))
     }
+
+    /// Zero-allocation count of flattened events across all measures and sequences in this part.
+    pub fn event_count(&self) -> usize {
+        self.measures
+            .iter()
+            .flat_map(|m| m.sequences.iter())
+            .map(|s| s.event_count())
+            .sum()
+    }
 }
 
 impl MnxDocument {
@@ -2270,6 +2342,33 @@ impl MnxDocument {
         for part in &mut self.parts {
             part.clean_unneeded_fret_fields();
         }
+    }
+
+    /// Runs the canonical normalization pipeline across `MnxDocument` in a deterministic order.
+    /// Returns `true` if structural auto-healing (missing EDO detection or duplicate ID repair)
+    /// modified the document.
+    pub fn normalize(&mut self, clean_ties: bool) -> bool {
+        self.ensure_measure_parity();
+        let had_missing_edo = self.parts.iter().any(|p| {
+            !p.is_percussion()
+                && p.ext.micro_fret_divisions.is_none()
+                && p.detect_tuning_edo().is_some()
+        });
+        self.clean_unneeded_fret_fields();
+        if clean_ties {
+            self.clean_dangling_ties();
+        }
+        self.clean_dangling_slides();
+        let ids_fixed = self.ensure_unique_ids();
+        had_missing_edo || ids_fixed
+    }
+
+    /// Exports this already-parsed `MnxDocument` directly to pretty-printed `.mnx` JSON without
+    /// re-parsing YAML.
+    pub fn to_mnx_export_json(&self) -> Result<String, String> {
+        let mut exported = self.clone();
+        exported.prepare_for_mnx_export();
+        to_mnx_json_string(&exported)
     }
 
     pub fn ensure_measure_parity(&mut self) {
@@ -2330,6 +2429,9 @@ impl Sequence {
         }
         total
     }
+    pub fn event_count(&self) -> usize {
+        self.content.iter().map(|i| i.event_count()).sum()
+    }
     pub fn flattened_events(&self) -> Vec<&Event> {
         let mut result = Vec::new();
         for item in &self.content {
@@ -2340,6 +2442,13 @@ impl Sequence {
 }
 
 impl SequenceItem {
+    pub fn event_count(&self) -> usize {
+        match self {
+            SequenceItem::Event(_) => 1,
+            SequenceItem::Tuplet(t) => t.content.iter().map(|i| i.event_count()).sum(),
+            SequenceItem::Grace(g) => g.content.iter().map(|i| i.event_count()).sum(),
+        }
+    }
     pub fn total_beats(&self) -> f64 {
         match self {
             SequenceItem::Event(e) => crate::validate::duration_to_quarter_beats(&e.duration),

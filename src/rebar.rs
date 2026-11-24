@@ -34,6 +34,58 @@ pub fn generate_uuid() -> String {
     format!("id_{:x}_{}", ts, count)
 }
 
+/// Generates a globally unique Tempo ID with "tempo_" prefix
+pub fn generate_tempo_id() -> String {
+    let count = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("tempo_{:x}_{}", ts, count)
+}
+
+/// Atomically writes `bytes` to `path` by writing to a sibling temporary file, calling `sync_all()`,
+/// and renaming over `path` so crashes or disk-full errors never leave a truncated 0-byte file.
+pub fn atomic_write_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory {:?}: {}", parent, e))?;
+        }
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output");
+    let tmp_name = format!(".{}.{}.tmp", file_name, generate_uuid());
+    let tmp_path = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(&tmp_name),
+        _ => std::path::PathBuf::from(&tmp_name),
+    };
+
+    let write_res = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write temporary file {:?}: {}", tmp_path, e));
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to finalize file {:?}: {}", path, e));
+    }
+
+    Ok(())
+}
+
 pub fn rebar_part(part: &mut Part, global_measures: &mut Vec<crate::mnx::GlobalMeasure>) {
     let mut flat_items = Vec::new();
     for measure in &part.measures {

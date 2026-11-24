@@ -74,10 +74,28 @@ impl DurationTextures {
     }
 }
 
+/// Maximum number of undo/redo states retained in memory.
+pub const MAX_UNDO_HISTORY: usize = 150;
+
+/// In-memory undo/redo snapshot storing the typed [`MnxDocument`] AST as the primary source of
+/// truth (falling back to reference-counted YAML text only when snapshotting unparseable text).
+#[derive(Clone, Debug)]
+pub(crate) struct UndoSnapshot {
+    pub doc: Option<MnxDocument>,
+    pub yaml_fallback: Option<std::sync::Arc<str>>,
+}
+
 pub struct MnxEditorApp {
     pub needs_scroll: bool,
     pub(crate) yaml_text: String,
     pub(crate) saved_yaml: String,
+    pub(crate) saved_doc: Option<MnxDocument>,
+    pub(crate) yaml_dirty: bool,
+    pub(crate) yaml_edit_session_active: bool,
+    pub(crate) interactive_gesture_active: bool,
+    pub(crate) live_play_dirty: bool,
+    pub(crate) last_live_play_just_play: bool,
+    pub(crate) last_live_play_controller_count: usize,
     pub(crate) parsed_mnx: Option<MnxDocument>,
     pub(crate) parsed_errors: Vec<validate::ValidationError>,
     pub(crate) validation_errors: Vec<String>,
@@ -114,8 +132,8 @@ pub struct MnxEditorApp {
     pub(crate) is_adding_instrument_in_dialog: bool, // True when InstrumentSetup is adding a new part
     pub(crate) show_string_channels_popup: bool, // Toggle state for String Channels dropdown panel
     pub(crate) show_grid_controllers_popup: bool, // Toggle state for Grid Controllers dropdown panel
-    pub(crate) undo_stack: Vec<String>,
-    pub(crate) redo_stack: Vec<String>,
+    pub(crate) undo_stack: std::collections::VecDeque<UndoSnapshot>,
+    pub(crate) redo_stack: std::collections::VecDeque<UndoSnapshot>,
     pub(crate) clipboard: Option<ClipboardData>,
     pub is_editing_lyric: bool,
     pub editing_lyric_buf: String,
@@ -127,7 +145,7 @@ pub struct MnxEditorApp {
     pub selected_layout_element_ids: std::collections::HashSet<String>,
     pub selected_layout_measures: std::collections::BTreeSet<usize>,
     pub is_dragging_layout_element: bool,
-    pub(crate) cached_event_ranges: Vec<crate::yaml_editor::EventRange>,
+    pub(crate) cached_event_ranges: std::sync::Arc<[crate::yaml_editor::EventRange]>,
     pub(crate) current_grid: String,
     pub(crate) instrument_presets: Vec<crate::presets::InstrumentPreset>,
     pub(crate) drum_kit_presets: Vec<crate::presets::DrumKitPreset>,
@@ -471,6 +489,13 @@ impl MnxEditorApp {
         let mut app = Self {
             yaml_text: initial_yaml.clone(),
             saved_yaml: initial_yaml,
+            saved_doc: None,
+            yaml_dirty: false,
+            yaml_edit_session_active: false,
+            interactive_gesture_active: false,
+            live_play_dirty: true,
+            last_live_play_just_play: false,
+            last_live_play_controller_count: 0,
             parsed_mnx: None,
             parsed_errors: Vec::new(),
             needs_scroll: true,
@@ -511,8 +536,8 @@ impl MnxEditorApp {
             is_adding_instrument_in_dialog: false,
             show_string_channels_popup: false,
             show_grid_controllers_popup: false,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: std::collections::VecDeque::new(),
+            redo_stack: std::collections::VecDeque::new(),
             clipboard: None,
             is_editing_lyric: false,
             editing_lyric_buf: String::new(),
@@ -524,7 +549,7 @@ impl MnxEditorApp {
             selected_layout_element_ids: std::collections::HashSet::new(),
             selected_layout_measures: std::collections::BTreeSet::new(),
             is_dragging_layout_element: false,
-            cached_event_ranges: Vec::new(),
+            cached_event_ranges: std::sync::Arc::from(&[][..]),
             current_grid: String::from("quarter"),
             instrument_presets: crate::presets::load_presets_with_user_config(),
             drum_kit_presets: crate::presets::load_drum_presets_with_user_config(),
@@ -548,6 +573,10 @@ impl MnxEditorApp {
         app.sync_live_play_config();
 
         app.process_and_render();
+        app.saved_yaml = app.yaml_text.clone();
+        app.saved_doc = app.parsed_mnx.clone();
+        app.undo_stack.clear();
+        app.redo_stack.clear();
         app
     }
 }
@@ -694,10 +723,13 @@ impl MnxEditorApp {
         self.selected_midi_port = self.get_part_midi_port(self.selected_part_idx);
         self.pitch_bend_range = self.get_part_pitch_bend_range(self.selected_part_idx);
         self.is_mpe_mode = self.is_part_mpe_mode(self.selected_part_idx);
+        self.live_play_dirty = true;
 
-        self.cached_event_ranges =
-            find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
-        let total_events = self.cached_event_ranges.len();
+        if self.show_yaml_panel || cfg!(test) {
+            self.ensure_yaml_synced();
+            self.refresh_cached_event_ranges();
+        }
+        let total_events = self.active_part_event_count();
         if let Some(ev_idx) = self.selected_event_idx {
             if total_events == 0 {
                 self.selected_event_idx = None;
@@ -706,6 +738,49 @@ impl MnxEditorApp {
             }
         }
         self.selection_anchor = None;
+    }
+
+    pub fn active_part_event_count(&self) -> usize {
+        if let Some(part) = self.active_part() {
+            part.event_count()
+        } else {
+            self.cached_event_ranges.len()
+        }
+    }
+
+    pub(crate) fn ensure_global_measure_up_to(doc: &mut MnxDocument, target_m_idx: usize) {
+        while doc.global.measures.len() <= target_m_idx {
+            if doc.global.measures.is_empty() {
+                doc.global.measures.push(crate::mnx::GlobalMeasure {
+                    time: Some(crate::mnx::TimeSignature { count: 4, unit: 4 }),
+                    ..Default::default()
+                });
+            } else {
+                doc.global
+                    .measures
+                    .push(crate::mnx::GlobalMeasure::default());
+            }
+        }
+    }
+
+    pub fn refresh_cached_event_ranges(&mut self) {
+        self.cached_event_ranges =
+            find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx).into();
+    }
+
+    /// Flushes any deferred `MnxDocument -> yaml_text` serialization when `yaml_dirty` is set.
+    pub fn ensure_yaml_synced(&mut self) {
+        if self.yaml_dirty {
+            if let Some(doc) = &self.parsed_mnx {
+                if let Ok(new_yaml) = serde_saphyr::to_string(doc) {
+                    self.yaml_text = new_yaml;
+                }
+            }
+            self.yaml_dirty = false;
+            if self.show_yaml_panel || cfg!(test) {
+                self.refresh_cached_event_ranges();
+            }
+        }
     }
 
     pub fn active_layout_part_indices(&self) -> Vec<usize> {
@@ -741,33 +816,128 @@ impl MnxEditorApp {
         }
     }
 
-    pub fn push_undo_state(&mut self) {
-        if self.undo_stack.last() != Some(&self.yaml_text) {
-            self.undo_stack.push(self.yaml_text.clone());
+    pub(crate) fn current_undo_snapshot(&self) -> UndoSnapshot {
+        if let Some(doc) = &self.parsed_mnx {
+            UndoSnapshot {
+                doc: Some(doc.clone()),
+                yaml_fallback: None,
+            }
+        } else {
+            UndoSnapshot {
+                doc: None,
+                yaml_fallback: Some(std::sync::Arc::from(self.yaml_text.as_str())),
+            }
+        }
+    }
+
+    pub(crate) fn push_undo_snapshot(&mut self, snap: UndoSnapshot) {
+        let is_same = self.undo_stack.back().map_or(false, |last| {
+            match (&last.doc, &snap.doc) {
+                (Some(a), Some(b)) => a == b,
+                (None, None) => last.yaml_fallback == snap.yaml_fallback,
+                _ => false,
+            }
+        });
+        if !is_same {
+            while self.undo_stack.len() >= MAX_UNDO_HISTORY {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(snap);
             self.redo_stack.clear();
         }
     }
 
+    pub fn push_undo_state(&mut self) {
+        let snap = self.current_undo_snapshot();
+        self.push_undo_snapshot(snap);
+    }
+
     pub fn update_yaml(&mut self, new_yaml: String) {
+        self.ensure_yaml_synced();
         if self.yaml_text != new_yaml {
             self.push_undo_state();
             self.yaml_text = new_yaml;
+            self.yaml_dirty = false;
+        }
+    }
+
+    fn restore_undo_snapshot(&mut self, snap: UndoSnapshot) {
+        self.interactive_gesture_active = false;
+        self.yaml_edit_session_active = false;
+        if let Some(doc) = snap.doc {
+            self.commit_doc_without_undo(doc);
+        } else if let Some(txt) = snap.yaml_fallback {
+            self.yaml_text = txt.to_string();
+            self.yaml_dirty = false;
+            self.process_and_render();
         }
     }
 
     pub fn undo(&mut self) {
-        if let Some(prev) = self.undo_stack.pop() {
-            self.redo_stack.push(self.yaml_text.clone());
-            self.yaml_text = prev;
-            self.process_and_render();
+        if let Some(prev) = self.undo_stack.pop_back() {
+            let cur = self.current_undo_snapshot();
+            while self.redo_stack.len() >= MAX_UNDO_HISTORY {
+                self.redo_stack.pop_front();
+            }
+            self.redo_stack.push_back(cur);
+            self.restore_undo_snapshot(prev);
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some(next) = self.redo_stack.pop() {
-            self.undo_stack.push(self.yaml_text.clone());
-            self.yaml_text = next;
-            self.process_and_render();
+        if let Some(next) = self.redo_stack.pop_back() {
+            let cur = self.current_undo_snapshot();
+            while self.undo_stack.len() >= MAX_UNDO_HISTORY {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(cur);
+            self.restore_undo_snapshot(next);
+        }
+    }
+
+    /// Starts a coalesced interactive gesture (e.g. Layout drag or live pad chord roll),
+    /// recording at most one undo snapshot for the entire gesture.
+    pub fn begin_interactive_gesture(&mut self) {
+        if !self.interactive_gesture_active {
+            self.push_undo_state();
+            self.interactive_gesture_active = true;
+        }
+    }
+
+    /// Mutates `self.parsed_mnx` directly in memory during a high-frequency gesture (such as
+    /// mouse dragging at 60–120 Hz) without re-serializing YAML, scanning ranges, or flooding
+    /// `undo_stack`.
+    pub fn mutate_doc_interactive<F>(&mut self, f: F) -> bool
+    where
+        F: FnOnce(&mut MnxDocument) -> bool,
+    {
+        if self.parsed_mnx.is_none() {
+            self.parsed_mnx = serde_saphyr::from_str::<MnxDocument>(&self.yaml_text).ok();
+        }
+        if self.parsed_mnx.is_none() {
+            return false;
+        }
+        self.begin_interactive_gesture();
+        let changed = if let Some(doc) = self.parsed_mnx.as_mut() {
+            f(doc)
+        } else {
+            false
+        };
+        if changed {
+            self.yaml_dirty = true;
+            self.live_play_dirty = true;
+        }
+        changed
+    }
+
+    /// Finalizes a coalesced interactive gesture, running normalization and syncing YAML once.
+    pub fn end_interactive_gesture(&mut self) {
+        if self.interactive_gesture_active {
+            self.interactive_gesture_active = false;
+            if let Some(mut doc) = self.parsed_mnx.take() {
+                doc.normalize(false);
+                self.commit_doc_without_undo(doc);
+            }
         }
     }
 
@@ -1221,7 +1391,7 @@ impl MnxEditorApp {
             if let Some(info) = self.find_event_measure_end_info(old_e_idx) {
                 if info.is_last_in_measure && info.is_blank {
                     let m_idx = info.measure_idx;
-                    let old_total = self.cached_event_ranges.len();
+                    let old_total = self.active_part_event_count();
                     let removed = self.mutate_doc(|doc| {
                         if crate::yaml_editor::remove_blank_event_at_end_of_measure_in_doc_part(
                             doc,
@@ -1233,7 +1403,7 @@ impl MnxEditorApp {
                             None
                         }
                     });
-                    let new_total = self.cached_event_ranges.len();
+                    let new_total = self.active_part_event_count();
                     if removed.is_some() && new_total < old_total {
                         ref_event_idx = old_e_idx.saturating_sub(1);
                     }
@@ -1250,7 +1420,7 @@ impl MnxEditorApp {
             .unwrap_or(0);
 
         self.select_part(target_part_idx);
-        let new_total = self.cached_event_ranges.len();
+        let new_total = self.active_part_event_count();
         if new_total > 0 {
             let clamped_ev = target_event_idx.min(new_total - 1);
             self.selected_event_idx = Some(clamped_ev);
@@ -1592,6 +1762,9 @@ impl MnxEditorApp {
             state.part_copy = part_opt;
             state.slots = self.grid_input.slots.clone();
         }
+        self.live_play_dirty = false;
+        self.last_live_play_just_play = self.grid_input.just_play_mode;
+        self.last_live_play_controller_count = self.grid_input.active_controller_count();
     }
 
     /// Handles live note-on/note-off events from grid controllers in "Just Play" mode,
@@ -1899,36 +2072,73 @@ impl MnxEditorApp {
         let target_preset = self.get_part_synth_preset(self.synth_lab.target_part_idx);
         self.synth_lab.preset = target_preset.clone();
         self.synth_lab.profile = target_preset.body_params.profile_base;
-        self.cached_event_ranges =
-            find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
-    }
-
-    pub fn apply_mutated_doc(&mut self, mut doc: MnxDocument) {
-        doc.ensure_measure_parity();
-        doc.clean_unneeded_fret_fields();
-        doc.clean_dangling_slides();
-        if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-            self.update_yaml(new_yaml);
-            self.sync_from_parsed_doc(doc);
+        self.live_play_dirty = true;
+        if (self.show_yaml_panel || cfg!(test)) && !self.yaml_dirty {
+            self.refresh_cached_event_ranges();
         }
     }
 
-    pub fn apply_mutated_doc_and_clean_ties(&mut self, mut doc: MnxDocument) {
-        doc.clean_dangling_ties();
-        self.apply_mutated_doc(doc);
+    fn commit_doc_without_undo(&mut self, doc: MnxDocument) {
+        if self.show_yaml_panel || cfg!(test) {
+            match serde_saphyr::to_string(&doc) {
+                Ok(new_yaml) => {
+                    self.yaml_text = new_yaml;
+                    self.yaml_dirty = false;
+                    self.sync_from_parsed_doc(doc);
+                }
+                Err(e) => {
+                    self.sync_from_parsed_doc(doc);
+                    self.validation_errors
+                        .push(format!("YAML SERIALIZE ERROR:\n{}", e));
+                }
+            }
+        } else {
+            self.yaml_dirty = true;
+            self.sync_from_parsed_doc(doc);
+        }
+        if self.synth_engine.is_some() {
+            self.sync_all_parts_to_synth_engine();
+        }
+    }
+
+    fn apply_mutated_doc_inner(&mut self, mut doc: MnxDocument, clean_ties: bool) {
+        self.interactive_gesture_active = false;
+        self.yaml_edit_session_active = false;
+        doc.normalize(clean_ties);
+        if let Some(prev) = self.parsed_mnx.take() {
+            if prev != doc {
+                self.push_undo_snapshot(UndoSnapshot {
+                    doc: Some(prev),
+                    yaml_fallback: None,
+                });
+            }
+        } else {
+            self.push_undo_state();
+        }
+        self.commit_doc_without_undo(doc);
+    }
+
+    pub fn apply_mutated_doc(&mut self, doc: MnxDocument) {
+        self.apply_mutated_doc_inner(doc, false);
+    }
+
+    pub fn apply_mutated_doc_and_clean_ties(&mut self, doc: MnxDocument) {
+        self.apply_mutated_doc_inner(doc, true);
     }
 
     pub fn mutate_doc<F, R>(&mut self, f: F) -> Option<R>
     where
         F: FnOnce(&mut MnxDocument) -> Option<R>,
     {
+        let prev_opt = self.parsed_mnx.clone();
         let mut doc = self
             .parsed_mnx
             .take()
             .or_else(|| serde_saphyr::from_str::<MnxDocument>(&self.yaml_text).ok())?;
         match f(&mut doc) {
             Some(res) => {
-                self.apply_mutated_doc(doc);
+                self.parsed_mnx = prev_opt;
+                self.apply_mutated_doc_inner(doc, false);
                 Some(res)
             }
             None => {
@@ -1942,14 +2152,15 @@ impl MnxEditorApp {
     where
         F: FnOnce(&mut MnxDocument) -> Option<R>,
     {
+        let prev_opt = self.parsed_mnx.clone();
         let mut doc = self
             .parsed_mnx
             .take()
             .or_else(|| serde_saphyr::from_str::<MnxDocument>(&self.yaml_text).ok())?;
         match f(&mut doc) {
             Some(res) => {
-                doc.clean_dangling_ties();
-                self.apply_mutated_doc(doc);
+                self.parsed_mnx = prev_opt;
+                self.apply_mutated_doc_inner(doc, true);
                 Some(res)
             }
             None => {
@@ -1959,18 +2170,35 @@ impl MnxEditorApp {
         }
     }
 
-    pub fn process_and_render(&mut self) {
+    /// Parses `self.yaml_text` while the user is actively typing in the YAML `TextEdit`,
+    /// updating `parsed_mnx` and validation without overwriting `self.yaml_text` mid-keystroke.
+    pub fn parse_yaml_from_editor(&mut self) {
         match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
             Ok(mut doc) => {
                 doc.ensure_measure_parity();
-                let had_missing_edo = doc.parts.iter().any(|p| {
-                    p.ext.micro_fret_divisions.is_none() && p.detect_tuning_edo().is_some()
-                });
                 doc.clean_unneeded_fret_fields();
-                let ids_fixed = doc.ensure_unique_ids();
-                if had_missing_edo || ids_fixed {
+                self.sync_from_parsed_doc(doc);
+                if self.synth_engine.is_some() {
+                    self.sync_all_parts_to_synth_engine();
+                }
+            }
+            Err(e) => {
+                self.refresh_cached_event_ranges();
+                self.parsed_mnx = None;
+                self.parsed_errors = Vec::new();
+                self.validation_errors = vec![format!("YAML PARSE ERROR:\n{}", e)];
+            }
+        }
+    }
+
+    pub fn process_and_render(&mut self) {
+        self.yaml_dirty = false;
+        match serde_saphyr::from_str::<MnxDocument>(&self.yaml_text) {
+            Ok(mut doc) => {
+                let healed = doc.normalize(false);
+                if healed {
                     if let Ok(new_yaml) = serde_saphyr::to_string(&doc) {
-                        self.update_yaml(new_yaml);
+                        self.yaml_text = new_yaml;
                     }
                 }
                 self.sync_from_parsed_doc(doc);
@@ -1979,8 +2207,7 @@ impl MnxEditorApp {
                 }
             }
             Err(e) => {
-                self.cached_event_ranges =
-                    find_event_ranges_for_part(&self.yaml_text, self.selected_part_idx);
+                self.refresh_cached_event_ranges();
                 self.parsed_mnx = None;
                 self.parsed_errors = Vec::new();
                 self.validation_errors = vec![format!("YAML PARSE ERROR:\n{}", e)];
@@ -2001,6 +2228,7 @@ impl MnxEditorApp {
         self.part_midi_ports.insert(part_idx, port_id);
         if part_idx == self.selected_part_idx {
             self.selected_midi_port = Some(port_id);
+            self.live_play_dirty = true;
         }
     }
 
@@ -2122,7 +2350,14 @@ impl MnxEditorApp {
     }
 
     pub fn is_modified(&self) -> bool {
-        self.yaml_text != self.saved_yaml
+        if self.yaml_dirty {
+            match (&self.parsed_mnx, &self.saved_doc) {
+                (Some(cur), Some(saved)) => cur != saved,
+                _ => true,
+            }
+        } else {
+            self.yaml_text != self.saved_yaml
+        }
     }
 
     pub fn open_instrument_setup_dialog(&mut self, show_custom_fretboard: bool) {
@@ -2440,6 +2675,16 @@ impl MnxEditorApp {
         }
         self.part_pitch_bend_ranges = new_pb_ranges;
 
+        let mut new_synth_presets = std::collections::HashMap::new();
+        for (k, v) in self.part_synth_presets.drain() {
+            if k < part_idx {
+                new_synth_presets.insert(k, v);
+            } else if k > part_idx {
+                new_synth_presets.insert(k - 1, v);
+            }
+        }
+        self.part_synth_presets = new_synth_presets;
+
         self.mutate_doc(|doc| {
             if doc.parts.len() > 1 && part_idx < doc.parts.len() {
                 doc.parts.remove(part_idx);
@@ -2457,6 +2702,9 @@ impl MnxEditorApp {
             .max(1);
         let next_sel = self.selected_part_idx.min(new_count - 1);
         self.select_part(next_sel);
+        if self.synth_engine.is_some() {
+            self.sync_all_parts_to_synth_engine();
+        }
     }
 
     pub fn prompt_new_tab_instrument_setup(&mut self) {
@@ -2579,10 +2827,18 @@ impl MnxEditorApp {
             }],
         };
 
+        let mut doc = doc;
+        doc.normalize(false);
         let new_yaml = serde_saphyr::to_string(&doc).unwrap_or_default();
 
-        self.update_yaml(new_yaml.clone());
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.yaml_edit_session_active = false;
+        self.interactive_gesture_active = false;
+        self.yaml_text = new_yaml.clone();
         self.saved_yaml = new_yaml;
+        self.saved_doc = Some(doc.clone());
+        self.yaml_dirty = false;
         self.current_file_path = None;
         self.selected_part_idx = 0;
         self.string_channel_dialog_part_idx = 0;
@@ -2590,6 +2846,7 @@ impl MnxEditorApp {
         self.part_mpe_modes.clear();
         self.part_midi_ports.clear();
         self.part_string_channel_maps.clear();
+        self.part_synth_presets.clear();
         self.layout_view_tab = LayoutViewTab::Ensemble;
         self.ensemble_visible_parts = vec![true];
         self.selected_event_idx = Some(0);
@@ -2598,6 +2855,9 @@ impl MnxEditorApp {
         self.editing_fret_buf.clear();
         self.editing_string = None;
         self.sync_from_parsed_doc(doc);
+        if self.synth_engine.is_some() {
+            self.sync_all_parts_to_synth_engine();
+        }
     }
 
     pub fn start_new_percussion_tab(
@@ -2660,10 +2920,18 @@ impl MnxEditorApp {
             }],
         };
 
+        let mut doc = doc;
+        doc.normalize(false);
         let new_yaml = serde_saphyr::to_string(&doc).unwrap_or_default();
 
-        self.update_yaml(new_yaml.clone());
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.yaml_edit_session_active = false;
+        self.interactive_gesture_active = false;
+        self.yaml_text = new_yaml.clone();
         self.saved_yaml = new_yaml;
+        self.saved_doc = Some(doc.clone());
+        self.yaml_dirty = false;
         self.current_file_path = None;
         self.selected_part_idx = 0;
         self.string_channel_dialog_part_idx = 0;
@@ -2671,6 +2939,7 @@ impl MnxEditorApp {
         self.part_mpe_modes.clear();
         self.part_midi_ports.clear();
         self.part_string_channel_maps.clear();
+        self.part_synth_presets.clear();
         self.layout_view_tab = LayoutViewTab::Ensemble;
         self.ensemble_visible_parts = vec![true];
         self.selected_event_idx = Some(0);
@@ -2679,6 +2948,9 @@ impl MnxEditorApp {
         self.editing_fret_buf.clear();
         self.editing_string = None;
         self.sync_from_parsed_doc(doc);
+        if self.synth_engine.is_some() {
+            self.sync_all_parts_to_synth_engine();
+        }
     }
 
     pub fn add_new_percussion_part(
@@ -2825,6 +3097,38 @@ impl MnxEditorApp {
         }
     }
 
+    /// Loads `content` as a freshly opened score, clearing prior undo/redo history so `Cmd+Z`
+    /// cannot revert into a previously open file and overwrite `file_path`.
+    pub fn load_yaml_into_fresh_session(
+        &mut self,
+        content: String,
+        file_path: Option<std::path::PathBuf>,
+    ) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.yaml_edit_session_active = false;
+        self.interactive_gesture_active = false;
+        self.yaml_text = content;
+        self.yaml_dirty = false;
+        self.current_file_path = file_path;
+        self.selected_part_idx = 0;
+        self.string_channel_dialog_part_idx = 0;
+        self.part_pitch_bend_ranges.clear();
+        self.part_mpe_modes.clear();
+        self.part_midi_ports.clear();
+        self.part_string_channel_maps.clear();
+        self.part_synth_presets.clear();
+        self.layout_view_tab = LayoutViewTab::Ensemble;
+        self.selected_event_idx = None;
+        self.selected_note_idx_in_event = None;
+        self.is_editing_fret = false;
+        self.editing_fret_buf.clear();
+        self.editing_string = None;
+        self.process_and_render();
+        self.saved_yaml = self.yaml_text.clone();
+        self.saved_doc = self.parsed_mnx.clone();
+    }
+
     pub(crate) fn perform_open_file(&mut self) -> bool {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("YAML Documents", &["yaml", "yml"])
@@ -2832,22 +3136,7 @@ impl MnxEditorApp {
         {
             match fs::read_to_string(&path) {
                 Ok(content) => {
-                    self.update_yaml(content.clone());
-                    self.saved_yaml = content;
-                    self.current_file_path = Some(path);
-                    self.selected_part_idx = 0;
-                    self.string_channel_dialog_part_idx = 0;
-                    self.part_pitch_bend_ranges.clear();
-                    self.part_mpe_modes.clear();
-                    self.part_midi_ports.clear();
-                    self.part_string_channel_maps.clear();
-                    self.layout_view_tab = LayoutViewTab::Ensemble;
-                    self.selected_event_idx = None;
-                    self.selected_note_idx_in_event = None;
-                    self.is_editing_fret = false;
-                    self.editing_fret_buf.clear();
-                    self.editing_string = None;
-                    self.process_and_render();
+                    self.load_yaml_into_fresh_session(content, Some(path));
                     true
                 }
                 Err(e) => {
@@ -2863,11 +3152,13 @@ impl MnxEditorApp {
     pub(crate) fn save_file(&mut self) -> bool {
         // If we have a known file path, save to it. Otherwise, trigger "Save As".
         if let Some(path) = self.current_file_path.clone() {
-            if let Err(e) = fs::write(&path, &self.yaml_text) {
+            self.ensure_yaml_synced();
+            if let Err(e) = crate::rebar::atomic_write_file(&path, self.yaml_text.as_bytes()) {
                 self.validation_errors = vec![format!("Failed to save file: {}", e)];
                 false
             } else {
                 self.saved_yaml = self.yaml_text.clone();
+                self.saved_doc = self.parsed_mnx.clone();
                 true
             }
         } else {
@@ -2881,13 +3172,15 @@ impl MnxEditorApp {
             .set_file_name("untitled.yaml")
             .save_file()
         {
-            if let Err(e) = fs::write(&path, &self.yaml_text) {
+            self.ensure_yaml_synced();
+            if let Err(e) = crate::rebar::atomic_write_file(&path, self.yaml_text.as_bytes()) {
                 self.validation_errors = vec![format!("Failed to save file: {}", e)];
                 false
             } else {
                 // Update the current path so subsequent "Saves" go here
                 self.current_file_path = Some(path);
                 self.saved_yaml = self.yaml_text.clone();
+                self.saved_doc = self.parsed_mnx.clone();
                 true
             }
         } else {
@@ -2948,9 +3241,15 @@ impl MnxEditorApp {
             if path.extension().and_then(|e| e.to_str()) != Some("mnx") {
                 path.set_extension("mnx");
             }
-            match crate::mnx::export_yaml_to_mnx_json(&self.yaml_text) {
+            let json_res = if let Some(doc) = &self.parsed_mnx {
+                doc.to_mnx_export_json()
+            } else {
+                self.ensure_yaml_synced();
+                crate::mnx::export_yaml_to_mnx_json(&self.yaml_text)
+            };
+            match json_res {
                 Ok(json_str) => {
-                    if let Err(e) = fs::write(&path, json_str) {
+                    if let Err(e) = crate::rebar::atomic_write_file(&path, json_str.as_bytes()) {
                         self.validation_errors = vec![format!("Failed to export .mnx file: {}", e)];
                         false
                     } else {
@@ -3031,8 +3330,7 @@ impl eframe::App for MnxEditorApp {
             }
         }
 
-        let event_ranges = self.cached_event_ranges.clone();
-        let total_events = event_ranges.len();
+        let total_events = self.active_part_event_count();
         let text_edit_id = egui::Id::new("yaml_source_editor");
 
         // Clamp selection if document changed
@@ -3050,14 +3348,19 @@ impl eframe::App for MnxEditorApp {
 
         let editor_focused = self.show_yaml_panel && ui.memory(|m| m.has_focus(text_edit_id));
 
-        self.sync_live_play_config();
+        let any_grid_connected = self.grid_input.active_controller_count() > 0;
+        if self.live_play_dirty
+            || self.last_live_play_just_play != self.grid_input.just_play_mode
+            || self.last_live_play_controller_count != self.grid_input.active_controller_count()
+        {
+            self.sync_live_play_config();
+        }
 
         // Poll Grid Controller MIDI Input
         let num_strings = self
             .active_part()
             .map(|p| p.num_strings() as u8)
             .unwrap_or(6);
-        let any_grid_connected = self.grid_input.active_controller_count() > 0;
         if any_grid_connected
             || self.grid_input.release_latch_start.is_some()
             || self.grid_input.active_calibration.is_some()
@@ -3085,27 +3388,22 @@ impl eframe::App for MnxEditorApp {
             let p_idx = self.selected_part_idx;
             self.selected_event_idx = Some(e_idx);
             self.selected_note_idx_in_event = None;
-            if self
-                .mutate_doc(|doc| {
-                    if crate::yaml_editor::set_chord_on_event_in_doc_part(doc, p_idx, e_idx, &chord)
-                    {
-                        Some(())
-                    } else {
-                        None
-                    }
-                })
-                .is_some()
-            {
+            if self.mutate_doc_interactive(|doc| {
+                crate::yaml_editor::set_chord_on_event_in_doc_part(doc, p_idx, e_idx, &chord)
+            }) {
                 self.preview_selected_sound();
             }
         }
         if should_finalize {
-            let cur_total = self.cached_event_ranges.len();
+            self.end_interactive_gesture();
+            let cur_total = self.active_part_event_count();
             self.advance_to_next_note_in_grid_mode(cur_total);
+        } else if was_grid_mode && !self.grid_input.is_grid_input_mode && self.interactive_gesture_active {
+            self.end_interactive_gesture();
         }
 
-        let event_ranges = self.cached_event_ranges.clone();
-        let total_events = event_ranges.len();
+        let event_ranges = std::sync::Arc::clone(&self.cached_event_ranges);
+        let total_events = self.active_part_event_count();
 
         self.handle_keyboard_input(ui, editor_focused, &event_ranges, total_events);
 

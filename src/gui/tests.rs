@@ -5519,7 +5519,7 @@ parts:
 
         // Verify that YAML serialization did not leak flow style into measures/events
         assert_eq!(app.cached_event_ranges.len(), total_events);
-        for range in &app.cached_event_ranges {
+        for range in app.cached_event_ranges.iter() {
             assert!(!range.note_ranges.is_empty());
         }
 
@@ -7145,6 +7145,228 @@ parts:
                 top_line_pos.y
             );
         }
+    }
+
+    #[test]
+    fn test_phase1_open_and_new_clear_undo_and_prevent_cross_file_overwrite() {
+        let mut app = MnxEditorApp::default();
+        app.selected_event_idx = Some(0);
+        app.change_selected_duration_base("half");
+        assert!(!app.undo_stack.is_empty(), "Editing Score A should push undo history");
+
+        // Load Score B containing duplicate IDs that trigger auto-healing on load
+        let score_b = r#"---
+mnx: { version: 1 }
+global:
+  measures:
+    - time: { count: 3, unit: 4 }
+parts:
+  - name: "Opened Bass"
+    _x: { microFretDivisions: 12 }
+    measures:
+      - sequences:
+          - content:
+              - id: dup_id
+                duration: { base: quarter }
+                notes:
+                  - id: dup_id
+                    pitch: { step: E, octave: 2 }
+                    _x: { string: 4, fret: 0 }
+"#;
+        let fake_path = std::path::PathBuf::from("/tmp/guitab_test_score_b.yaml");
+        app.load_yaml_into_fresh_session(score_b.to_string(), Some(fake_path.clone()));
+
+        assert!(app.undo_stack.is_empty(), "Opening a file must clear prior undo history");
+        assert!(app.redo_stack.is_empty(), "Opening a file must clear prior redo history");
+        assert!(!app.is_modified(), "Auto-healed newly opened file must start clean (not modified)");
+        assert_eq!(app.current_file_path.as_ref(), Some(&fake_path));
+
+        // Pressing undo right after open must be a no-op (never reverting to Score A!)
+        app.undo();
+        assert_eq!(
+            app.parsed_mnx.as_ref().unwrap().parts[0].name.as_deref(),
+            Some("Opened Bass")
+        );
+
+        // Make an edit in Score B, then start a new tab and verify undo history clears again
+        app.selected_event_idx = Some(0);
+        app.change_selected_duration_base("whole");
+        assert!(!app.undo_stack.is_empty());
+        app.start_new_tab(6, 12, 1, Vec::new());
+        assert!(app.undo_stack.is_empty(), "Starting a new tab must clear undo history");
+        assert!(!app.is_modified());
+    }
+
+    #[test]
+    fn test_phase1_atomic_write_file_and_deterministic_offsets_order() {
+        let dir = std::env::temp_dir().join(format!("guitab_atomic_test_{}", crate::rebar::generate_uuid()));
+        let target = dir.join("score.yaml");
+
+        crate::rebar::atomic_write_file(&target, b"first version").expect("Initial atomic write");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first version");
+
+        crate::rebar::atomic_write_file(&target, b"second version overwrite").expect("Atomic overwrite");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "second version overwrite");
+
+        // Ensure no leftover temporary files remain in the directory
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 1, "No .tmp sibling files should remain after atomic write");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Verify deterministic BTreeMap key ordering for ScoreLayout::offsets
+        let mut app = MnxEditorApp::default();
+        app.action_set_element_offset("zeta_id", 12.0, -4.0);
+        app.action_set_element_offset("alpha_id", 5.0, 8.0);
+        app.action_set_element_offset("mid_id", -3.0, 2.0);
+
+        let pos_alpha = app.yaml_text.find("alpha_id").expect("alpha_id present");
+        let pos_mid = app.yaml_text.find("mid_id").expect("mid_id present");
+        let pos_zeta = app.yaml_text.find("zeta_id").expect("zeta_id present");
+        assert!(
+            pos_alpha < pos_mid && pos_mid < pos_zeta,
+            "Layout offsets must serialize in deterministic sorted key order"
+        );
+    }
+
+    #[test]
+    fn test_phase1_remove_instrument_shifts_synth_presets_cleanly() {
+        let mut app = MnxEditorApp::default();
+        app.add_new_instrument_part("Second Synth Part".to_string(), 6, 12, 1, Vec::new(), None);
+
+        let lead = crate::synth::SynthPreset::heavy_lead();
+        let fm = crate::synth::SynthPreset::fm_dx_electric_piano();
+        app.set_part_synth_preset(0, lead);
+        app.set_part_synth_preset(1, fm);
+
+        // Remove Part 0 -> former Part 1 becomes Part 0 and must keep its FM preset
+        app.remove_instrument_part(0);
+        let surviving_preset = app.get_part_synth_preset(0);
+        assert_eq!(surviving_preset.name, "FM DX Electric Piano");
+        assert_eq!(surviving_preset.engine, crate::synth::PitchedEngine::FmSynth);
+    }
+
+    #[test]
+    fn test_phase2_compact_synth_preset_omits_unused_engines_and_defaults() {
+        let mut app = MnxEditorApp::default();
+        // Part 0: Pure factory Tele Clean (no parameter overrides)
+        app.set_part_synth_preset(0, crate::synth::SynthPreset::tele_clean());
+
+        // Part 1: Tweaked Heavy Lead (only t60_decay_sec overridden)
+        app.add_new_instrument_part("Lead Guitar".to_string(), 6, 12, 1, Vec::new(), None);
+        let mut lead = crate::synth::SynthPreset::heavy_lead();
+        lead.string_params.t60_decay_sec = 6.25;
+        app.set_part_synth_preset(1, lead);
+
+        // Part 2: Tweaked FM Synth (only mod_ratio overridden)
+        app.add_new_instrument_part("Keys".to_string(), 6, 12, 1, Vec::new(), None);
+        let mut fm = crate::synth::SynthPreset::fm_dx_electric_piano();
+        fm.fm_params.mod_ratio = 3.5;
+        app.set_part_synth_preset(2, fm);
+
+        // Part 3: Percussion kit (only kick.volume_db overridden)
+        app.add_new_percussion_part(
+            "Drums".to_string(),
+            crate::presets::standard_6_line_kit_configs(),
+        );
+        let mut drums = crate::synth::SynthPreset::linn_808_kit();
+        drums.drum_params.kick.volume_db = 4.5;
+        app.set_part_synth_preset(3, drums);
+
+        let yaml = app.yaml_text.clone();
+
+        // Unused drum roles (e.g. vibraslap, maracas, cuica) must NOT bloat the score YAML!
+        assert!(
+            !yaml.contains("vibraslap"),
+            "Unmodified drum roles must be omitted from score YAML:\n{}",
+            yaml
+        );
+        assert!(
+            !yaml.contains("pick_hardness"),
+            "Unmodified string_params fields must be omitted from score YAML:\n{}",
+            yaml
+        );
+        assert!(
+            yaml.contains("t60_decay_sec"),
+            "Modified string_params field must be serialized"
+        );
+        assert!(
+            yaml.contains("mod_ratio"),
+            "Modified fm_params field must be serialized"
+        );
+        assert!(
+            yaml.contains("volume_db"),
+            "Modified drum kick.volume_db must be serialized"
+        );
+
+        // Round-trip reload and verify all 4 parts restore every factory + custom parameter accurately
+        let mut app2 = MnxEditorApp::default();
+        app2.load_yaml_into_fresh_session(yaml, None);
+
+        let p0 = app2.get_part_synth_preset(0);
+        assert_eq!(p0, crate::synth::SynthPreset::tele_clean());
+
+        let p1 = app2.get_part_synth_preset(1);
+        assert_eq!(p1.name, "Heavy Lead");
+        assert!((p1.string_params.t60_decay_sec - 6.25).abs() < 1e-4);
+        assert!((p1.body_params.pre_drive - 3.8).abs() < 1e-4, "Factory Heavy Lead pre_drive preserved");
+
+        let p2 = app2.get_part_synth_preset(2);
+        assert_eq!(p2.name, "FM DX Electric Piano");
+        assert_eq!(p2.engine, crate::synth::PitchedEngine::FmSynth);
+        assert!((p2.fm_params.mod_ratio - 3.5).abs() < 1e-4);
+        assert!((p2.fm_params.mod_index - 2.2).abs() < 1e-4, "Factory FM mod_index preserved");
+
+        let p3 = app2.get_part_synth_preset(3);
+        assert_eq!(p3.name, "Linn-808 Kit");
+        assert!((p3.drum_params.kick.volume_db - 4.5).abs() < 1e-4);
+        assert!((p3.drum_params.snare.rim_volume_db - 5.5).abs() < 1e-4, "Default snare rim_volume_db preserved");
+    }
+
+    #[test]
+    fn test_phase2_interactive_gesture_coalesces_undo_and_lazy_yaml_sync() {
+        let mut app = MnxEditorApp::default();
+        assert!(app.undo_stack.is_empty());
+
+        // Simulate 50 mouse-move drag frames on a layout element
+        for step in 1..=50 {
+            app.action_set_element_offset_interactive("tempo_0", step as f32 * 1.5, -2.0);
+        }
+        assert!(app.yaml_dirty, "Intermediate interactive drag frames must defer YAML serialization");
+        assert_eq!(
+            app.undo_stack.len(),
+            1,
+            "50 interactive drag frames must coalesce into exactly 1 undo snapshot"
+        );
+
+        app.end_interactive_gesture();
+        assert!(!app.yaml_dirty, "Ending gesture in test/open-YAML mode flushes yaml_text");
+        let off = app
+            .parsed_mnx
+            .as_ref()
+            .unwrap()
+            .layout
+            .as_ref()
+            .unwrap()
+            .offsets
+            .get("tempo_0")
+            .copied()
+            .unwrap();
+        assert!((off.dx - 75.0).abs() < 1e-3);
+
+        // Single Undo restores the pre-drag state completely
+        app.undo();
+        let has_off_after_undo = app
+            .parsed_mnx
+            .as_ref()
+            .unwrap()
+            .layout
+            .as_ref()
+            .map(|l| l.offsets.contains_key("tempo_0"))
+            .unwrap_or(false);
+        assert!(!has_off_after_undo, "Single undo must revert the entire 50-frame drag gesture");
     }
 }
 
