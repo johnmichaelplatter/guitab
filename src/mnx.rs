@@ -44,22 +44,60 @@ pub mod flow_seq_req {
 }
 use std::fmt;
 
+/// Canonical 15-string standard tuning extended downward in fourths from `E4`..`E2`.
+pub const STANDARD_15_STRING_TUNING: [(&str, i32); 15] = [
+    ("E", 4),
+    ("B", 3),
+    ("G", 3),
+    ("D", 3),
+    ("A", 2),
+    ("E", 2),
+    ("B", 1),
+    ("F#", 1),
+    ("C#", 1),
+    ("G#", 0),
+    ("D#", 0),
+    ("A#", 0),
+    ("F", 0),
+    ("C", 0),
+    ("G", 0),
+];
+
+#[inline]
+pub fn standard_15_string_tuning(string: u8) -> (&'static str, i32) {
+    STANDARD_15_STRING_TUNING
+        .get(string.saturating_sub(1) as usize)
+        .copied()
+        .unwrap_or(("G", 0))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AstPath {
     TopLevel(usize, usize, usize),
     InTuplet(usize, usize, usize, usize),
+    InGrace(usize, usize, usize, usize),
 }
 
 impl AstPath {
     pub fn m_idx(&self) -> usize {
         match self {
-            AstPath::TopLevel(m, _, _) => *m,
-            AstPath::InTuplet(m, _, _, _) => *m,
+            AstPath::TopLevel(m, _, _)
+            | AstPath::InTuplet(m, _, _, _)
+            | AstPath::InGrace(m, _, _, _) => *m,
+        }
+    }
+
+    pub fn container_coords(&self) -> (usize, usize, usize) {
+        match *self {
+            AstPath::TopLevel(m, s, i)
+            | AstPath::InTuplet(m, s, i, _)
+            | AstPath::InGrace(m, s, i, _) => (m, s, i),
         }
     }
 }
 
 impl MnxDocument {
+    #[cfg(test)]
     pub fn get_flattened_event_paths(&self) -> Vec<AstPath> {
         self.get_flattened_event_paths_for_part(0)
     }
@@ -86,7 +124,7 @@ impl MnxDocument {
                                 for (g_idx, inner) in g.content.iter().enumerate() {
                                     if let crate::mnx::SequenceItem::Event(_) = inner {
                                         flattened_events
-                                            .push(AstPath::InTuplet(m_idx, s_idx, i_idx, g_idx));
+                                            .push(AstPath::InGrace(m_idx, s_idx, i_idx, g_idx));
                                     }
                                 }
                             }
@@ -98,6 +136,7 @@ impl MnxDocument {
         flattened_events
     }
 
+    #[cfg(test)]
     pub fn get_event_at_path(&self, path: AstPath) -> Option<&Event> {
         self.get_event_at_part_path(0, path)
     }
@@ -121,7 +160,7 @@ impl MnxDocument {
                 }
             }
             AstPath::InTuplet(m, s, i, t) => {
-                let item = self
+                let SequenceItem::Tuplet(tu) = self
                     .parts
                     .get(part_idx)?
                     .measures
@@ -129,28 +168,39 @@ impl MnxDocument {
                     .sequences
                     .get(s)?
                     .content
-                    .get(i)?;
-                match item {
-                    SequenceItem::Tuplet(tu) => {
-                        if let SequenceItem::Event(e) = tu.content.get(t)? {
-                            Some(e)
-                        } else {
-                            None
-                        }
-                    }
-                    SequenceItem::Grace(gr) => {
-                        if let SequenceItem::Event(e) = gr.content.get(t)? {
-                            Some(e)
-                        } else {
-                            None
-                        }
-                    }
-                    SequenceItem::Event(_) => None,
+                    .get(i)?
+                else {
+                    return None;
+                };
+                if let SequenceItem::Event(e) = tu.content.get(t)? {
+                    Some(e)
+                } else {
+                    None
+                }
+            }
+            AstPath::InGrace(m, s, i, g) => {
+                let SequenceItem::Grace(gr) = self
+                    .parts
+                    .get(part_idx)?
+                    .measures
+                    .get(m)?
+                    .sequences
+                    .get(s)?
+                    .content
+                    .get(i)?
+                else {
+                    return None;
+                };
+                if let SequenceItem::Event(e) = gr.content.get(g)? {
+                    Some(e)
+                } else {
+                    None
                 }
             }
         }
     }
 
+    #[cfg(test)]
     pub fn get_event_mut_at_path(&mut self, path: AstPath) -> Option<&mut Event> {
         self.get_event_mut_at_part_path(0, path)
     }
@@ -178,7 +228,7 @@ impl MnxDocument {
                 }
             }
             AstPath::InTuplet(m, s, i, t) => {
-                let item = self
+                let SequenceItem::Tuplet(tu) = self
                     .parts
                     .get_mut(part_idx)?
                     .measures
@@ -186,23 +236,33 @@ impl MnxDocument {
                     .sequences
                     .get_mut(s)?
                     .content
-                    .get_mut(i)?;
-                match item {
-                    SequenceItem::Tuplet(tu) => {
-                        if let SequenceItem::Event(e) = tu.content.get_mut(t)? {
-                            Some(e)
-                        } else {
-                            None
-                        }
-                    }
-                    SequenceItem::Grace(gr) => {
-                        if let SequenceItem::Event(e) = gr.content.get_mut(t)? {
-                            Some(e)
-                        } else {
-                            None
-                        }
-                    }
-                    SequenceItem::Event(_) => None,
+                    .get_mut(i)?
+                else {
+                    return None;
+                };
+                if let SequenceItem::Event(e) = tu.content.get_mut(t)? {
+                    Some(e)
+                } else {
+                    None
+                }
+            }
+            AstPath::InGrace(m, s, i, g) => {
+                let SequenceItem::Grace(gr) = self
+                    .parts
+                    .get_mut(part_idx)?
+                    .measures
+                    .get_mut(m)?
+                    .sequences
+                    .get_mut(s)?
+                    .content
+                    .get_mut(i)?
+                else {
+                    return None;
+                };
+                if let SequenceItem::Event(e) = gr.content.get_mut(g)? {
+                    Some(e)
+                } else {
+                    None
                 }
             }
         }
@@ -227,65 +287,46 @@ impl MnxDocument {
         let mut all_event_ids = std::collections::HashSet::new();
 
         for part in &self.parts {
-            for measure in &part.measures {
-                for seq in &measure.sequences {
-                    for ev in seq.flattened_events() {
-                        if let Some(eid) = &ev.id {
-                            all_event_ids.insert(eid.clone());
-                        }
-                        for note in &ev.notes {
-                            if let Some(id) = &note.id {
-                                all_note_ids.insert(id.clone());
-                            }
-                        }
+            for ev in part.events() {
+                if let Some(eid) = &ev.id {
+                    all_event_ids.insert(eid.clone());
+                }
+                for note in &ev.notes {
+                    if let Some(id) = &note.id {
+                        all_note_ids.insert(id.clone());
                     }
                 }
             }
         }
 
-        macro_rules! traverse_mut {
-            ($content:expr) => {
-                fn walk(
-                    content: &mut Vec<SequenceItem>,
-                    all_note_ids: &std::collections::HashSet<String>,
-                    all_event_ids: &std::collections::HashSet<String>,
-                ) {
-                    for item in content {
-                        match item {
-                            SequenceItem::Event(ev) => {
-                                for note in &mut ev.notes {
-                                    if let Some(ties) = &mut note.ties {
-                                        ties.retain(|tie| all_note_ids.contains(&tie.target) || all_event_ids.contains(&tie.target));
-                                        if ties.is_empty() {
-                                            note.ties = None;
-                                        }
-                                    }
-                                }
-                            }
-                            SequenceItem::Tuplet(t) => {
-                                walk(&mut t.content, all_note_ids, all_event_ids);
-                            }
-                            SequenceItem::Grace(g) => {
-                                walk(&mut g.content, all_note_ids, all_event_ids);
-                            }
-                        }
-                    }
-                }
-                walk($content, &all_note_ids, &all_event_ids);
-            };
-        }
-
         for part in &mut self.parts {
             for measure in &mut part.measures {
                 for seq in &mut measure.sequences {
-                    traverse_mut!(&mut seq.content);
+                    for ev in seq.events_mut() {
+                        for note in &mut ev.notes {
+                            if let Some(ties) = &mut note.ties {
+                                ties.retain(|tie| {
+                                    all_note_ids.contains(&tie.target)
+                                        || all_event_ids.contains(&tie.target)
+                                });
+                                if ties.is_empty() {
+                                    note.ties = None;
+                                }
+                            }
+                        }
+                    }
 
                     // Merge adjacent SequenceItem::Grace items
                     let mut i = 0;
                     while i + 1 < seq.content.len() {
-                        if matches!((&seq.content[i], &seq.content[i + 1]), (SequenceItem::Grace(_), SequenceItem::Grace(_))) {
+                        if matches!(
+                            (&seq.content[i], &seq.content[i + 1]),
+                            (SequenceItem::Grace(_), SequenceItem::Grace(_))
+                        ) {
                             let next_item = seq.content.remove(i + 1);
-                            if let (SequenceItem::Grace(g1), SequenceItem::Grace(g2)) = (&mut seq.content[i], next_item) {
+                            if let (SequenceItem::Grace(g1), SequenceItem::Grace(g2)) =
+                                (&mut seq.content[i], next_item)
+                            {
                                 g1.content.extend(g2.content);
                             }
                         } else {
@@ -532,60 +573,28 @@ impl MnxDocument {
 
     pub fn clean_dangling_slides(&mut self) {
         for part in &mut self.parts {
-            let mut string_events: std::collections::HashMap<u8, Vec<usize>> = std::collections::HashMap::new();
-            let mut event_idx = 0;
-            for measure in &part.measures {
-                for seq in &measure.sequences {
-                    for ev in seq.flattened_events() {
-                        for note in &ev.notes {
-                            if let Some(s) = note.string {
-                                string_events.entry(s).or_default().push(event_idx);
-                            }
-                        }
-                        event_idx += 1;
+            let mut string_events: std::collections::HashMap<u8, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (event_idx, ev) in part.events().enumerate() {
+                for note in &ev.notes {
+                    if let Some(s) = note.string {
+                        string_events.entry(s).or_default().push(event_idx);
                     }
                 }
             }
 
-            fn clean_slides_in_items(
-                items: &mut [SequenceItem],
-                string_events: &std::collections::HashMap<u8, Vec<usize>>,
-                cur_ev: &mut usize,
-            ) {
-                for item in items {
-                    match item {
-                        SequenceItem::Event(ev) => {
-                            let ev_i = *cur_ev;
-                            *cur_ev += 1;
-                            for note in &mut ev.notes {
-                                if note.slide.is_some() {
-                                    if let Some(s) = note.string {
-                                        let has_next = string_events.get(&s).map_or(false, |list| {
-                                            list.iter().any(|&next_ev| next_ev > ev_i)
-                                        });
-                                        if !has_next {
-                                            note.slide = None;
-                                        }
-                                    } else {
-                                        note.slide = None;
-                                    }
-                                }
-                            }
-                        }
-                        SequenceItem::Tuplet(t) => {
-                            clean_slides_in_items(&mut t.content, string_events, cur_ev);
-                        }
-                        SequenceItem::Grace(g) => {
-                            clean_slides_in_items(&mut g.content, string_events, cur_ev);
+            for (ev_i, ev) in part.events_mut().enumerate() {
+                for note in &mut ev.notes {
+                    if note.slide.is_some() {
+                        let has_next = note.string.map_or(false, |s| {
+                            string_events
+                                .get(&s)
+                                .map_or(false, |list| list.iter().any(|&next_ev| next_ev > ev_i))
+                        });
+                        if !has_next {
+                            note.slide = None;
                         }
                     }
-                }
-            }
-
-            let mut cur_ev = 0;
-            for measure in &mut part.measures {
-                for seq in &mut measure.sequences {
-                    clean_slides_in_items(&mut seq.content, &string_events, &mut cur_ev);
                 }
             }
         }
@@ -954,6 +963,115 @@ pub struct Tempo {
 pub struct TimeSignature {
     pub count: u32,
     pub unit: u32,
+}
+
+impl TimeSignature {
+    /// Expected measure capacity in quarter-note beats (e.g. 4/4 -> 4.0, 6/8 -> 3.0, 7/16 -> 1.75).
+    #[inline]
+    pub fn expected_quarter_beats(&self) -> f64 {
+        if self.unit == 0 {
+            4.0
+        } else {
+            (self.count as f64) * (4.0 / (self.unit as f64))
+        }
+    }
+}
+
+/// Typed MNX base rhythmic note values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoteValue {
+    SixtyFourth,
+    ThirtySecond,
+    Sixteenth,
+    Eighth,
+    Quarter,
+    Half,
+    Whole,
+    Breve,
+}
+
+impl NoteValue {
+    /// Ordered duration values used when nudging/cycling note durations in the editor (`[` / `]`).
+    pub const EDITOR_CYCLE: [NoteValue; 6] = [
+        NoteValue::ThirtySecond,
+        NoteValue::Sixteenth,
+        NoteValue::Eighth,
+        NoteValue::Quarter,
+        NoteValue::Half,
+        NoteValue::Whole,
+    ];
+
+    pub fn from_base_str(base_str: &str) -> Option<Self> {
+        let s = base_str.trim().to_lowercase();
+        if s.contains("breve") || s.contains("double-whole") {
+            Some(Self::Breve)
+        } else if s.contains("whole") || s == "1" {
+            Some(Self::Whole)
+        } else if s.contains("half") || s == "1/2" {
+            Some(Self::Half)
+        } else if s.contains("32nd")
+            || s.contains("thirtysecond")
+            || s.contains("thirty-second")
+            || s == "1/32"
+        {
+            Some(Self::ThirtySecond)
+        } else if s.contains("64th")
+            || s.contains("sixtyfourth")
+            || s.contains("sixty-fourth")
+            || s == "1/64"
+        {
+            Some(Self::SixtyFourth)
+        } else if s.contains("16th") || s.contains("sixteenth") || s == "1/16" {
+            Some(Self::Sixteenth)
+        } else if s.contains("eighth") || s.contains("8th") || s == "1/8" {
+            Some(Self::Eighth)
+        } else if s.contains("quarter") || s.contains("4th") || s == "1/4" {
+            Some(Self::Quarter)
+        } else {
+            None
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SixtyFourth => "64th",
+            Self::ThirtySecond => "32nd",
+            Self::Sixteenth => "16th",
+            Self::Eighth => "eighth",
+            Self::Quarter => "quarter",
+            Self::Half => "half",
+            Self::Whole => "whole",
+            Self::Breve => "breve",
+        }
+    }
+
+    pub const fn quarter_beats(self) -> f64 {
+        match self {
+            Self::SixtyFourth => 0.0625,
+            Self::ThirtySecond => 0.125,
+            Self::Sixteenth => 0.25,
+            Self::Eighth => 0.5,
+            Self::Quarter => 1.0,
+            Self::Half => 2.0,
+            Self::Whole => 4.0,
+            Self::Breve => 8.0,
+        }
+    }
+
+    /// Steps up (`+1`) or down (`-1`) within [`Self::EDITOR_CYCLE`], clamping at `32nd`..`whole`.
+    pub fn nudged_in_editor_cycle(self, step: i32) -> Self {
+        let cur_idx = Self::EDITOR_CYCLE
+            .iter()
+            .position(|&v| v == self)
+            .unwrap_or(match self {
+                Self::SixtyFourth => 0,
+                Self::Breve => Self::EDITOR_CYCLE.len() - 1,
+                _ => 3,
+            });
+        let new_idx =
+            (cur_idx as i32 + step).clamp(0, (Self::EDITOR_CYCLE.len() - 1) as i32) as usize;
+        Self::EDITOR_CYCLE[new_idx]
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
@@ -2151,15 +2269,10 @@ impl Part {
             }
         }
 
-        let (step, octave) = match string {
-            1 => ("E", 4),
-            2 => ("B", 3),
-            3 => ("G", 3),
-            4 => ("D", 3),
-            5 => ("A", 2),
-            6 => ("E", 2),
-            _ => return None,
-        };
+        if !(1..=6).contains(&string) {
+            return None;
+        }
+        let (step, octave) = STANDARD_15_STRING_TUNING[(string - 1) as usize];
 
         Some(Pitch {
             step: step.to_string(),
@@ -2335,6 +2448,33 @@ impl Part {
             .map(|s| s.event_count())
             .sum()
     }
+
+    /// Zero-allocation iterator over all flattened [`Event`]s in this part (including inside tuplets and grace blocks).
+    pub fn events(&self) -> impl Iterator<Item = &Event> {
+        self.measures
+            .iter()
+            .flat_map(|m| m.sequences.iter())
+            .flat_map(|s| s.events())
+    }
+
+    /// Zero-allocation mutable iterator over all flattened [`Event`]s in this part.
+    pub fn events_mut(&mut self) -> impl Iterator<Item = &mut Event> {
+        self.measures
+            .iter_mut()
+            .flat_map(|m| m.sequences.iter_mut())
+            .flat_map(|s| s.events_mut())
+    }
+
+    /// Zero-allocation lookup of the `idx`-th flattened [`Event`] in this part.
+    pub fn nth_event(&self, idx: usize) -> Option<&Event> {
+        self.events().nth(idx)
+    }
+
+    /// Zero-allocation mutable lookup of the `idx`-th flattened [`Event`] in this part.
+    #[allow(dead_code)]
+    pub fn nth_event_mut(&mut self, idx: usize) -> Option<&mut Event> {
+        self.events_mut().nth(idx)
+    }
 }
 
 impl MnxDocument {
@@ -2397,15 +2537,13 @@ impl MnxDocument {
                 // Ensure the previous final measure in this part is filled to full measure capacity
                 if p_len > 0 {
                     let prev_m = p_len - 1;
-                    let prev_ts = time_sigs[prev_m];
-                    let prev_expected = (prev_ts.count as f64) * (4.0 / (prev_ts.unit as f64));
+                    let prev_expected = time_sigs[prev_m].expected_quarter_beats();
                     if let Some(m) = part.measures.get_mut(prev_m) {
                         crate::yaml_editor::fill_measure_to_capacity_with_rests(m, prev_expected);
                     }
                 }
                 for m_i in p_len..target_len {
-                    let time_sig = time_sigs[m_i];
-                    let expected_beats = (time_sig.count as f64) * (4.0 / (time_sig.unit as f64));
+                    let expected_beats = time_sigs[m_i].expected_quarter_beats();
                     part.measures.push(crate::mnx::Measure {
                         comment: None,
                         beams: None,
@@ -2421,6 +2559,97 @@ impl MnxDocument {
     }
 }
 
+/// Zero-allocation iterator over flattened [`Event`]s within a [`Sequence`].
+pub struct SequenceEvents<'a> {
+    stack: [Option<std::slice::Iter<'a, SequenceItem>>; 4],
+    depth: usize,
+}
+
+impl<'a> SequenceEvents<'a> {
+    fn new(items: &'a [SequenceItem]) -> Self {
+        let mut stack: [Option<std::slice::Iter<'a, SequenceItem>>; 4] = [None, None, None, None];
+        stack[0] = Some(items.iter());
+        Self { stack, depth: 1 }
+    }
+}
+
+impl<'a> Iterator for SequenceEvents<'a> {
+    type Item = &'a Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.depth > 0 {
+            let top = self.depth - 1;
+            let next_item = self.stack[top].as_mut().and_then(|it| it.next());
+            match next_item {
+                Some(SequenceItem::Event(ev)) => return Some(ev),
+                Some(SequenceItem::Tuplet(t)) => {
+                    if self.depth < self.stack.len() {
+                        self.stack[self.depth] = Some(t.content.iter());
+                        self.depth += 1;
+                    }
+                }
+                Some(SequenceItem::Grace(g)) => {
+                    if self.depth < self.stack.len() {
+                        self.stack[self.depth] = Some(g.content.iter());
+                        self.depth += 1;
+                    }
+                }
+                None => {
+                    self.stack[top] = None;
+                    self.depth -= 1;
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Zero-allocation mutable iterator over flattened [`Event`]s within a [`Sequence`].
+pub struct SequenceEventsMut<'a> {
+    stack: [Option<std::slice::IterMut<'a, SequenceItem>>; 4],
+    depth: usize,
+}
+
+impl<'a> SequenceEventsMut<'a> {
+    fn new(items: &'a mut [SequenceItem]) -> Self {
+        let mut stack: [Option<std::slice::IterMut<'a, SequenceItem>>; 4] =
+            [None, None, None, None];
+        stack[0] = Some(items.iter_mut());
+        Self { stack, depth: 1 }
+    }
+}
+
+impl<'a> Iterator for SequenceEventsMut<'a> {
+    type Item = &'a mut Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.depth > 0 {
+            let top = self.depth - 1;
+            let next_item = self.stack[top].as_mut().and_then(|it| it.next());
+            match next_item {
+                Some(SequenceItem::Event(ev)) => return Some(ev),
+                Some(SequenceItem::Tuplet(t)) => {
+                    if self.depth < self.stack.len() {
+                        self.stack[self.depth] = Some(t.content.iter_mut());
+                        self.depth += 1;
+                    }
+                }
+                Some(SequenceItem::Grace(g)) => {
+                    if self.depth < self.stack.len() {
+                        self.stack[self.depth] = Some(g.content.iter_mut());
+                        self.depth += 1;
+                    }
+                }
+                None => {
+                    self.stack[top] = None;
+                    self.depth -= 1;
+                }
+            }
+        }
+        None
+    }
+}
+
 impl Sequence {
     pub fn total_beats(&self) -> f64 {
         let mut total = 0.0;
@@ -2432,12 +2661,14 @@ impl Sequence {
     pub fn event_count(&self) -> usize {
         self.content.iter().map(|i| i.event_count()).sum()
     }
+    pub fn events(&self) -> SequenceEvents<'_> {
+        SequenceEvents::new(&self.content)
+    }
+    pub fn events_mut(&mut self) -> SequenceEventsMut<'_> {
+        SequenceEventsMut::new(&mut self.content)
+    }
     pub fn flattened_events(&self) -> Vec<&Event> {
-        let mut result = Vec::new();
-        for item in &self.content {
-            item.collect_events(&mut result);
-        }
-        result
+        self.events().collect()
     }
 }
 
@@ -2491,6 +2722,7 @@ pub struct GraceInfo<'a> {
 }
 
 impl MnxDocument {
+    #[cfg(test)]
     pub fn find_event_tuplet_info(&self, flat_event_idx: usize) -> Option<TupletInfo<'_>> {
         self.find_event_tuplet_info_for_part(0, flat_event_idx)
     }
@@ -2513,11 +2745,7 @@ impl MnxDocument {
                             cur_e += 1;
                         }
                         SequenceItem::Tuplet(t) => {
-                            let mut tuplet_events = Vec::new();
-                            for inner_item in &t.content {
-                                inner_item.collect_events(&mut tuplet_events);
-                            }
-                            let count = tuplet_events.len();
+                            let count: usize = t.content.iter().map(|i| i.event_count()).sum();
                             let start = cur_e;
                             let end = cur_e + count;
                             if flat_event_idx >= start && flat_event_idx < end {
@@ -2530,11 +2758,7 @@ impl MnxDocument {
                             cur_e = end;
                         }
                         SequenceItem::Grace(g) => {
-                            let mut grace_events = Vec::new();
-                            for inner_item in &g.content {
-                                inner_item.collect_events(&mut grace_events);
-                            }
-                            let count = grace_events.len();
+                            let count: usize = g.content.iter().map(|i| i.event_count()).sum();
                             let start = cur_e;
                             let end = cur_e + count;
                             if flat_event_idx >= start && flat_event_idx < end {
@@ -2549,6 +2773,7 @@ impl MnxDocument {
         None
     }
 
+    #[cfg(test)]
     pub fn find_event_grace_info(&self, flat_event_idx: usize) -> Option<GraceInfo<'_>> {
         self.find_event_grace_info_for_part(0, flat_event_idx)
     }
@@ -2571,11 +2796,7 @@ impl MnxDocument {
                             cur_e += 1;
                         }
                         SequenceItem::Tuplet(t) => {
-                            let mut tuplet_events = Vec::new();
-                            for inner_item in &t.content {
-                                inner_item.collect_events(&mut tuplet_events);
-                            }
-                            let count = tuplet_events.len();
+                            let count: usize = t.content.iter().map(|i| i.event_count()).sum();
                             let start = cur_e;
                             let end = cur_e + count;
                             if flat_event_idx >= start && flat_event_idx < end {
@@ -2584,11 +2805,7 @@ impl MnxDocument {
                             cur_e = end;
                         }
                         SequenceItem::Grace(g) => {
-                            let mut grace_events = Vec::new();
-                            for inner_item in &g.content {
-                                inner_item.collect_events(&mut grace_events);
-                            }
-                            let count = grace_events.len();
+                            let count: usize = g.content.iter().map(|i| i.event_count()).sum();
                             let start = cur_e;
                             let end = cur_e + count;
                             if flat_event_idx >= start && flat_event_idx < end {
@@ -2647,29 +2864,15 @@ impl MnxDocument {
             }
         }
 
-        fn convert_items(items: &mut [SequenceItem], ref_note: Option<&ReferenceNoteSpec>) {
-            for item in items {
-                match item {
-                    SequenceItem::Event(ev) => {
-                        for note in &mut ev.notes {
-                            convert_note(note, ref_note);
-                        }
-                    }
-                    SequenceItem::Tuplet(t) => convert_items(&mut t.content, ref_note),
-                    SequenceItem::Grace(g) => convert_items(&mut g.content, ref_note),
-                }
-            }
-        }
-
         for part in &mut self.parts {
             if let Some(tunings) = &mut part.ext.tuning {
                 for t in tunings {
                     t.pitch = t.pitch.to_standard_12edo_pitch(ref_note.as_ref());
                 }
             }
-            for measure in &mut part.measures {
-                for seq in &mut measure.sequences {
-                    convert_items(&mut seq.content, ref_note.as_ref());
+            for ev in part.events_mut() {
+                for note in &mut ev.notes {
+                    convert_note(note, ref_note.as_ref());
                 }
             }
         }

@@ -1,5 +1,5 @@
 use crate::edo::EdoTuning;
-use crate::mnx::{Duration, MnxDocument, TimeSignature};
+use crate::mnx::{Duration, MnxDocument, NoteValue, TimeSignature};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,39 +13,16 @@ pub struct ValidationError {
 
 /// Converts an MNX Duration to duration in quarter-note beats.
 pub fn duration_to_quarter_beats(duration: &Duration) -> f64 {
-    let base_str = duration.base.trim().to_lowercase();
-    let is_string_dotted = base_str.contains("dotted") || base_str.contains('.');
+    let base_str = duration.base.trim();
+    let is_string_dotted =
+        base_str.to_ascii_lowercase().contains("dotted") || base_str.contains('.');
     let dot_count = duration
         .dots
         .unwrap_or(if is_string_dotted { 1 } else { 0 });
 
-    let raw_beats = if base_str.contains("breve") || base_str.contains("double-whole") {
-        8.0
-    } else if base_str.contains("whole") || base_str == "1" {
-        4.0
-    } else if base_str.contains("half") || base_str == "1/2" {
-        2.0
-    } else if base_str.contains("32nd")
-        || base_str.contains("thirtysecond")
-        || base_str.contains("thirty-second")
-        || base_str == "1/32"
-    {
-        0.125
-    } else if base_str.contains("64th")
-        || base_str.contains("sixtyfourth")
-        || base_str.contains("sixty-fourth")
-        || base_str == "1/64"
-    {
-        0.0625
-    } else if base_str.contains("16th") || base_str.contains("sixteenth") || base_str == "1/16" {
-        0.25
-    } else if base_str.contains("eighth") || base_str.contains("8th") || base_str == "1/8" {
-        0.5
-    } else if base_str.contains("quarter") || base_str.contains("4th") || base_str == "1/4" {
-        1.0
-    } else {
-        1.0
-    };
+    let raw_beats = NoteValue::from_base_str(base_str)
+        .unwrap_or(NoteValue::Quarter)
+        .quarter_beats();
 
     let mut multiplier = 1.0;
     let mut add = 0.5;
@@ -98,12 +75,15 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                 || (doc.parts.len() > 1
                     && part.measures[m_idx + 1..].iter().all(|m| {
                         m.sequences.iter().all(|s| {
-                            let evs = s.flattened_events();
-                            evs.len() == 1 && evs[0].rest.is_some() && !evs[0].has_any_notes()
+                            let mut evs = s.events();
+                            matches!(
+                                (evs.next(), evs.next()),
+                                (Some(ev), None) if ev.rest.is_some() && !ev.has_any_notes()
+                            )
                         })
                     }));
             let time_sig = get_time_signature_for_measure(doc, m_idx);
-            let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+            let expected_beats = time_sig.expected_quarter_beats();
 
             for seq in &measure.sequences {
                 // Validate sequence total duration against measure time signature
@@ -146,7 +126,7 @@ pub fn validate_mnx(doc: &MnxDocument) -> Vec<ValidationError> {
                 }
 
                 // Note-level geometry and concurrency checks
-                for (e_idx, event) in seq.flattened_events().into_iter().enumerate() {
+                for (e_idx, event) in seq.events().enumerate() {
                     let mut active_strings = HashSet::new();
 
                     if !event.kit_notes.is_empty() {

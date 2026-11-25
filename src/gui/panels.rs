@@ -1877,14 +1877,13 @@ impl MnxEditorApp {
 
                                 if dialog_p_idx == self.selected_part_idx
                                     && self
-                                        .part_string_channel_maps
-                                        .get(&dialog_p_idx)
-                                        .map(|m| m.is_empty())
+                                        .part_runtime(dialog_p_idx)
+                                        .map(|rt| rt.string_channel_map.is_empty())
                                         .unwrap_or(true)
                                     && !self.string_channel_map.is_empty()
                                 {
-                                    self.part_string_channel_maps
-                                        .insert(dialog_p_idx, self.string_channel_map.clone());
+                                    self.part_runtime_mut(dialog_p_idx).string_channel_map =
+                                        self.string_channel_map.clone();
                                 }
 
                                 ui.label(
@@ -1897,10 +1896,8 @@ impl MnxEditorApp {
                                 );
                                 ui.separator();
                                 let mut map_changed = false;
-                                let part_map = self
-                                    .part_string_channel_maps
-                                    .entry(dialog_p_idx)
-                                    .or_default();
+                                let part_map =
+                                    &mut self.part_runtime_mut(dialog_p_idx).string_channel_map;
                                 for s in 1..=num_strings {
                                     ui.horizontal(|ui| {
                                         ui.label(format!("String {}:", s));
@@ -1935,27 +1932,23 @@ impl MnxEditorApp {
                                     })
                                     .clicked()
                                 {
-                                    if let Some(m) =
-                                        self.part_string_channel_maps.get_mut(&dialog_p_idx)
-                                    {
-                                        for s in 1..=num_strings {
-                                            let def_ch = if is_mpe {
-                                                2 + ((prior_strings_on_port + s - 1) % 15)
-                                            } else {
-                                                1 + ((prior_strings_on_port + s - 1) % 16)
-                                            };
-                                            m.insert(s, def_ch);
-                                        }
+                                    let m =
+                                        &mut self.part_runtime_mut(dialog_p_idx).string_channel_map;
+                                    for s in 1..=num_strings {
+                                        let def_ch = if is_mpe {
+                                            2 + ((prior_strings_on_port + s - 1) % 15)
+                                        } else {
+                                            1 + ((prior_strings_on_port + s - 1) % 16)
+                                        };
+                                        m.insert(s, def_ch);
                                     }
                                     map_changed = true;
                                 }
                                 if (map_changed || dialog_p_idx == self.selected_part_idx)
                                     && dialog_p_idx == self.selected_part_idx
                                 {
-                                    if let Some(m) =
-                                        self.part_string_channel_maps.get(&dialog_p_idx)
-                                    {
-                                        self.string_channel_map = m.clone();
+                                    if let Some(rt) = self.part_runtime(dialog_p_idx) {
+                                        self.string_channel_map = rt.string_channel_map.clone();
                                     }
                                 }
                                 }

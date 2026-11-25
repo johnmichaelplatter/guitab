@@ -4,6 +4,7 @@ pub struct EventRange {
     pub note_ranges: Vec<std::ops::Range<usize>>,
 }
 
+#[cfg(test)]
 pub fn find_all_event_ranges(yaml: &str) -> Vec<EventRange> {
     find_all_event_ranges_by_part(yaml)
         .into_iter()
@@ -364,6 +365,7 @@ pub fn calculate_pitch_for_string_decimal_fret_with_ref(
 }
 
 /// Helper to parse the `string: <n>` value out of an individual note YAML block text.
+#[cfg(test)]
 pub fn get_note_string_from_text(note_text: &str) -> Option<u8> {
     if let Some(pos) = note_text.find("string:") {
         let after = note_text[pos + "string:".len()..].trim_start();
@@ -443,10 +445,7 @@ pub fn fill_measure_to_capacity_with_rests(
         return;
     }
     let seq = &mut measure.sequences[0];
-    let has_any_notes = seq
-        .flattened_events()
-        .iter()
-        .any(|ev| ev.has_any_notes());
+    let has_any_notes = seq.events().any(|ev| ev.has_any_notes());
     if !has_any_notes {
         // Measure has no music in it: replace with a single rest spanning the full measure
         seq.content = make_rest_items_for_beats(expected_beats);
@@ -468,6 +467,7 @@ pub fn fill_measure_to_capacity_with_rests(
 }
 
 /// Replaces the fret number and pitch of the given note inside `doc`.
+#[cfg(test)]
 pub fn update_note_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -506,6 +506,7 @@ pub fn update_note_in_doc_part(
 }
 
 /// Replaces the fret number and pitch of the given note inside yaml_text and returns the updated YAML string.
+#[cfg(test)]
 pub fn update_note_in_yaml(
     yaml: &str,
     event_idx: usize,
@@ -521,6 +522,7 @@ pub fn update_note_in_yaml(
 }
 
 /// Updates an existing note on `target_string` in `event_idx`, or appends a new note on `target_string` to `event_idx` if none exists.
+#[cfg(test)]
 pub fn set_or_add_note_on_string_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -557,6 +559,7 @@ pub fn set_or_add_note_on_string_in_doc_part(
 }
 
 /// Updates an existing note on `target_string` in `event_idx` with a whole or decimal fret (e.g. `1.5`), or appends a new note.
+#[cfg(test)]
 pub fn set_or_add_decimal_note_on_string_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -628,6 +631,7 @@ pub fn set_or_add_decimal_note_on_string_in_doc_part(
 }
 
 /// Replaces all notes in `event_idx` with the given `string -> fret` chord map (used by Grid Controller Input Mode).
+#[cfg(test)]
 pub fn set_chord_on_event_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -731,6 +735,7 @@ pub fn set_chord_on_event_in_doc_part(
 }
 
 /// Updates an existing note on `target_string` in `event_idx`, or appends a new note on `target_string` to `event_idx` if none exists.
+#[cfg(test)]
 pub fn set_or_add_note_on_string(
     yaml: &str,
     event_idx: usize,
@@ -796,6 +801,7 @@ pub fn set_or_add_kit_note_on_line_in_doc_part(
 }
 
 /// Removes the note on `target_string` from the event at `event_idx` in `doc`.
+#[cfg(test)]
 pub fn remove_note_on_string_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -838,6 +844,7 @@ pub fn remove_note_on_string_in_doc_part(
 }
 
 /// Removes the note on `target_string` from the event at `event_idx`.
+#[cfg(test)]
 pub fn remove_note_on_string(yaml: &str, event_idx: usize, target_string: u8) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !remove_note_on_string_in_doc(&mut doc, event_idx, target_string) {
@@ -847,6 +854,7 @@ pub fn remove_note_on_string(yaml: &str, event_idx: usize, target_string: u8) ->
 }
 
 /// Replaces the `duration` property of the event at `event_idx` with `new_duration` in `doc`.
+#[cfg(test)]
 pub fn update_event_duration_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -873,6 +881,7 @@ pub fn update_event_duration_in_doc_part(
 }
 
 /// Replaces the `duration` property of the event at `event_idx` with `new_duration`.
+#[cfg(test)]
 pub fn update_event_duration_in_yaml(
     yaml: &str,
     event_idx: usize,
@@ -917,6 +926,7 @@ pub fn set_bpm_in_doc(doc: &mut crate::mnx::MnxDocument, new_bpm: f64) {
     }
 }
 
+#[cfg(test)]
 pub fn set_bpm_in_yaml(yaml: &str, new_bpm: f64) -> String {
     let Ok(mut doc) = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml) else {
         return yaml.to_string();
@@ -926,6 +936,7 @@ pub fn set_bpm_in_yaml(yaml: &str, new_bpm: f64) -> String {
 }
 
 /// Appends a new measure to `global/measures` and to all parts in `doc`, containing a single blank note with `duration`.
+#[cfg(test)]
 pub fn add_measure_to_doc(
     doc: &mut crate::mnx::MnxDocument,
     duration: &crate::mnx::Duration,
@@ -947,8 +958,8 @@ pub fn add_measure_to_doc_part(
     // is filled to capacity with rests so it doesn't become an incomplete non-final measure.
     if doc.parts.len() > 1 && !doc.global.measures.is_empty() {
         let prev_last_m = doc.global.measures.len() - 1;
-        let time_sig = crate::validate::get_time_signature_for_measure(doc, prev_last_m);
-        let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+        let expected_beats =
+            crate::validate::get_time_signature_for_measure(doc, prev_last_m).expected_quarter_beats();
         for (p_idx, part) in doc.parts.iter_mut().enumerate() {
             if p_idx != active_part_idx {
                 if let Some(m) = part.measures.get_mut(prev_last_m) {
@@ -969,8 +980,8 @@ pub fn add_measure_to_doc_part(
     }
 
     let new_m_idx = doc.global.measures.len() - 1;
-    let new_time_sig = crate::validate::get_time_signature_for_measure(doc, new_m_idx);
-    let new_expected_beats = (new_time_sig.count as f64) * (4.0 / new_time_sig.unit as f64);
+    let new_expected_beats =
+        crate::validate::get_time_signature_for_measure(doc, new_m_idx).expected_quarter_beats();
 
     for (p_idx, part) in doc.parts.iter_mut().enumerate() {
         let content = if p_idx == active_part_idx {
@@ -994,6 +1005,7 @@ pub fn add_measure_to_doc_part(
 }
 
 /// Appends a new measure to `global/measures` and to the first part in `yaml_text`, containing a single blank note with `duration`.
+#[cfg(test)]
 pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !add_measure_to_doc(&mut doc, duration) {
@@ -1003,6 +1015,7 @@ pub fn add_measure_to_yaml(yaml: &str, duration: &crate::mnx::Duration) -> Optio
 }
 
 /// Appends a new blank note (notes: []) to the last measure of the first part in `doc`.
+#[cfg(test)]
 pub fn add_blank_note_to_last_measure_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     duration: &crate::mnx::Duration,
@@ -1055,8 +1068,8 @@ pub fn replace_default_rest_with_blank_note_in_doc_part(
     measure_idx: usize,
     duration: &crate::mnx::Duration,
 ) -> bool {
-    let time_sig = crate::validate::get_time_signature_for_measure(doc, measure_idx);
-    let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+    let expected_beats =
+        crate::validate::get_time_signature_for_measure(doc, measure_idx).expected_quarter_beats();
     let Some(seq) = doc
         .parts
         .get_mut(part_idx)
@@ -1066,11 +1079,14 @@ pub fn replace_default_rest_with_blank_note_in_doc_part(
         return false;
     };
     let is_default_full_rest = {
-        let evs = seq.flattened_events();
-        evs.len() == 1
-            && evs[0].rest.is_some()
-            && !evs[0].has_any_notes()
-            && (seq.total_beats() - expected_beats).abs() < 1e-3
+        let mut evs = seq.events();
+        matches!(
+            (evs.next(), evs.next()),
+            (Some(ev), None)
+                if ev.rest.is_some()
+                    && !ev.has_any_notes()
+                    && (seq.total_beats() - expected_beats).abs() < 1e-3
+        )
     };
     if !is_default_full_rest {
         return false;
@@ -1082,6 +1098,7 @@ pub fn replace_default_rest_with_blank_note_in_doc_part(
 }
 
 /// Appends a new blank note (notes: []) to the last measure of the first part.
+#[cfg(test)]
 pub fn add_blank_note_to_last_measure(
     yaml: &str,
     duration: &crate::mnx::Duration,
@@ -1093,6 +1110,7 @@ pub fn add_blank_note_to_last_measure(
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn insert_blank_note_after_tuplet_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -1131,6 +1149,7 @@ pub fn insert_blank_note_after_tuplet_in_doc_part(
     Some(tuplet_end)
 }
 
+#[cfg(test)]
 pub fn insert_blank_note_after_tuplet(
     yaml: &str,
     event_idx: usize,
@@ -1144,6 +1163,7 @@ pub fn insert_blank_note_after_tuplet(
 
 /// If the final event in the last measure is blank (notes: []), removes it from `doc`.
 /// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
+#[cfg(test)]
 pub fn remove_last_blank_event_in_doc(doc: &mut crate::mnx::MnxDocument) -> bool {
     remove_last_blank_event_in_doc_part(doc, 0)
 }
@@ -1215,14 +1235,15 @@ pub fn remove_last_blank_event_in_doc_part(
                     .map(|m| {
                         m.sequences
                             .iter()
-                            .any(|s| s.flattened_events().iter().any(|ev| ev.has_any_notes()))
+                            .any(|s| s.events().any(|ev| ev.has_any_notes()))
                     })
                     .unwrap_or(false)
             });
 
         if other_parts_have_notes_in_last_measure {
-            let time_sig = crate::validate::get_time_signature_for_measure(doc, last_measure_idx);
-            let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+            let expected_beats =
+                crate::validate::get_time_signature_for_measure(doc, last_measure_idx)
+                    .expected_quarter_beats();
             doc.parts[part_idx].measures[last_measure_idx].sequences[0].content =
                 make_rest_items_for_beats(expected_beats);
         } else {
@@ -1258,8 +1279,8 @@ pub fn remove_blank_event_at_end_of_measure_in_doc_part(
         return remove_last_blank_event_in_doc_part(doc, part_idx);
     }
 
-    let time_sig = crate::validate::get_time_signature_for_measure(doc, measure_idx);
-    let expected_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+    let expected_beats =
+        crate::validate::get_time_signature_for_measure(doc, measure_idx).expected_quarter_beats();
 
     let Some(seq) = doc
         .parts
@@ -1270,11 +1291,11 @@ pub fn remove_blank_event_at_end_of_measure_in_doc_part(
         return false;
     };
 
-    let flat_evs = seq.flattened_events();
-    if flat_evs.len() <= 1 {
+    let ev_count = seq.event_count();
+    if ev_count <= 1 {
         if measure_idx > 0
-            && flat_evs.len() == 1
-            && flat_evs[0].is_blank()
+            && ev_count == 1
+            && seq.events().next().map_or(false, |e| e.is_blank())
         {
             seq.content = make_rest_items_for_beats(expected_beats);
             return true;
@@ -1316,6 +1337,7 @@ pub fn remove_blank_event_at_end_of_measure_in_doc_part(
 
 /// If the final event in the last measure is blank (notes: []), removes it from the YAML.
 /// If it was the only event in that measure, removes the entire measure (and the corresponding global measure if applicable).
+#[cfg(test)]
 pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !remove_last_blank_event_in_doc(&mut doc) {
@@ -1324,6 +1346,7 @@ pub fn remove_last_blank_event(yaml: &str) -> Option<String> {
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn convert_rest_to_blank_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
     convert_rest_to_blank_in_doc_part(doc, 0, event_idx)
 }
@@ -1347,6 +1370,7 @@ pub fn convert_rest_to_blank_in_doc_part(
     true
 }
 
+#[cfg(test)]
 pub fn convert_rest_to_blank(yaml: &str, event_idx: usize) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !convert_rest_to_blank_in_doc(&mut doc, event_idx) {
@@ -1355,6 +1379,7 @@ pub fn convert_rest_to_blank(yaml: &str, event_idx: usize) -> Option<String> {
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn convert_event_to_rest_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
     convert_event_to_rest_in_doc_part(doc, 0, event_idx)
 }
@@ -1380,6 +1405,7 @@ pub fn convert_event_to_rest_in_doc_part(
     true
 }
 
+#[cfg(test)]
 pub fn convert_event_to_rest(yaml: &str, event_idx: usize) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !convert_event_to_rest_in_doc(&mut doc, event_idx) {
@@ -1388,6 +1414,7 @@ pub fn convert_event_to_rest(yaml: &str, event_idx: usize) -> Option<String> {
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn create_tuplet_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -1457,6 +1484,7 @@ pub fn create_tuplet_in_doc_part(
     true
 }
 
+#[cfg(test)]
 pub fn create_tuplet_in_yaml(
     yaml: &str,
     event_idx: usize,
@@ -1471,6 +1499,7 @@ pub fn create_tuplet_in_yaml(
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn remove_tuplet_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
     remove_tuplet_in_doc_part(doc, 0, event_idx)
 }
@@ -1505,6 +1534,7 @@ pub fn remove_tuplet_in_doc_part(
     }
 }
 
+#[cfg(test)]
 pub fn remove_tuplet_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !remove_tuplet_in_doc(&mut doc, event_idx) {
@@ -1513,6 +1543,7 @@ pub fn remove_tuplet_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn fill_tuplet_rests_and_add_blank_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -1568,8 +1599,8 @@ pub fn fill_tuplet_rests_and_add_blank_in_doc_part(
     let is_last_item_in_measure = i_idx + 1 == seq_items_len;
 
     let dur_beats = crate::validate::duration_to_quarter_beats(&outer_dur);
-    let time_sig = crate::validate::get_time_signature_for_measure(doc, m_idx);
-    let max_beats = (time_sig.count as f64) * (4.0 / time_sig.unit as f64);
+    let max_beats =
+        crate::validate::get_time_signature_for_measure(doc, m_idx).expected_quarter_beats();
     let seq_beats = doc.parts[part_idx].measures[m_idx]
         .sequences
         .get(s_idx)
@@ -1578,7 +1609,7 @@ pub fn fill_tuplet_rests_and_add_blank_in_doc_part(
 
     if is_last_measure && is_last_item_in_measure && (seq_beats + dur_beats > max_beats + 1e-4) {
         if add_measure_to_doc_part(doc, part_idx, &outer_dur) {
-            let new_total = doc.get_flattened_event_paths_for_part(part_idx).len();
+            let new_total = doc.parts[part_idx].event_count();
             return Some(new_total.saturating_sub(1));
         }
         return None;
@@ -1594,6 +1625,7 @@ pub fn fill_tuplet_rests_and_add_blank_in_doc_part(
     Some(tuplet_end)
 }
 
+#[cfg(test)]
 pub fn fill_tuplet_rests_and_add_blank(yaml: &str, event_idx: usize) -> Option<(String, usize)> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     let target_idx = fill_tuplet_rests_and_add_blank_in_doc(&mut doc, event_idx)?;
@@ -1638,6 +1670,7 @@ parts:
     }
 }
 
+#[cfg(test)]
 pub fn set_note_bend_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -1679,6 +1712,7 @@ pub fn set_note_bend_in_doc_part(
     }
 }
 
+#[cfg(test)]
 pub fn set_note_bend_in_yaml(
     yaml: &str,
     event_idx: usize,
@@ -1765,6 +1799,7 @@ pub fn set_global_measure_property_in_doc(
     }
 }
 
+#[cfg(test)]
 pub fn set_global_measure_property(
     yaml: &str,
     target_m_idx: usize,
@@ -1778,6 +1813,7 @@ pub fn set_global_measure_property(
     serde_saphyr::to_string(&doc).unwrap_or_else(|_| yaml.to_string())
 }
 
+#[cfg(test)]
 pub fn insert_grace_before_in_doc(doc: &mut crate::mnx::MnxDocument, event_idx: usize) -> bool {
     insert_grace_before_in_doc_part(doc, 0, event_idx)
 }
@@ -1827,6 +1863,7 @@ pub fn insert_grace_before_in_doc_part(
     true
 }
 
+#[cfg(test)]
 pub fn insert_grace_before_in_yaml(yaml: &str, event_idx: usize) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !insert_grace_before_in_doc(&mut doc, event_idx) {
@@ -1835,6 +1872,7 @@ pub fn insert_grace_before_in_yaml(yaml: &str, event_idx: usize) -> Option<Strin
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn append_blank_note_to_grace_block_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     e_idx: usize,
@@ -1851,7 +1889,7 @@ pub fn append_blank_note_to_grace_block_in_doc_part(
         return false;
     }
     let paths = doc.get_flattened_event_paths_for_part(part_idx);
-    let Some(&crate::mnx::AstPath::InTuplet(m_idx, s_idx, i_idx, _)) = paths.get(e_idx) else {
+    let Some(&crate::mnx::AstPath::InGrace(m_idx, s_idx, i_idx, _)) = paths.get(e_idx) else {
         return false;
     };
 
@@ -1875,6 +1913,7 @@ pub fn append_blank_note_to_grace_block_in_doc_part(
     }
 }
 
+#[cfg(test)]
 pub fn append_blank_note_to_grace_block_in_yaml(yaml: &str, e_idx: usize) -> Option<String> {
     let mut doc = serde_saphyr::from_str::<crate::mnx::MnxDocument>(yaml).ok()?;
     if !append_blank_note_to_grace_block_in_doc(&mut doc, e_idx) {
@@ -1883,6 +1922,7 @@ pub fn append_blank_note_to_grace_block_in_yaml(yaml: &str, e_idx: usize) -> Opt
     serde_saphyr::to_string(&doc).ok()
 }
 
+#[cfg(test)]
 pub fn set_event_text_markings_in_doc(
     doc: &mut crate::mnx::MnxDocument,
     event_idx: usize,
@@ -1911,6 +1951,7 @@ pub fn set_event_text_markings_in_doc_part(
     true
 }
 
+#[cfg(test)]
 pub fn set_event_text_markings_in_yaml(
     yaml: &str,
     event_idx: usize,

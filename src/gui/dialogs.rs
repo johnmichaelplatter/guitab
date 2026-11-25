@@ -142,17 +142,7 @@ impl MnxEditorApp {
             RemoveInstrument {
                 part_idx: usize,
             },
-            ApplyInstrumentSetup {
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
-            },
+            ApplyInstrumentSetup(Box<InstrumentSetupForm>),
             ApplyPercussionSetup {
                 is_new_tab: bool,
             },
@@ -168,103 +158,21 @@ impl MnxEditorApp {
                 step_multiplier: u8,
                 tunings: Vec<crate::mnx::StringTuning>,
             },
-            OpenSavePresetDialog {
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                show_custom_fretboard: bool,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
-            },
+            OpenSavePresetDialog(Box<InstrumentSetupForm>),
             SaveInstrumentPreset {
                 preset_name: String,
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                show_custom_fretboard: bool,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
+                form: Box<InstrumentSetupForm>,
             },
-            ReturnToInstrumentSetup {
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                show_custom_fretboard: bool,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
-            },
-            ImportPresetsYaml {
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                show_custom_fretboard: bool,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
-            },
-            ExportSinglePresetYaml {
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-            },
+            ReturnToInstrumentSetup(Box<InstrumentSetupForm>),
+            ImportPresetsYaml(Box<InstrumentSetupForm>),
+            ExportSinglePresetYaml(Box<InstrumentSetupForm>),
             ExportAllPresetsYaml,
-            OpenSaveDrumPresetDialog {
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                show_custom_fretboard: bool,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
-            },
+            OpenSaveDrumPresetDialog(Box<InstrumentSetupForm>),
             SaveDrumKitPreset {
                 preset_name: String,
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                show_custom_fretboard: bool,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
+                form: Box<InstrumentSetupForm>,
             },
-            ImportDrumPresetsYaml {
-                num_strings: u8,
-                edo: u8,
-                step_multiplier: u8,
-                tuning_mode: InstrumentTuningMode,
-                tunings_text: Vec<String>,
-                tunings_name: Vec<String>,
-                tunings_octave: Vec<i32>,
-                show_custom_fretboard: bool,
-                fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-                is_new_tab: bool,
-            },
+            ImportDrumPresetsYaml(Box<InstrumentSetupForm>),
             ExportSingleDrumPresetYaml,
             ExportAllDrumPresetsYaml,
             DiscardChangesSave {
@@ -899,18 +807,19 @@ impl MnxEditorApp {
                         });
                     });
             }
-            ActiveDialog::InstrumentSetup {
-                num_strings,
-                edo,
-                step_multiplier,
-                tuning_mode,
-                tunings_text,
-                tunings_name,
-                tunings_octave,
-                show_custom_fretboard,
-                fretboard_editor,
-                is_new_tab,
-            } => {
+            ActiveDialog::InstrumentSetup(form) => {
+                let InstrumentSetupForm {
+                    num_strings,
+                    edo,
+                    step_multiplier,
+                    tuning_mode,
+                    tunings_text,
+                    tunings_name,
+                    tunings_octave,
+                    show_custom_fretboard,
+                    fretboard_editor,
+                    is_new_tab,
+                } = &mut **form;
                 let win_title = if self.is_adding_instrument_in_dialog {
                     if *show_custom_fretboard {
                         "Add Instrument & Custom Fretboard Editor"
@@ -1014,18 +923,20 @@ impl MnxEditorApp {
                                     });
 
                                 if ui.button("Save as kit preset...").clicked() {
-                                    apply_action = Some(DialogAction::OpenSaveDrumPresetDialog {
-                                        num_strings: *num_strings,
-                                        edo: *edo,
-                                        step_multiplier: *step_multiplier,
-                                        tuning_mode: *tuning_mode,
-                                        tunings_text: tunings_text.clone(),
-                                        tunings_name: tunings_name.clone(),
-                                        tunings_octave: tunings_octave.clone(),
-                                        show_custom_fretboard: *show_custom_fretboard,
-                                        fretboard_editor: fretboard_editor.clone(),
-                                        is_new_tab: *is_new_tab,
-                                    });
+                                    apply_action = Some(DialogAction::OpenSaveDrumPresetDialog(
+                                        Box::new(InstrumentSetupForm {
+                                            num_strings: *num_strings,
+                                            edo: *edo,
+                                            step_multiplier: *step_multiplier,
+                                            tuning_mode: *tuning_mode,
+                                            tunings_text: tunings_text.clone(),
+                                            tunings_name: tunings_name.clone(),
+                                            tunings_octave: tunings_octave.clone(),
+                                            show_custom_fretboard: *show_custom_fretboard,
+                                            fretboard_editor: fretboard_editor.clone(),
+                                            is_new_tab: *is_new_tab,
+                                        }),
+                                    ));
                                 }
 
                                 ui.separator();
@@ -1066,18 +977,20 @@ impl MnxEditorApp {
                                     .on_hover_text("Import a single drum kit preset or a list of kit presets from a YAML file")
                                     .clicked()
                                 {
-                                    apply_action = Some(DialogAction::ImportDrumPresetsYaml {
-                                        num_strings: *num_strings,
-                                        edo: *edo,
-                                        step_multiplier: *step_multiplier,
-                                        tuning_mode: *tuning_mode,
-                                        tunings_text: tunings_text.clone(),
-                                        tunings_name: tunings_name.clone(),
-                                        tunings_octave: tunings_octave.clone(),
-                                        show_custom_fretboard: *show_custom_fretboard,
-                                        fretboard_editor: fretboard_editor.clone(),
-                                        is_new_tab: *is_new_tab,
-                                    });
+                                    apply_action = Some(DialogAction::ImportDrumPresetsYaml(
+                                        Box::new(InstrumentSetupForm {
+                                            num_strings: *num_strings,
+                                            edo: *edo,
+                                            step_multiplier: *step_multiplier,
+                                            tuning_mode: *tuning_mode,
+                                            tunings_text: tunings_text.clone(),
+                                            tunings_name: tunings_name.clone(),
+                                            tunings_octave: tunings_octave.clone(),
+                                            show_custom_fretboard: *show_custom_fretboard,
+                                            fretboard_editor: fretboard_editor.clone(),
+                                            is_new_tab: *is_new_tab,
+                                        }),
+                                    ));
                                 }
                                 if ui
                                     .button("Export Current Kit...")
@@ -1442,18 +1355,20 @@ impl MnxEditorApp {
                                 });
 
                             if ui.button("Save as instrument preset...").clicked() {
-                                apply_action = Some(DialogAction::OpenSavePresetDialog {
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    show_custom_fretboard: *show_custom_fretboard,
-                                    fretboard_editor: fretboard_editor.clone(),
-                                    is_new_tab: *is_new_tab,
-                                });
+                                apply_action = Some(DialogAction::OpenSavePresetDialog(Box::new(
+                                    InstrumentSetupForm {
+                                        num_strings: *num_strings,
+                                        edo: *edo,
+                                        step_multiplier: *step_multiplier,
+                                        tuning_mode: *tuning_mode,
+                                        tunings_text: tunings_text.clone(),
+                                        tunings_name: tunings_name.clone(),
+                                        tunings_octave: tunings_octave.clone(),
+                                        show_custom_fretboard: *show_custom_fretboard,
+                                        fretboard_editor: fretboard_editor.clone(),
+                                        is_new_tab: *is_new_tab,
+                                    },
+                                )));
                             }
                         });
 
@@ -1463,34 +1378,41 @@ impl MnxEditorApp {
                                 .on_hover_text("Import a single preset or a list of presets from a YAML file")
                                 .clicked()
                             {
-                                apply_action = Some(DialogAction::ImportPresetsYaml {
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    show_custom_fretboard: *show_custom_fretboard,
-                                    fretboard_editor: fretboard_editor.clone(),
-                                    is_new_tab: *is_new_tab,
-                                });
+                                apply_action = Some(DialogAction::ImportPresetsYaml(Box::new(
+                                    InstrumentSetupForm {
+                                        num_strings: *num_strings,
+                                        edo: *edo,
+                                        step_multiplier: *step_multiplier,
+                                        tuning_mode: *tuning_mode,
+                                        tunings_text: tunings_text.clone(),
+                                        tunings_name: tunings_name.clone(),
+                                        tunings_octave: tunings_octave.clone(),
+                                        show_custom_fretboard: *show_custom_fretboard,
+                                        fretboard_editor: fretboard_editor.clone(),
+                                        is_new_tab: *is_new_tab,
+                                    },
+                                )));
                             }
                             if ui
                                 .button("Export Current...")
                                 .on_hover_text("Export the current instrument setup as a YAML preset file")
                                 .clicked()
                             {
-                                apply_action = Some(DialogAction::ExportSinglePresetYaml {
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    fretboard_editor: fretboard_editor.clone(),
-                                });
+                                apply_action =
+                                    Some(DialogAction::ExportSinglePresetYaml(Box::new(
+                                        InstrumentSetupForm {
+                                            num_strings: *num_strings,
+                                            edo: *edo,
+                                            step_multiplier: *step_multiplier,
+                                            tuning_mode: *tuning_mode,
+                                            tunings_text: tunings_text.clone(),
+                                            tunings_name: tunings_name.clone(),
+                                            tunings_octave: tunings_octave.clone(),
+                                            show_custom_fretboard: *show_custom_fretboard,
+                                            fretboard_editor: fretboard_editor.clone(),
+                                            is_new_tab: *is_new_tab,
+                                        },
+                                    )));
                             }
                             if ui
                                 .button("Export Preset List...")
@@ -1745,17 +1667,20 @@ impl MnxEditorApp {
                         ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button("Accept").clicked() {
-                                apply_action = Some(DialogAction::ApplyInstrumentSetup {
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    fretboard_editor: fretboard_editor.clone(),
-                                    is_new_tab: *is_new_tab,
-                                });
+                                apply_action = Some(DialogAction::ApplyInstrumentSetup(Box::new(
+                                    InstrumentSetupForm {
+                                        num_strings: *num_strings,
+                                        edo: *edo,
+                                        step_multiplier: *step_multiplier,
+                                        tuning_mode: *tuning_mode,
+                                        tunings_text: tunings_text.clone(),
+                                        tunings_name: tunings_name.clone(),
+                                        tunings_octave: tunings_octave.clone(),
+                                        show_custom_fretboard: *show_custom_fretboard,
+                                        fretboard_editor: fretboard_editor.clone(),
+                                        is_new_tab: *is_new_tab,
+                                    },
+                                )));
                                 close_dialog = true;
                             }
                             let toggle_label = if *show_custom_fretboard {
@@ -1794,16 +1719,7 @@ impl MnxEditorApp {
             ActiveDialog::SaveInstrumentPreset {
                 preset_name,
                 error_msg,
-                num_strings,
-                edo,
-                step_multiplier,
-                tuning_mode,
-                tunings_text,
-                tunings_name,
-                tunings_octave,
-                show_custom_fretboard,
-                fretboard_editor,
-                is_new_tab,
+                form,
             } => {
                 egui::Window::new("Save as Instrument Preset")
                     .collapsible(false)
@@ -1813,7 +1729,7 @@ impl MnxEditorApp {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
                         ui.label(format!(
                             "Save current {}-EDO ({}-string) tuning to preset list:",
-                            edo, num_strings
+                            form.edo, form.num_strings
                         ));
                         ui.horizontal(|ui| {
                             ui.label("Preset name:");
@@ -1839,31 +1755,12 @@ impl MnxEditorApp {
                             if ui.button("Save Preset").clicked() || enter_pressed {
                                 apply_action = Some(DialogAction::SaveInstrumentPreset {
                                     preset_name: preset_name.clone(),
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    show_custom_fretboard: *show_custom_fretboard,
-                                    fretboard_editor: fretboard_editor.clone(),
-                                    is_new_tab: *is_new_tab,
+                                    form: form.clone(),
                                 });
                             }
                             if ui.button("Cancel").clicked() || esc_pressed {
-                                apply_action = Some(DialogAction::ReturnToInstrumentSetup {
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    show_custom_fretboard: *show_custom_fretboard,
-                                    fretboard_editor: fretboard_editor.clone(),
-                                    is_new_tab: *is_new_tab,
-                                });
+                                apply_action =
+                                    Some(DialogAction::ReturnToInstrumentSetup(form.clone()));
                             }
                         });
                     });
@@ -1871,16 +1768,7 @@ impl MnxEditorApp {
             ActiveDialog::SaveDrumKitPreset {
                 preset_name,
                 error_msg,
-                num_strings,
-                edo,
-                step_multiplier,
-                tuning_mode,
-                tunings_text,
-                tunings_name,
-                tunings_octave,
-                show_custom_fretboard,
-                fretboard_editor,
-                is_new_tab,
+                form,
             } => {
                 egui::Window::new("Save as Drum Kit Preset")
                     .collapsible(false)
@@ -1916,31 +1804,12 @@ impl MnxEditorApp {
                             if ui.button("Save Kit Preset").clicked() || enter_pressed {
                                 apply_action = Some(DialogAction::SaveDrumKitPreset {
                                     preset_name: preset_name.clone(),
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    show_custom_fretboard: *show_custom_fretboard,
-                                    fretboard_editor: fretboard_editor.clone(),
-                                    is_new_tab: *is_new_tab,
+                                    form: form.clone(),
                                 });
                             }
                             if ui.button("Cancel").clicked() || esc_pressed {
-                                apply_action = Some(DialogAction::ReturnToInstrumentSetup {
-                                    num_strings: *num_strings,
-                                    edo: *edo,
-                                    step_multiplier: *step_multiplier,
-                                    tuning_mode: *tuning_mode,
-                                    tunings_text: tunings_text.clone(),
-                                    tunings_name: tunings_name.clone(),
-                                    tunings_octave: tunings_octave.clone(),
-                                    show_custom_fretboard: *show_custom_fretboard,
-                                    fretboard_editor: fretboard_editor.clone(),
-                                    is_new_tab: *is_new_tab,
-                                });
+                                apply_action =
+                                    Some(DialogAction::ReturnToInstrumentSetup(form.clone()));
                             }
                         });
                     });
@@ -2613,17 +2482,19 @@ impl MnxEditorApp {
                     self.is_adding_instrument_in_dialog = false;
                     self.active_dialog = ActiveDialog::None;
                 }
-                DialogAction::ApplyInstrumentSetup {
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    fretboard_editor,
-                    is_new_tab,
-                } => {
+                DialogAction::ApplyInstrumentSetup(form) => {
+                    let InstrumentSetupForm {
+                        num_strings,
+                        edo,
+                        step_multiplier,
+                        tuning_mode,
+                        tunings_text,
+                        tunings_name,
+                        tunings_octave,
+                        show_custom_fretboard: _,
+                        fretboard_editor,
+                        is_new_tab,
+                    } = *form;
                     let p_idx = self.selected_part_idx;
                     let part = self.parsed_mnx.as_ref().and_then(|d| d.parts.get(p_idx));
                     let old_num_strings = part.map(|p| p.num_strings()).unwrap_or(6) as u8;
@@ -2846,58 +2717,16 @@ impl MnxEditorApp {
                         self.active_dialog = ActiveDialog::StartupPrompt;
                     }
                 }
-                DialogAction::OpenSavePresetDialog {
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    show_custom_fretboard,
-                    fretboard_editor,
-                    is_new_tab,
-                } => {
+                DialogAction::OpenSavePresetDialog(form) => {
                     self.preset_status_msg = None;
                     self.active_dialog = ActiveDialog::SaveInstrumentPreset {
                         preset_name: String::new(),
                         error_msg: None,
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        tunings_text,
-                        tunings_name,
-                        tunings_octave,
-                        show_custom_fretboard,
-                        fretboard_editor,
-                        is_new_tab,
+                        form,
                     };
                 }
-                DialogAction::SaveInstrumentPreset {
-                    preset_name,
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    show_custom_fretboard,
-                    fretboard_editor,
-                    is_new_tab,
-                } => {
-                    match crate::presets::InstrumentPreset::from_dialog_state(
-                        &preset_name,
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        &tunings_text,
-                        &tunings_name,
-                        &tunings_octave,
-                        &fretboard_editor,
-                    ) {
+                DialogAction::SaveInstrumentPreset { preset_name, form } => {
+                    match crate::presets::InstrumentPreset::from_setup_form(&preset_name, &form) {
                         Ok(preset) => {
                             let saved_label = preset.display_label();
                             crate::presets::add_or_update_preset(
@@ -2909,74 +2738,21 @@ impl MnxEditorApp {
                             );
                             self.preset_status_msg =
                                 Some(format!("Saved preset: {}", saved_label));
-                            self.active_dialog = ActiveDialog::InstrumentSetup {
-                                num_strings,
-                                edo,
-                                step_multiplier,
-                                tuning_mode,
-                                tunings_text,
-                                tunings_name,
-                                tunings_octave,
-                                show_custom_fretboard,
-                                fretboard_editor,
-                                is_new_tab,
-                            };
+                            self.active_dialog = ActiveDialog::InstrumentSetup(form);
                         }
                         Err(err) => {
                             self.active_dialog = ActiveDialog::SaveInstrumentPreset {
                                 preset_name,
                                 error_msg: Some(err),
-                                num_strings,
-                                edo,
-                                step_multiplier,
-                                tuning_mode,
-                                tunings_text,
-                                tunings_name,
-                                tunings_octave,
-                                show_custom_fretboard,
-                                fretboard_editor,
-                                is_new_tab,
+                                form,
                             };
                         }
                     }
                 }
-                DialogAction::ReturnToInstrumentSetup {
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    show_custom_fretboard,
-                    fretboard_editor,
-                    is_new_tab,
-                } => {
-                    self.active_dialog = ActiveDialog::InstrumentSetup {
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        tunings_text,
-                        tunings_name,
-                        tunings_octave,
-                        show_custom_fretboard,
-                        fretboard_editor,
-                        is_new_tab,
-                    };
+                DialogAction::ReturnToInstrumentSetup(form) => {
+                    self.active_dialog = ActiveDialog::InstrumentSetup(form);
                 }
-                DialogAction::ImportPresetsYaml {
-                    mut num_strings,
-                    mut edo,
-                    mut step_multiplier,
-                    mut tuning_mode,
-                    mut tunings_text,
-                    mut tunings_name,
-                    mut tunings_octave,
-                    mut show_custom_fretboard,
-                    mut fretboard_editor,
-                    is_new_tab,
-                } => {
+                DialogAction::ImportPresetsYaml(mut form) => {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("YAML Preset(s)", &["yaml", "yml"])
                         .pick_file()
@@ -2986,17 +2762,7 @@ impl MnxEditorApp {
                                 Ok(imported) => {
                                     let count = imported.len();
                                     if let Some(first) = imported.first() {
-                                        first.apply_to_dialog_state(
-                                            &mut num_strings,
-                                            &mut edo,
-                                            &mut step_multiplier,
-                                            &mut tuning_mode,
-                                            &mut tunings_text,
-                                            &mut tunings_name,
-                                            &mut tunings_octave,
-                                            &mut fretboard_editor,
-                                            &mut show_custom_fretboard,
-                                        );
+                                        first.apply_to_setup_form(&mut form);
                                     }
                                     for p in imported {
                                         crate::presets::add_or_update_preset(
@@ -3025,73 +2791,34 @@ impl MnxEditorApp {
                             }
                         }
                     }
-                    self.active_dialog = ActiveDialog::InstrumentSetup {
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        tunings_text,
-                        tunings_name,
-                        tunings_octave,
-                        show_custom_fretboard,
-                        fretboard_editor,
-                        is_new_tab,
-                    };
+                    self.active_dialog = ActiveDialog::InstrumentSetup(form);
                 }
-                DialogAction::ExportSinglePresetYaml {
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    fretboard_editor,
-                } => {
-                    let matched_name = crate::presets::InstrumentPreset::from_dialog_state(
-                        "probe",
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        &tunings_text,
-                        &tunings_name,
-                        &tunings_octave,
-                        &fretboard_editor,
-                    )
-                    .ok()
-                    .and_then(|probe| {
-                        self.instrument_presets
-                            .iter()
-                            .find(|p| {
-                                p.edo == probe.edo
-                                    && p.step_multiplier == probe.step_multiplier
-                                    && p.tuning == probe.tuning
-                                    && p.custom_frets == probe.custom_frets
+                DialogAction::ExportSinglePresetYaml(form) => {
+                    let matched_name =
+                        crate::presets::InstrumentPreset::from_setup_form("probe", &form)
+                            .ok()
+                            .and_then(|probe| {
+                                self.instrument_presets
+                                    .iter()
+                                    .find(|p| {
+                                        p.edo == probe.edo
+                                            && p.step_multiplier == probe.step_multiplier
+                                            && p.tuning == probe.tuning
+                                            && p.custom_frets == probe.custom_frets
+                                    })
+                                    .map(|p| p.name.clone())
                             })
-                            .map(|p| p.name.clone())
-                    })
-                    .unwrap_or_else(|| {
-                        if !fretboard_editor.frets.is_empty() {
-                            format!("Custom Fretboard ({}-str)", num_strings)
-                        } else if tuning_mode == InstrumentTuningMode::RatioCents {
-                            format!("JI ({}-str)", num_strings)
-                        } else {
-                            format!("Custom {}-EDO ({}-str)", edo, num_strings)
-                        }
-                    });
+                            .unwrap_or_else(|| {
+                                if !form.fretboard_editor.frets.is_empty() {
+                                    format!("Custom Fretboard ({}-str)", form.num_strings)
+                                } else if form.tuning_mode == InstrumentTuningMode::RatioCents {
+                                    format!("JI ({}-str)", form.num_strings)
+                                } else {
+                                    format!("Custom {}-EDO ({}-str)", form.edo, form.num_strings)
+                                }
+                            });
 
-                    match crate::presets::InstrumentPreset::from_dialog_state(
-                        &matched_name,
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        &tunings_text,
-                        &tunings_name,
-                        &tunings_octave,
-                        &fretboard_editor,
-                    ) {
+                    match crate::presets::InstrumentPreset::from_setup_form(&matched_name, &form) {
                         Ok(preset) => {
                             if let Ok(yaml) = crate::presets::serialize_preset_to_yaml(&preset) {
                                 if let Some(path) = rfd::FileDialog::new()
@@ -3099,7 +2826,9 @@ impl MnxEditorApp {
                                     .add_filter("YAML Preset", &["yaml", "yml"])
                                     .save_file()
                                 {
-                                    if let Err(e) = std::fs::write(&path, yaml) {
+                                    if let Err(e) =
+                                        crate::rebar::atomic_write_file(&path, yaml.as_bytes())
+                                    {
                                         self.preset_status_msg =
                                             Some(format!("Failed to export preset: {}", e));
                                     } else {
@@ -3125,7 +2854,8 @@ impl MnxEditorApp {
                             .add_filter("YAML Presets List", &["yaml", "yml"])
                             .save_file()
                         {
-                            if let Err(e) = std::fs::write(&path, yaml) {
+                            if let Err(e) = crate::rebar::atomic_write_file(&path, yaml.as_bytes())
+                            {
                                 self.preset_status_msg =
                                     Some(format!("Failed to export preset list: {}", e));
                             } else {
@@ -3137,62 +2867,21 @@ impl MnxEditorApp {
                         }
                     }
                 }
-                DialogAction::OpenSaveDrumPresetDialog {
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    show_custom_fretboard,
-                    fretboard_editor,
-                    is_new_tab,
-                } => {
+                DialogAction::OpenSaveDrumPresetDialog(form) => {
                     self.preset_status_msg = None;
                     self.active_dialog = ActiveDialog::SaveDrumKitPreset {
                         preset_name: String::new(),
                         error_msg: None,
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        tunings_text,
-                        tunings_name,
-                        tunings_octave,
-                        show_custom_fretboard,
-                        fretboard_editor,
-                        is_new_tab,
+                        form,
                     };
                 }
-                DialogAction::SaveDrumKitPreset {
-                    preset_name,
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    show_custom_fretboard,
-                    fretboard_editor,
-                    is_new_tab,
-                } => {
+                DialogAction::SaveDrumKitPreset { preset_name, form } => {
                     let clean_name = preset_name.trim().to_string();
                     if clean_name.is_empty() {
                         self.active_dialog = ActiveDialog::SaveDrumKitPreset {
                             preset_name,
                             error_msg: Some("Kit preset name cannot be empty.".to_string()),
-                            num_strings,
-                            edo,
-                            step_multiplier,
-                            tuning_mode,
-                            tunings_text,
-                            tunings_name,
-                            tunings_octave,
-                            show_custom_fretboard,
-                            fretboard_editor,
-                            is_new_tab,
+                            form,
                         };
                     } else {
                         let preset = crate::presets::DrumKitPreset {
@@ -3209,32 +2898,10 @@ impl MnxEditorApp {
                         );
                         self.preset_status_msg =
                             Some(format!("Saved kit preset: {}", saved_label));
-                        self.active_dialog = ActiveDialog::InstrumentSetup {
-                            num_strings,
-                            edo,
-                            step_multiplier,
-                            tuning_mode,
-                            tunings_text,
-                            tunings_name,
-                            tunings_octave,
-                            show_custom_fretboard,
-                            fretboard_editor,
-                            is_new_tab,
-                        };
+                        self.active_dialog = ActiveDialog::InstrumentSetup(form);
                     }
                 }
-                DialogAction::ImportDrumPresetsYaml {
-                    num_strings,
-                    edo,
-                    step_multiplier,
-                    tuning_mode,
-                    tunings_text,
-                    tunings_name,
-                    tunings_octave,
-                    show_custom_fretboard,
-                    fretboard_editor,
-                    is_new_tab,
-                } => {
+                DialogAction::ImportDrumPresetsYaml(form) => {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("YAML Drum Kit Preset(s)", &["yaml", "yml"])
                         .pick_file()
@@ -3276,18 +2943,7 @@ impl MnxEditorApp {
                             }
                         }
                     }
-                    self.active_dialog = ActiveDialog::InstrumentSetup {
-                        num_strings,
-                        edo,
-                        step_multiplier,
-                        tuning_mode,
-                        tunings_text,
-                        tunings_name,
-                        tunings_octave,
-                        show_custom_fretboard,
-                        fretboard_editor,
-                        is_new_tab,
-                    };
+                    self.active_dialog = ActiveDialog::InstrumentSetup(form);
                 }
                 DialogAction::ExportSingleDrumPresetYaml => {
                     let matched_name = self
@@ -3316,7 +2972,8 @@ impl MnxEditorApp {
                             .add_filter("YAML Drum Kit Preset", &["yaml", "yml"])
                             .save_file()
                         {
-                            if let Err(e) = std::fs::write(&path, yaml) {
+                            if let Err(e) = crate::rebar::atomic_write_file(&path, yaml.as_bytes())
+                            {
                                 self.preset_status_msg =
                                     Some(format!("Failed to export kit preset: {}", e));
                             } else {
@@ -3335,7 +2992,8 @@ impl MnxEditorApp {
                             .add_filter("YAML Drum Kit Presets List", &["yaml", "yml"])
                             .save_file()
                         {
-                            if let Err(e) = std::fs::write(&path, yaml) {
+                            if let Err(e) = crate::rebar::atomic_write_file(&path, yaml.as_bytes())
+                            {
                                 self.preset_status_msg =
                                     Some(format!("Failed to export kit preset list: {}", e));
                             } else {

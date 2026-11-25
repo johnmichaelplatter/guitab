@@ -85,6 +85,16 @@ pub(crate) struct UndoSnapshot {
     pub yaml_fallback: Option<std::sync::Arc<str>>,
 }
 
+/// Per-part runtime audio/MIDI routing and cached synth state, kept aligned 1:1 with `MnxDocument::parts`.
+#[derive(Clone, Debug, Default)]
+pub struct PartRuntimeState {
+    pub midi_port: Option<usize>,
+    pub string_channel_map: std::collections::HashMap<u8, u8>,
+    pub mpe_mode: Option<bool>,
+    pub pitch_bend_range: Option<u8>,
+    pub synth_preset: Option<crate::synth::SynthPreset>,
+}
+
 pub struct MnxEditorApp {
     pub needs_scroll: bool,
     pub(crate) yaml_text: String,
@@ -115,11 +125,7 @@ pub struct MnxEditorApp {
     pub(crate) selected_midi_port: Option<usize>, // Selected MIDI port id
     pub(crate) pitch_bend_range: u8,              // Pitchbend range (1-48, default 2)
     pub(crate) string_channel_map: std::collections::HashMap<u8, u8>, // String (1..n) -> MIDI channel (1..16)
-    pub(crate) part_midi_ports: std::collections::HashMap<usize, usize>, // Per-part MIDI port id
-    pub(crate) part_string_channel_maps:
-        std::collections::HashMap<usize, std::collections::HashMap<u8, u8>>, // Per-part string -> channel
-    pub(crate) part_mpe_modes: std::collections::HashMap<usize, bool>, // Per-part MPE toggle state
-    pub(crate) part_pitch_bend_ranges: std::collections::HashMap<usize, u8>, // Per-part pitch bend range
+    pub(crate) parts_runtime: Vec<PartRuntimeState>, // Per-part runtime MIDI/synth settings
     pub(crate) string_channel_dialog_part_idx: usize, // Selected part in String Channels popup
     pub(crate) is_mpe_mode: bool, // Toggle button for multi-timbral vs MPE output
     pub(crate) midi_player: crate::midi::MidiPlayer, // Real-time MIDI sequencer playback engine
@@ -162,7 +168,6 @@ pub struct MnxEditorApp {
     pub(crate) use_external_midi: bool,
     pub(crate) synth_engine: Option<crate::synth::SynthEngine>,
     pub(crate) synth_lab: crate::synth::SynthTestLabState,
-    pub(crate) part_synth_presets: std::collections::HashMap<usize, crate::synth::SynthPreset>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +213,59 @@ pub enum InstrumentTuningMode {
     #[default]
     Edo,
     RatioCents,
+}
+
+/// Shared form state for the Instrument Setup dialog and its preset sub-dialogs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstrumentSetupForm {
+    pub num_strings: u8,
+    pub edo: u8,
+    pub step_multiplier: u8,
+    pub tuning_mode: InstrumentTuningMode,
+    /// In EDO mode: step name; in RatioCents mode: ratio or cents (e.g. `"4/3"` or `"498.0"`).
+    pub tunings_text: Vec<String>,
+    /// 53-EDO recommended or user-specified ups/downs name (e.g. `"G"`).
+    pub tunings_name: Vec<String>,
+    pub tunings_octave: Vec<i32>,
+    pub show_custom_fretboard: bool,
+    pub fretboard_editor: crate::fretboard_editor::FretboardEditorState,
+    pub is_new_tab: bool,
+}
+
+impl InstrumentSetupForm {
+    pub fn default_12edo_6_string(
+        ref_step: String,
+        ref_oct: i32,
+        ref_freq: f64,
+        is_new_tab: bool,
+    ) -> Self {
+        let mut tunings_text = Vec::with_capacity(15);
+        let mut tunings_name = Vec::with_capacity(15);
+        let mut tunings_octave = Vec::with_capacity(15);
+        for &(step, octave) in &crate::mnx::STANDARD_15_STRING_TUNING {
+            tunings_text.push(step.to_string());
+            tunings_name.push(step.to_string());
+            tunings_octave.push(octave);
+        }
+        Self {
+            num_strings: 6,
+            edo: 12,
+            step_multiplier: 1,
+            tuning_mode: InstrumentTuningMode::Edo,
+            tunings_text,
+            tunings_name,
+            tunings_octave,
+            show_custom_fretboard: false,
+            fretboard_editor: crate::fretboard_editor::FretboardEditorState::new(
+                6,
+                Vec::new(),
+                ref_step,
+                ref_oct,
+                ref_freq,
+            ),
+            is_new_tab,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -262,45 +320,16 @@ pub enum ActiveDialog {
     ConfirmRemoveTuplet {
         event_idx: usize,
     },
-    InstrumentSetup {
-        num_strings: u8,
-        edo: u8,
-        step_multiplier: u8,
-        tuning_mode: InstrumentTuningMode,
-        tunings_text: Vec<String>, // In EDO mode: step name; in RatioCents mode: ratio or cents (e.g. "4/3" or "498.0")
-        tunings_name: Vec<String>, // 53-EDO recommended or user-specified ups/downs name (e.g. "G")
-        tunings_octave: Vec<i32>,  // octave
-        show_custom_fretboard: bool,
-        fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-        is_new_tab: bool,
-    },
+    InstrumentSetup(Box<InstrumentSetupForm>),
     SaveInstrumentPreset {
         preset_name: String,
         error_msg: Option<String>,
-        num_strings: u8,
-        edo: u8,
-        step_multiplier: u8,
-        tuning_mode: InstrumentTuningMode,
-        tunings_text: Vec<String>,
-        tunings_name: Vec<String>,
-        tunings_octave: Vec<i32>,
-        show_custom_fretboard: bool,
-        fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-        is_new_tab: bool,
+        form: Box<InstrumentSetupForm>,
     },
     SaveDrumKitPreset {
         preset_name: String,
         error_msg: Option<String>,
-        num_strings: u8,
-        edo: u8,
-        step_multiplier: u8,
-        tuning_mode: InstrumentTuningMode,
-        tunings_text: Vec<String>,
-        tunings_name: Vec<String>,
-        tunings_octave: Vec<i32>,
-        show_custom_fretboard: bool,
-        fretboard_editor: crate::fretboard_editor::FretboardEditorState,
-        is_new_tab: bool,
+        form: Box<InstrumentSetupForm>,
     },
     ConfirmEdoChange {
         new_num_strings: u8,
@@ -356,62 +385,19 @@ impl Default for MnxEditorApp {
 
 impl MnxEditorApp {
     pub fn default_empty_yaml() -> String {
-        let tunings = vec![
-            crate::mnx::StringTuning {
-                string: 1,
+        let tunings: Vec<crate::mnx::StringTuning> = crate::mnx::STANDARD_15_STRING_TUNING[..6]
+            .iter()
+            .enumerate()
+            .map(|(i, &(step, octave))| crate::mnx::StringTuning {
+                string: (i + 1) as u8,
                 pitch: crate::mnx::Pitch {
-                    step: "E".to_string(),
-                    octave: 4,
+                    step: step.to_string(),
+                    octave,
                     alter: None,
                     ..Default::default()
                 },
-            },
-            crate::mnx::StringTuning {
-                string: 2,
-                pitch: crate::mnx::Pitch {
-                    step: "B".to_string(),
-                    octave: 3,
-                    alter: None,
-                    ..Default::default()
-                },
-            },
-            crate::mnx::StringTuning {
-                string: 3,
-                pitch: crate::mnx::Pitch {
-                    step: "G".to_string(),
-                    octave: 3,
-                    alter: None,
-                    ..Default::default()
-                },
-            },
-            crate::mnx::StringTuning {
-                string: 4,
-                pitch: crate::mnx::Pitch {
-                    step: "D".to_string(),
-                    octave: 3,
-                    alter: None,
-                    ..Default::default()
-                },
-            },
-            crate::mnx::StringTuning {
-                string: 5,
-                pitch: crate::mnx::Pitch {
-                    step: "A".to_string(),
-                    octave: 2,
-                    alter: None,
-                    ..Default::default()
-                },
-            },
-            crate::mnx::StringTuning {
-                string: 6,
-                pitch: crate::mnx::Pitch {
-                    step: "E".to_string(),
-                    octave: 2,
-                    alter: None,
-                    ..Default::default()
-                },
-            },
-        ];
+            })
+            .collect();
 
         let doc = MnxDocument {
             mnx: crate::mnx::MnxMeta { version: 1 },
@@ -516,10 +502,7 @@ impl MnxEditorApp {
             selected_midi_port: selected_port,
             pitch_bend_range: 2,
             string_channel_map: std::collections::HashMap::new(),
-            part_midi_ports: std::collections::HashMap::new(),
-            part_string_channel_maps: std::collections::HashMap::new(),
-            part_mpe_modes: std::collections::HashMap::new(),
-            part_pitch_bend_ranges: std::collections::HashMap::new(),
+            parts_runtime: Vec::new(),
             string_channel_dialog_part_idx: 0,
             is_mpe_mode: false,
             midi_player: crate::midi::MidiPlayer::new(),
@@ -563,7 +546,6 @@ impl MnxEditorApp {
             use_external_midi: true,
             synth_engine: None,
             synth_lab: crate::synth::SynthTestLabState::default(),
-            part_synth_presets: std::collections::HashMap::new(),
         };
 
         let conn_arc = app.midi_player.connections_arc();
@@ -582,6 +564,22 @@ impl MnxEditorApp {
 }
 
 impl MnxEditorApp {
+    pub(crate) fn ensure_parts_runtime_len(&mut self, min_len: usize) {
+        if self.parts_runtime.len() < min_len {
+            self.parts_runtime
+                .resize_with(min_len, PartRuntimeState::default);
+        }
+    }
+
+    pub(crate) fn part_runtime(&self, part_idx: usize) -> Option<&PartRuntimeState> {
+        self.parts_runtime.get(part_idx)
+    }
+
+    pub(crate) fn part_runtime_mut(&mut self, part_idx: usize) -> &mut PartRuntimeState {
+        self.ensure_parts_runtime_len(part_idx + 1);
+        &mut self.parts_runtime[part_idx]
+    }
+
     pub fn get_part_synth_preset(&self, part_idx: usize) -> crate::synth::SynthPreset {
         if let Some(doc) = &self.parsed_mnx {
             if let Some(part) = doc.parts.get(part_idx) {
@@ -590,7 +588,10 @@ impl MnxEditorApp {
                 }
             }
         }
-        if let Some(preset) = self.part_synth_presets.get(&part_idx) {
+        if let Some(preset) = self
+            .part_runtime(part_idx)
+            .and_then(|rt| rt.synth_preset.as_ref())
+        {
             preset.clone()
         } else {
             let is_perc = self
@@ -608,7 +609,7 @@ impl MnxEditorApp {
     }
 
     pub fn set_part_synth_preset(&mut self, part_idx: usize, preset: crate::synth::SynthPreset) {
-        self.part_synth_presets.insert(part_idx, preset.clone());
+        self.part_runtime_mut(part_idx).synth_preset = Some(preset.clone());
         self.mutate_doc(|doc| {
             let part = doc.parts.get_mut(part_idx)?;
             part.ext.synth_preset = Some(preset.clone());
@@ -692,15 +693,20 @@ impl MnxEditorApp {
         let new_idx = part_idx.min(part_count - 1);
 
         // Save current part's MIDI channel map and port before switching
-        self.part_string_channel_maps
-            .insert(self.selected_part_idx, self.string_channel_map.clone());
-        if let Some(p) = self.selected_midi_port {
-            self.part_midi_ports.insert(self.selected_part_idx, p);
+        let cur_idx = self.selected_part_idx;
+        let cur_map = self.string_channel_map.clone();
+        let cur_port = self.selected_midi_port;
+        let cur_mpe = self.is_mpe_mode;
+        let cur_pb = self.pitch_bend_range;
+        {
+            let rt = self.part_runtime_mut(cur_idx);
+            rt.string_channel_map = cur_map;
+            if let Some(p) = cur_port {
+                rt.midi_port = Some(p);
+            }
+            rt.mpe_mode = Some(cur_mpe);
+            rt.pitch_bend_range = Some(cur_pb);
         }
-        self.part_mpe_modes
-            .insert(self.selected_part_idx, self.is_mpe_mode);
-        self.part_pitch_bend_ranges
-            .insert(self.selected_part_idx, self.pitch_bend_range);
 
         if self.selected_part_idx != new_idx {
             self.selected_part_idx = new_idx;
@@ -716,9 +722,8 @@ impl MnxEditorApp {
         }
 
         self.string_channel_map = self
-            .part_string_channel_maps
-            .get(&self.selected_part_idx)
-            .cloned()
+            .part_runtime(self.selected_part_idx)
+            .map(|rt| rt.string_channel_map.clone())
             .unwrap_or_default();
         self.selected_midi_port = self.get_part_midi_port(self.selected_part_idx);
         self.pitch_bend_range = self.get_part_pitch_bend_range(self.selected_part_idx);
@@ -1004,7 +1009,7 @@ impl MnxEditorApp {
             for part in &doc.parts {
                 for (m_idx, m) in part.measures.iter().enumerate() {
                     for seq in &m.sequences {
-                        for ev in seq.flattened_events() {
+                        for ev in seq.events() {
                             if ev.id.as_deref() == Some(element_id) {
                                 return Some(m_idx);
                             }
@@ -1143,7 +1148,9 @@ impl MnxEditorApp {
                 let custom_map = if p_idx == self.selected_part_idx && !self.string_channel_map.is_empty() {
                     Some(&self.string_channel_map)
                 } else {
-                    self.part_string_channel_maps.get(&p_idx)
+                    self.part_runtime(p_idx)
+                        .map(|rt| &rt.string_channel_map)
+                        .filter(|m| !m.is_empty())
                 };
 
                 let is_mpe = self.is_part_mpe_mode(p_idx);
@@ -1494,24 +1501,8 @@ impl MnxEditorApp {
         let is_mpe = self.is_part_mpe_mode(self.selected_part_idx);
         let pb_range = self.get_part_pitch_bend_range(self.selected_part_idx);
 
-        // Find the event
-        let mut cur_e = 0;
-        let mut target_event = None;
-        'find_ev: for m in &part.measures {
-            for seq in &m.sequences {
-                for ev in seq.flattened_events() {
-                    if cur_e == e_idx {
-                        target_event = Some(ev);
-                        break 'find_ev;
-                    }
-                    cur_e += 1;
-                }
-            }
-        }
-
-        let event = match target_event {
-            Some(ev) => ev,
-            None => return,
+        let Some(event) = part.nth_event(e_idx) else {
+            return;
         };
 
         if part.is_percussion() {
@@ -2048,17 +2039,18 @@ impl MnxEditorApp {
         }
 
         // Sync MPE mode, pitch bend range, and per-part synth presets from YAML
-        self.part_mpe_modes.clear();
-        self.part_pitch_bend_ranges.clear();
+        if self.parts_runtime.len() < num_parts {
+            self.parts_runtime
+                .resize_with(num_parts, PartRuntimeState::default);
+        } else if self.parts_runtime.len() > num_parts {
+            self.parts_runtime.truncate(num_parts);
+        }
         for (i, part) in doc.parts.iter().enumerate() {
-            if let Some(mpe) = part.mpe {
-                self.part_mpe_modes.insert(i, mpe);
-            }
-            if let Some(pb) = part.pitch_bend_range {
-                self.part_pitch_bend_ranges.insert(i, pb.clamp(1, 48));
-            }
+            let rt = &mut self.parts_runtime[i];
+            rt.mpe_mode = part.mpe;
+            rt.pitch_bend_range = part.pitch_bend_range.map(|pb| pb.clamp(1, 48));
             if let Some(sp) = &part.ext.synth_preset {
-                self.part_synth_presets.insert(i, sp.clone());
+                rt.synth_preset = Some(sp.clone());
             }
         }
         self.is_mpe_mode = self.is_part_mpe_mode(self.selected_part_idx);
@@ -2216,7 +2208,7 @@ impl MnxEditorApp {
     }
 
     pub fn get_part_midi_port(&self, part_idx: usize) -> Option<usize> {
-        if let Some(&port) = self.part_midi_ports.get(&part_idx) {
+        if let Some(port) = self.part_runtime(part_idx).and_then(|rt| rt.midi_port) {
             if self.midi_ports.iter().any(|p| p.id == port) {
                 return Some(port);
             }
@@ -2225,7 +2217,7 @@ impl MnxEditorApp {
     }
 
     pub fn set_part_midi_port(&mut self, part_idx: usize, port_id: usize) {
-        self.part_midi_ports.insert(part_idx, port_id);
+        self.part_runtime_mut(part_idx).midi_port = Some(port_id);
         if part_idx == self.selected_part_idx {
             self.selected_midi_port = Some(port_id);
             self.live_play_dirty = true;
@@ -2233,7 +2225,7 @@ impl MnxEditorApp {
     }
 
     pub fn is_part_mpe_mode(&self, part_idx: usize) -> bool {
-        if let Some(&mpe) = self.part_mpe_modes.get(&part_idx) {
+        if let Some(mpe) = self.part_runtime(part_idx).and_then(|rt| rt.mpe_mode) {
             return mpe;
         }
         if let Some(mpe) = self
@@ -2248,7 +2240,10 @@ impl MnxEditorApp {
     }
 
     pub fn get_part_pitch_bend_range(&self, part_idx: usize) -> u8 {
-        if let Some(&pb) = self.part_pitch_bend_ranges.get(&part_idx) {
+        if let Some(pb) = self
+            .part_runtime(part_idx)
+            .and_then(|rt| rt.pitch_bend_range)
+        {
             return pb;
         }
         if let Some(pb) = self
@@ -2267,7 +2262,7 @@ impl MnxEditorApp {
 
     pub fn set_part_pitch_bend_range(&mut self, part_idx: usize, pb_range: u8) {
         let clamped = pb_range.clamp(1, 48);
-        self.part_pitch_bend_ranges.insert(part_idx, clamped);
+        self.part_runtime_mut(part_idx).pitch_bend_range = Some(clamped);
         if part_idx == self.selected_part_idx {
             self.pitch_bend_range = clamped;
         }
@@ -2304,14 +2299,14 @@ impl MnxEditorApp {
     }
 
     pub fn set_part_mpe_mode(&mut self, part_idx: usize, is_mpe: bool) {
-        self.part_mpe_modes.insert(part_idx, is_mpe);
+        let new_pb = if is_mpe { 48 } else { 2 };
+        {
+            let rt = self.part_runtime_mut(part_idx);
+            rt.mpe_mode = Some(is_mpe);
+            rt.pitch_bend_range = Some(new_pb);
+        }
         if part_idx == self.selected_part_idx {
             self.is_mpe_mode = is_mpe;
-        }
-
-        let new_pb = if is_mpe { 48 } else { 2 };
-        self.part_pitch_bend_ranges.insert(part_idx, new_pb);
-        if part_idx == self.selected_part_idx {
             self.pitch_bend_range = new_pb;
         }
 
@@ -2324,18 +2319,21 @@ impl MnxEditorApp {
 
         let target_port = self.get_part_midi_port(part_idx).unwrap_or(0);
         let prior_strings_on_port = self.compute_prior_strings_on_port(part_idx, target_port);
-        let part_map = self.part_string_channel_maps.entry(part_idx).or_default();
-        part_map.clear();
-        for s in 1..=num_strings {
-            let def_ch = if is_mpe {
-                2 + ((prior_strings_on_port + s - 1) % 15)
-            } else {
-                1 + ((prior_strings_on_port + s - 1) % 16)
-            };
-            part_map.insert(s, def_ch);
-        }
+        let updated_map = {
+            let part_map = &mut self.part_runtime_mut(part_idx).string_channel_map;
+            part_map.clear();
+            for s in 1..=num_strings {
+                let def_ch = if is_mpe {
+                    2 + ((prior_strings_on_port + s - 1) % 15)
+                } else {
+                    1 + ((prior_strings_on_port + s - 1) % 16)
+                };
+                part_map.insert(s, def_ch);
+            }
+            part_map.clone()
+        };
         if part_idx == self.selected_part_idx {
-            self.string_channel_map = part_map.clone();
+            self.string_channel_map = updated_map;
         }
 
         self.mutate_doc(|doc| {
@@ -2434,23 +2432,7 @@ impl MnxEditorApp {
                 }
                 tunings_octave.push(pitch.octave);
             } else {
-                let (step, octave) = match s {
-                    1 => ("E", 4),
-                    2 => ("B", 3),
-                    3 => ("G", 3),
-                    4 => ("D", 3),
-                    5 => ("A", 2),
-                    6 => ("E", 2),
-                    7 => ("B", 1),
-                    8 => ("F#", 1),
-                    9 => ("C#", 1),
-                    10 => ("G#", 0),
-                    11 => ("D#", 0),
-                    12 => ("A#", 0),
-                    13 => ("F", 0),
-                    14 => ("C", 0),
-                    _ => ("G", 0),
-                };
+                let (step, octave) = crate::mnx::standard_15_string_tuning(s);
                 if tuning_mode == InstrumentTuningMode::RatioCents {
                     tunings_text.push("1/1".to_string());
                     tunings_name.push(fretboard_editor.reference_note_step.clone());
@@ -2462,7 +2444,7 @@ impl MnxEditorApp {
             }
         }
 
-        self.active_dialog = ActiveDialog::InstrumentSetup {
+        self.active_dialog = ActiveDialog::InstrumentSetup(Box::new(InstrumentSetupForm {
             num_strings,
             edo,
             step_multiplier,
@@ -2473,7 +2455,7 @@ impl MnxEditorApp {
             show_custom_fretboard,
             fretboard_editor,
             is_new_tab: false,
-        };
+        }));
     }
 
     pub fn open_add_instrument_dialog(&mut self) {
@@ -2488,32 +2470,6 @@ impl MnxEditorApp {
         self.instrument_setup_percussion_lines = crate::presets::standard_6_line_kit_configs();
         self.instrument_setup_new_sym_bufs = vec![String::new(); 15];
 
-        let mut tunings_text = Vec::new();
-        let mut tunings_name = Vec::new();
-        let mut tunings_octave = Vec::new();
-        for s in 1..=15 {
-            let (step, octave) = match s {
-                1 => ("E", 4),
-                2 => ("B", 3),
-                3 => ("G", 3),
-                4 => ("D", 3),
-                5 => ("A", 2),
-                6 => ("E", 2),
-                7 => ("B", 1),
-                8 => ("F#", 1),
-                9 => ("C#", 1),
-                10 => ("G#", 0),
-                11 => ("D#", 0),
-                12 => ("A#", 0),
-                13 => ("F", 0),
-                14 => ("C", 0),
-                _ => ("G", 0),
-            };
-            tunings_text.push(step.to_string());
-            tunings_name.push(step.to_string());
-            tunings_octave.push(octave);
-        }
-
         let (ref_step, ref_oct, ref_freq) = self
             .parsed_mnx
             .as_ref()
@@ -2527,24 +2483,9 @@ impl MnxEditorApp {
             })
             .unwrap_or_else(|| ("D".to_string(), 4, 293.67));
 
-        self.active_dialog = ActiveDialog::InstrumentSetup {
-            num_strings: 6,
-            edo: 12,
-            step_multiplier: 1,
-            tuning_mode: InstrumentTuningMode::Edo,
-            tunings_text,
-            tunings_name,
-            tunings_octave,
-            show_custom_fretboard: false,
-            fretboard_editor: crate::fretboard_editor::FretboardEditorState::new(
-                6,
-                Vec::new(),
-                ref_step,
-                ref_oct,
-                ref_freq,
-            ),
-            is_new_tab: false,
-        };
+        self.active_dialog = ActiveDialog::InstrumentSetup(Box::new(
+            InstrumentSetupForm::default_12edo_6_string(ref_step, ref_oct, ref_freq, false),
+        ));
     }
 
     pub fn add_new_instrument_part(
@@ -2579,8 +2520,9 @@ impl MnxEditorApp {
             let num_measures = doc.global.measures.len();
             let mut measures = Vec::with_capacity(num_measures);
             for m_idx in 0..num_measures {
-                let ts = crate::render::get_time_signature_for_measure(Some(&doc.global), m_idx);
-                let expected_beats = (ts.count as f64) * (4.0 / (ts.unit as f64));
+                let expected_beats =
+                    crate::render::get_time_signature_for_measure(Some(&doc.global), m_idx)
+                        .expected_quarter_beats();
                 let content = crate::yaml_editor::make_rest_items_for_beats(expected_beats);
                 measures.push(crate::mnx::Measure {
                     comment: None,
@@ -2634,56 +2576,9 @@ impl MnxEditorApp {
         if part_idx < self.ensemble_visible_parts.len() {
             self.ensemble_visible_parts.remove(part_idx);
         }
-
-        let mut new_midi_ports = std::collections::HashMap::new();
-        for (k, v) in self.part_midi_ports.drain() {
-            if k < part_idx {
-                new_midi_ports.insert(k, v);
-            } else if k > part_idx {
-                new_midi_ports.insert(k - 1, v);
-            }
+        if part_idx < self.parts_runtime.len() {
+            self.parts_runtime.remove(part_idx);
         }
-        self.part_midi_ports = new_midi_ports;
-
-        let mut new_channel_maps = std::collections::HashMap::new();
-        for (k, v) in self.part_string_channel_maps.drain() {
-            if k < part_idx {
-                new_channel_maps.insert(k, v);
-            } else if k > part_idx {
-                new_channel_maps.insert(k - 1, v);
-            }
-        }
-        self.part_string_channel_maps = new_channel_maps;
-
-        let mut new_mpe_modes = std::collections::HashMap::new();
-        for (k, v) in self.part_mpe_modes.drain() {
-            if k < part_idx {
-                new_mpe_modes.insert(k, v);
-            } else if k > part_idx {
-                new_mpe_modes.insert(k - 1, v);
-            }
-        }
-        self.part_mpe_modes = new_mpe_modes;
-
-        let mut new_pb_ranges = std::collections::HashMap::new();
-        for (k, v) in self.part_pitch_bend_ranges.drain() {
-            if k < part_idx {
-                new_pb_ranges.insert(k, v);
-            } else if k > part_idx {
-                new_pb_ranges.insert(k - 1, v);
-            }
-        }
-        self.part_pitch_bend_ranges = new_pb_ranges;
-
-        let mut new_synth_presets = std::collections::HashMap::new();
-        for (k, v) in self.part_synth_presets.drain() {
-            if k < part_idx {
-                new_synth_presets.insert(k, v);
-            } else if k > part_idx {
-                new_synth_presets.insert(k - 1, v);
-            }
-        }
-        self.part_synth_presets = new_synth_presets;
 
         self.mutate_doc(|doc| {
             if doc.parts.len() > 1 && part_idx < doc.parts.len() {
@@ -2701,7 +2596,20 @@ impl MnxEditorApp {
             .unwrap_or(1)
             .max(1);
         let next_sel = self.selected_part_idx.min(new_count - 1);
-        self.select_part(next_sel);
+        self.selected_part_idx = next_sel;
+        self.string_channel_dialog_part_idx = next_sel;
+        self.string_channel_map = self
+            .part_runtime(next_sel)
+            .map(|rt| rt.string_channel_map.clone())
+            .unwrap_or_default();
+        self.selected_midi_port = self.get_part_midi_port(next_sel);
+        self.pitch_bend_range = self.get_part_pitch_bend_range(next_sel);
+        self.is_mpe_mode = self.is_part_mpe_mode(next_sel);
+        self.live_play_dirty = true;
+        if self.show_yaml_panel || cfg!(test) {
+            self.ensure_yaml_synced();
+            self.refresh_cached_event_ranges();
+        }
         if self.synth_engine.is_some() {
             self.sync_all_parts_to_synth_engine();
         }
@@ -2713,49 +2621,9 @@ impl MnxEditorApp {
         self.instrument_setup_is_percussion = false;
         self.instrument_setup_percussion_lines = crate::presets::standard_6_line_kit_configs();
         self.instrument_setup_new_sym_bufs = vec![String::new(); 15];
-        let mut tunings_text = Vec::new();
-        let mut tunings_name = Vec::new();
-        let mut tunings_octave = Vec::new();
-        for s in 1..=15 {
-            let (step, octave) = match s {
-                1 => ("E", 4),
-                2 => ("B", 3),
-                3 => ("G", 3),
-                4 => ("D", 3),
-                5 => ("A", 2),
-                6 => ("E", 2),
-                7 => ("B", 1),
-                8 => ("F#", 1),
-                9 => ("C#", 1),
-                10 => ("G#", 0),
-                11 => ("D#", 0),
-                12 => ("A#", 0),
-                13 => ("F", 0),
-                14 => ("C", 0),
-                _ => ("G", 0),
-            };
-            tunings_text.push(step.to_string());
-            tunings_name.push(step.to_string());
-            tunings_octave.push(octave);
-        }
-        self.active_dialog = ActiveDialog::InstrumentSetup {
-            num_strings: 6,
-            edo: 12,
-            step_multiplier: 1,
-            tuning_mode: InstrumentTuningMode::Edo,
-            tunings_text,
-            tunings_name,
-            tunings_octave,
-            show_custom_fretboard: false,
-            fretboard_editor: crate::fretboard_editor::FretboardEditorState::new(
-                6,
-                Vec::new(),
-                "D".to_string(),
-                4,
-                293.67,
-            ),
-            is_new_tab: true,
-        };
+        self.active_dialog = ActiveDialog::InstrumentSetup(Box::new(
+            InstrumentSetupForm::default_12edo_6_string("D".to_string(), 4, 293.67, true),
+        ));
     }
 
     pub fn start_new_tab(
@@ -2842,11 +2710,7 @@ impl MnxEditorApp {
         self.current_file_path = None;
         self.selected_part_idx = 0;
         self.string_channel_dialog_part_idx = 0;
-        self.part_pitch_bend_ranges.clear();
-        self.part_mpe_modes.clear();
-        self.part_midi_ports.clear();
-        self.part_string_channel_maps.clear();
-        self.part_synth_presets.clear();
+        self.parts_runtime.clear();
         self.layout_view_tab = LayoutViewTab::Ensemble;
         self.ensemble_visible_parts = vec![true];
         self.selected_event_idx = Some(0);
@@ -2935,11 +2799,7 @@ impl MnxEditorApp {
         self.current_file_path = None;
         self.selected_part_idx = 0;
         self.string_channel_dialog_part_idx = 0;
-        self.part_pitch_bend_ranges.clear();
-        self.part_mpe_modes.clear();
-        self.part_midi_ports.clear();
-        self.part_string_channel_maps.clear();
-        self.part_synth_presets.clear();
+        self.parts_runtime.clear();
         self.layout_view_tab = LayoutViewTab::Ensemble;
         self.ensemble_visible_parts = vec![true];
         self.selected_event_idx = Some(0);
@@ -2977,8 +2837,9 @@ impl MnxEditorApp {
             let num_measures = doc.global.measures.len();
             let mut measures = Vec::with_capacity(num_measures);
             for m_idx in 0..num_measures {
-                let ts = crate::render::get_time_signature_for_measure(Some(&doc.global), m_idx);
-                let expected_beats = (ts.count as f64) * (4.0 / (ts.unit as f64));
+                let expected_beats =
+                    crate::render::get_time_signature_for_measure(Some(&doc.global), m_idx)
+                        .expected_quarter_beats();
                 let content = crate::yaml_editor::make_rest_items_for_beats(expected_beats);
                 measures.push(crate::mnx::Measure {
                     comment: None,
@@ -3036,41 +2897,11 @@ impl MnxEditorApp {
                 part.ext.midi_channel = Some(10);
             }
             // Remove any kit_notes referencing deleted component IDs
-            for m in &mut part.measures {
-                for seq in &mut m.sequences {
-                    for item in &mut seq.content {
-                        match item {
-                            crate::mnx::SequenceItem::Event(ev) => {
-                                ev.notes.clear();
-                                ev.kit_notes.retain(|kn| kit.contains_key(&kn.kit_component));
-                                if ev.kit_notes.is_empty() {
-                                    ev.rest = Some(crate::mnx::Rest {});
-                                }
-                            }
-                            crate::mnx::SequenceItem::Tuplet(t) => {
-                                for sub in &mut t.content {
-                                    if let crate::mnx::SequenceItem::Event(ev) = sub {
-                                        ev.notes.clear();
-                                        ev.kit_notes.retain(|kn| kit.contains_key(&kn.kit_component));
-                                        if ev.kit_notes.is_empty() {
-                                            ev.rest = Some(crate::mnx::Rest {});
-                                        }
-                                    }
-                                }
-                            }
-                            crate::mnx::SequenceItem::Grace(g) => {
-                                for sub in &mut g.content {
-                                    if let crate::mnx::SequenceItem::Event(ev) = sub {
-                                        ev.notes.clear();
-                                        ev.kit_notes.retain(|kn| kit.contains_key(&kn.kit_component));
-                                        if ev.kit_notes.is_empty() {
-                                            ev.rest = Some(crate::mnx::Rest {});
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            for ev in part.events_mut() {
+                ev.notes.clear();
+                ev.kit_notes.retain(|kn| kit.contains_key(&kn.kit_component));
+                if ev.kit_notes.is_empty() {
+                    ev.rest = Some(crate::mnx::Rest {});
                 }
             }
             Some(())
@@ -3113,11 +2944,7 @@ impl MnxEditorApp {
         self.current_file_path = file_path;
         self.selected_part_idx = 0;
         self.string_channel_dialog_part_idx = 0;
-        self.part_pitch_bend_ranges.clear();
-        self.part_mpe_modes.clear();
-        self.part_midi_ports.clear();
-        self.part_string_channel_maps.clear();
-        self.part_synth_presets.clear();
+        self.parts_runtime.clear();
         self.layout_view_tab = LayoutViewTab::Ensemble;
         self.selected_event_idx = None;
         self.selected_note_idx_in_event = None;

@@ -632,6 +632,39 @@ impl InstrumentPreset {
         })
     }
 
+    /// Construct an `InstrumentPreset` from an [`crate::gui::InstrumentSetupForm`].
+    pub fn from_setup_form(
+        name: &str,
+        form: &crate::gui::InstrumentSetupForm,
+    ) -> Result<Self, String> {
+        Self::from_dialog_state(
+            name,
+            form.num_strings,
+            form.edo,
+            form.step_multiplier,
+            form.tuning_mode,
+            &form.tunings_text,
+            &form.tunings_name,
+            &form.tunings_octave,
+            &form.fretboard_editor,
+        )
+    }
+
+    /// Apply this preset's parameters into an [`crate::gui::InstrumentSetupForm`].
+    pub fn apply_to_setup_form(&self, form: &mut crate::gui::InstrumentSetupForm) {
+        self.apply_to_dialog_state(
+            &mut form.num_strings,
+            &mut form.edo,
+            &mut form.step_multiplier,
+            &mut form.tuning_mode,
+            &mut form.tunings_text,
+            &mut form.tunings_name,
+            &mut form.tunings_octave,
+            &mut form.fretboard_editor,
+            &mut form.show_custom_fretboard,
+        );
+    }
+
     /// Construct an `InstrumentPreset` from basic EDO dialog fields (convenience helper).
     pub fn from_edo_dialog_state(
         name: &str,

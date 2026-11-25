@@ -261,42 +261,16 @@ impl MnxEditorApp {
 
     pub fn get_selected_event_duration(&self) -> Option<crate::mnx::Duration> {
         let e_idx = self.selected_event_idx?;
-        let part = self.active_part()?;
-        let mut cur_e = 0;
-        for m in &part.measures {
-            for seq in &m.sequences {
-                for ev in seq.flattened_events() {
-                    if cur_e == e_idx {
-                        return Some(ev.duration.clone());
-                    }
-                    cur_e += 1;
-                }
-            }
-        }
-        None
+        Some(self.active_part()?.nth_event(e_idx)?.duration.clone())
     }
 
     pub fn is_selected_event_rest(&self) -> bool {
-        let e_idx = match self.selected_event_idx {
-            Some(i) => i,
-            None => return false,
+        let Some(e_idx) = self.selected_event_idx else {
+            return false;
         };
-        let part = match self.active_part() {
-            Some(p) => p,
-            None => return false,
-        };
-        let mut cur_e = 0;
-        for m in &part.measures {
-            for seq in &m.sequences {
-                for ev in seq.flattened_events() {
-                    if cur_e == e_idx {
-                        return ev.rest.is_some();
-                    }
-                    cur_e += 1;
-                }
-            }
-        }
-        false
+        self.active_part()
+            .and_then(|p| p.nth_event(e_idx))
+            .map_or(false, |ev| ev.rest.is_some())
     }
 
     pub fn is_selected_event_in_tuplet(&self) -> bool {
@@ -313,26 +287,16 @@ impl MnxEditorApp {
     }
 
     pub fn is_selected_note_bent(&self) -> bool {
-        if let Some(part) = self.active_part() {
-            if let Some(e_idx) = self.selected_event_idx {
-                if let Some(n_idx) = self.selected_note_idx_in_event {
-                    let mut count = 0;
-                    for m in &part.measures {
-                        for seq in &m.sequences {
-                            for ev in seq.flattened_events() {
-                                if count == e_idx {
-                                    if let Some(note) = ev.notes.get(n_idx) {
-                                        return note.bend.is_some();
-                                    }
-                                }
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        false
+        let (Some(part), Some(e_idx), Some(n_idx)) = (
+            self.active_part(),
+            self.selected_event_idx,
+            self.selected_note_idx_in_event,
+        ) else {
+            return false;
+        };
+        part.nth_event(e_idx)
+            .and_then(|ev| ev.notes.get(n_idx))
+            .map_or(false, |n| n.bend.is_some())
     }
 
     pub fn action_edit_bend(&mut self) {
@@ -344,21 +308,13 @@ impl MnxEditorApp {
                 let mut existing_bend = None;
                 let mut target_str = 1;
 
-                if let Some(part) = self.active_part() {
-                    let mut count = 0;
-                    for m in &part.measures {
-                        for seq in &m.sequences {
-                            for ev in seq.flattened_events() {
-                                if count == e_idx {
-                                    if let Some(note) = ev.notes.get(n_idx) {
-                                        existing_bend = note.bend.clone();
-                                        target_str = note.string.unwrap_or(1);
-                                    }
-                                }
-                                count += 1;
-                            }
-                        }
-                    }
+                if let Some(note) = self
+                    .active_part()
+                    .and_then(|p| p.nth_event(e_idx))
+                    .and_then(|ev| ev.notes.get(n_idx))
+                {
+                    existing_bend = note.bend.clone();
+                    target_str = note.string.unwrap_or(1);
                 }
 
                 let rect =
@@ -381,70 +337,39 @@ impl MnxEditorApp {
     }
 
     pub fn is_selected_note_slurred(&self) -> bool {
-        let e_idx = match self.selected_event_idx {
-            Some(i) => i,
-            None => return false,
+        let Some(e_idx) = self.selected_event_idx else {
+            return false;
         };
-        let part = match self.active_part() {
-            Some(p) => p,
-            None => return false,
+        let Some(ev) = self.active_part().and_then(|p| p.nth_event(e_idx)) else {
+            return false;
         };
-        let mut cur_e = 0;
-        for m in &part.measures {
-            for seq in &m.sequences {
-                for ev in seq.flattened_events() {
-                    if cur_e == e_idx {
-                        if let Some(slurs) = &ev.slurs {
-                            if let Some(n_idx) = self.selected_note_idx_in_event {
-                                if let Some(n) = ev.notes.get(n_idx) {
-                                    if let Some(id) = &n.id {
-                                        return slurs
-                                            .iter()
-                                            .any(|s| s.start_note.as_ref() == Some(id));
-                                    }
-                                }
-                            } else {
-                                // Blue mode: if any slur starts on this event
-                                return !slurs.is_empty();
-                            }
-                        }
-                        return false;
-                    }
-                    cur_e += 1;
-                }
-            }
+        let Some(slurs) = &ev.slurs else {
+            return false;
+        };
+        if let Some(n_idx) = self.selected_note_idx_in_event {
+            ev.notes
+                .get(n_idx)
+                .and_then(|n| n.id.as_ref())
+                .map_or(false, |id| slurs.iter().any(|s| s.start_note.as_ref() == Some(id)))
+        } else {
+            !slurs.is_empty()
         }
-        false
     }
     pub fn is_selected_event_tied(&self) -> bool {
-        let e_idx = match self.selected_event_idx {
-            Some(i) => i,
-            None => return false,
+        let Some(e_idx) = self.selected_event_idx else {
+            return false;
         };
-        let part = match self.active_part() {
-            Some(p) => p,
-            None => return false,
+        let Some(ev) = self.active_part().and_then(|p| p.nth_event(e_idx)) else {
+            return false;
         };
-        let mut cur_e = 0;
-        for m in &part.measures {
-            for seq in &m.sequences {
-                for ev in seq.flattened_events() {
-                    if cur_e == e_idx {
-                        if let Some(n_idx) = self.selected_note_idx_in_event {
-                            if let Some(n) = ev.notes.get(n_idx) {
-                                return n.ties.as_ref().map_or(false, |t| !t.is_empty());
-                            }
-                        }
-                        return ev
-                            .notes
-                            .iter()
-                            .any(|n| n.ties.as_ref().map_or(false, |t| !t.is_empty()));
-                    }
-                    cur_e += 1;
-                }
+        if let Some(n_idx) = self.selected_note_idx_in_event {
+            if let Some(n) = ev.notes.get(n_idx) {
+                return n.ties.as_ref().map_or(false, |t| !t.is_empty());
             }
         }
-        false
+        ev.notes
+            .iter()
+            .any(|n| n.ties.as_ref().map_or(false, |t| !t.is_empty()))
     }
 
     pub fn is_selected_note_sliding(&self) -> bool {
@@ -589,69 +514,43 @@ impl MnxEditorApp {
     }
 
     pub fn is_selected_note_tapped(&self) -> bool {
-        let e_idx = match self.selected_event_idx {
-            Some(i) => i,
-            None => return false,
+        let Some(e_idx) = self.selected_event_idx else {
+            return false;
         };
-        let part = match self.active_part() {
-            Some(p) => p,
-            None => return false,
+        let Some(ev) = self.active_part().and_then(|p| p.nth_event(e_idx)) else {
+            return false;
         };
-        let mut cur_e = 0;
-        for m in &part.measures {
-            for seq in &m.sequences {
-                for ev in seq.flattened_events() {
-                    if cur_e == e_idx {
-                        if let Some(n_idx) = self.selected_note_idx_in_event {
-                            if let Some(n) = ev.notes.get(n_idx) {
-                                return n.tap.is_some();
-                            }
-                        } else if let Some(cur_str) = self.editing_string {
-                            return ev
-                                .notes
-                                .iter()
-                                .any(|n| n.string == Some(cur_str) && n.tap.is_some());
-                        }
-                        return ev.notes.iter().any(|n| n.tap.is_some());
-                    }
-                    cur_e += 1;
-                }
+        if let Some(n_idx) = self.selected_note_idx_in_event {
+            if let Some(n) = ev.notes.get(n_idx) {
+                return n.tap.is_some();
             }
+        } else if let Some(cur_str) = self.editing_string {
+            return ev
+                .notes
+                .iter()
+                .any(|n| n.string == Some(cur_str) && n.tap.is_some());
         }
-        false
+        ev.notes.iter().any(|n| n.tap.is_some())
     }
 
     pub fn is_selected_note_harmonic(&self) -> bool {
-        let e_idx = match self.selected_event_idx {
-            Some(i) => i,
-            None => return false,
+        let Some(e_idx) = self.selected_event_idx else {
+            return false;
         };
-        let part = match self.active_part() {
-            Some(p) => p,
-            None => return false,
+        let Some(ev) = self.active_part().and_then(|p| p.nth_event(e_idx)) else {
+            return false;
         };
-        let mut cur_e = 0;
-        for m in &part.measures {
-            for seq in &m.sequences {
-                for ev in seq.flattened_events() {
-                    if cur_e == e_idx {
-                        if let Some(n_idx) = self.selected_note_idx_in_event {
-                            if let Some(n) = ev.notes.get(n_idx) {
-                                return n.harmonic.is_some();
-                            }
-                        } else if let Some(cur_str) = self.editing_string {
-                            return ev
-                                .notes
-                                .iter()
-                                .any(|n| n.string == Some(cur_str) && n.harmonic.is_some());
-                        }
-                        return ev.notes.iter().any(|n| n.harmonic.is_some());
-                    }
-                    cur_e += 1;
-                }
+        if let Some(n_idx) = self.selected_note_idx_in_event {
+            if let Some(n) = ev.notes.get(n_idx) {
+                return n.harmonic.is_some();
             }
+        } else if let Some(cur_str) = self.editing_string {
+            return ev
+                .notes
+                .iter()
+                .any(|n| n.string == Some(cur_str) && n.harmonic.is_some());
         }
-        false
+        ev.notes.iter().any(|n| n.harmonic.is_some())
     }
 
     #[allow(dead_code)]
@@ -766,43 +665,22 @@ impl MnxEditorApp {
         let min_idx = cursor.min(anchor);
         let max_idx = cursor.max(anchor);
 
-        const DURATION_CYCLE: &[&str] = &[
-            "32nd",
-            "16th",
-            "eighth",
-            "quarter",
-            "half",
-            "whole",
-        ];
-
-        let base_to_index = |base_str: &str| -> usize {
-            let s = base_str.to_lowercase();
-            if s.contains("whole") || s == "1" {
-                5
-            } else if s.contains("half") || s == "1/2" {
-                4
-            } else if s.contains("quarter") || s.contains("4th") || s == "1/4" {
-                3
-            } else if s.contains("eighth") || s.contains("8th") || s == "1/8" {
-                2
-            } else if s.contains("16th") || s.contains("sixteenth") || s == "1/16" {
-                1
-            } else if s.contains("32nd") || s.contains("thirtysecond") || s == "1/32" {
-                0
-            } else {
-                3 // default quarter
-            }
+        let nudged_base = |base_str: &str| -> &'static str {
+            crate::mnx::NoteValue::from_base_str(base_str)
+                .unwrap_or(crate::mnx::NoteValue::Quarter)
+                .nudged_in_editor_cycle(step)
+                .as_str()
         };
 
         if min_idx == max_idx {
-            let cur_dur = self.get_selected_event_duration().unwrap_or_else(|| crate::mnx::Duration {
-                multiple: None,
-                base: "quarter".to_string(),
-                dots: None,
-            });
-            let cur_idx = base_to_index(&cur_dur.base);
-            let new_idx = (cur_idx as i32 + step).clamp(0, (DURATION_CYCLE.len() - 1) as i32) as usize;
-            self.change_selected_duration_base(DURATION_CYCLE[new_idx]);
+            let cur_dur = self
+                .get_selected_event_duration()
+                .unwrap_or_else(|| crate::mnx::Duration {
+                    multiple: None,
+                    base: "quarter".to_string(),
+                    dots: None,
+                });
+            self.change_selected_duration_base(nudged_base(&cur_dur.base));
             return;
         }
 
@@ -812,10 +690,9 @@ impl MnxEditorApp {
             for e_idx in min_idx..=max_idx {
                 if let Some(&path) = paths.get(e_idx) {
                     if let Some(ev) = doc.get_event_mut_at_part_path(p_idx, path) {
-                        let cur_idx = base_to_index(&ev.duration.base);
-                        let new_idx = (cur_idx as i32 + step).clamp(0, (DURATION_CYCLE.len() - 1) as i32) as usize;
-                        let new_base = DURATION_CYCLE[new_idx];
-                        let is_string_dotted = ev.duration.base.contains("dotted") || ev.duration.base.contains('.');
+                        let new_base = nudged_base(&ev.duration.base);
+                        let is_string_dotted =
+                            ev.duration.base.contains("dotted") || ev.duration.base.contains('.');
                         let dots = if ev.duration.dots.unwrap_or(0) > 0 {
                             ev.duration.dots
                         } else if is_string_dotted {
@@ -884,7 +761,7 @@ impl MnxEditorApp {
             .active_part()
             .and_then(|p| p.measures.last())
             .and_then(|m| m.sequences.first())
-            .and_then(|s| s.flattened_events().last().copied())
+            .and_then(|s| s.events().last())
             .map(|e| e.duration.clone())
             .unwrap_or_else(|| crate::mnx::Duration {
                 multiple: None,
@@ -1467,10 +1344,7 @@ impl MnxEditorApp {
             None => return,
         };
 
-        let (cur_m, cur_s, cur_i) = match cur_path {
-            crate::mnx::AstPath::TopLevel(m, s, i) => (m, s, i),
-            crate::mnx::AstPath::InTuplet(m, s, i, _) => (m, s, i),
-        };
+        let (cur_m, cur_s, cur_i) = cur_path.container_coords();
 
         let is_blue_mode = self.editing_string.is_none() && self.selected_note_idx_in_event.is_none();
 

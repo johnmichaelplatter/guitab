@@ -1120,19 +1120,21 @@ mod tuplet_button_tests {
         assert!(!app.is_modified(), "Initial app should not be modified");
 
         app.new_file();
-        assert!(
-            matches!(
-                app.active_dialog,
-                ActiveDialog::InstrumentSetup {
-                    num_strings: 6,
-                    edo: 12,
-                    step_multiplier: 1,
-                    is_new_tab: true,
-                    ..
-                }
+        match &app.active_dialog {
+            ActiveDialog::InstrumentSetup(form) => {
+                assert_eq!(form.num_strings, 6);
+                assert_eq!(form.edo, 12);
+                assert_eq!(form.step_multiplier, 1);
+                assert!(
+                    form.is_new_tab,
+                    "Unmodified new_file should open InstrumentSetup for new tab"
+                );
+            }
+            other => panic!(
+                "Unmodified new_file should open InstrumentSetup for new tab, got {:?}",
+                other
             ),
-            "Unmodified new_file should open InstrumentSetup for new tab"
-        );
+        }
     }
 
     #[test]
@@ -3139,11 +3141,11 @@ parts:
 
         // Simulate choosing "Create a New Tab"
         app.prompt_new_tab_instrument_setup();
-        match app.active_dialog {
-            ActiveDialog::InstrumentSetup { is_new_tab, .. } => {
-                assert!(is_new_tab, "Expected is_new_tab to be true");
+        match &app.active_dialog {
+            ActiveDialog::InstrumentSetup(form) => {
+                assert!(form.is_new_tab, "Expected is_new_tab to be true");
             }
-            ref other => panic!("Expected ActiveDialog::InstrumentSetup, got {:?}", other),
+            other => panic!("Expected ActiveDialog::InstrumentSetup, got {:?}", other),
         }
     }
 
@@ -3912,17 +3914,11 @@ parts:
         // Verify opening Instrument Setup from this Ratio/Cents document detects RatioCents mode
         app.open_instrument_setup_dialog(true);
         match &app.active_dialog {
-            ActiveDialog::InstrumentSetup {
-                tuning_mode,
-                tunings_text,
-                tunings_name,
-                show_custom_fretboard,
-                ..
-            } => {
-                assert_eq!(*tuning_mode, InstrumentTuningMode::RatioCents);
-                assert_eq!(tunings_text[0], "498.0");
-                assert_eq!(tunings_name[0], "G");
-                assert!(*show_custom_fretboard);
+            ActiveDialog::InstrumentSetup(form) => {
+                assert_eq!(form.tuning_mode, InstrumentTuningMode::RatioCents);
+                assert_eq!(form.tunings_text[0], "498.0");
+                assert_eq!(form.tunings_name[0], "G");
+                assert!(form.show_custom_fretboard);
             }
             other => panic!("Expected InstrumentSetup dialog, got {:?}", other),
         }
@@ -4271,54 +4267,23 @@ parts:
         };
 
         // Extract dialog mutable state and apply preset
-        if let ActiveDialog::InstrumentSetup {
-            num_strings,
-            edo,
-            step_multiplier,
-            tuning_mode,
-            tunings_text,
-            tunings_name,
-            tunings_octave,
-            show_custom_fretboard,
-            fretboard_editor,
-            ..
-        } = &mut app.active_dialog
-        {
-            custom_preset.apply_to_dialog_state(
-                num_strings,
-                edo,
-                step_multiplier,
-                tuning_mode,
-                tunings_text,
-                tunings_name,
-                tunings_octave,
-                fretboard_editor,
-                show_custom_fretboard,
-            );
+        if let ActiveDialog::InstrumentSetup(form) = &mut app.active_dialog {
+            custom_preset.apply_to_setup_form(form);
 
-            assert_eq!(*tuning_mode, InstrumentTuningMode::RatioCents);
-            assert!(*show_custom_fretboard);
-            assert_eq!(tunings_text[0], "4/3");
-            assert_eq!(tunings_name[0], "G");
-            assert_eq!(tunings_text[1], "5/3");
-            assert_eq!(tunings_name[1], "vB");
-            assert_eq!(fretboard_editor.frets.len(), 2);
-            assert_eq!(fretboard_editor.reference_note_step, "D");
-            assert_eq!(fretboard_editor.reference_frequency_hz, 293.66);
+            assert_eq!(form.tuning_mode, InstrumentTuningMode::RatioCents);
+            assert!(form.show_custom_fretboard);
+            assert_eq!(form.tunings_text[0], "4/3");
+            assert_eq!(form.tunings_name[0], "G");
+            assert_eq!(form.tunings_text[1], "5/3");
+            assert_eq!(form.tunings_name[1], "vB");
+            assert_eq!(form.fretboard_editor.frets.len(), 2);
+            assert_eq!(form.fretboard_editor.reference_note_step, "D");
+            assert_eq!(form.fretboard_editor.reference_frequency_hz, 293.66);
 
             // Test creating and adding preset into app's preset list
-            let reconstructed = crate::presets::InstrumentPreset::from_dialog_state(
-                "Test JI Preset",
-                *num_strings,
-                *edo,
-                *step_multiplier,
-                *tuning_mode,
-                tunings_text,
-                tunings_name,
-                tunings_octave,
-                fretboard_editor,
-            )
-            .expect("from_dialog_state succeeds");
+            let reconstructed =
+                crate::presets::InstrumentPreset::from_setup_form("Test JI Preset", form)
+                    .expect("from_setup_form succeeds");
             assert_eq!(reconstructed, custom_preset);
         } else {
             panic!("Expected ActiveDialog::InstrumentSetup");
@@ -6609,7 +6574,7 @@ parts:
 
         // Part 0 has 8 strings on Port 0. When Part 1 shares Port 0,
         // its member channel offset is 2 + 8 = 10.
-        let map1 = app.part_string_channel_maps.get(&1).unwrap();
+        let map1 = &app.part_runtime(1).unwrap().string_channel_map;
         assert_eq!(map1.get(&1), Some(&10));
 
         // When Part 1 is assigned its own MIDI port (Port 1), its prior strings on that port is 0,
@@ -6620,7 +6585,7 @@ parts:
         ];
         app.set_part_midi_port(1, 1);
         app.set_part_mpe_mode(1, true);
-        let map1_own_port = app.part_string_channel_maps.get(&1).unwrap();
+        let map1_own_port = &app.part_runtime(1).unwrap().string_channel_map;
         assert_eq!(map1_own_port.get(&1), Some(&2));
 
         // Active part selection syncs is_mpe_mode and pitch_bend_range
@@ -7367,6 +7332,176 @@ parts:
             .map(|l| l.offsets.contains_key("tempo_0"))
             .unwrap_or(false);
         assert!(!has_off_after_undo, "Single undo must revert the entire 50-frame drag gesture");
+    }
+
+    #[test]
+    fn test_phase3_zero_alloc_event_iterators_and_distinct_ast_paths() {
+        let mut app = MnxEditorApp::new_with_optional_example(None);
+        let p_idx = 0;
+
+        // Add two more events in measure 0: [ev0, ev1, ev2]
+        let q_dur = crate::mnx::Duration {
+            base: "quarter".to_string(),
+            dots: None,
+            multiple: None,
+        };
+        app.mutate_doc(|doc| {
+            crate::yaml_editor::add_blank_note_to_measure_in_doc_part(doc, p_idx, 0, &q_dur);
+            crate::yaml_editor::add_blank_note_to_measure_in_doc_part(doc, p_idx, 0, &q_dur);
+            // Insert grace before ev1 -> [ev0, grace(g0), ev1, ev2]
+            assert!(crate::yaml_editor::insert_grace_before_in_doc_part(
+                doc, p_idx, 1
+            ));
+            // Append second grace event -> [ev0, grace(g0, g1), ev1, ev2]
+            assert!(crate::yaml_editor::append_blank_note_to_grace_block_in_doc_part(
+                doc, p_idx, 1
+            ));
+            // Convert ev2 (now flat index 4) into a 3:2 eighth tuplet -> [ev0, grace(g0, g1), ev1, tuplet(t0, t1, t2)]
+            assert!(crate::yaml_editor::create_tuplet_in_doc_part(
+                doc, p_idx, 4, 3, 2, "eighth"
+            ));
+            Some(())
+        });
+
+        let mut doc = app.parsed_mnx.clone().unwrap();
+        let paths = doc.get_flattened_event_paths_for_part(p_idx);
+        assert_eq!(paths.len(), 7);
+        assert_eq!(paths[0], crate::mnx::AstPath::TopLevel(0, 0, 0));
+        assert_eq!(paths[1], crate::mnx::AstPath::InGrace(0, 0, 1, 0));
+        assert_eq!(paths[2], crate::mnx::AstPath::InGrace(0, 0, 1, 1));
+        assert_eq!(paths[3], crate::mnx::AstPath::TopLevel(0, 0, 2));
+        assert_eq!(paths[4], crate::mnx::AstPath::InTuplet(0, 0, 3, 0));
+        assert_eq!(paths[5], crate::mnx::AstPath::InTuplet(0, 0, 3, 1));
+        assert_eq!(paths[6], crate::mnx::AstPath::InTuplet(0, 0, 3, 2));
+
+        // Verify strict distinction between InGrace and InTuplet paths
+        assert!(doc
+            .get_event_at_part_path(p_idx, crate::mnx::AstPath::InTuplet(0, 0, 1, 0))
+            .is_none());
+        assert!(doc
+            .get_event_at_part_path(p_idx, crate::mnx::AstPath::InGrace(0, 0, 3, 0))
+            .is_none());
+        assert!(doc.get_event_at_part_path(p_idx, paths[1]).is_some());
+        assert!(doc.get_event_at_part_path(p_idx, paths[4]).is_some());
+
+        // Mutate every event via part.events_mut() and verify part.events() / nth_event()
+        for (i, ev) in doc.parts[p_idx].events_mut().enumerate() {
+            ev.id = Some(format!("ev_iter_{}", i));
+        }
+        assert_eq!(doc.parts[p_idx].event_count(), 7);
+        let collected_ids: Vec<String> = doc.parts[p_idx]
+            .events()
+            .map(|e| e.id.clone().unwrap())
+            .collect();
+        assert_eq!(
+            collected_ids,
+            (0..7).map(|i| format!("ev_iter_{}", i)).collect::<Vec<_>>()
+        );
+        for i in 0..7 {
+            assert_eq!(
+                doc.parts[p_idx].nth_event(i).and_then(|e| e.id.as_deref()),
+                Some(format!("ev_iter_{}", i).as_str())
+            );
+        }
+        assert!(doc.parts[p_idx].nth_event(7).is_none());
+    }
+
+    #[test]
+    fn test_phase3_parts_runtime_vec_alignment_across_add_select_remove() {
+        let mut app = MnxEditorApp::new_with_optional_example(None);
+        app.midi_ports = vec![
+            crate::midi::MidiPortInfo {
+                id: 0,
+                name: "Port 0".to_string(),
+            },
+            crate::midi::MidiPortInfo {
+                id: 1,
+                name: "Port 1".to_string(),
+            },
+            crate::midi::MidiPortInfo {
+                id: 2,
+                name: "Port 2".to_string(),
+            },
+        ];
+
+        let tunings_6: Vec<crate::mnx::StringTuning> = crate::mnx::STANDARD_15_STRING_TUNING[..6]
+            .iter()
+            .enumerate()
+            .map(|(i, &(step, octave))| crate::mnx::StringTuning {
+                string: (i + 1) as u8,
+                pitch: crate::mnx::Pitch {
+                    step: step.to_string(),
+                    octave,
+                    alter: None,
+                    ..Default::default()
+                },
+            })
+            .collect();
+
+        app.add_new_instrument_part("Bass".to_string(), 4, 12, 1, tunings_6[..4].to_vec(), None);
+        app.add_new_instrument_part("Lead".to_string(), 6, 19, 1, tunings_6, None);
+        assert_eq!(app.parts_runtime.len(), 3);
+
+        app.set_part_midi_port(0, 0);
+        app.set_part_midi_port(1, 1);
+        app.set_part_midi_port(2, 2);
+        app.set_part_mpe_mode(2, true);
+        app.set_part_synth_preset(2, crate::synth::SynthPreset::fm_dx_electric_piano());
+        app.part_runtime_mut(2).string_channel_map.insert(1, 7);
+
+        // Remove middle part (Part 1 = Bass); Part 2 (Lead) shifts to index 1
+        app.remove_instrument_part(1);
+        assert_eq!(app.parts_runtime.len(), 2);
+        assert_eq!(app.get_part_midi_port(0), Some(0));
+        assert_eq!(app.get_part_midi_port(1), Some(2));
+        assert!(app.is_part_mpe_mode(1));
+        assert_eq!(app.get_part_pitch_bend_range(1), 48);
+        assert_eq!(app.get_part_synth_preset(1).name, "FM DX Electric Piano");
+        assert_eq!(
+            app.part_runtime(1).unwrap().string_channel_map.get(&1),
+            Some(&7)
+        );
+    }
+
+    #[test]
+    fn test_phase3_note_value_and_time_signature_helpers() {
+        use crate::mnx::{NoteValue, TimeSignature};
+
+        assert!((TimeSignature { count: 4, unit: 4 }.expected_quarter_beats() - 4.0).abs() < 1e-9);
+        assert!((TimeSignature { count: 6, unit: 8 }.expected_quarter_beats() - 3.0).abs() < 1e-9);
+        assert!((TimeSignature { count: 7, unit: 16 }.expected_quarter_beats() - 1.75).abs() < 1e-9);
+        assert!((TimeSignature { count: 5, unit: 2 }.expected_quarter_beats() - 10.0).abs() < 1e-9);
+        assert!((TimeSignature { count: 4, unit: 0 }.expected_quarter_beats() - 4.0).abs() < 1e-9);
+
+        assert_eq!(NoteValue::from_base_str("32nd"), Some(NoteValue::ThirtySecond));
+        assert_eq!(NoteValue::from_base_str("1/16"), Some(NoteValue::Sixteenth));
+        assert_eq!(NoteValue::from_base_str("dotted-eighth"), Some(NoteValue::Eighth));
+        assert_eq!(NoteValue::from_base_str("quarter"), Some(NoteValue::Quarter));
+        assert_eq!(NoteValue::from_base_str("half"), Some(NoteValue::Half));
+        assert_eq!(NoteValue::from_base_str("whole"), Some(NoteValue::Whole));
+
+        assert_eq!(NoteValue::ThirtySecond.nudged_in_editor_cycle(-1), NoteValue::ThirtySecond);
+        assert_eq!(NoteValue::ThirtySecond.nudged_in_editor_cycle(1), NoteValue::Sixteenth);
+        assert_eq!(NoteValue::Quarter.nudged_in_editor_cycle(1), NoteValue::Half);
+        assert_eq!(NoteValue::Whole.nudged_in_editor_cycle(1), NoteValue::Whole);
+    }
+
+    #[test]
+    fn test_phase3_instrument_setup_form_boxing_and_standard_15_string_tuning() {
+        assert!(
+            std::mem::size_of::<ActiveDialog>() < std::mem::size_of::<InstrumentSetupForm>(),
+            "Boxing InstrumentSetupForm must keep ActiveDialog smaller than the unboxed form struct"
+        );
+        assert_eq!(crate::mnx::STANDARD_15_STRING_TUNING[0], ("E", 4));
+        assert_eq!(crate::mnx::STANDARD_15_STRING_TUNING[5], ("E", 2));
+        assert_eq!(crate::mnx::STANDARD_15_STRING_TUNING[14], ("G", 0));
+
+        let form = InstrumentSetupForm::default_12edo_6_string("D".to_string(), 4, 293.67, true);
+        assert_eq!(form.tunings_text.len(), 15);
+        assert_eq!(form.tunings_text[0], "E");
+        assert_eq!(form.tunings_octave[0], 4);
+        assert_eq!(form.tunings_text[7], "F#");
+        assert_eq!(form.tunings_octave[7], 1);
     }
 }
 
