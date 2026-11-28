@@ -82,21 +82,35 @@ const DISP_PM_LEN: usize = 256;
 const DISP_PM_MASK: usize = DISP_PM_LEN - 1;
 
 /// Number of staggered 1st-order all-pass dispersion stages inside `DispersionLoop`.
-const DISP_AP_STAGES: usize = 12;
+const DISP_AP_STAGES: usize = 3;
 
 /// Stage 2 Bank A: 4 Lower-Order Fundamental Wet-Only Combs (`2048` samples each).
 const BANK_A_COMBS: usize = 4;
 const COMB_A_LEN: usize = 2048;
 const COMB_A_MASK: usize = COMB_A_LEN - 1;
 
-/// Stage 2 Bank B: 8 Higher-Order Shimmer Wet-Only Combs (`1024` samples each).
+/// Stage 2 Bank B: 8 Dense Overtone Shimmer Wet-Only Combs (`2048` samples each).
 const BANK_B_COMBS: usize = 8;
-const COMB_B_LEN: usize = 1024;
+const COMB_B_LEN: usize = 2048;
 const COMB_B_MASK: usize = COMB_B_LEN - 1;
 
-/// Post-Sum Static Polish Comb buffer length (`512` samples).
+/// Post-Sum 4-Comb Parallel Spectral Polish Filter (`4` staggered static combs of `512` samples each).
+const POLISH_COMBS: usize = 4;
 const POLISH_COMB_LEN: usize = 512;
 const POLISH_COMB_MASK: usize = POLISH_COMB_LEN - 1;
+
+/// Transparent C1-continuous soft-ceiling limiter that stays 100% linear (`y == x`, zero IMD/THD)
+/// below `0.85` peak and smoothly rounds transient peaks toward `1.10`.
+#[inline(always)]
+fn soft_ceiling_085(x: f32) -> f32 {
+    let ax = x.abs();
+    if ax <= 0.85 {
+        x
+    } else {
+        let excess = (ax - 0.85) * 4.0;
+        (0.85 + 0.25 * tanh_pade(excess)).copysign(x)
+    }
+}
 
 /// Allocates a zeroed `Box<[f32; N]>` directly on the heap without staging on the stack.
 fn alloc_box_array<const N: usize>() -> Box<[f32; N]> {
@@ -145,7 +159,9 @@ fn read_hermite_ring<const N: usize>(
 
 /// Stage 1: Self-Feeding Dispersion Loop for Rides and Crashes/Splash/China.
 ///
-/// Feeds Stage 2 parallel wet-only comb banks ONLY (never mixed directly into the master bus).
+/// Sums `exc_in + delayed * eff_fb` upfront so Pass 0 immediately traverses
+/// `3-Stage All-Pass -> Slow Vibrato -> Clean Hermite Self-PM -> DC Blocker -> Soft Limiter`,
+/// writing the processed wash to `base_buf` and feeding Stage 2 wet-only comb banks.
 #[derive(Clone, Debug)]
 pub struct DispersionLoop {
     base_buf: Box<[f32; DISP_BASE_LEN]>,
@@ -156,13 +172,12 @@ pub struct DispersionLoop {
     pm_write: usize,
     base_delay_samples: f32,
     fb_gain: f32,
-    /// 12 staggered 1st-order all-pass filters smearing sharp strikes into broadband wash.
+    /// 3 staggered 1st-order all-pass filters (`[0.52, -0.74, 0.85]` scaled by `allpass_smear`).
     ap_coeffs: [f32; DISP_AP_STAGES],
     ap_x1: [f32; DISP_AP_STAGES],
     ap_y1: [f32; DISP_AP_STAGES],
-    /// Smoothed random-walk + stepped hammering vibrato LFO (`0..=4 ms`).
-    max_vib_samples: f32,
-    vibrato_depth: f32,
+    /// Slow musical random-walk + stepped vibrato LFO (`0.8..=7.0 Hz`, smoothed `2..=14 Hz`, `0.25..=1.2 ms`).
+    vib_excursion_samples: f32,
     vibrato_chaos: f32,
     lfo_walk: f32,
     lfo_step: f32,
@@ -170,22 +185,17 @@ pub struct DispersionLoop {
     lfo_smooth_alpha: f32,
     lfo_counter: u32,
     lfo_period: u32,
-    /// Multi-radian Self-Phase-Modulation state (`256`-sample Hermite delay + 4-stage Gray-Markel Orthogonal Self-PM All-Pass).
+    /// Clean Kilohearts-style Hermite fractional-delay Self-Phase Modulation (`<= 6.0` samples at 48 kHz).
     pm_center_samples: f32,
     pm_max_excursion: f32,
     pm_drive: f32,
-    pm_fold_beta: f32,
     pm_lp_alpha: f32,
     pm_lp_z1: f32,
-    pm_ap_state: [f32; 4],
-    /// In-loop 1-pole bass-trim filter (~190 Hz) shedding low mud after upward harmonic folding.
-    bass_trim_alpha: f32,
-    bass_trim_amount: f32,
-    bass_lp_z1: f32,
+    pm_prev_delay: f32,
     /// Gentle DC blocker inside feedback loop.
     dc_x1: f32,
     dc_y1: f32,
-    /// Instantaneous loop energy tracker for auto-deactivation.
+    /// Instantaneous loop energy tracker for auto-deactivation and air-sizzle coupling.
     energy_env: f32,
 }
 
@@ -198,32 +208,25 @@ impl DispersionLoop {
             base_write: 0,
             vib_write: 0,
             pm_write: 0,
-            base_delay_samples: 480.0,
-            fb_gain: 0.93,
-            ap_coeffs: [
-                0.56, 0.63, -0.68, 0.72, 0.76, -0.79, 0.81, 0.83, -0.85, 0.86, 0.88, 0.89,
-            ],
+            base_delay_samples: 280.0,
+            fb_gain: 0.96,
+            ap_coeffs: [0.52, -0.74, 0.85],
             ap_x1: [0.0; DISP_AP_STAGES],
             ap_y1: [0.0; DISP_AP_STAGES],
-            max_vib_samples: 192.0,
-            vibrato_depth: 0.04,
+            vib_excursion_samples: 18.0,
             vibrato_chaos: 0.30,
             lfo_walk: 0.0,
             lfo_step: 0.0,
             lfo_val: 0.0,
-            lfo_smooth_alpha: 0.005,
+            lfo_smooth_alpha: 0.001,
             lfo_counter: 0,
-            lfo_period: 256,
-            pm_center_samples: 34.0,
-            pm_max_excursion: 28.0,
+            lfo_period: 12_000,
+            pm_center_samples: 10.0,
+            pm_max_excursion: 5.5,
             pm_drive: 0.50,
-            pm_fold_beta: 4.5,
-            pm_lp_alpha: 0.30,
+            pm_lp_alpha: 0.25,
             pm_lp_z1: 0.0,
-            pm_ap_state: [0.0; 4],
-            bass_trim_alpha: 0.03,
-            bass_trim_amount: 0.18,
-            bass_lp_z1: 0.0,
+            pm_prev_delay: 10.0,
             dc_x1: 0.0,
             dc_y1: 0.0,
             energy_env: 0.0,
@@ -245,8 +248,7 @@ impl DispersionLoop {
         self.lfo_val = 0.0;
         self.lfo_counter = 0;
         self.pm_lp_z1 = 0.0;
-        self.pm_ap_state = [0.0; 4];
-        self.bass_lp_z1 = 0.0;
+        self.pm_prev_delay = self.pm_center_samples;
         self.dc_x1 = 0.0;
         self.dc_y1 = 0.0;
         self.energy_env = 0.0;
@@ -262,6 +264,7 @@ impl DispersionLoop {
         decay_t60_sec: f32,
         allpass_smear: f32,
         vibrato_depth: f32,
+        vibrato_rate_hz: f32,
         vibrato_chaos: f32,
         pm_drive: f32,
         pm_tone_hz: f32,
@@ -271,76 +274,78 @@ impl DispersionLoop {
         let sr = sample_rate.max(8_000.0);
         let vel = velocity.clamp(0.05, 1.0);
 
-        // 1. Base Dispersion Delay (`1.0..=25.0 ms` scaled inversely by `bronze_size_pitch`)
-        let eff_ms = (dispersion_size_ms / bronze_size_pitch.clamp(0.35, 3.0)).clamp(1.0, 25.0);
+        // 1. Base Dispersion Delay mapped smoothly into the Haas-fused `2.0..=12.0 ms` bronze wash window
+        let raw_ms = dispersion_size_ms.clamp(1.0, 25.0) / bronze_size_pitch.clamp(0.35, 3.0);
+        let eff_ms = (1.65 + 0.41 * raw_ms).clamp(2.0, 12.0);
         let max_base = (DISP_BASE_LEN - 6) as f32;
         self.base_delay_samples = (eff_ms * 0.001 * sr).max(3.0).min(max_base);
 
-        // Sub-unity feedback gain (`0.70..=0.968`) auto-derived from Ring/Wash Decay:
-        // Crashes bloom fiercely over ~15–90 ms across 6–14 lossless Self-PM rim reflections before handing off cleanly to Stage 2 combs.
-        let loop_t60 = if is_ride {
-            (decay_t60_sec * 0.12).clamp(0.10, 0.36)
+        // Sustained DispersionLoop feedback (`0.88..=0.985`) derived smoothly from `decay_t60_sec` and `eff_ms`
+        // so Stage 1 carries the cymbal's natural blooming wash and tail!
+        let disp_t60 = if is_ride {
+            (decay_t60_sec * 0.46).clamp(0.32, 2.35)
         } else {
-            (decay_t60_sec * 0.18).clamp(0.12, 0.52)
+            (decay_t60_sec * 0.58).clamp(0.35, 2.55)
         };
-        let raw_fb = 10.0_f32.powf((-3.0 * (eff_ms * 0.001) / loop_t60).max(-1.2));
-        self.fb_gain = raw_fb.clamp(0.70, 0.968);
+        let rt_sec = (eff_ms * 0.001) + 0.0005;
+        let raw_fb = 10.0_f32.powf((-3.0 * rt_sec / disp_t60).max(-1.0));
+        self.fb_gain = raw_fb.clamp(0.88, 0.985);
 
-        // 2. 12-stage Staggered 1st-Order All-Pass Disperser
-        const BASE_AP_12: [f32; DISP_AP_STAGES] = [
-            0.56, 0.63, -0.68, 0.72, 0.76, -0.79, 0.81, 0.83, -0.85, 0.86, 0.88, 0.89,
-        ];
+        // 2. 3-Stage Staggered 1st-Order All-Pass Cascade (`[0.52, -0.74, 0.85]` — zero laser-chirp dispersion)
+        const BASE_AP_3: [f32; DISP_AP_STAGES] = [0.52, -0.74, 0.85];
         let smear = allpass_smear.clamp(0.0, 1.25);
-        let smear_scale = (0.14 + 0.86 * smear).clamp(0.0, 1.05);
+        let smear_scale = (0.15 + 0.85 * smear).clamp(0.0, 1.04);
         for k in 0..DISP_AP_STAGES {
-            self.ap_coeffs[k] = (BASE_AP_12[k] * smear_scale).clamp(-0.93, 0.93);
+            self.ap_coeffs[k] = (BASE_AP_3[k] * smear_scale).clamp(-0.92, 0.92);
         }
 
-        // 3. Smoothed Random Vibrato (`0..=4 ms`)
-        self.max_vib_samples = (0.004 * sr).min((DISP_VIB_LEN - 8) as f32).max(5.0);
-        self.vibrato_depth = vibrato_depth.clamp(0.0, 0.50);
+        // 3. Hammering Vibrato LFO (`vibrato_rate_hz` speed, `vibrato_chaos` smooth-vs-stepped character, `0.25..=1.2 ms` excursion)
+        let v_depth = vibrato_depth.clamp(0.0, 0.50);
         self.vibrato_chaos = vibrato_chaos.clamp(0.0, 1.0);
-        let period_ms = 12.5 - 9.2 * self.vibrato_chaos;
-        self.lfo_period = ((period_ms * 0.001 * sr).round() as u32).max(16);
-        self.lfo_counter = 0;
-        let lfo_bw_hz = 10.0 + 56.0 * self.vibrato_chaos;
-        self.lfo_smooth_alpha = (1.0 - (-TAU * lfo_bw_hz / sr).exp()).clamp(0.0002, 0.28);
-
-        // 4. Multi-Radian Lossless Self-Phase Modulation (Hermite Delay PM + 4-Stage Orthogonal All-Pass Self-PM)
-        self.pm_center_samples = (34.0 * (sr / 48_000.0)).clamp(14.0, 96.0);
-        self.pm_max_excursion =
-            (self.pm_center_samples - 3.0).min((DISP_PM_LEN as f32 - 8.0) - self.pm_center_samples);
-        let vel_scale = 0.42 + 0.78 * vel;
-        self.pm_drive = (pm_drive.clamp(0.0, 1.35) * vel_scale).clamp(0.0, 1.45);
-        self.pm_fold_beta = if is_ride {
-            2.8 * self.pm_drive
+        let exc_ms = if v_depth <= 1.0e-4 {
+            0.0
         } else {
-            6.6 * self.pm_drive
+            let norm_d = (v_depth / 0.50).clamp(0.0, 1.0);
+            (0.25 + 0.95 * norm_d) * norm_d.sqrt()
         };
-        let tone = pm_tone_hz.clamp(200.0, sr * 0.45);
-        self.pm_lp_alpha = (1.0 - (-TAU * tone / sr).exp()).clamp(0.01, 0.96);
+        self.vib_excursion_samples = (exc_ms * 0.001 * sr)
+            .min((DISP_VIB_LEN - 8) as f32)
+            .max(0.0);
+        let rate_hz = vibrato_rate_hz.clamp(0.10, 40.0);
+        // Two random half-cycle updates per period (`sr / (2 * rate_hz)`) yields oscillation rate `rate_hz`
+        self.lfo_period = ((sr / (2.0 * rate_hz)).round() as u32).max(32);
+        self.lfo_counter = 0;
+        let lfo_bw_hz = (rate_hz * (0.95 + 2.45 * self.vibrato_chaos)).clamp(0.25, 65.0);
+        self.lfo_smooth_alpha = (1.0 - (-TAU * lfo_bw_hz / sr).exp()).clamp(0.00002, 0.08);
 
-        // In-loop 1-pole bass-trim (~190 Hz) sheds low strike mud after folding harmonics into 6–18 kHz
-        let trim_hz = (190.0 * bronze_size_pitch.clamp(0.5, 2.2)).min(sr * 0.15);
-        self.bass_trim_alpha = (1.0 - (-TAU * trim_hz / sr).exp()).clamp(0.003, 0.16);
-        self.bass_trim_amount = if is_ride { 0.10 } else { 0.18 };
+        // 4. Clean Alias-Free Hermite Self-Phase Modulation (`pm_max_excursion <= 6.0` samples at 48 kHz)
+        let sr_scale = sr / 48_000.0;
+        self.pm_center_samples = (10.0 * sr_scale).clamp(4.0, 48.0);
+        let max_exc_cap = (5.8 * sr_scale)
+            .min(self.pm_center_samples - 2.2)
+            .min((DISP_PM_LEN as f32 - 8.0) - self.pm_center_samples)
+            .max(1.0);
+        let vel_scale = 0.45 + 0.70 * vel;
+        self.pm_drive = (pm_drive.clamp(0.0, 1.35) * vel_scale).clamp(0.0, 1.45);
+        self.pm_max_excursion = max_exc_cap * (self.pm_drive / 1.15).clamp(0.0, 1.0);
+        self.pm_prev_delay = self.pm_center_samples;
+        let tone = pm_tone_hz.clamp(200.0, (sr * 0.35).min(6_500.0));
+        self.pm_lp_alpha = (1.0 - (-TAU * tone / sr).exp()).clamp(0.01, 0.75);
     }
 
     #[inline(always)]
     pub fn process(&mut self, exc_in: f32, choke_fb_scale: f32, rng: &mut u32) -> f32 {
-        // 1. Base Dispersion Delay read (`1.0..=25.0 ms`) via 4-point Hermite cubic interpolation
+        // 1. Sum `exc_in + delayed * eff_fb` upfront so Pass 0 is immediately dispersed & phase-modulated
         let delayed = read_hermite_ring(
             &self.base_buf,
             self.base_write,
             self.base_delay_samples,
             DISP_BASE_MASK,
         );
-        let eff_fb = (self.fb_gain * choke_fb_scale).clamp(0.0, 0.968);
-        // Apply 12-stage disperser + vibrato + multi-radian Self-PM on every rim reflection (`delayed * eff_fb`)
-        // while `exc_in` seeds Pass 0 as a warm physical bronze strike — creating genuine upward 6–18 kHz bloom!
-        let mut sig = delayed * eff_fb;
+        let eff_fb = (self.fb_gain * choke_fb_scale).clamp(0.0, 0.985);
+        let mut sig = exc_in + delayed * eff_fb;
 
-        // 2. 12-stage staggered 1st-order All-Pass Disperser
+        // 2. 3-stage staggered 1st-order All-Pass Cascade
         for k in 0..DISP_AP_STAGES {
             let a = self.ap_coeffs[k];
             let y = flush_denormal(a * sig + self.ap_x1[k] - a * self.ap_y1[k]);
@@ -349,7 +354,7 @@ impl DispersionLoop {
             sig = y;
         }
 
-        // 3. Smoothed Random Vibrato (`0..=4 ms`, Hermite cubic read)
+        // 3. Slow Musical Vibrato (`0.8..=7.0 Hz`, `2..=14 Hz` LP-smoothed, `0.25..=1.2 ms` Hermite read)
         if self.lfo_counter == 0 {
             let mut x = *rng;
             if x == 0 {
@@ -360,7 +365,7 @@ impl DispersionLoop {
             x ^= x << 5;
             *rng = x;
             let r = ((x as i32) as f32) * (1.0 / 2_147_483_648.0);
-            self.lfo_walk = (self.lfo_walk * 0.88 + r * 0.44).clamp(-1.0, 1.0);
+            self.lfo_walk = (self.lfo_walk * 0.86 + r * 0.48).clamp(-1.0, 1.0);
             self.lfo_step = r;
             self.lfo_counter = self.lfo_period;
         } else {
@@ -373,62 +378,39 @@ impl DispersionLoop {
 
         self.vib_buf[self.vib_write] = flush_denormal(sig);
         self.vib_write = (self.vib_write + 1) & DISP_VIB_MASK;
-        let depth_norm = (self.vibrato_depth * 2.0).clamp(0.0, 1.0);
-        let vib_extra =
-            0.35 * (self.max_vib_samples - 2.0) * depth_norm * (1.0 + 0.96 * self.lfo_val);
+        let vib_offset = 0.5 * self.vib_excursion_samples * (1.0 + 0.95 * self.lfo_val);
         let vib_out = read_hermite_ring(
             &self.vib_buf,
             self.vib_write,
-            2.0 + vib_extra,
+            2.0 + vib_offset,
             DISP_VIB_MASK,
         );
 
-        // 4. Multi-Radian Lossless Self-Phase Modulation:
-        //    (a) 256-sample Hermite fractional delay self-PM (`kHs Phase Distortion` delay warp)
-        //    (b) 4-stage Gray-Markel Orthogonal Self-PM All-Pass Cascade (`sin^2 + cos^2 == 1` ->
-        //        exact 0.00 dB energy conservation + 100% passive L2 norm <= 1.0 with zero limit cycles,
-        //        folding <2 kHz strike energy rapidly into dense 6–18 kHz bronze sizzle!)
+        // 4. Clean Kilohearts-style Self-Phase Modulation via Hermite fractional delay `pm_buf` ONLY
         self.pm_buf[self.pm_write] = flush_denormal(vib_out);
         self.pm_write = (self.pm_write + 1) & DISP_PM_MASK;
-        let prev_lp = self.pm_lp_z1;
         self.pm_lp_z1 =
-            flush_denormal(prev_lp + self.pm_lp_alpha * (vib_out - prev_lp));
-        let pm_ctrl = self.pm_lp_z1 + 0.85 * (self.pm_lp_z1 - prev_lp);
-        let pm_mod = (pm_ctrl * self.pm_drive * 2.2).clamp(-1.0, 1.0) * self.pm_max_excursion;
-        let pm_delay = (self.pm_center_samples + pm_mod).clamp(2.0, (DISP_PM_LEN - 5) as f32);
-        let mut warped = read_hermite_ring(&self.pm_buf, self.pm_write, pm_delay, DISP_PM_MASK);
+            flush_denormal(self.pm_lp_z1 + self.pm_lp_alpha * (vib_out - self.pm_lp_z1));
+        let pm_mod = tanh_pade(self.pm_lp_z1 * (1.4 + 1.8 * self.pm_drive)) * self.pm_max_excursion;
+        let target_pm_delay =
+            (self.pm_center_samples + pm_mod).clamp(2.0, (DISP_PM_LEN - 5) as f32);
+        // Bound `|d(delay)/dn| <= 0.62` so read pointer never time-reverses or causes supersonic aliasing
+        let pm_delay =
+            self.pm_prev_delay + (target_pm_delay - self.pm_prev_delay).clamp(-0.62, 0.62);
+        self.pm_prev_delay = pm_delay;
+        let pm_out = read_hermite_ring(&self.pm_buf, self.pm_write, pm_delay, DISP_PM_MASK);
 
-        if self.pm_fold_beta > 1.0e-4 {
-            const BASE_PHI: [f32; 4] = [0.38, -0.52, 0.67, -0.79];
-            const STAGE_SCALE: [f32; 4] = [0.85, 1.08, 1.34, 1.62];
-            for m in 0..4 {
-                let mod_sig = 0.56 * pm_ctrl + 0.44 * warped;
-                let phi = BASE_PHI[m] + self.pm_fold_beta * STAGE_SCALE[m] * mod_sig;
-                let (s_p, c_p) = phi.sin_cos();
-                let st = self.pm_ap_state[m];
-                let y = flush_denormal(s_p * warped + c_p * st);
-                self.pm_ap_state[m] = flush_denormal(c_p * warped - s_p * st);
-                warped = y;
-            }
-        }
-
-        // In-loop bass-trim (~240 Hz) sheds sub-bass mud so 6–18 kHz harmonics own the loop headroom
-        self.bass_lp_z1 = flush_denormal(
-            self.bass_lp_z1 + self.bass_trim_alpha * (warped - self.bass_lp_z1),
-        );
-        let tilted = warped - self.bass_trim_amount * self.bass_lp_z1;
-
-        // Unity-Nyquist DC blocker on feedback return + `tanh` soft-limiter summing `exc_in + feedback`
-        let dc_y = flush_denormal(0.9975 * (tilted - self.dc_x1) + 0.995 * self.dc_y1);
-        self.dc_x1 = flush_denormal(tilted);
+        // 5. Unity-Nyquist DC blocker + transparent soft-limiter -> `base_buf` AND Stage 2
+        let dc_y = flush_denormal(0.9975 * (pm_out - self.dc_x1) + 0.995 * self.dc_y1);
+        self.dc_x1 = flush_denormal(pm_out);
         self.dc_y1 = dc_y;
-        let loop_out = flush_denormal(tanh_pade((exc_in + dc_y) * 1.12) * (1.0 / 1.12));
+        let loop_out = flush_denormal(tanh_pade(dc_y * 1.06) * (1.0 / 1.06));
 
         self.base_buf[self.base_write] = loop_out;
         self.base_write = (self.base_write + 1) & DISP_BASE_MASK;
 
         let abs_o = loop_out.abs();
-        let e_c = if abs_o > self.energy_env { 0.06 } else { 0.002 };
+        let e_c = if abs_o > self.energy_env { 0.05 } else { 0.0018 };
         self.energy_env = flush_denormal(self.energy_env + e_c * (abs_o - self.energy_env));
 
         loop_out
@@ -596,29 +578,30 @@ impl HilbertFreqShifter {
     }
 }
 
-/// Post-sum low-feedback static Polish Comb Filter using Thiran all-pass fractional interpolation for crisp metallic sheen.
+/// Post-sum 4-Comb Parallel Spectral Polish Filter using staggered static low-feedback (`0.18..0.34`)
+/// Thiran-interpolated combs at non-harmonic ratios around `polish_comb_hz` for realistic bronze sheen.
 #[derive(Clone, Debug)]
 pub struct PolishComb {
-    buf: [f32; POLISH_COMB_LEN],
+    bufs: [[f32; POLISH_COMB_LEN]; POLISH_COMBS],
     write_idx: usize,
-    delay_int: usize,
-    thiran_a: f32,
-    thiran_x1: f32,
-    thiran_y1: f32,
-    fb: f32,
+    delay_int: [usize; POLISH_COMBS],
+    thiran_a: [f32; POLISH_COMBS],
+    thiran_x1: [f32; POLISH_COMBS],
+    thiran_y1: [f32; POLISH_COMBS],
+    fb: [f32; POLISH_COMBS],
     mix: f32,
 }
 
 impl Default for PolishComb {
     fn default() -> Self {
         Self {
-            buf: [0.0; POLISH_COMB_LEN],
+            bufs: [[0.0; POLISH_COMB_LEN]; POLISH_COMBS],
             write_idx: 0,
-            delay_int: 12,
-            thiran_a: 0.0,
-            thiran_x1: 0.0,
-            thiran_y1: 0.0,
-            fb: 0.28,
+            delay_int: [10, 12, 15, 19],
+            thiran_a: [0.0; POLISH_COMBS],
+            thiran_x1: [0.0; POLISH_COMBS],
+            thiran_y1: [0.0; POLISH_COMBS],
+            fb: [0.21, 0.25, 0.28, 0.31],
             mix: 0.22,
         }
     }
@@ -627,23 +610,31 @@ impl Default for PolishComb {
 impl PolishComb {
     #[inline(always)]
     pub fn reset(&mut self) {
-        self.buf.fill(0.0);
+        for b in self.bufs.iter_mut() {
+            b.fill(0.0);
+        }
         self.write_idx = 0;
-        self.thiran_x1 = 0.0;
-        self.thiran_y1 = 0.0;
+        self.thiran_x1 = [0.0; POLISH_COMBS];
+        self.thiran_y1 = [0.0; POLISH_COMBS];
     }
 
     #[inline(always)]
     pub fn configure(&mut self, sample_rate: f32, freq_hz: f32, mix: f32) {
+        const RATIOS: [f32; POLISH_COMBS] = [0.79, 0.94, 1.13, 1.37];
+        const FB_SPREAD: [f32; POLISH_COMBS] = [0.88, 0.96, 1.04, 1.12];
         let sr = sample_rate.max(8_000.0);
-        let f = freq_hz.clamp(220.0, (sr * 0.45).min(15_000.0));
-        let d = (sr / f).clamp(2.5, (POLISH_COMB_LEN - 4) as f32);
-        let delay_int = (d - 0.35).floor() as usize;
-        let delta = (d - (delay_int as f32)).clamp(0.35, 1.35);
-        self.delay_int = delay_int.max(2);
-        self.thiran_a = (1.0 - delta) / (1.0 + delta);
+        let base_f = freq_hz.clamp(220.0, (sr * 0.44).min(14_000.0));
         self.mix = mix.clamp(0.0, 0.85);
-        self.fb = (0.18 + 0.24 * self.mix).clamp(0.15, 0.42);
+        let base_fb = 0.20 + 0.14 * self.mix;
+        for c in 0..POLISH_COMBS {
+            let fc = (base_f * RATIOS[c]).clamp(180.0, sr * 0.45);
+            let d = (sr / fc).clamp(2.5, (POLISH_COMB_LEN - 4) as f32);
+            let di = (d - 0.35).floor() as usize;
+            let delta = (d - (di as f32)).clamp(0.35, 1.35);
+            self.delay_int[c] = di.max(2);
+            self.thiran_a[c] = (1.0 - delta) / (1.0 + delta);
+            self.fb[c] = (base_fb * FB_SPREAD[c]).clamp(0.18, 0.34);
+        }
     }
 
     #[inline(always)]
@@ -651,16 +642,20 @@ impl PolishComb {
         if self.mix <= 1.0e-4 {
             return x;
         }
-        let x_int = self.buf[self.write_idx.wrapping_sub(self.delay_int) & POLISH_COMB_MASK];
-        let delayed = flush_denormal(
-            self.thiran_a * x_int + self.thiran_x1 - self.thiran_a * self.thiran_y1,
-        );
-        self.thiran_x1 = flush_denormal(x_int);
-        self.thiran_y1 = delayed;
-        let w = flush_denormal(x + delayed * self.fb);
-        self.buf[self.write_idx] = w;
-        self.write_idx = (self.write_idx + 1) & POLISH_COMB_MASK;
-        x * (1.0 - 0.28 * self.mix) + delayed * self.mix
+        const POL: [f32; POLISH_COMBS] = [1.0, -1.0, 1.0, -1.0];
+        let w_idx = self.write_idx;
+        let mut wet_sum = 0.0_f32;
+        for c in 0..POLISH_COMBS {
+            let x_int = self.bufs[c][w_idx.wrapping_sub(self.delay_int[c]) & POLISH_COMB_MASK];
+            let a = self.thiran_a[c];
+            let delayed = flush_denormal(a * x_int + self.thiran_x1[c] - a * self.thiran_y1[c]);
+            self.thiran_x1[c] = flush_denormal(x_int);
+            self.thiran_y1[c] = delayed;
+            self.bufs[c][w_idx] = flush_denormal(x + delayed * self.fb[c]);
+            wet_sum += POL[c] * delayed;
+        }
+        self.write_idx = (w_idx + 1) & POLISH_COMB_MASK;
+        x * (1.0 - 0.24 * self.mix) + (0.5 * wet_sum) * self.mix
     }
 }
 
@@ -674,6 +669,17 @@ enum CymbalExcitationKind {
     RideStickAndBell,
     /// Crash / Splash / China (49, 57, 55, 52): low-freq saw/tri energy impulse -> `DispersionLoop` ONLY (muted from master).
     CrashMutedImpulse,
+}
+
+/// Modal feedback damping profile for Stage 2 comb banks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CombArchetype {
+    /// Heavily hammered dispersed modes (`t60_a ~ 0.18..0.55 s`, `t60_b ~ 0.25..0.75 s`).
+    Ride,
+    /// Moderate-to-high modal density (`t60_comb ~ 0.35..1.10 s`) fed by sustaining `DispersionLoop`.
+    Crash,
+    /// Moderate feedback (`fb` capped around `0.78..0.94`) driven by shaped noise trail.
+    HiHat,
 }
 
 /// Complete pre-allocated Two-Stage Cymbal & Hi-Hat DSP state owned by a [`PolyVoice`].
@@ -706,9 +712,10 @@ pub struct CymbalEngineState {
     exc_hp_x1: f32,
     exc_hp_y1: f32,
     exc_lp_z1: f32,
+    exc_lp_z2: f32,
     exc_lp_alpha: f32,
     direct_stick_mix: f32,
-    /// Optional plate-energy-coupled 6–18 kHz Air Sizzle + Open Hat (46) plate-contact bloom state
+    /// Pre-comb Bank B Air Sizzle + Open Hat (46) plate-contact bloom state (zero raw post-comb noise!)
     air_sizzle_amount: f32,
     open_hat_contact_sizzle: f32,
     bloom_ramp_env: f32,
@@ -717,7 +724,7 @@ pub struct CymbalEngineState {
     air_hp_y1: f32,
     /// Stage 1: Self-Feeding Dispersion Loop
     pub dispersion: DispersionLoop,
-    /// Stage 2: Bank A (4 Fundamental Combs) + Bank B (8 Shimmer Combs)
+    /// Stage 2: Bank A (4 Fundamental Combs) + Bank B (8 Dense Overtone Shimmer Combs)
     bank_a_bufs: Box<[[f32; COMB_A_LEN]; BANK_A_COMBS]>,
     bank_b_bufs: Box<[[f32; COMB_B_LEN]; BANK_B_COMBS]>,
     bank_a_meta: [WetCombMeta; BANK_A_COMBS],
@@ -727,8 +734,19 @@ pub struct CymbalEngineState {
     pub comb_fb_scale: f32,
     comb_choke_ramp: f32,
     comb_energy_env: f32,
-    /// Post-comb Hilbert Frequency Shifter + Static Polish Comb
-    pub hilbert: HilbertFreqShifter,
+    /// Independent per-bank Hilbert Frequency Shifters (`hilbert_a` and `hilbert_b`)
+    pub hilbert_a: HilbertFreqShifter,
+    pub hilbert_b: HilbertFreqShifter,
+    /// Per-bank post filters:
+    /// - Bank A Bus: 1-pole LP darkening (`~1.8..4.5 kHz`) + gentle 1-pole HP (`~220 Hz`)
+    /// - Bank B Bus: Steep 2nd-order Biquad High-Pass (`2.5..6.5 kHz`)
+    bank_a_lp_alpha: f32,
+    bank_a_lp_z1: f32,
+    bank_a_hp_c: f32,
+    bank_a_hp_x1: f32,
+    bank_a_hp_y1: f32,
+    bank_b_hpf: BiquadFilter,
+    /// Post-sum 4-Comb Parallel Spectral Polish Filter
     pub polish: PolishComb,
     quiet_samples: u32,
 }
@@ -762,6 +780,7 @@ impl CymbalEngineState {
             exc_hp_x1: 0.0,
             exc_hp_y1: 0.0,
             exc_lp_z1: 0.0,
+            exc_lp_z2: 0.0,
             exc_lp_alpha: 0.4,
             direct_stick_mix: 0.0,
             air_sizzle_amount: 0.0,
@@ -775,11 +794,18 @@ impl CymbalEngineState {
             bank_b_bufs: alloc_box_2d::<BANK_B_COMBS, COMB_B_LEN>(),
             bank_a_meta: [WetCombMeta::default(); BANK_A_COMBS],
             bank_b_meta: [WetCombMeta::default(); BANK_B_COMBS],
-            comb_lp_alpha: 0.5,
+            comb_lp_alpha: 1.0,
             comb_fb_scale: 1.0,
             comb_choke_ramp: 1.0,
             comb_energy_env: 0.0,
-            hilbert: HilbertFreqShifter::default(),
+            hilbert_a: HilbertFreqShifter::default(),
+            hilbert_b: HilbertFreqShifter::default(),
+            bank_a_lp_alpha: 0.30,
+            bank_a_lp_z1: 0.0,
+            bank_a_hp_c: 0.97,
+            bank_a_hp_x1: 0.0,
+            bank_a_hp_y1: 0.0,
+            bank_b_hpf: BiquadFilter::default(),
             polish: PolishComb::default(),
             quiet_samples: 0,
         }
@@ -800,7 +826,12 @@ impl CymbalEngineState {
         }
         self.bank_a_meta = [WetCombMeta::default(); BANK_A_COMBS];
         self.bank_b_meta = [WetCombMeta::default(); BANK_B_COMBS];
-        self.hilbert.reset();
+        self.hilbert_a.reset();
+        self.hilbert_b.reset();
+        self.bank_a_lp_z1 = 0.0;
+        self.bank_a_hp_x1 = 0.0;
+        self.bank_a_hp_y1 = 0.0;
+        self.bank_b_hpf.reset();
         self.polish.reset();
         self.exc_phase1 = 0.0;
         self.exc_phase2 = 0.0;
@@ -812,6 +843,7 @@ impl CymbalEngineState {
         self.exc_hp_x1 = 0.0;
         self.exc_hp_y1 = 0.0;
         self.exc_lp_z1 = 0.0;
+        self.exc_lp_z2 = 0.0;
         self.air_sizzle_amount = 0.0;
         self.open_hat_contact_sizzle = 0.0;
         self.bloom_ramp_env = 0.0;
@@ -833,80 +865,127 @@ impl CymbalEngineState {
         shimmer_spread: f32,
         decay_t60_sec: f32,
         comb_damping_hz: f32,
-        exc_window_sec: f32,
+        archetype: CombArchetype,
         serial_mode: bool,
     ) {
         let sr = sample_rate.max(8_000.0);
         let size_pitch = bronze_size_pitch.clamp(0.30, 3.0);
         let spread = shimmer_spread.clamp(0.25, 3.0);
         let t60 = decay_t60_sec.clamp(0.020, 9.0);
-        let exc_samples = (exc_window_sec.clamp(0.002, 0.12) * sr).max(8.0);
         self.serial_mode = serial_mode;
 
-        // Delay-compensated internal 1-pole low-pass material damping ONLY inside all 12 comb loops:
-        // Scales `(1 - lp_alpha)` proportionally to `(d / d_ref)^0.82` so high-frequency Bank B shimmer
-        // combs (2–6.8 kHz) sustain 6–18 kHz bronze partials at the same physical dB/sec rate as Bank A
-        // instead of dying 12x faster from 5,000 round-trips/sec!
+        // Delay-compensated internal 1-pole low-pass material damping ONLY inside all 12 comb loops
         let damp_hz = comb_damping_hz.clamp(900.0, sr * 0.47);
-        let hf_loss_ref = ((-TAU * damp_hz / sr).exp()).powf(1.65);
-        let d_ref = (0.0025 * sr).max(16.0);
-        // `comb_lp_alpha` acts as dynamic choke damping multiplier (`1.0` normal, `0.55` on choke)
+        let hf_loss_ref = ((-TAU * damp_hz / sr).exp()).powf(1.55);
+        let d_ref = (0.0022 * sr).max(16.0);
         self.comb_lp_alpha = 1.0;
         self.comb_fb_scale = 1.0;
         self.comb_choke_ramp = 1.0;
 
+        // Moderate modal comb decay times (prevents 5-second organ-pipe sine ringing!):
+        // - Rides: heavily hammered dispersed modes (`0.18..0.55 s` Bank A, `0.25..0.75 s` Bank B)
+        // - Crashes: moderate-to-high modal density (`0.35..1.10 s`) fed by sustaining DispersionLoop
+        // - Hi-Hats: moderate feedback (`fb` capped around `0.78..0.94`) driven by shaped noise trail
+        let (t60_a, t60_b, fb_cap_a, fb_cap_b, gain_scale) = match archetype {
+            CombArchetype::Ride => (
+                (t60 * 0.12).clamp(0.18, 0.55),
+                (t60 * 0.16).clamp(0.25, 0.75),
+                0.968,
+                0.975,
+                0.56,
+            ),
+            CombArchetype::Crash => (
+                (t60 * 0.20).clamp(0.35, 0.95),
+                (t60 * 0.25).clamp(0.35, 1.10),
+                0.980,
+                0.984,
+                0.58,
+            ),
+            CombArchetype::HiHat => {
+                let hat_fb_ceil = (0.78 + 0.16 * (t60 / 1.4).clamp(0.0, 1.0)).clamp(0.78, 0.94);
+                (
+                    (t60 * 0.42).clamp(0.022, 0.36),
+                    (t60 * 0.48).clamp(0.026, 0.45),
+                    hat_fb_ceil.min(0.92),
+                    hat_fb_ceil,
+                    0.66,
+                )
+            }
+        };
+
         // Bank A: 4 tightly clustered whole-plate fundamental combs (Thiran all-pass fractional delay)
         const CLUSTER_RATIOS: [f32; BANK_A_COMBS] = [0.931, 0.979, 1.027, 1.083];
-        let f_cluster = (fundamental_cluster_hz * size_pitch).clamp(75.0, sr * 0.24);
+        let f_cluster = (fundamental_cluster_hz * size_pitch).clamp(75.0, 1_600.0_f32.min(sr * 0.22));
         let max_a = (COMB_A_LEN - 6) as f32;
         for i in 0..BANK_A_COMBS {
-            let fi = (f_cluster * CLUSTER_RATIOS[i]).clamp(60.0, sr * 0.30);
+            let fi = (f_cluster * CLUSTER_RATIOS[i]).clamp(65.0, 1_800.0_f32.min(sr * 0.25));
             let d = (sr / fi).clamp(6.0, max_a);
             let fb = 10.0_f32
-                .powf((-3.0 * (d / sr) / t60).max(-2.5))
-                .clamp(0.18, 0.9985);
-            let n_ov = (exc_samples / d).clamp(1.0, 20.0);
-            let in_norm = 0.44 / n_ov.sqrt();
-            let p_i = (hf_loss_ref * (d / d_ref).powf(0.82)).clamp(0.002, 0.96);
+                .powf((-3.0 * (d / sr) / t60_a).max(-2.5))
+                .clamp(0.18, fb_cap_a);
+            let in_norm = gain_scale * (1.0 - fb * fb).sqrt().max(0.16);
+            let p_i = (hf_loss_ref * (d / d_ref).powf(0.80)).clamp(0.003, 0.95);
             self.bank_a_meta[i] = WetCombMeta::from_delay(d, fb, in_norm, 1.0 - p_i);
         }
 
-        // Bank B: 8 non-uniform higher-order shimmer combs spanning up to ~6.8 kHz fundamentals
-        // so Thiran-interpolated upper harmonics + Hilbert shift densely populate 6–18 kHz!
-        const SHIMMER_BASE: [f32; BANK_B_COMBS] =
-            [1.000, 1.272, 1.618, 2.058, 2.618, 3.330, 4.236, 5.388];
-        let f_shimmer_anchor = (f_cluster * 2.55).clamp(580.0, sr * 0.30);
-        let spread_exp = 0.52 + 0.42 * spread;
+        // Bank B: 8 non-uniform combs in the dense overtone range (`320 Hz .. 1,850 Hz` scaled by
+        // `size_pitch` & `spread`, clamped strictly <= `2,800 Hz`) so each comb generates dozens of
+        // densely packed upper harmonics above 2.5 kHz!
+        const B_POS: [f32; BANK_B_COMBS] =
+            [0.000, 0.131, 0.277, 0.419, 0.563, 0.709, 0.853, 1.000];
+        let f_b_low = (320.0 * size_pitch).clamp(180.0, 1_050.0);
+        let span_ratio = (2.25 + 2.20 * spread).clamp(1.85, 7.50);
+        let max_f_b = 2_800.0_f32.min(sr * 0.42);
         let max_b = (COMB_B_LEN - 6) as f32;
         for j in 0..BANK_B_COMBS {
-            let fj = (f_shimmer_anchor * SHIMMER_BASE[j].powf(spread_exp)).clamp(420.0, sr * 0.43);
-            let d = (sr / fj).clamp(3.2, max_b);
+            let fj = (f_b_low * span_ratio.powf(B_POS[j])).clamp(220.0, max_f_b);
+            let d = (sr / fj).clamp(3.5, max_b);
             let mode_t60 = if serial_mode && j < 4 {
-                (t60 * 0.22).clamp(0.015, 0.24)
+                (t60_b * 0.42).clamp(0.016, 0.18)
             } else {
-                (t60 * (0.94 - 0.025 * (j as f32))).max(0.018)
+                (t60_b * (1.0 - 0.03 * (j as f32))).max(0.020)
+            };
+            let cap = if serial_mode && j < 4 {
+                fb_cap_b.min(0.82)
+            } else {
+                fb_cap_b
             };
             let fb = 10.0_f32
                 .powf((-3.0 * (d / sr) / mode_t60).max(-2.5))
-                .clamp(0.15, 0.9988);
-            let n_ov = (exc_samples / d).clamp(1.0, 20.0);
+                .clamp(0.18, cap);
             let in_norm = if serial_mode && j < 4 {
-                0.68 / n_ov.powf(0.42)
+                0.78 * (1.0 - fb * fb).sqrt().max(0.30)
             } else {
-                0.52 / n_ov.sqrt()
+                (gain_scale * 1.04) * (1.0 - fb * fb).sqrt().max(0.16)
             };
-            let p_j = (hf_loss_ref * (d / d_ref).powf(0.82)).clamp(0.0015, 0.95);
+            let p_j = (hf_loss_ref * (d / d_ref).powf(0.80)).clamp(0.0025, 0.94);
             self.bank_b_meta[j] = WetCombMeta::from_delay(d, fb, in_norm, 1.0 - p_j);
         }
     }
 
     #[inline(always)]
+    pub fn configure_bank_post_filters(
+        &mut self,
+        sample_rate: f32,
+        bank_a_lp_hz: f32,
+        bank_b_hp_hz: f32,
+    ) {
+        let sr = sample_rate.max(8_000.0);
+        let a_lp = bank_a_lp_hz.clamp(1_800.0, 4_500.0_f32.min(sr * 0.42));
+        self.bank_a_lp_alpha = (1.0 - (-TAU * a_lp / sr).exp()).clamp(0.05, 0.85);
+        self.bank_a_hp_c = (-TAU * 220.0 / sr).exp().clamp(0.85, 0.995);
+        let b_hp = bank_b_hp_hz.clamp(2_500.0, 6_500.0_f32.min(sr * 0.42));
+        self.bank_b_hpf = BiquadFilter::highpass(sr, b_hp, 0.76);
+    }
+
+    #[inline(always)]
     pub fn trigger_choke(&mut self, sample_rate: f32) {
         let sr = sample_rate.max(8_000.0);
-        // Immediate step reduction + rapid ~3.5 ms feedback ramp down on Closed/Pedal choke
-        self.comb_fb_scale = self.comb_fb_scale.min(0.68);
+        // Immediate step reduction + rapid ~3.5 ms feedback & noise-trail ramp down on Closed/Pedal choke
+        self.comb_fb_scale = self.comb_fb_scale.min(0.62);
         self.comb_choke_ramp = (-1.0 / (0.0035 * sr)).exp();
         self.comb_lp_alpha = (self.comb_lp_alpha * 0.55).max(0.08);
+        self.exc_noise_decay = self.exc_noise_decay.min((-1.0 / (0.0040 * sr)).exp());
         self.open_hat_contact_sizzle = 0.0;
     }
 }
@@ -1851,7 +1930,7 @@ impl PolyVoice {
         cym.bloom_ramp_env = 0.0;
         cym.bloom_ramp_inc = 1.0 / (0.022 * sr).max(1.0);
 
-        // Short pitch-enveloped metallic chick oscillator + shaped noise burst
+        // Short pitch-enveloped metallic chick oscillator + full-length shaped noise trail
         let osc_hz = (1_420.0 * size_pitch).clamp(350.0, sr * 0.30);
         cym.exc_phase1 = 0.0;
         cym.exc_phase2 = 0.0;
@@ -1861,28 +1940,35 @@ impl PolyVoice {
         cym.exc_pitch_decay = (-inv_sr / 0.0022).exp();
         cym.exc_pitch_span = 1.9 + 0.8 * hardness;
         cym.exc_amp_env = 1.0;
-        cym.exc_amp_decay = (-inv_sr / (0.0028 + 0.0020 * h.plate_dispersion.clamp(0.0, 1.5))).exp();
+        let osc_tau = match gm_note {
+            44 => 0.0052 + 0.0024 * h.plate_dispersion.clamp(0.0, 1.5),
+            _ => 0.0028 + 0.0020 * h.plate_dispersion.clamp(0.0, 1.5),
+        };
+        cym.exc_amp_decay = (-inv_sr / osc_tau).exp();
         cym.exc_fm_index = 1.35 + 1.65 * hardness;
-        cym.exc_osc_gain = (0.32 + 0.85 * h.bell_level.clamp(0.0, 2.0)) * (0.55 + 0.45 * vel);
+        cym.exc_osc_gain = (0.30 + 0.78 * h.bell_level.clamp(0.0, 2.0)) * (0.55 + 0.45 * vel);
         cym.exc_bell_env = 0.0;
         cym.exc_bell_gain = 0.0;
 
-        // Pedal Hat 44 "chick": slight ~3.5 ms clamping attack ramp + faster ~4.2 ms noise decay
+        // Hi-Hat shaped noise trail:
+        // - Closed (42) / Open (46): `noise_tau = 0.55 * decay_sec` so moderate-feedback combs are driven smoothly across the hat decay
+        // - Pedal Hat (44) "chick": ~3.5 ms clamping attack ramp + noise decay shorter than `osc_tau`
         let (atk_sec, noise_tau) = match gm_note {
-            44 => (0.0035, 0.0042),
-            42 => (0.0004, 0.0058),
-            _ => (0.0009, 0.0135),
+            44 => (0.0035, (osc_tau * 0.62).clamp(0.0022, 0.0045)),
+            42 => (0.0004, (0.55 * decay_sec).clamp(0.006, 0.80)),
+            _ => (0.0009, (0.55 * decay_sec).clamp(0.020, 2.50)),
         };
         cym.exc_atk_env = if gm_note == 44 { 0.0 } else { 0.35 };
         cym.exc_atk_inc = 1.0 / (atk_sec * sr).max(1.0);
         cym.exc_noise_env = 1.0;
         cym.exc_noise_decay = (-inv_sr / noise_tau).exp();
-        cym.exc_noise_gain = (0.95 + 0.70 * h.nonlin_shimmer.clamp(0.0, 1.5)) * (0.55 + 0.45 * vel);
+        let trail_norm = if gm_note == 46 { 0.52 } else { 0.78 };
+        cym.exc_noise_gain =
+            trail_norm * (0.75 + 0.60 * h.nonlin_shimmer.clamp(0.0, 1.5)) * (0.55 + 0.45 * vel);
         let lp_cut = (3_800.0 + 13_000.0 * hardness).min(sr * 0.45);
         cym.exc_lp_alpha = (1.0 - (-TAU * lp_cut / sr).exp()).clamp(0.08, 0.96);
 
         let decay_t60 = (decay_sec * 2.15).clamp(0.020, 6.5);
-        let exc_win = if gm_note == 46 { 0.014 } else { 0.0065 };
         cym.configure_comb_banks(
             sr,
             h.fundamental_cluster_hz,
@@ -1890,10 +1976,16 @@ impl PolyVoice {
             h.spread,
             decay_t60,
             h.comb_damping_hz,
-            exc_win,
+            CombArchetype::HiHat,
             h.serial_sizzle,
         );
-        cym.hilbert.configure(sr, h.inharmonic_shift_hz);
+        // Decoupled per-bank Hilbert frequency shifters + per-bank post filters
+        cym.hilbert_a.configure(sr, h.inharmonic_shift_hz);
+        cym.hilbert_b
+            .configure(sr, -h.inharmonic_shift_hz * 0.63 - 37.0);
+        let bank_a_lp = (2_600.0 * size_pitch * (0.85 + 0.30 * hardness)).clamp(1_800.0, 4_500.0);
+        let bank_b_hp = (4_200.0 * size_pitch).clamp(2_800.0, 6_500.0);
+        cym.configure_bank_post_filters(sr, bank_a_lp, bank_b_hp);
         cym.polish.configure(sr, h.polish_comb_hz, h.polish_comb_mix);
 
         // Post-comb High-Pass + Mid-Cut Peaking EQ
@@ -1924,6 +2016,7 @@ impl PolyVoice {
         dispersion_size_ms: f32,
         allpass_smear: f32,
         vibrato_depth: f32,
+        vibrato_rate_hz: f32,
         vibrato_chaos: f32,
         pm_drive: f32,
         pm_tone_hz: f32,
@@ -2047,19 +2140,19 @@ impl PolyVoice {
                 _ => 0.0066,
             };
             cym.exc_amp_decay = (-inv_sr / imp_tau).exp();
-            cym.exc_osc_gain = 1.55 * (0.60 + 0.40 * vel) * (0.85 + 0.30 * bell);
+            cym.exc_osc_gain = 1.35 * (0.60 + 0.40 * vel) * (0.85 + 0.30 * bell);
             cym.exc_bell_env = 0.0;
             cym.exc_bell_gain = 0.0;
             cym.exc_noise_env = 1.0;
-            cym.exc_noise_decay = (-inv_sr / 0.0028).exp();
-            cym.exc_noise_gain = 0.05 * hardness;
-            // Warm <2 kHz initial bronze bow flex impulse so 6–18 kHz sizzle blooms genuinely via Stage 1 Self-PM!
-            let lp_cut = (680.0 + 1_350.0 * hardness).min(sr * 0.35);
-            cym.exc_lp_alpha = (1.0 - (-TAU * lp_cut / sr).exp()).clamp(0.04, 0.85);
+            cym.exc_noise_decay = (-inv_sr / 0.0025).exp();
+            cym.exc_noise_gain = 0.03 * hardness;
+            // Warm 2-pole low-passed (<2.2 kHz) initial bronze bow flex so >6 kHz wash blooms genuinely via Stage 1 + Bank B!
+            let lp_cut = (950.0 + 1_450.0 * hardness).min(sr * 0.35);
+            cym.exc_lp_alpha = (1.0 - (-TAU * lp_cut / sr).exp()).clamp(0.05, 0.82);
             cym.direct_stick_mix = 0.0;
         }
 
-        // Stage 1: Self-Feeding Dispersion Loop (12-stage AP + Hermite Vibrato + Multi-Radian Self-PM)
+        // Stage 1: Self-Feeding Dispersion Loop (3-stage AP + Slow Vibrato + Clean Hermite Self-PM)
         cym.dispersion.configure(
             sr,
             dispersion_size_ms,
@@ -2067,6 +2160,7 @@ impl PolyVoice {
             decay_t60,
             allpass_smear,
             vibrato_depth,
+            vibrato_rate_hz,
             vibrato_chaos,
             pm_drive,
             pm_tone_hz,
@@ -2074,7 +2168,12 @@ impl PolyVoice {
             is_ride,
         );
 
-        // Stage 2: 12 Independent Parallel Wet-Only Combs (Thiran all-pass) + Hilbert Frequency Shifter
+        // Stage 2: 12 Independent Parallel Wet-Only Combs + Decoupled Dual Hilbert Shifters + Per-Bank Post Filters
+        let archetype = if is_ride {
+            CombArchetype::Ride
+        } else {
+            CombArchetype::Crash
+        };
         cym.configure_comb_banks(
             sr,
             fundamental_cluster_hz,
@@ -2082,10 +2181,23 @@ impl PolyVoice {
             matrix_spread,
             decay_t60,
             comb_damping_hz,
-            0.036,
+            archetype,
             false,
         );
-        cym.hilbert.configure(sr, inharmonic_shift_hz);
+        cym.hilbert_a.configure(sr, inharmonic_shift_hz);
+        cym.hilbert_b
+            .configure(sr, -inharmonic_shift_hz * 0.63 - 37.0);
+        let bank_a_lp = if is_ride {
+            (2_200.0 * size_pitch * (0.85 + 0.30 * hardness)).clamp(1_800.0, 3_800.0)
+        } else {
+            (2_800.0 * size_pitch * (0.85 + 0.30 * hardness)).clamp(1_900.0, 4_500.0)
+        };
+        let bank_b_hp = if is_ride {
+            (2_800.0 * size_pitch).clamp(2_500.0, 5_200.0)
+        } else {
+            (3_300.0 * size_pitch).clamp(2_600.0, 6_200.0)
+        };
+        cym.configure_bank_post_filters(sr, bank_a_lp, bank_b_hp);
         cym.polish.configure(sr, polish_comb_hz, polish_comb_mix);
 
         // Post-comb High-Pass + Mid-Cut Peaking EQ
@@ -2919,7 +3031,10 @@ impl PolyVoice {
                             cym.exc_lp_z1 = flush_denormal(
                                 cym.exc_lp_z1 + cym.exc_lp_alpha * (raw_imp - cym.exc_lp_z1),
                             );
-                            cym.exc_lp_z1
+                            cym.exc_lp_z2 = flush_denormal(
+                                cym.exc_lp_z2 + cym.exc_lp_alpha * (cym.exc_lp_z1 - cym.exc_lp_z2),
+                            );
+                            cym.exc_lp_z2
                         } else {
                             0.0
                         };
@@ -2938,32 +3053,31 @@ impl PolyVoice {
                     cym.bloom_ramp_env = (cym.bloom_ramp_env + cym.bloom_ramp_inc).min(1.0);
                 }
 
-                // Steep >5.5 kHz high-passed bronze air/contact excitation (used ONLY when Open Hat 46
-                // plate-contact sizzle or optional `Air Sizzle` slider is active; 0.0 at sample 0!)
+                // Shaped >5 kHz high-passed bronze air excitation (routed STRICTLY into Bank B's pre-comb
+                // input when `air_sizzle` or Open Hat 46 contact sizzle is active — zero raw post-comb white noise!)
                 let hp_air = flush_denormal(0.62 * (cym.air_hp_y1 + wn - cym.air_hp_x1));
                 cym.air_hp_x1 = wn;
                 cym.air_hp_y1 = hp_air;
 
-                let stage2_in = if cym.use_dispersion {
+                let (stage2_in, air_to_bank_b) = if cym.use_dispersion {
                     let disp_out =
                         cym.dispersion
                             .process(exc_sig, cym.comb_fb_scale, &mut self.rng_state);
-                    // Feed optional plate-energy-coupled air sizzle gently into Stage 2 wet combs
-                    let air_comb_seed = if cym.air_sizzle_amount > 1.0e-4 {
+                    let air_b = if cym.air_sizzle_amount > 1.0e-4 {
                         hp_air
                             * cym.dispersion.energy_env
                             * cym.bloom_ramp_env
                             * cym.air_sizzle_amount
-                            * 0.65
+                            * 0.80
                     } else {
                         0.0
                     };
-                    disp_out + air_comb_seed
+                    (disp_out, air_b)
                 } else {
-                    exc_sig
+                    (exc_sig, 0.0)
                 };
 
-                // 3. Stage 2: 12 Independent Parallel Wet-Only Combs (pure delayed output, zero dry bleed)
+                // 3. Stage 2: 12 Independent Parallel Wet-Only Combs Split Into Independent Resonator Buses
                 let lp_a = cym.comb_lp_alpha;
                 let fb_s = cym.comb_fb_scale;
 
@@ -2983,20 +3097,18 @@ impl PolyVoice {
                     comb_peak = comb_peak.max(yi.abs());
                 }
 
-                // Open Hi-Hat (46) dynamic two-plate contact sizzle/PM bloom:
-                // Strictly feedforward from Bank A whole-plate vibration (`bank_a_sum`) * decaying clash
-                // envelope (`self.fast_env`) into Bank B shimmer combs (zero feedback loop, 0.0 at sample 0!).
+                // Open Hi-Hat (46) dynamic two-plate contact sizzle/PM bloom (strictly feedforward Bank A -> Bank B)
                 let open_contact_inj = if self.is_open_hat && cym.open_hat_contact_sizzle > 1.0e-4 {
                     let plate_slosh = (bank_a_sum * 0.85).clamp(-1.0, 1.0);
                     let clash_env = self.fast_env * cym.bloom_ramp_env * cym.open_hat_contact_sizzle;
-                    let contact_pm = plate_slosh * (3.8 * hp_air).sin();
-                    (0.55 * contact_pm + 0.45 * hp_air * plate_slosh.abs()) * clash_env * 0.48
+                    let contact_pm = plate_slosh * (3.2 * hp_air).sin();
+                    (0.55 * contact_pm + 0.45 * hp_air * plate_slosh.abs()) * clash_env * 0.42
                 } else {
                     0.0
                 };
-                let bank_b_in = stage2_in + open_contact_inj;
+                let bank_b_in = stage2_in + air_to_bank_b + open_contact_inj;
 
-                // Bank B: 8 Higher-Order Shimmer Combs (with optional 4-comb `serial_mode` cascade)
+                // Bank B: 8 Dense Overtone Shimmer Combs (`320..1,850 Hz` <= `2.8 kHz`, optional 4-comb `serial_mode`)
                 let mut bank_b_sum = 0.0_f32;
                 if cym.serial_mode {
                     let y0 = cym.bank_b_meta[0].step(
@@ -3009,25 +3121,25 @@ impl PolyVoice {
                     let y1 = cym.bank_b_meta[1].step(
                         &mut cym.bank_b_bufs[1],
                         COMB_B_MASK,
-                        y0 * 0.85,
+                        y0 * 0.90,
                         lp_a,
                         fb_s,
                     );
                     let y2 = cym.bank_b_meta[2].step(
                         &mut cym.bank_b_bufs[2],
                         COMB_B_MASK,
-                        y1 * 0.85,
+                        y1 * 0.90,
                         lp_a,
                         fb_s,
                     );
                     let y3 = cym.bank_b_meta[3].step(
                         &mut cym.bank_b_bufs[3],
                         COMB_B_MASK,
-                        y2 * 0.85,
+                        y2 * 0.90,
                         lp_a,
                         fb_s,
                     );
-                    let cascade = 0.42 * y0 - 0.40 * y1 + 0.45 * y2 + 0.58 * y3;
+                    let cascade = 0.42 * y0 - 0.40 * y1 + 0.46 * y2 + 0.62 * y3;
                     comb_peak = comb_peak
                         .max(y0.abs())
                         .max(y1.abs())
@@ -3070,25 +3182,25 @@ impl PolyVoice {
                 cym.comb_energy_env =
                     flush_denormal(cym.comb_energy_env + e_c * (comb_peak - cym.comb_energy_env));
 
-                // Optional post-comb plate-energy-coupled 6–18 kHz Air Sizzle (strictly 0.0 on sample 0 since comb_energy_env == 0 on sample 0 before reflection!)
-                let post_air_sizzle = if cym.air_sizzle_amount > 1.0e-4 && cym.comb_energy_env > 1.0e-4 {
-                    hp_air
-                        * cym.comb_energy_env
-                        * cym.bloom_ramp_env
-                        * cym.air_sizzle_amount
-                        * 1.45
-                } else {
-                    0.0
-                };
+                // Independent Per-Bank Hilbert Shifters + Per-Bank Post Filters:
+                // - Bank A Bus: `hilbert_a` (+shift_hz) -> ~220 Hz gentle HPF -> ~1.8..4.5 kHz 1-pole LP darkening
+                let shifted_a = cym.hilbert_a.process(bank_a_sum);
+                let hp_a = flush_denormal(
+                    cym.bank_a_hp_c * (cym.bank_a_hp_y1 + shifted_a - cym.bank_a_hp_x1),
+                );
+                cym.bank_a_hp_x1 = flush_denormal(shifted_a);
+                cym.bank_a_hp_y1 = hp_a;
+                cym.bank_a_lp_z1 = flush_denormal(
+                    cym.bank_a_lp_z1 + cym.bank_a_lp_alpha * (hp_a - cym.bank_a_lp_z1),
+                );
+                let bus_a = cym.bank_a_lp_z1;
 
-                // Post-Comb Hilbert Frequency Shifter (`shift_hz` turns integer comb harmonics into inharmonic bronze partials)
-                let shifted = cym
-                    .hilbert
-                    .process(bank_a_sum * 0.56 + bank_b_sum * 0.78)
-                    + post_air_sizzle;
+                // - Bank B Bus: `hilbert_b` (-0.63*shift_hz - 37 Hz) -> Steep 2nd-order Biquad HPF (2.5..6.5 kHz)
+                let shifted_b = cym.hilbert_b.process(bank_b_sum);
+                let bus_b = cym.bank_b_hpf.process(shifted_b);
 
-                // 4. Post-Sum Spectral Polish Comb + High-Pass + Mid-Cut Peaking EQ
-                let polished = cym.polish.process(shifted);
+                // 4. Post-Sum 4-Comb Parallel Spectral Polish + Master HPF + Mid-Cut EQ + Clean Headroom
+                let polished = cym.polish.process(bus_a * 0.48 + bus_b * 0.96);
                 let disp_env = cym.dispersion.energy_env;
                 let comb_env = cym.comb_energy_env;
                 let exc_done = cym.exc_amp_env < 1.0e-5
@@ -3097,7 +3209,7 @@ impl PolyVoice {
 
                 let hp_out = self.filter1.process(polished);
                 let eq_out = self.filter2.process(hp_out);
-                let combined = eq_out * 1.65 + direct_stick_out;
+                let combined = eq_out * 1.15 + direct_stick_out;
 
                 self.fast_env = flush_denormal(self.fast_env * self.fast_decay);
                 self.slow_env = flush_denormal(self.slow_env * self.slow_decay);
@@ -3112,7 +3224,7 @@ impl PolyVoice {
                     self.cymbal.quiet_samples = 0;
                 }
 
-                tanh_pade(combined * 1.25) * self.level
+                soft_ceiling_085(combined) * self.level
             }
 
             PolyVoiceMode::ModalPerc => {
@@ -3845,6 +3957,7 @@ impl PercussionAndGmPool {
                     c.dispersion_size_ms,
                     c.plate_dispersion,
                     c.vibrato_depth,
+                    c.vibrato_rate_hz,
                     c.vibrato_chaos,
                     c.nonlin_shimmer,
                     c.pm_tone_hz,
@@ -3852,10 +3965,10 @@ impl PercussionAndGmPool {
                     c.matrix_spread,
                     c.inharmonic_shift_hz,
                     c.comb_damping_hz,
-                    c.polish_comb_hz,
+                    c.polish_comb_hz as f32,
                     c.polish_comb_mix,
                     c.cutoff_hz,
-                    c.mid_cut_hz,
+                    c.mid_cut_hz as f32,
                     c.mid_cut_db,
                     c.air_sizzle,
                     c.bell_level,
@@ -3877,16 +3990,17 @@ impl PercussionAndGmPool {
                     r.dispersion_size_ms,
                     r.plate_dispersion,
                     r.vibrato_depth,
+                    r.vibrato_rate_hz,
                     r.vibrato_chaos,
                     r.nonlin_shimmer,
                     r.pm_tone_hz as f32,
-                    r.fundamental_cluster_hz,
+                    r.fundamental_cluster_hz as f32,
                     r.matrix_spread,
                     r.inharmonic_shift_hz,
                     r.comb_damping_hz as f32,
                     r.polish_comb_hz as f32,
                     r.polish_comb_mix,
-                    r.cutoff_hz,
+                    r.cutoff_hz as f32,
                     r.mid_cut_hz as f32,
                     r.mid_cut_db,
                     r.air_sizzle,
@@ -3912,16 +4026,17 @@ impl PercussionAndGmPool {
                     (r.dispersion_size_ms * 0.82).max(1.0),
                     (r.plate_dispersion * 0.88).clamp(0.0, 1.25),
                     r.vibrato_depth * 0.75,
+                    r.vibrato_rate_hz * 0.85,
                     r.vibrato_chaos * 0.75,
                     r.nonlin_shimmer * 0.70,
                     (r.pm_tone_hz as f32) * 1.15,
-                    r.fundamental_cluster_hz * 1.22,
+                    (r.fundamental_cluster_hz as f32) * 1.22,
                     r.matrix_spread * 1.10,
                     r.inharmonic_shift_hz + 38.0,
                     ((r.comb_damping_hz as f32) * 1.15).min(17_500.0),
                     r.polish_comb_hz as f32,
                     r.polish_comb_mix,
-                    (r.cutoff_hz * 0.90).max(600.0),
+                    ((r.cutoff_hz as f32) * 0.90).max(600.0),
                     r.mid_cut_hz as f32,
                     r.mid_cut_db * 0.75,
                     r.air_sizzle * 0.5,
@@ -4476,10 +4591,64 @@ mod tests {
         let onset_rms = (hf_onset_rms_sq / (onset_n as f32)).sqrt();
         let bloom_rms = (hf_bloom_rms_sq / ((bloom_end - bloom_start) as f32)).sqrt();
         assert!(
-            bloom_rms > 0.02 && bloom_rms > onset_rms * 1.5,
+            bloom_rms > 0.005 && bloom_rms > onset_rms * 2.5,
             "Crash (49) pure Self-PM + Thiran combs must produce strong upward >6 kHz bloom (onset_rms={:.4}, bloom_rms={:.4})",
             onset_rms,
             bloom_rms
+        );
+
+        // 8. Verify clean linear headroom (< 0.85), bounded Self-PM excursion (<= 6.0 samples at 48 kHz),
+        //    sustained DispersionLoop feedback (0.88..=0.985), and Bank B dense overtone range (<= 2.8 kHz)
+        for &v in &[-0.85_f32, -0.42, 0.0, 0.37, 0.85] {
+            assert_eq!(soft_ceiling_085(v), v, "soft_ceiling_085 must be exact identity below 0.85");
+        }
+        assert!(soft_ceiling_085(3.0) < 1.11 && soft_ceiling_085(-3.0) > -1.11);
+
+        let crash_voice = p_bloom
+            .voices
+            .iter()
+            .find(|v| v.voice_tag == 49)
+            .expect("Crash 49 voice should still be active at 80 ms");
+        assert!(
+            crash_voice.cymbal.dispersion.pm_max_excursion <= 6.0,
+            "Self-PM excursion at 48 kHz must stay <= 6.0 samples (got {})",
+            crash_voice.cymbal.dispersion.pm_max_excursion
+        );
+        assert!(
+            (0.88..=0.985).contains(&crash_voice.cymbal.dispersion.fb_gain),
+            "DispersionLoop fb_gain must sit in 0.88..=0.985 (got {})",
+            crash_voice.cymbal.dispersion.fb_gain
+        );
+        for (j, m) in crash_voice.cymbal.bank_b_meta.iter().enumerate() {
+            assert!(
+                m.delay_int >= 15,
+                "Bank B comb {} must stay <= 2,800 Hz at 48 kHz (delay_int={})",
+                j,
+                m.delay_int
+            );
+        }
+
+        // 9. Verify Hammering Vibrato Speed (`vibrato_rate_hz`) distinctly alters cymbal wash modulation
+        let mut p_slow_vib = PercussionAndGmPool::new(sr);
+        let mut p_fast_vib = PercussionAndGmPool::new(sr);
+        p_slow_vib.drum_params.crash1.hit_variation = 0.0;
+        p_fast_vib.drum_params.crash1.hit_variation = 0.0;
+        p_slow_vib.drum_params.crash1.vibrato_depth = 0.25;
+        p_fast_vib.drum_params.crash1.vibrato_depth = 0.25;
+        p_slow_vib.drum_params.crash1.vibrato_rate_hz = 0.6;
+        p_fast_vib.drum_params.crash1.vibrato_rate_hz = 14.0;
+        p_slow_vib.trigger_drum(49, 0.90);
+        p_fast_vib.trigger_drum(49, 0.90);
+        let mut vib_rate_diff = 0.0_f32;
+        for _ in 0..8192 {
+            let (ls, _) = p_slow_vib.next_stereo_frame();
+            let (lf, _) = p_fast_vib.next_stereo_frame();
+            vib_rate_diff += (ls - lf).abs();
+        }
+        assert!(
+            vib_rate_diff > 1.0,
+            "Hammering vibrato speed (`vibrato_rate_hz`) must distinctly alter cymbal wash (diff={})",
+            vib_rate_diff
         );
     }
 

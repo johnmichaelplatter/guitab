@@ -3068,7 +3068,7 @@ fn render_single_cymbal_params_grid(
                 add_cymbal_slider_row(
                     ui,
                     "All-Pass Smear:",
-                    "Stage 1 12-stage staggered all-pass disperser smearing sharp impulses into broadband wash",
+                    "Stage 1 3-stage staggered all-pass disperser smearing sharp strikes into broadband wash",
                     &mut c.plate_dispersion,
                     def.plate_dispersion,
                     0.0..=1.25,
@@ -3078,11 +3078,21 @@ fn render_single_cymbal_params_grid(
                 add_cymbal_slider_row(
                     ui,
                     "Hammering Vibrato Depth:",
-                    "Stage 1 0–4 ms Hermite fractional delay depth (~0.045 subtle sheen on Rides, ~0.16 chaotic wash on Crashes)",
+                    "Stage 1 0.25–1.2 ms Hermite fractional delay depth (~0.045 subtle sheen on Rides, ~0.16 wash on Crashes)",
                     &mut c.vibrato_depth,
                     def.vibrato_depth,
                     0.0..=0.50,
                     "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Hammering Vibrato Speed:",
+                    "Stage 1 hammering vibrato modulation rate in Hz (slow ~1.8 Hz shimmer drift to faster ~12+ Hz flutter)",
+                    &mut c.vibrato_rate_hz,
+                    def.vibrato_rate_hz,
+                    0.1..=25.0,
+                    " Hz",
                     &mut changed,
                 );
                 add_cymbal_slider_row(
@@ -3195,20 +3205,23 @@ fn render_single_cymbal_params_grid(
                     "",
                     &mut changed,
                 );
+                let mut polish_hz_f32 = c.polish_comb_hz as f32;
                 add_cymbal_slider_row(
                     ui,
                     "Post Polish Freq:",
-                    "Static post-sum polish comb frequency for metallic sheen",
-                    &mut c.polish_comb_hz,
-                    def.polish_comb_hz,
+                    "Post-sum 4-comb parallel spectral polish frequency for metallic sheen",
+                    &mut polish_hz_f32,
+                    def.polish_comb_hz as f32,
                     400.0..=8000.0,
                     " Hz",
                     &mut changed,
                 );
+                c.polish_comb_hz = polish_hz_f32.round().clamp(100.0, 16_000.0) as u16;
+
                 add_cymbal_slider_row(
                     ui,
                     "Post Polish Sheen:",
-                    "Wet mix of the static post-sum polish comb filter",
+                    "Wet mix of the post-sum 4-comb parallel spectral polish filter",
                     &mut c.polish_comb_mix,
                     def.polish_comb_mix,
                     0.0..=0.80,
@@ -3225,16 +3238,19 @@ fn render_single_cymbal_params_grid(
                     " Hz",
                     &mut changed,
                 );
+
+                let mut mid_hz_f32 = c.mid_cut_hz as f32;
                 add_cymbal_slider_row(
                     ui,
                     "Mid Scoop Freq:",
                     "Post-comb peaking EQ center frequency to scoop boxy mid-range harshness",
-                    &mut c.mid_cut_hz,
-                    def.mid_cut_hz,
+                    &mut mid_hz_f32,
+                    def.mid_cut_hz as f32,
                     350.0..=3500.0,
                     " Hz",
                     &mut changed,
                 );
+                c.mid_cut_hz = mid_hz_f32.round().clamp(200.0, 8_000.0) as u16;
                 add_cymbal_slider_row(
                     ui,
                     "Mid Scoop Gain:",
@@ -3327,7 +3343,7 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
                 add_cymbal_slider_row(
                     ui,
                     "All-Pass Smear:",
-                    "Stage 1 12-stage staggered all-pass disperser smearing stick click into ride bed",
+                    "Stage 1 3-stage staggered all-pass disperser smearing stick click into ride bed",
                     &mut r.plate_dispersion,
                     def.plate_dispersion,
                     0.0..=1.25,
@@ -3337,11 +3353,21 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
                 add_cymbal_slider_row(
                     ui,
                     "Hammering Vibrato Depth:",
-                    "Stage 1 0–4 ms Hermite fractional delay depth (~0.045 subtle organic sheen on Rides)",
+                    "Stage 1 0.25–1.2 ms Hermite fractional delay depth (~0.045 subtle organic sheen on Rides)",
                     &mut r.vibrato_depth,
                     def.vibrato_depth,
                     0.0..=0.50,
                     "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Hammering Vibrato Speed:",
+                    "Stage 1 hammering vibrato modulation rate in Hz (~1.8 Hz slow organic sheen on Rides)",
+                    &mut r.vibrato_rate_hz,
+                    def.vibrato_rate_hz,
+                    0.1..=25.0,
+                    " Hz",
                     &mut changed,
                 );
                 add_cymbal_slider_row(
@@ -3398,16 +3424,18 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
             .num_columns(2)
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
+                let mut fund_cluster_f32 = r.fundamental_cluster_hz as f32;
                 add_cymbal_slider_row(
                     ui,
                     "Fundamental Cluster Freq:",
                     "Bank A (4 lower-order whole-plate combs) tight cluster center frequency",
-                    &mut r.fundamental_cluster_hz,
-                    def.fundamental_cluster_hz,
+                    &mut fund_cluster_f32,
+                    def.fundamental_cluster_hz as f32,
                     120.0..=1400.0,
                     " Hz",
                     &mut changed,
                 );
+                r.fundamental_cluster_hz = fund_cluster_f32.round().clamp(60.0, 4_000.0) as u16;
                 add_cymbal_slider_row(
                     ui,
                     "Shimmer Comb Spread:",
@@ -3485,16 +3513,18 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
                     "",
                     &mut changed,
                 );
+                let mut cutoff_hz_f32 = r.cutoff_hz as f32;
                 add_cymbal_slider_row(
                     ui,
                     "Post High-Pass Cutoff:",
                     "Post-comb high-pass filter cutoff frequency",
-                    &mut r.cutoff_hz,
-                    def.cutoff_hz,
+                    &mut cutoff_hz_f32,
+                    def.cutoff_hz as f32,
                     500.0..=12000.0,
                     " Hz",
                     &mut changed,
                 );
+                r.cutoff_hz = cutoff_hz_f32.round().clamp(250.0, 20_000.0) as u16;
 
                 let mut mid_hz_f32 = r.mid_cut_hz as f32;
                 add_cymbal_slider_row(
