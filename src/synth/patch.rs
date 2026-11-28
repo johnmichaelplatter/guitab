@@ -882,24 +882,65 @@ fn default_bronze_size_pitch() -> f32 {
     1.0
 }
 fn default_hat_plate_dispersion() -> f32 {
-    0.48
+    0.45
 }
 fn default_hat_nonlin_shimmer() -> f32 {
-    0.42
+    0.52
 }
 fn default_hat_bell_level() -> f32 {
-    0.35
+    0.38
 }
 fn default_hat_stick_hardness() -> f32 {
-    0.68
+    0.62
+}
+fn default_hat_fund_cluster_hz() -> f32 {
+    650.0
+}
+fn default_hat_inharmonic_shift_hz() -> f32 {
+    165.0
+}
+fn default_hat_comb_damping_hz() -> f32 {
+    14_800.0
+}
+fn default_hat_polish_comb_hz() -> f32 {
+    4_800.0
+}
+fn default_hat_polish_comb_mix() -> f32 {
+    0.26
+}
+fn default_hat_mid_cut_hz() -> f32 {
+    1_350.0
+}
+fn default_hat_mid_cut_db() -> f32 {
+    -6.5
+}
+fn default_hat_serial_sizzle() -> bool {
+    true
 }
 
-/// Cast B20 bronze hi-hat parameters for closed, pedal, and open modes.
+/// Deserializes an integer Hz parameter (`u16`) from either an integer or float literal in JSON/YAML.
+fn de_u16_or_f32<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Num {
+        U16(u16),
+        F32(f32),
+    }
+    match Num::deserialize(deserializer)? {
+        Num::U16(v) => Ok(v),
+        Num::F32(v) => Ok(v.round().clamp(0.0, 65_535.0) as u16),
+    }
+}
+
+/// Cast B20 bronze hi-hat parameters for closed, pedal, and open modes (Fast-Path Parallel Inharmonic Combs).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HiHatParams {
-    /// Frequency spread multiplier on bronze modal spacing (0.5..=2.0).
+    /// Frequency spread multiplier on Bank B shimmer comb spacing (0.25..=3.0).
     pub spread: f32,
-    /// Highpass filter cutoff frequency in Hz (3000.0..=12000.0).
+    /// Post-comb highpass filter cutoff frequency in Hz (1200.0..=15000.0).
     pub highpass_cutoff_hz: f32,
     /// Closed hi-hat decay time in milliseconds (15.0..=150.0 ms).
     pub closed_decay_ms: f32,
@@ -910,16 +951,16 @@ pub struct HiHatParams {
     /// Bronze plate diameter/pitch scaling multiplier (0.5 = large/dark, 2.0 = small/bright).
     #[serde(default = "default_bronze_size_pitch")]
     pub bronze_size_pitch: f32,
-    /// All-pass plate dispersion depth shaping initial stick ping character (0.0..=1.0).
+    /// Excitation transient tightness / metallic ping focus (0.0..=1.0).
     #[serde(default = "default_hat_plate_dispersion")]
     pub plate_dispersion: f32,
-    /// Signal-modulated non-linear all-pass shimmer cascade bloom (0.0..=1.0).
+    /// Crisp high-frequency air / open-hat plate-contact sizzle bloom (0.0..=1.0).
     #[serde(default = "default_hat_nonlin_shimmer")]
     pub nonlin_shimmer: f32,
-    /// High-Q bronze bell / cup modal resonance emphasis (0.0..=1.0).
+    /// Pitch-enveloped metallic chick oscillator level (0.0..=1.0).
     #[serde(default = "default_hat_bell_level")]
     pub bell_level: f32,
-    /// Drumstick tip hardness controlling excitation lowpass brightness (0.0..=1.0).
+    /// Drumstick tip hardness controlling excitation brightness (0.0..=1.0).
     #[serde(default = "default_hat_stick_hardness")]
     pub stick_hardness: f32,
     /// Per-hit humanization amount varying velocity & stick strike character (0.0 = locked/identical, 1.0 = heavy variation).
@@ -934,68 +975,210 @@ pub struct HiHatParams {
     /// Absolute Open Hi-Hat (GM 46) volume in dB (`-48.0..=+12.0 dB`).
     #[serde(default = "default_zero_db")]
     pub open_volume_db: f32,
+    /// Bank A lower-order whole-plate fundamental comb cluster center in Hz (150.0..=1400.0 Hz).
+    #[serde(default = "default_hat_fund_cluster_hz")]
+    pub fundamental_cluster_hz: f32,
+    /// Post-comb Hilbert frequency shifter offset in Hz (`-200.0..=+400.0 Hz`).
+    #[serde(default = "default_hat_inharmonic_shift_hz")]
+    pub inharmonic_shift_hz: f32,
+    /// Internal one-pole low-pass material damping frequency inside all 12 comb loops (`1500.0..=18000.0 Hz`).
+    #[serde(default = "default_hat_comb_damping_hz")]
+    pub comb_damping_hz: f32,
+    /// Post-sum static polish comb frequency in Hz (`400.0..=8000.0 Hz`).
+    #[serde(default = "default_hat_polish_comb_hz")]
+    pub polish_comb_hz: f32,
+    /// Post-sum static polish comb wet sheen mix (`0.0..=0.80`).
+    #[serde(default = "default_hat_polish_comb_mix")]
+    pub polish_comb_mix: f32,
+    /// Post-comb mid-cut peaking EQ center frequency in Hz (`350.0..=3500.0 Hz`).
+    #[serde(default = "default_hat_mid_cut_hz")]
+    pub mid_cut_hz: f32,
+    /// Post-comb mid-cut peaking EQ gain in dB (`-18.0..=+6.0 dB`).
+    #[serde(default = "default_hat_mid_cut_db")]
+    pub mid_cut_db: f32,
+    /// Routes 4 combs of Bank B in serial cascade for extra ringy metallic hi-hat sizzle.
+    #[serde(default = "default_hat_serial_sizzle")]
+    pub serial_sizzle: bool,
 }
 
 impl Default for HiHatParams {
     fn default() -> Self {
         Self {
-            spread: 1.90,
-            highpass_cutoff_hz: 5400.0,
-            closed_decay_ms: 27.0,
-            pedal_decay_ms: 55.0,
-            open_decay_ms: 850.0,
-            bronze_size_pitch: 1.01,
-            plate_dispersion: 0.40,
-            nonlin_shimmer: 0.51,
-            bell_level: 0.44,
-            stick_hardness: 0.49,
-            hit_variation: 0.38,
-            closed_volume_db: -3.0,
-            pedal_volume_db: -3.0,
-            open_volume_db: -4.0,
+            spread: 1.52,
+            highpass_cutoff_hz: 5_000.0,
+            closed_decay_ms: 34.0,
+            pedal_decay_ms: 52.0,
+            open_decay_ms: 820.0,
+            bronze_size_pitch: 1.00,
+            plate_dispersion: 0.45,
+            nonlin_shimmer: 0.62,
+            bell_level: 0.38,
+            stick_hardness: 0.68,
+            hit_variation: 0.22,
+            closed_volume_db: -2.5,
+            pedal_volume_db: -2.5,
+            open_volume_db: -3.5,
+            fundamental_cluster_hz: 650.0,
+            inharmonic_shift_hz: 165.0,
+            comb_damping_hz: 14_800.0,
+            polish_comb_hz: 4_800.0,
+            polish_comb_mix: 0.26,
+            mid_cut_hz: 1_350.0,
+            mid_cut_db: -6.5,
+            serial_sizzle: true,
         }
     }
 }
 
 fn default_cymbal_plate_dispersion() -> f32 {
-    0.52
+    0.92
 }
 fn default_cymbal_nonlin_shimmer() -> f32 {
-    0.58
+    0.82
 }
 fn default_cymbal_stick_hardness() -> f32 {
-    0.62
+    0.72
+}
+fn default_cymbal_disp_size_ms() -> f32 {
+    9.2
+}
+fn default_cymbal_vibrato_depth() -> f32 {
+    0.16
+}
+fn default_cymbal_vibrato_chaos() -> f32 {
+    0.78
+}
+fn default_cymbal_pm_tone_hz() -> f32 {
+    3_600.0
+}
+fn default_cymbal_fund_cluster_hz() -> f32 {
+    410.0
+}
+fn default_cymbal_inharmonic_shift_hz() -> f32 {
+    148.0
+}
+fn default_cymbal_comb_damping_hz() -> f32 {
+    14_800.0
+}
+fn default_cymbal_polish_comb_hz() -> f32 {
+    4_600.0
+}
+fn default_cymbal_polish_comb_mix() -> f32 {
+    0.28
+}
+fn default_cymbal_mid_cut_hz() -> f32 {
+    1_020.0
+}
+fn default_cymbal_mid_cut_db() -> f32 {
+    -7.5
+}
+fn default_cymbal_air_sizzle() -> f32 {
+    0.08
 }
 
-/// Individually shapeable cast B20 bronze cymbal parameters (Crash 1, Crash 2, Splash, China, Ride 2).
+fn default_ride_disp_size_ms() -> f32 {
+    12.8
+}
+fn default_ride_vibrato_depth() -> f32 {
+    0.045
+}
+fn default_ride_vibrato_chaos() -> f32 {
+    0.30
+}
+fn default_ride_pm_tone_hz() -> u16 {
+    2_600
+}
+fn default_ride_fund_cluster_hz() -> f32 {
+    350.0
+}
+fn default_ride_inharmonic_shift_hz() -> f32 {
+    96.0
+}
+fn default_ride_comb_damping_hz() -> u16 {
+    11_200
+}
+fn default_ride_polish_comb_hz() -> u16 {
+    3_600
+}
+fn default_ride_polish_comb_mix() -> f32 {
+    0.22
+}
+fn default_ride_mid_cut_hz() -> u16 {
+    920
+}
+fn default_ride_mid_cut_db() -> f32 {
+    -5.5
+}
+fn default_ride_air_sizzle() -> f32 {
+    0.03
+}
+
+/// Individually shapeable Two-Stage Dispersive + Parallel Inharmonic Comb cymbal parameters
+/// (Crash 1, Crash 2, Splash, China, Ride 2).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SingleCymbalParams {
     /// Absolute output volume in dB (`-48.0..=+12.0 dB`).
     #[serde(default = "default_zero_db")]
     pub volume_db: f32,
-    /// Cymbal ring / shimmer decay duration in milliseconds (150.0..=3800.0 ms).
+    /// Cymbal ring / shimmer decay duration in milliseconds (150.0..=6000.0 ms).
     pub decay_ms: f32,
-    /// Thin bronze plate highpass/brightness cutoff frequency in Hz (1800.0..=8500.0).
+    /// Post-comb highpass filter cutoff frequency in Hz (`post_hp_hz`, 800.0..=12000.0).
     pub cutoff_hz: f32,
     /// Bronze plate diameter/pitch scaling multiplier (0.5 = large/dark, 2.0 = small/bright).
     #[serde(default = "default_bronze_size_pitch")]
     pub bronze_size_pitch: f32,
-    /// Frequency spread multiplier on bronze modal spacing (0.5..=2.0).
+    /// Frequency spread multiplier on Bank B shimmer comb spacing (0.25..=3.0).
     pub matrix_spread: f32,
-    /// All-pass plate dispersion depth shaping initial stick ping character (0.0..=1.0).
+    /// Stage 1 All-Pass Smear across the 12-stage dispersion cascade (`0.0..=1.0`).
     #[serde(default = "default_cymbal_plate_dispersion")]
     pub plate_dispersion: f32,
-    /// Signal-modulated non-linear all-pass shimmer cascade bloom (0.0..=1.0).
+    /// Stage 1 Bronze Swell / Multi-Radian Self-Phase-Modulation drive (`pm_drive`, `0.0..=1.0`).
     #[serde(default = "default_cymbal_nonlin_shimmer")]
     pub nonlin_shimmer: f32,
-    /// Bell / cup harmonic presence peak level (0.0..=1.0).
+    /// Excitation energy / bell cup presence level (`0.0..=1.0`).
     pub bell_level: f32,
-    /// Drumstick tip hardness controlling excitation lowpass brightness (0.0..=1.0).
+    /// Drumstick tip hardness / impulse brightness (`0.0..=1.0`).
     #[serde(default = "default_cymbal_stick_hardness")]
     pub stick_hardness: f32,
-    /// Per-hit humanization amount varying velocity & stick strike character (0.0..=1.0).
+    /// Per-hit humanization amount varying velocity & stick strike character (`0.0..=1.0`).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Stage 1 Base Dispersion Delay line size in milliseconds (`1.0..=25.0 ms`).
+    #[serde(default = "default_cymbal_disp_size_ms")]
+    pub dispersion_size_ms: f32,
+    /// Stage 1 Hammering Vibrato fractional delay modulation depth (`0.0..=0.50`; ~0.04 Rides, ~0.16 Crashes).
+    #[serde(default = "default_cymbal_vibrato_depth")]
+    pub vibrato_depth: f32,
+    /// Stage 1 Hammering Vibrato chaos / random-walk vs stepped blend (`0.0` = smooth sheen, `1.0` = chaotic wash).
+    #[serde(default = "default_cymbal_vibrato_chaos")]
+    pub vibrato_chaos: f32,
+    /// Stage 1 Bronze Swell self-PM one-pole low-pass tone frequency in Hz (`200.0..=8000.0 Hz`).
+    #[serde(default = "default_cymbal_pm_tone_hz")]
+    pub pm_tone_hz: f32,
+    /// Stage 2 Bank A lower-order whole-plate fundamental comb cluster frequency in Hz (`120.0..=1400.0 Hz`).
+    #[serde(default = "default_cymbal_fund_cluster_hz")]
+    pub fundamental_cluster_hz: f32,
+    /// Stage 2 Post-Comb Hilbert frequency shifter offset in Hz (`-200.0..=+400.0 Hz`).
+    #[serde(default = "default_cymbal_inharmonic_shift_hz")]
+    pub inharmonic_shift_hz: f32,
+    /// Stage 2 internal one-pole low-pass material damping frequency inside all 12 comb loops (`1500.0..=18000.0 Hz`).
+    #[serde(default = "default_cymbal_comb_damping_hz")]
+    pub comb_damping_hz: f32,
+    /// Post-sum static polish comb frequency in Hz (`400.0..=8000.0 Hz`).
+    #[serde(default = "default_cymbal_polish_comb_hz")]
+    pub polish_comb_hz: f32,
+    /// Post-sum static polish comb wet sheen mix (`0.0..=0.80`).
+    #[serde(default = "default_cymbal_polish_comb_mix")]
+    pub polish_comb_mix: f32,
+    /// Post-comb mid-cut peaking EQ center frequency in Hz (`350.0..=3500.0 Hz`).
+    #[serde(default = "default_cymbal_mid_cut_hz")]
+    pub mid_cut_hz: f32,
+    /// Post-comb mid-cut peaking EQ gain in dB (`-18.0..=+6.0 dB`).
+    #[serde(default = "default_cymbal_mid_cut_db")]
+    pub mid_cut_db: f32,
+    /// Optional plate-energy-coupled 6–18 kHz air turbulence sizzle blend (`0.0..=1.0`).
+    #[serde(default = "default_cymbal_air_sizzle")]
+    pub air_sizzle: f32,
 }
 
 impl Default for SingleCymbalParams {
@@ -1005,83 +1188,143 @@ impl Default for SingleCymbalParams {
 }
 
 impl SingleCymbalParams {
-    /// Thin flexible 18" Crash Cymbal 1 (GM 49) default voicing.
+    /// Thin flexible 18" Crash Cymbal 1 (GM 49) default voicing (bright aggressive modern bloom).
     pub fn crash1_default() -> Self {
         Self {
-            volume_db: 9.0,
-            decay_ms: 1800.0,
-            cutoff_hz: 3500.0,
-            bronze_size_pitch: 1.71,
-            matrix_spread: 1.69,
-            plate_dispersion: 1.0,
-            nonlin_shimmer: 0.89,
-            bell_level: 0.0,
-            stick_hardness: 1.0,
-            hit_variation: 0.018,
+            volume_db: 6.0,
+            decay_ms: 1_950.0,
+            cutoff_hz: 2_200.0,
+            bronze_size_pitch: 1.00,
+            matrix_spread: 1.58,
+            plate_dispersion: 0.94,
+            nonlin_shimmer: 0.82,
+            bell_level: 0.28,
+            stick_hardness: 0.74,
+            hit_variation: 0.10,
+            dispersion_size_ms: 9.2,
+            vibrato_depth: 0.16,
+            vibrato_chaos: 0.78,
+            pm_tone_hz: 3_600.0,
+            fundamental_cluster_hz: 410.0,
+            inharmonic_shift_hz: 148.0,
+            comb_damping_hz: 14_800.0,
+            polish_comb_hz: 4_600.0,
+            polish_comb_mix: 0.28,
+            mid_cut_hz: 1_020.0,
+            mid_cut_db: -7.5,
+            air_sizzle: 0.08,
         }
     }
 
-    /// Slightly brighter 16"–17" Crash Cymbal 2 (GM 57) default voicing.
+    /// Brighter, fast-exploding 16"–17" Crash Cymbal 2 (GM 57) default voicing.
     pub fn crash2_default() -> Self {
         Self {
-            volume_db: 8.5,
-            decay_ms: 2600.0,
-            cutoff_hz: 3650.0,
-            bronze_size_pitch: 0.60,
-            matrix_spread: 0.80,
-            plate_dispersion: 0.0,
-            nonlin_shimmer: 0.10,
-            bell_level: 0.83,
-            stick_hardness: 1.0,
-            hit_variation: 0.018,
+            volume_db: 6.0,
+            decay_ms: 1_650.0,
+            cutoff_hz: 2_450.0,
+            bronze_size_pitch: 1.14,
+            matrix_spread: 1.65,
+            plate_dispersion: 0.92,
+            nonlin_shimmer: 0.85,
+            bell_level: 0.30,
+            stick_hardness: 0.78,
+            hit_variation: 0.10,
+            dispersion_size_ms: 7.6,
+            vibrato_depth: 0.17,
+            vibrato_chaos: 0.80,
+            pm_tone_hz: 4_100.0,
+            fundamental_cluster_hz: 465.0,
+            inharmonic_shift_hz: 172.0,
+            comb_damping_hz: 15_400.0,
+            polish_comb_hz: 5_100.0,
+            polish_comb_mix: 0.28,
+            mid_cut_hz: 1_120.0,
+            mid_cut_db: -7.0,
+            air_sizzle: 0.08,
         }
     }
 
-    /// Secondary Ride Cymbal 2 (GM 59) default voicing (slightly darker/washier than Ride 1).
+    /// Secondary Ride Cymbal 2 (GM 59) default voicing (22" washy sizzle ride).
     pub fn ride2_default() -> Self {
         Self {
-            volume_db: 6.5,
-            decay_ms: 770.0,
-            cutoff_hz: 1800.0,
-            bronze_size_pitch: 1.03,
-            matrix_spread: 2.0,
-            plate_dispersion: 1.0,
-            nonlin_shimmer: 1.0,
-            bell_level: 0.0,
-            stick_hardness: 0.0,
-            hit_variation: 0.03,
+            volume_db: 5.5,
+            decay_ms: 2_600.0,
+            cutoff_hz: 1_550.0,
+            bronze_size_pitch: 0.92,
+            matrix_spread: 1.44,
+            plate_dispersion: 0.86,
+            nonlin_shimmer: 0.56,
+            bell_level: 0.35,
+            stick_hardness: 0.64,
+            hit_variation: 0.08,
+            dispersion_size_ms: 14.8,
+            vibrato_depth: 0.06,
+            vibrato_chaos: 0.38,
+            pm_tone_hz: 2_300.0,
+            fundamental_cluster_hz: 315.0,
+            inharmonic_shift_hz: 82.0,
+            comb_damping_hz: 9_800.0,
+            polish_comb_hz: 3_100.0,
+            polish_comb_mix: 0.20,
+            mid_cut_hz: 860.0,
+            mid_cut_db: -5.0,
+            air_sizzle: 0.04,
         }
     }
 
     /// Small, thin, fast-blooming 10" Splash Cymbal (GM 55) default voicing.
     pub fn splash_default() -> Self {
         Self {
-            volume_db: 9.0,
-            decay_ms: 750.0,
-            cutoff_hz: 5450.0,
-            bronze_size_pitch: 2.0,
-            matrix_spread: 0.50,
-            plate_dispersion: 1.0,
-            nonlin_shimmer: 1.0,
-            bell_level: 0.0,
-            stick_hardness: 1.0,
+            volume_db: 5.5,
+            decay_ms: 720.0,
+            cutoff_hz: 2_900.0,
+            bronze_size_pitch: 1.45,
+            matrix_spread: 1.72,
+            plate_dispersion: 0.90,
+            nonlin_shimmer: 0.80,
+            bell_level: 0.22,
+            stick_hardness: 0.82,
             hit_variation: 0.10,
+            dispersion_size_ms: 3.8,
+            vibrato_depth: 0.15,
+            vibrato_chaos: 0.75,
+            pm_tone_hz: 4_800.0,
+            fundamental_cluster_hz: 610.0,
+            inharmonic_shift_hz: 195.0,
+            comb_damping_hz: 15_800.0,
+            polish_comb_hz: 5_600.0,
+            polish_comb_mix: 0.26,
+            mid_cut_hz: 1_320.0,
+            mid_cut_db: -6.5,
+            air_sizzle: 0.08,
         }
     }
 
-    /// Trashy, thin, high-shimmer Chinese Cymbal (GM 52) default voicing.
+    /// Trashy, aggressive, inverted-flange Chinese Cymbal (GM 52) default voicing.
     pub fn china_default() -> Self {
         Self {
-            volume_db: 12.0,
-            decay_ms: 650.0,
-            cutoff_hz: 3000.0,
-            bronze_size_pitch: 1.61,
-            matrix_spread: 2.0,
-            plate_dispersion: 1.0,
-            nonlin_shimmer: 0.91,
-            bell_level: 0.16,
-            stick_hardness: 1.0,
-            hit_variation: 0.80,
+            volume_db: 6.5,
+            decay_ms: 1_150.0,
+            cutoff_hz: 1_950.0,
+            bronze_size_pitch: 1.08,
+            matrix_spread: 1.82,
+            plate_dispersion: 0.98,
+            nonlin_shimmer: 0.92,
+            bell_level: 0.34,
+            stick_hardness: 0.85,
+            hit_variation: 0.14,
+            dispersion_size_ms: 10.8,
+            vibrato_depth: 0.24,
+            vibrato_chaos: 0.90,
+            pm_tone_hz: 3_900.0,
+            fundamental_cluster_hz: 380.0,
+            inharmonic_shift_hz: -145.0,
+            comb_damping_hz: 14_200.0,
+            polish_comb_hz: 3_200.0,
+            polish_comb_mix: 0.36,
+            mid_cut_hz: 940.0,
+            mid_cut_db: -8.0,
+            air_sizzle: 0.12,
         }
     }
 }
@@ -1095,48 +1338,96 @@ pub struct RideCymbalParams {
     /// Absolute Ride Bell (GM 53) output volume in dB (`-48.0..=+12.0 dB`).
     #[serde(default = "default_zero_db")]
     pub bell_volume_db: f32,
-    /// Ride bow wash decay duration in milliseconds (300.0..=3500.0 ms).
+    /// Ride bow wash decay duration in milliseconds (300.0..=6000.0 ms).
     pub bow_decay_ms: f32,
-    /// Ride bell singing cup decay duration in milliseconds (200.0..=3000.0 ms).
+    /// Ride bell singing cup decay duration in milliseconds (200.0..=5000.0 ms).
     pub bell_decay_ms: f32,
-    /// Highpass/brightness cutoff frequency in Hz (1800.0..=8000.0).
+    /// Post-comb highpass filter cutoff frequency in Hz (`post_hp_hz`, 800.0..=12000.0).
     pub cutoff_hz: f32,
     /// Shared bronze plate diameter/pitch scaling multiplier (0.5..=2.0).
     #[serde(default = "default_bronze_size_pitch")]
     pub bronze_size_pitch: f32,
-    /// Frequency spread multiplier on bronze modal spacing (0.5..=2.0).
+    /// Frequency spread multiplier on Bank B shimmer comb spacing (0.25..=3.0).
     pub matrix_spread: f32,
-    /// All-pass plate dispersion depth (0.0..=1.0).
+    /// Stage 1 All-Pass Smear across the 12-stage dispersion cascade (`0.0..=1.0`).
     #[serde(default = "default_cymbal_plate_dispersion")]
     pub plate_dispersion: f32,
-    /// Signal-modulated non-linear shimmer wash bloom (0.0..=1.0).
+    /// Stage 1 Bronze Swell / Multi-Radian Self-Phase-Modulation drive (`pm_drive`, `0.0..=1.0`).
     #[serde(default = "default_cymbal_nonlin_shimmer")]
     pub nonlin_shimmer: f32,
-    /// Ride bell harmonic presence peak level (0.0..=1.0).
+    /// Ride Bell (GM 53) singing FM cup excitation presence (`0.0..=1.0`).
     pub bell_peak_level: f32,
-    /// Drumstick tip hardness (0.0..=1.0).
+    /// Drumstick tip hardness & direct stick ping brightness (`0.0..=1.0`).
     #[serde(default = "default_cymbal_stick_hardness")]
     pub stick_hardness: f32,
-    /// Per-hit velocity & stick strike humanization (0.0..=1.0).
+    /// Per-hit velocity & stick strike humanization (`0.0..=1.0`).
     #[serde(default = "default_drum_hit_variation")]
     pub hit_variation: f32,
+    /// Stage 1 Base Dispersion Delay line size in milliseconds (`1.0..=25.0 ms`).
+    #[serde(default = "default_ride_disp_size_ms")]
+    pub dispersion_size_ms: f32,
+    /// Stage 1 Hammering Vibrato depth (`0.0..=0.50`; ~0.045 subtle sheen on Rides).
+    #[serde(default = "default_ride_vibrato_depth")]
+    pub vibrato_depth: f32,
+    /// Stage 1 Hammering Vibrato chaos (`0.0` = smooth sheen, `1.0` = chaotic wash).
+    #[serde(default = "default_ride_vibrato_chaos")]
+    pub vibrato_chaos: f32,
+    /// Stage 2 Bank A lower-order whole-plate fundamental comb cluster frequency in Hz (`120.0..=1400.0 Hz`).
+    #[serde(default = "default_ride_fund_cluster_hz")]
+    pub fundamental_cluster_hz: f32,
+    /// Stage 2 Post-Comb Hilbert frequency shifter offset in Hz (`-200.0..=+400.0 Hz`).
+    #[serde(default = "default_ride_inharmonic_shift_hz")]
+    pub inharmonic_shift_hz: f32,
+    /// Post-sum static polish comb wet sheen mix (`0.0..=0.80`).
+    #[serde(default = "default_ride_polish_comb_mix")]
+    pub polish_comb_mix: f32,
+    /// Post-comb mid-cut peaking EQ gain in dB (`-18.0..=+6.0 dB`).
+    #[serde(default = "default_ride_mid_cut_db")]
+    pub mid_cut_db: f32,
+    /// Optional plate-energy-coupled 6–18 kHz air turbulence sizzle blend (`0.0..=1.0`).
+    #[serde(default = "default_ride_air_sizzle")]
+    pub air_sizzle: f32,
+    /// Stage 1 Bronze Swell self-PM one-pole low-pass tone frequency in Hz (`200..=8000 Hz`, compact `u16`).
+    #[serde(default = "default_ride_pm_tone_hz", deserialize_with = "de_u16_or_f32")]
+    pub pm_tone_hz: u16,
+    /// Stage 2 internal one-pole low-pass material damping frequency inside all 12 comb loops (`1500..=18000 Hz`, compact `u16`).
+    #[serde(default = "default_ride_comb_damping_hz", deserialize_with = "de_u16_or_f32")]
+    pub comb_damping_hz: u16,
+    /// Post-sum static polish comb frequency in Hz (`400..=8000 Hz`, compact `u16` to keep `SynthCommand <= 96B`).
+    #[serde(default = "default_ride_polish_comb_hz", deserialize_with = "de_u16_or_f32")]
+    pub polish_comb_hz: u16,
+    /// Post-comb mid-cut peaking EQ center frequency in Hz (`350..=3500 Hz`, compact `u16` to keep `SynthCommand <= 96B`).
+    #[serde(default = "default_ride_mid_cut_hz", deserialize_with = "de_u16_or_f32")]
+    pub mid_cut_hz: u16,
 }
 
 impl Default for RideCymbalParams {
     fn default() -> Self {
         Self {
-            bow_volume_db: 6.5,
-            bell_volume_db: 8.0,
-            bow_decay_ms: 3500.0,
-            bell_decay_ms: 1300.0,
-            cutoff_hz: 3450.0,
-            bronze_size_pitch: 1.68,
-            matrix_spread: 1.60,
-            plate_dispersion: 0.01,
-            nonlin_shimmer: 0.54,
-            bell_peak_level: 1.0,
-            stick_hardness: 1.0,
-            hit_variation: 0.0,
+            bow_volume_db: 5.5,
+            bell_volume_db: 7.0,
+            bow_decay_ms: 2_850.0,
+            bell_decay_ms: 1_650.0,
+            cutoff_hz: 1_750.0,
+            bronze_size_pitch: 1.00,
+            matrix_spread: 1.38,
+            plate_dispersion: 0.82,
+            nonlin_shimmer: 0.48,
+            bell_peak_level: 0.85,
+            stick_hardness: 0.75,
+            hit_variation: 0.08,
+            dispersion_size_ms: 12.8,
+            vibrato_depth: 0.045,
+            vibrato_chaos: 0.30,
+            fundamental_cluster_hz: 350.0,
+            inharmonic_shift_hz: 96.0,
+            polish_comb_mix: 0.22,
+            mid_cut_db: -5.5,
+            air_sizzle: 0.03,
+            pm_tone_hz: 2_600,
+            comb_damping_hz: 11_200,
+            polish_comb_hz: 3_600,
+            mid_cut_hz: 920,
         }
     }
 }
@@ -1714,7 +2005,8 @@ impl DrumKitParams {
     }
 }
 
-/// Lightweight `Copy` parameter payload (`<= 68` bytes) for lock-free updates to any of the 28 drum roles.
+/// Lightweight `Copy` parameter payload (`<= 92` bytes, keeping `SynthCommand <= 96` bytes)
+/// for lock-free updates to any of the 28 drum roles.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DrumVoiceParams {
     Kick(KickParams),
@@ -2254,7 +2546,19 @@ impl SynthPreset {
             out.push_str(&format!("      \"nonlin_shimmer\": {:.4},\n", c.nonlin_shimmer));
             out.push_str(&format!("      \"bell_level\": {:.4},\n", c.bell_level));
             out.push_str(&format!("      \"stick_hardness\": {:.4},\n", c.stick_hardness));
-            out.push_str(&format!("      \"hit_variation\": {:.4}\n", c.hit_variation));
+            out.push_str(&format!("      \"hit_variation\": {:.4},\n", c.hit_variation));
+            out.push_str(&format!("      \"dispersion_size_ms\": {:.2},\n", c.dispersion_size_ms));
+            out.push_str(&format!("      \"vibrato_depth\": {:.4},\n", c.vibrato_depth));
+            out.push_str(&format!("      \"vibrato_chaos\": {:.4},\n", c.vibrato_chaos));
+            out.push_str(&format!("      \"pm_tone_hz\": {:.1},\n", c.pm_tone_hz));
+            out.push_str(&format!("      \"fundamental_cluster_hz\": {:.1},\n", c.fundamental_cluster_hz));
+            out.push_str(&format!("      \"inharmonic_shift_hz\": {:.1},\n", c.inharmonic_shift_hz));
+            out.push_str(&format!("      \"comb_damping_hz\": {:.1},\n", c.comb_damping_hz));
+            out.push_str(&format!("      \"polish_comb_hz\": {:.1},\n", c.polish_comb_hz));
+            out.push_str(&format!("      \"polish_comb_mix\": {:.4},\n", c.polish_comb_mix));
+            out.push_str(&format!("      \"mid_cut_hz\": {:.1},\n", c.mid_cut_hz));
+            out.push_str(&format!("      \"mid_cut_db\": {:.2},\n", c.mid_cut_db));
+            out.push_str(&format!("      \"air_sizzle\": {:.4}\n", c.air_sizzle));
             out.push_str(if trailing_comma { "    },\n" } else { "    }\n" });
         };
         let write_ride_cymbal = |out: &mut String, key: &str, r: &RideCymbalParams, trailing_comma: bool| {
@@ -2270,7 +2574,19 @@ impl SynthPreset {
             out.push_str(&format!("      \"nonlin_shimmer\": {:.4},\n", r.nonlin_shimmer));
             out.push_str(&format!("      \"bell_peak_level\": {:.4},\n", r.bell_peak_level));
             out.push_str(&format!("      \"stick_hardness\": {:.4},\n", r.stick_hardness));
-            out.push_str(&format!("      \"hit_variation\": {:.4}\n", r.hit_variation));
+            out.push_str(&format!("      \"hit_variation\": {:.4},\n", r.hit_variation));
+            out.push_str(&format!("      \"dispersion_size_ms\": {:.2},\n", r.dispersion_size_ms));
+            out.push_str(&format!("      \"vibrato_depth\": {:.4},\n", r.vibrato_depth));
+            out.push_str(&format!("      \"vibrato_chaos\": {:.4},\n", r.vibrato_chaos));
+            out.push_str(&format!("      \"pm_tone_hz\": {},\n", r.pm_tone_hz));
+            out.push_str(&format!("      \"fundamental_cluster_hz\": {:.1},\n", r.fundamental_cluster_hz));
+            out.push_str(&format!("      \"inharmonic_shift_hz\": {:.1},\n", r.inharmonic_shift_hz));
+            out.push_str(&format!("      \"comb_damping_hz\": {},\n", r.comb_damping_hz));
+            out.push_str(&format!("      \"polish_comb_hz\": {},\n", r.polish_comb_hz));
+            out.push_str(&format!("      \"polish_comb_mix\": {:.4},\n", r.polish_comb_mix));
+            out.push_str(&format!("      \"mid_cut_hz\": {},\n", r.mid_cut_hz));
+            out.push_str(&format!("      \"mid_cut_db\": {:.2},\n", r.mid_cut_db));
+            out.push_str(&format!("      \"air_sizzle\": {:.4}\n", r.air_sizzle));
             out.push_str(if trailing_comma { "    },\n" } else { "    }\n" });
         };
         let write_perc_aux = |out: &mut String, key: &str, a: &PercAuxParams, trailing_comma: bool| {
@@ -2321,7 +2637,15 @@ impl SynthPreset {
         out.push_str(&format!("      \"hit_variation\": {:.4},\n", dp.hi_hats.hit_variation));
         out.push_str(&format!("      \"closed_volume_db\": {:.2},\n", dp.hi_hats.closed_volume_db));
         out.push_str(&format!("      \"pedal_volume_db\": {:.2},\n", dp.hi_hats.pedal_volume_db));
-        out.push_str(&format!("      \"open_volume_db\": {:.2}\n", dp.hi_hats.open_volume_db));
+        out.push_str(&format!("      \"open_volume_db\": {:.2},\n", dp.hi_hats.open_volume_db));
+        out.push_str(&format!("      \"fundamental_cluster_hz\": {:.1},\n", dp.hi_hats.fundamental_cluster_hz));
+        out.push_str(&format!("      \"inharmonic_shift_hz\": {:.1},\n", dp.hi_hats.inharmonic_shift_hz));
+        out.push_str(&format!("      \"comb_damping_hz\": {:.1},\n", dp.hi_hats.comb_damping_hz));
+        out.push_str(&format!("      \"polish_comb_hz\": {:.1},\n", dp.hi_hats.polish_comb_hz));
+        out.push_str(&format!("      \"polish_comb_mix\": {:.4},\n", dp.hi_hats.polish_comb_mix));
+        out.push_str(&format!("      \"mid_cut_hz\": {:.1},\n", dp.hi_hats.mid_cut_hz));
+        out.push_str(&format!("      \"mid_cut_db\": {:.2},\n", dp.hi_hats.mid_cut_db));
+        out.push_str(&format!("      \"serial_sizzle\": {}\n", dp.hi_hats.serial_sizzle));
         out.push_str("    },\n");
         write_single_cymbal(&mut out, "crash1", &dp.crash1, true);
         write_single_cymbal(&mut out, "crash2", &dp.crash2, true);
@@ -2545,22 +2869,116 @@ pub mod compact_yaml {
         hit_variation,
     });
 
-    define_f32_patch!(HiHatPatch for HiHatParams {
-        spread,
-        highpass_cutoff_hz,
-        closed_decay_ms,
-        pedal_decay_ms,
-        open_decay_ms,
-        bronze_size_pitch,
-        plate_dispersion,
-        nonlin_shimmer,
-        bell_level,
-        stick_hardness,
-        hit_variation,
-        closed_volume_db,
-        pedal_volume_db,
-        open_volume_db,
-    });
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct HiHatPatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub spread: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub highpass_cutoff_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub closed_decay_ms: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pedal_decay_ms: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub open_decay_ms: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bronze_size_pitch: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub plate_dispersion: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub nonlin_shimmer: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bell_level: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub stick_hardness: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub hit_variation: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub closed_volume_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pedal_volume_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub open_volume_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub fundamental_cluster_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub inharmonic_shift_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub comb_damping_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub polish_comb_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub polish_comb_mix: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mid_cut_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mid_cut_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub serial_sizzle: Option<bool>,
+    }
+
+    impl HiHatPatch {
+        pub fn from_diff(val: &HiHatParams, def: &HiHatParams) -> Option<Self> {
+            let p = Self {
+                spread: diff_f32(val.spread, def.spread),
+                highpass_cutoff_hz: diff_f32(val.highpass_cutoff_hz, def.highpass_cutoff_hz),
+                closed_decay_ms: diff_f32(val.closed_decay_ms, def.closed_decay_ms),
+                pedal_decay_ms: diff_f32(val.pedal_decay_ms, def.pedal_decay_ms),
+                open_decay_ms: diff_f32(val.open_decay_ms, def.open_decay_ms),
+                bronze_size_pitch: diff_f32(val.bronze_size_pitch, def.bronze_size_pitch),
+                plate_dispersion: diff_f32(val.plate_dispersion, def.plate_dispersion),
+                nonlin_shimmer: diff_f32(val.nonlin_shimmer, def.nonlin_shimmer),
+                bell_level: diff_f32(val.bell_level, def.bell_level),
+                stick_hardness: diff_f32(val.stick_hardness, def.stick_hardness),
+                hit_variation: diff_f32(val.hit_variation, def.hit_variation),
+                closed_volume_db: diff_f32(val.closed_volume_db, def.closed_volume_db),
+                pedal_volume_db: diff_f32(val.pedal_volume_db, def.pedal_volume_db),
+                open_volume_db: diff_f32(val.open_volume_db, def.open_volume_db),
+                fundamental_cluster_hz: diff_f32(val.fundamental_cluster_hz, def.fundamental_cluster_hz),
+                inharmonic_shift_hz: diff_f32(val.inharmonic_shift_hz, def.inharmonic_shift_hz),
+                comb_damping_hz: diff_f32(val.comb_damping_hz, def.comb_damping_hz),
+                polish_comb_hz: diff_f32(val.polish_comb_hz, def.polish_comb_hz),
+                polish_comb_mix: diff_f32(val.polish_comb_mix, def.polish_comb_mix),
+                mid_cut_hz: diff_f32(val.mid_cut_hz, def.mid_cut_hz),
+                mid_cut_db: diff_f32(val.mid_cut_db, def.mid_cut_db),
+                serial_sizzle: if val.serial_sizzle != def.serial_sizzle {
+                    Some(val.serial_sizzle)
+                } else {
+                    None
+                },
+            };
+            if p == Self::default() {
+                None
+            } else {
+                Some(p)
+            }
+        }
+
+        pub fn apply_to(&self, out: &mut HiHatParams) {
+            if let Some(v) = self.spread { out.spread = v; }
+            if let Some(v) = self.highpass_cutoff_hz { out.highpass_cutoff_hz = v; }
+            if let Some(v) = self.closed_decay_ms { out.closed_decay_ms = v; }
+            if let Some(v) = self.pedal_decay_ms { out.pedal_decay_ms = v; }
+            if let Some(v) = self.open_decay_ms { out.open_decay_ms = v; }
+            if let Some(v) = self.bronze_size_pitch { out.bronze_size_pitch = v; }
+            if let Some(v) = self.plate_dispersion { out.plate_dispersion = v; }
+            if let Some(v) = self.nonlin_shimmer { out.nonlin_shimmer = v; }
+            if let Some(v) = self.bell_level { out.bell_level = v; }
+            if let Some(v) = self.stick_hardness { out.stick_hardness = v; }
+            if let Some(v) = self.hit_variation { out.hit_variation = v; }
+            if let Some(v) = self.closed_volume_db { out.closed_volume_db = v; }
+            if let Some(v) = self.pedal_volume_db { out.pedal_volume_db = v; }
+            if let Some(v) = self.open_volume_db { out.open_volume_db = v; }
+            if let Some(v) = self.fundamental_cluster_hz { out.fundamental_cluster_hz = v; }
+            if let Some(v) = self.inharmonic_shift_hz { out.inharmonic_shift_hz = v; }
+            if let Some(v) = self.comb_damping_hz { out.comb_damping_hz = v; }
+            if let Some(v) = self.polish_comb_hz { out.polish_comb_hz = v; }
+            if let Some(v) = self.polish_comb_mix { out.polish_comb_mix = v; }
+            if let Some(v) = self.mid_cut_hz { out.mid_cut_hz = v; }
+            if let Some(v) = self.mid_cut_db { out.mid_cut_db = v; }
+            if let Some(v) = self.serial_sizzle { out.serial_sizzle = v; }
+        }
+    }
 
     define_f32_patch!(SingleCymbalPatch for SingleCymbalParams {
         volume_db,
@@ -2573,22 +2991,150 @@ pub mod compact_yaml {
         bell_level,
         stick_hardness,
         hit_variation,
+        dispersion_size_ms,
+        vibrato_depth,
+        vibrato_chaos,
+        pm_tone_hz,
+        fundamental_cluster_hz,
+        inharmonic_shift_hz,
+        comb_damping_hz,
+        polish_comb_hz,
+        polish_comb_mix,
+        mid_cut_hz,
+        mid_cut_db,
+        air_sizzle,
     });
 
-    define_f32_patch!(RideCymbalPatch for RideCymbalParams {
-        bow_volume_db,
-        bell_volume_db,
-        bow_decay_ms,
-        bell_decay_ms,
-        cutoff_hz,
-        bronze_size_pitch,
-        matrix_spread,
-        plate_dispersion,
-        nonlin_shimmer,
-        bell_peak_level,
-        stick_hardness,
-        hit_variation,
-    });
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct RideCymbalPatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bow_volume_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bell_volume_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bow_decay_ms: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bell_decay_ms: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cutoff_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bronze_size_pitch: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub matrix_spread: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub plate_dispersion: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub nonlin_shimmer: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bell_peak_level: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub stick_hardness: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub hit_variation: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub dispersion_size_ms: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub vibrato_depth: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub vibrato_chaos: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pm_tone_hz: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub fundamental_cluster_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub inharmonic_shift_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub comb_damping_hz: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub polish_comb_hz: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub polish_comb_mix: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mid_cut_hz: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mid_cut_db: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub air_sizzle: Option<f32>,
+    }
+
+    impl RideCymbalPatch {
+        pub fn from_diff(val: &RideCymbalParams, def: &RideCymbalParams) -> Option<Self> {
+            let p = Self {
+                bow_volume_db: diff_f32(val.bow_volume_db, def.bow_volume_db),
+                bell_volume_db: diff_f32(val.bell_volume_db, def.bell_volume_db),
+                bow_decay_ms: diff_f32(val.bow_decay_ms, def.bow_decay_ms),
+                bell_decay_ms: diff_f32(val.bell_decay_ms, def.bell_decay_ms),
+                cutoff_hz: diff_f32(val.cutoff_hz, def.cutoff_hz),
+                bronze_size_pitch: diff_f32(val.bronze_size_pitch, def.bronze_size_pitch),
+                matrix_spread: diff_f32(val.matrix_spread, def.matrix_spread),
+                plate_dispersion: diff_f32(val.plate_dispersion, def.plate_dispersion),
+                nonlin_shimmer: diff_f32(val.nonlin_shimmer, def.nonlin_shimmer),
+                bell_peak_level: diff_f32(val.bell_peak_level, def.bell_peak_level),
+                stick_hardness: diff_f32(val.stick_hardness, def.stick_hardness),
+                hit_variation: diff_f32(val.hit_variation, def.hit_variation),
+                dispersion_size_ms: diff_f32(val.dispersion_size_ms, def.dispersion_size_ms),
+                vibrato_depth: diff_f32(val.vibrato_depth, def.vibrato_depth),
+                vibrato_chaos: diff_f32(val.vibrato_chaos, def.vibrato_chaos),
+                pm_tone_hz: if val.pm_tone_hz != def.pm_tone_hz {
+                    Some(val.pm_tone_hz)
+                } else {
+                    None
+                },
+                fundamental_cluster_hz: diff_f32(val.fundamental_cluster_hz, def.fundamental_cluster_hz),
+                inharmonic_shift_hz: diff_f32(val.inharmonic_shift_hz, def.inharmonic_shift_hz),
+                comb_damping_hz: if val.comb_damping_hz != def.comb_damping_hz {
+                    Some(val.comb_damping_hz)
+                } else {
+                    None
+                },
+                polish_comb_hz: if val.polish_comb_hz != def.polish_comb_hz {
+                    Some(val.polish_comb_hz)
+                } else {
+                    None
+                },
+                polish_comb_mix: diff_f32(val.polish_comb_mix, def.polish_comb_mix),
+                mid_cut_hz: if val.mid_cut_hz != def.mid_cut_hz {
+                    Some(val.mid_cut_hz)
+                } else {
+                    None
+                },
+                mid_cut_db: diff_f32(val.mid_cut_db, def.mid_cut_db),
+                air_sizzle: diff_f32(val.air_sizzle, def.air_sizzle),
+            };
+            if p == Self::default() {
+                None
+            } else {
+                Some(p)
+            }
+        }
+
+        pub fn apply_to(&self, out: &mut RideCymbalParams) {
+            if let Some(v) = self.bow_volume_db { out.bow_volume_db = v; }
+            if let Some(v) = self.bell_volume_db { out.bell_volume_db = v; }
+            if let Some(v) = self.bow_decay_ms { out.bow_decay_ms = v; }
+            if let Some(v) = self.bell_decay_ms { out.bell_decay_ms = v; }
+            if let Some(v) = self.cutoff_hz { out.cutoff_hz = v; }
+            if let Some(v) = self.bronze_size_pitch { out.bronze_size_pitch = v; }
+            if let Some(v) = self.matrix_spread { out.matrix_spread = v; }
+            if let Some(v) = self.plate_dispersion { out.plate_dispersion = v; }
+            if let Some(v) = self.nonlin_shimmer { out.nonlin_shimmer = v; }
+            if let Some(v) = self.bell_peak_level { out.bell_peak_level = v; }
+            if let Some(v) = self.stick_hardness { out.stick_hardness = v; }
+            if let Some(v) = self.hit_variation { out.hit_variation = v; }
+            if let Some(v) = self.dispersion_size_ms { out.dispersion_size_ms = v; }
+            if let Some(v) = self.vibrato_depth { out.vibrato_depth = v; }
+            if let Some(v) = self.vibrato_chaos { out.vibrato_chaos = v; }
+            if let Some(v) = self.pm_tone_hz { out.pm_tone_hz = v; }
+            if let Some(v) = self.fundamental_cluster_hz { out.fundamental_cluster_hz = v; }
+            if let Some(v) = self.inharmonic_shift_hz { out.inharmonic_shift_hz = v; }
+            if let Some(v) = self.comb_damping_hz { out.comb_damping_hz = v; }
+            if let Some(v) = self.polish_comb_hz { out.polish_comb_hz = v; }
+            if let Some(v) = self.polish_comb_mix { out.polish_comb_mix = v; }
+            if let Some(v) = self.mid_cut_hz { out.mid_cut_hz = v; }
+            if let Some(v) = self.mid_cut_db { out.mid_cut_db = v; }
+            if let Some(v) = self.air_sizzle { out.air_sizzle = v; }
+        }
+    }
 
     define_f32_patch!(PercAuxPatch for PercAuxParams {
         freq1_hz,
@@ -3358,11 +3904,16 @@ mod tests {
         assert!((parsed.drum_params.toms.shell_wood_cavity - 0.58).abs() < 1e-4);
         assert_eq!(parsed.drum_params.toms.tom_tuning_semitones, [0.0; 6]);
         assert!((parsed.drum_params.hi_hats.bronze_size_pitch - 1.0).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.nonlin_shimmer - 0.89).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.stick_hardness - 1.0).abs() < 1e-4);
+        assert!(parsed.drum_params.hi_hats.serial_sizzle);
+        assert!((parsed.drum_params.hi_hats.fundamental_cluster_hz - 650.0).abs() < 1e-3);
+        assert!((parsed.drum_params.crash1.nonlin_shimmer - 0.82).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.stick_hardness - 0.74).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.dispersion_size_ms - 9.2).abs() < 1e-3);
+        assert!((parsed.drum_params.crash1.vibrato_depth - 0.16).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.air_sizzle - 0.08).abs() < 1e-4);
         assert!((parsed.drum_params.kick.hit_variation - 0.10).abs() < 1e-4);
         assert!((parsed.drum_params.snare.hit_variation - 0.10).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.hit_variation - 0.018).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.hit_variation - 0.10).abs() < 1e-4);
         assert!((parsed.drum_params.kick.volume_db - 0.0).abs() < 1e-4);
         assert!((parsed.drum_params.acoustic_kick.volume_db - 2.5).abs() < 1e-4);
         assert!((parsed.drum_params.snare.volume_db - 0.0).abs() < 1e-4);
@@ -3373,9 +3924,11 @@ mod tests {
         assert!((parsed.drum_params.hi_hats.closed_volume_db - 0.0).abs() < 1e-4);
         assert!((parsed.drum_params.hi_hats.pedal_volume_db - 0.0).abs() < 1e-4);
         assert!((parsed.drum_params.hi_hats.open_volume_db - 0.0).abs() < 1e-4);
-        assert!((parsed.drum_params.crash1.volume_db - 9.0).abs() < 1e-4);
-        assert!((parsed.drum_params.ride1_and_bell.bow_volume_db - 6.5).abs() < 1e-4);
-        assert!((parsed.drum_params.ride1_and_bell.bell_volume_db - 8.0).abs() < 1e-4);
+        assert!((parsed.drum_params.crash1.volume_db - 6.0).abs() < 1e-4);
+        assert!((parsed.drum_params.ride1_and_bell.bow_volume_db - 5.5).abs() < 1e-4);
+        assert!((parsed.drum_params.ride1_and_bell.bell_volume_db - 7.0).abs() < 1e-4);
+        assert!((parsed.drum_params.ride1_and_bell.vibrato_depth - 0.045).abs() < 1e-4);
+        assert!((parsed.drum_params.ride1_and_bell.air_sizzle - 0.03).abs() < 1e-4);
         assert!((parsed.drum_params.cowbell.volume_db - (-8.0)).abs() < 1e-4);
     }
 
@@ -3386,6 +3939,72 @@ mod tests {
         };
         let parsed = SynthPreset::from_json_string(&json_str)
             .expect("context/default_percussion_all3.json must deserialize cleanly");
-        assert_eq!(parsed.drum_params, DrumKitParams::default());
+        let def = DrumKitParams::default();
+        // All 21 non-cymbal/hat drum & percussion roles match context/default_percussion_all3.json,
+        // while cymbal/hat roles carry the new Two-Stage Dispersive + Parallel Inharmonic Comb defaults.
+        for &role in DrumRole::all() {
+            if role.family() != DrumFamily::CymbalsAndHats {
+                assert_eq!(
+                    parsed.drum_params.params_for_role(role),
+                    def.params_for_role(role),
+                    "Non-cymbal role {:?} should match context/default_percussion_all3.json",
+                    role
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_two_stage_cymbal_and_hihat_json_and_compact_yaml_roundtrip() {
+        let mut p = SynthPreset::linn_808_kit();
+        p.drum_params.hi_hats.serial_sizzle = false;
+        p.drum_params.hi_hats.fundamental_cluster_hz = 540.0;
+        p.drum_params.hi_hats.inharmonic_shift_hz = -85.0;
+        p.drum_params.hi_hats.comb_damping_hz = 9_200.0;
+        p.drum_params.hi_hats.polish_comb_hz = 4_100.0;
+        p.drum_params.hi_hats.polish_comb_mix = 0.38;
+        p.drum_params.hi_hats.mid_cut_hz = 1_200.0;
+        p.drum_params.hi_hats.mid_cut_db = -9.5;
+
+        p.drum_params.crash1.dispersion_size_ms = 14.2;
+        p.drum_params.crash1.vibrato_depth = 0.21;
+        p.drum_params.crash1.vibrato_chaos = 0.85;
+        p.drum_params.crash1.pm_tone_hz = 3_100.0;
+        p.drum_params.crash1.fundamental_cluster_hz = 350.0;
+        p.drum_params.crash1.inharmonic_shift_hz = 190.0;
+        p.drum_params.crash1.comb_damping_hz = 8_800.0;
+        p.drum_params.crash1.polish_comb_hz = 2_800.0;
+        p.drum_params.crash1.polish_comb_mix = 0.35;
+        p.drum_params.crash1.mid_cut_hz = 950.0;
+        p.drum_params.crash1.mid_cut_db = -10.5;
+        p.drum_params.crash1.air_sizzle = 0.42;
+
+        p.drum_params.ride1_and_bell.dispersion_size_ms = 16.5;
+        p.drum_params.ride1_and_bell.vibrato_depth = 0.05;
+        p.drum_params.ride1_and_bell.vibrato_chaos = 0.20;
+        p.drum_params.ride1_and_bell.pm_tone_hz = 2_100;
+        p.drum_params.ride1_and_bell.fundamental_cluster_hz = 315.0;
+        p.drum_params.ride1_and_bell.inharmonic_shift_hz = 110.0;
+        p.drum_params.ride1_and_bell.comb_damping_hz = 7_900;
+        p.drum_params.ride1_and_bell.polish_comb_hz = 3_150;
+        p.drum_params.ride1_and_bell.polish_comb_mix = 0.28;
+        p.drum_params.ride1_and_bell.mid_cut_hz = 880;
+        p.drum_params.ride1_and_bell.mid_cut_db = -6.0;
+        p.drum_params.ride1_and_bell.air_sizzle = 0.25;
+
+        let json = p.to_json_string().expect("JSON export failed");
+        let from_json = SynthPreset::from_json_string(&json).expect("JSON import failed");
+        assert_eq!(from_json.drum_params.hi_hats, p.drum_params.hi_hats);
+        assert_eq!(from_json.drum_params.crash1, p.drum_params.crash1);
+        assert_eq!(from_json.drum_params.ride1_and_bell, p.drum_params.ride1_and_bell);
+
+        let compact = compact_yaml::CompactSynthPreset::from_preset(&p, true);
+        let yaml = serde_saphyr::to_string(&compact).expect("Compact YAML serialize failed");
+        let compact_back: compact_yaml::CompactSynthPreset =
+            serde_saphyr::from_str(&yaml).expect("Compact YAML deserialize failed");
+        let restored = compact_back.into_preset();
+        assert_eq!(restored.drum_params.hi_hats, p.drum_params.hi_hats);
+        assert_eq!(restored.drum_params.crash1, p.drum_params.crash1);
+        assert_eq!(restored.drum_params.ride1_and_bell, p.drum_params.ride1_and_bell);
     }
 }

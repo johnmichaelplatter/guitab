@@ -2743,11 +2743,38 @@ fn render_membrane_group_params_grid(
     changed
 }
 
+fn add_cymbal_slider_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    hover: &str,
+    val: &mut f32,
+    def_val: f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    changed: &mut bool,
+) {
+    ui.label(label).on_hover_text(hover);
+    let mut slider = egui::Slider::new(val, range).clamping(egui::SliderClamping::Never);
+    if !suffix.is_empty() {
+        slider = slider.suffix(suffix);
+    }
+    let resp = ui.add(slider);
+    if resp.changed() {
+        *changed = true;
+    }
+    if resp.double_clicked() {
+        *val = def_val;
+        *changed = true;
+    }
+    ui.end_row();
+}
+
 fn render_hihat_params_grid(ui: &mut egui::Ui, h: &mut HiHatParams) -> bool {
     let mut changed = false;
     let def = HiHatParams::default();
 
     ui.group(|ui| {
+        ui.label(egui::RichText::new("Volumes, Decays & Fast-Path Excitation:").strong());
         egui::Grid::new("hihat_params_grid")
             .num_columns(2)
             .spacing([12.0, 4.0])
@@ -2777,104 +2804,196 @@ fn render_hihat_params_grid(ui: &mut egui::Ui, h: &mut HiHatParams) -> bool {
                     &mut changed,
                 );
 
-                ui.label("Metallic Matrix Spread:");
-                let r1 = ui.add(
-                    egui::Slider::new(&mut h.spread, 0.25..=3.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Closed Hat Decay:",
+                    "Closed Hi-Hat (GM 42) comb envelope decay duration",
+                    &mut h.closed_decay_ms,
+                    def.closed_decay_ms,
+                    8.0..=500.0,
+                    " ms",
+                    &mut changed,
                 );
-                if r1.changed() { changed = true; }
-                if r1.double_clicked() { h.spread = def.spread; changed = true; }
+                add_cymbal_slider_row(
+                    ui,
+                    "Pedal Hat Decay:",
+                    "Pedal Hi-Hat (GM 44) foot-chick decay duration",
+                    &mut h.pedal_decay_ms,
+                    def.pedal_decay_ms,
+                    10.0..=600.0,
+                    " ms",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Open Hat Decay:",
+                    "Open Hi-Hat (GM 46) sustain wash decay duration (choked by 42 / 44)",
+                    &mut h.open_decay_ms,
+                    def.open_decay_ms,
+                    50.0..=4500.0,
+                    " ms",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Bronze Size / Pitch:",
+                    "Scales whole-plate & shimmer comb pitch (lower = larger/darker hats, higher = smaller/crisper)",
+                    &mut h.bronze_size_pitch,
+                    def.bronze_size_pitch,
+                    0.30..=3.0,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Chick Osc Presence:",
+                    "Pitch-enveloped metallic chick oscillator level feeding the comb banks",
+                    &mut h.bell_level,
+                    def.bell_level,
+                    0.0..=2.0,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Air Sizzle Burst:",
+                    "Shaped high-frequency noise burst level feeding Bank A + Bank B",
+                    &mut h.nonlin_shimmer,
+                    def.nonlin_shimmer,
+                    0.0..=1.5,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Chick Transient Sustain:",
+                    "Controls metallic oscillator transient length on stick/pedal contact",
+                    &mut h.plate_dispersion,
+                    def.plate_dispersion,
+                    0.0..=1.5,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Stick Hardness:",
+                    "Stick tip lowpass brightness (soft wood tip vs. crisp nylon tip)",
+                    &mut h.stick_hardness,
+                    def.stick_hardness,
+                    0.0..=1.5,
+                    "",
+                    &mut changed,
+                );
+            });
+    });
+
+    ui.add_space(4.0);
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Parallel Inharmonic Combs & Post Polish:").strong());
+        egui::Grid::new("hihat_comb_polish_grid")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Serial Sizzle (Hats):")
+                    .on_hover_text("Routes 4 combs of Bank B in serial cascade for extra ringy metallic hi-hat sizzle");
+                if ui
+                    .checkbox(&mut h.serial_sizzle, "4-Comb Bank B Serial Cascade")
+                    .changed()
+                {
+                    changed = true;
+                }
                 ui.end_row();
 
-                ui.label("Highpass Cutoff:");
-                let r2 = ui.add(
-                    egui::Slider::new(&mut h.highpass_cutoff_hz, 1200.0..=15000.0)
-                        .suffix(" Hz")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Fundamental Cluster Freq:",
+                    "Bank A (4 lower-order whole-plate combs) tight cluster center frequency",
+                    &mut h.fundamental_cluster_hz,
+                    def.fundamental_cluster_hz,
+                    120.0..=1400.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r2.changed() { changed = true; }
-                if r2.double_clicked() { h.highpass_cutoff_hz = def.highpass_cutoff_hz; changed = true; }
-                ui.end_row();
-
-                ui.label("Closed Hat Decay:");
-                let r3 = ui.add(
-                    egui::Slider::new(&mut h.closed_decay_ms, 8.0..=500.0)
-                        .suffix(" ms")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Shimmer Comb Spread:",
+                    "Bank B (8 higher-order shimmer combs) non-uniform frequency spread",
+                    &mut h.spread,
+                    def.spread,
+                    0.25..=3.0,
+                    "",
+                    &mut changed,
                 );
-                if r3.changed() { changed = true; }
-                if r3.double_clicked() { h.closed_decay_ms = def.closed_decay_ms; changed = true; }
-                ui.end_row();
-
-                ui.label("Pedal Hat Decay:");
-                let r4 = ui.add(
-                    egui::Slider::new(&mut h.pedal_decay_ms, 10.0..=600.0)
-                        .suffix(" ms")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Inharmonic Shift (Hz):",
+                    "Post-comb 4-stage Hilbert quadrature frequency shift turning integer comb harmonics into cast-bronze partials",
+                    &mut h.inharmonic_shift_hz,
+                    def.inharmonic_shift_hz,
+                    -200.0..=400.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r4.changed() { changed = true; }
-                if r4.double_clicked() { h.pedal_decay_ms = def.pedal_decay_ms; changed = true; }
-                ui.end_row();
-
-                ui.label("Open Hat Decay:");
-                let r5 = ui.add(
-                    egui::Slider::new(&mut h.open_decay_ms, 50.0..=4500.0)
-                        .suffix(" ms")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Comb Material Damping:",
+                    "Internal 1-pole low-pass damping frequency inside all 12 Thiran wet-only comb loops",
+                    &mut h.comb_damping_hz,
+                    def.comb_damping_hz,
+                    1500.0..=18000.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r5.changed() { changed = true; }
-                if r5.double_clicked() { h.open_decay_ms = def.open_decay_ms; changed = true; }
-                ui.end_row();
-
-                ui.label("Bronze Size / Pitch:")
-                    .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning");
-                let r6 = ui.add(
-                    egui::Slider::new(&mut h.bronze_size_pitch, 0.30..=3.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Post Polish Freq:",
+                    "Static post-sum low-feedback polish comb frequency for metallic sheen",
+                    &mut h.polish_comb_hz,
+                    def.polish_comb_hz,
+                    400.0..=8000.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r6.changed() { changed = true; }
-                if r6.double_clicked() { h.bronze_size_pitch = def.bronze_size_pitch; changed = true; }
-                ui.end_row();
-
-                ui.label("Plate Dispersion (Stick Ping):")
-                    .on_hover_text("1st-order all-pass plate dispersion depth inside the 4-line Hadamard waveguide mesh");
-                let r7 = ui.add(
-                    egui::Slider::new(&mut h.plate_dispersion, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Post Polish Sheen:",
+                    "Wet mix of the static post-sum polish comb filter",
+                    &mut h.polish_comb_mix,
+                    def.polish_comb_mix,
+                    0.0..=0.80,
+                    "",
+                    &mut changed,
                 );
-                if r7.changed() { changed = true; }
-                if r7.double_clicked() { h.plate_dispersion = def.plate_dispersion; changed = true; }
-                ui.end_row();
-
-                ui.label("Non-Linear Shimmer Bloom:")
-                    .on_hover_text("Signal-modulated all-pass dispersion energy cascade into 4–15 kHz bronze shimmer");
-                let r8 = ui.add(
-                    egui::Slider::new(&mut h.nonlin_shimmer, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Post High-Pass Cutoff:",
+                    "Post-comb high-pass filter removing low-end thud",
+                    &mut h.highpass_cutoff_hz,
+                    def.highpass_cutoff_hz,
+                    1200.0..=15000.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r8.changed() { changed = true; }
-                if r8.double_clicked() { h.nonlin_shimmer = def.nonlin_shimmer; changed = true; }
-                ui.end_row();
-
-                ui.label("Bell Level:")
-                    .on_hover_text("High-Q cast-bronze bell / cup modal resonance emphasis");
-                let r9 = ui.add(
-                    egui::Slider::new(&mut h.bell_level, 0.0..=2.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Mid Scoop Freq:",
+                    "Post-comb peaking EQ center frequency to clean up boxy mid-range harshness",
+                    &mut h.mid_cut_hz,
+                    def.mid_cut_hz,
+                    350.0..=3500.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r9.changed() { changed = true; }
-                if r9.double_clicked() { h.bell_level = def.bell_level; changed = true; }
-                ui.end_row();
-
-                ui.label("Stick Hardness:")
-                    .on_hover_text("Stick tip lowpass brightness (soft wood tip vs. bright nylon tip)");
-                let r10 = ui.add(
-                    egui::Slider::new(&mut h.stick_hardness, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Mid Scoop Gain:",
+                    "Post-comb mid-cut peaking EQ gain in dB (negative scoops boxy midrange)",
+                    &mut h.mid_cut_db,
+                    def.mid_cut_db,
+                    -18.0..=6.0,
+                    " dB",
+                    &mut changed,
                 );
-                if r10.changed() { changed = true; }
-                if r10.double_clicked() { h.stick_hardness = def.stick_hardness; changed = true; }
-                ui.end_row();
 
                 add_hit_variation_slider_row(
                     ui,
@@ -2903,7 +3022,8 @@ fn render_single_cymbal_params_grid(
     };
 
     ui.group(|ui| {
-        egui::Grid::new(("single_cymbal_params_grid", role))
+        ui.label(egui::RichText::new("Output, Decay & Stage 1 Dispersion Loop:").strong());
+        egui::Grid::new(("single_cymbal_stage1_grid", role))
             .num_columns(2)
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
@@ -2915,84 +3035,216 @@ fn render_single_cymbal_params_grid(
                     def.volume_db,
                     &mut changed,
                 );
-
-                ui.label("Ring / Wash Decay:");
-                let r1 = ui.add(
-                    egui::Slider::new(&mut c.decay_ms, 80.0..=6000.0)
-                        .suffix(" ms")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Ring / Wash Decay:",
+                    "Overall cast-bronze wash & comb decay duration",
+                    &mut c.decay_ms,
+                    def.decay_ms,
+                    80.0..=6000.0,
+                    " ms",
+                    &mut changed,
                 );
-                if r1.changed() { changed = true; }
-                if r1.double_clicked() { c.decay_ms = def.decay_ms; changed = true; }
-                ui.end_row();
-
-                ui.label("Bronze Size / Pitch:")
-                    .on_hover_text("Scales B20 bronze waveguide delay lengths and modal tuning");
-                let r2 = ui.add(
-                    egui::Slider::new(&mut c.bronze_size_pitch, 0.30..=3.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Bronze Size / Pitch:",
+                    "Scales dispersion travel time and comb frequencies (lower = larger/darker plate, higher = smaller/brighter)",
+                    &mut c.bronze_size_pitch,
+                    def.bronze_size_pitch,
+                    0.30..=3.0,
+                    "",
+                    &mut changed,
                 );
-                if r2.changed() { changed = true; }
-                if r2.double_clicked() { c.bronze_size_pitch = def.bronze_size_pitch; changed = true; }
-                ui.end_row();
-
-                ui.label("Highpass / Brightness Cutoff:");
-                let r3 = ui.add(
-                    egui::Slider::new(&mut c.cutoff_hz, 800.0..=12000.0)
-                        .suffix(" Hz")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Dispersion Size (ms):",
+                    "Stage 1 base fractional delay line length (1–25 ms) scaling perceived cymbal diameter",
+                    &mut c.dispersion_size_ms,
+                    def.dispersion_size_ms,
+                    1.0..=25.0,
+                    " ms",
+                    &mut changed,
                 );
-                if r3.changed() { changed = true; }
-                if r3.double_clicked() { c.cutoff_hz = def.cutoff_hz; changed = true; }
-                ui.end_row();
-
-                ui.label("Shimmer Matrix Spread:");
-                let r4 = ui.add(
-                    egui::Slider::new(&mut c.matrix_spread, 0.25..=3.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "All-Pass Smear:",
+                    "Stage 1 12-stage staggered all-pass disperser smearing sharp impulses into broadband wash",
+                    &mut c.plate_dispersion,
+                    def.plate_dispersion,
+                    0.0..=1.25,
+                    "",
+                    &mut changed,
                 );
-                if r4.changed() { changed = true; }
-                if r4.double_clicked() { c.matrix_spread = def.matrix_spread; changed = true; }
-                ui.end_row();
-
-                ui.label("Plate Dispersion (Flex):")
-                    .on_hover_text("1st-order all-pass plate dispersion depth inside the 4-line Hadamard waveguide mesh");
-                let r5 = ui.add(
-                    egui::Slider::new(&mut c.plate_dispersion, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Hammering Vibrato Depth:",
+                    "Stage 1 0–4 ms Hermite fractional delay depth (~0.045 subtle sheen on Rides, ~0.16 chaotic wash on Crashes)",
+                    &mut c.vibrato_depth,
+                    def.vibrato_depth,
+                    0.0..=0.50,
+                    "",
+                    &mut changed,
                 );
-                if r5.changed() { changed = true; }
-                if r5.double_clicked() { c.plate_dispersion = def.plate_dispersion; changed = true; }
-                ui.end_row();
-
-                ui.label("Non-Linear Shimmer Bloom:")
-                    .on_hover_text("Signal-modulated all-pass dispersion energy cascade into 4–15 kHz cast-bronze shimmer");
-                let r6 = ui.add(
-                    egui::Slider::new(&mut c.nonlin_shimmer, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Hammering Vibrato Chaos:",
+                    "Blends smoothed random-walk sheen (0.0) into stepped chaotic wash (1.0)",
+                    &mut c.vibrato_chaos,
+                    def.vibrato_chaos,
+                    0.0..=1.0,
+                    "",
+                    &mut changed,
                 );
-                if r6.changed() { changed = true; }
-                if r6.double_clicked() { c.nonlin_shimmer = def.nonlin_shimmer; changed = true; }
-                ui.end_row();
-
-                ui.label("Bell / Cup Presence:");
-                let r7 = ui.add(
-                    egui::Slider::new(&mut c.bell_level, 0.0..=2.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Bronze Swell (Self-PM Drive):",
+                    "Stage 1 multi-radian Self-Phase-Modulation drive folding strike energy upward into 6–18 kHz bloom",
+                    &mut c.nonlin_shimmer,
+                    def.nonlin_shimmer,
+                    0.0..=1.25,
+                    "",
+                    &mut changed,
                 );
-                if r7.changed() { changed = true; }
-                if r7.double_clicked() { c.bell_level = def.bell_level; changed = true; }
-                ui.end_row();
-
-                ui.label("Stick Hardness:")
-                    .on_hover_text("Stick tip lowpass brightness (soft felt/wood tip vs. crisp nylon tip)");
-                let r8 = ui.add(
-                    egui::Slider::new(&mut c.stick_hardness, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Bronze Swell Tone (Hz):",
+                    "One-pole low-pass cutoff shaping the self-phase-modulating loop signal",
+                    &mut c.pm_tone_hz,
+                    def.pm_tone_hz,
+                    200.0..=8000.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r8.changed() { changed = true; }
-                if r8.double_clicked() { c.stick_hardness = def.stick_hardness; changed = true; }
-                ui.end_row();
+                add_cymbal_slider_row(
+                    ui,
+                    "Air Sizzle (6–18 kHz):",
+                    "Optional plate-energy-coupled high-frequency bronze air turbulence blend (0.0 = pure feedback/PM physics)",
+                    &mut c.air_sizzle,
+                    def.air_sizzle,
+                    0.0..=1.0,
+                    "",
+                    &mut changed,
+                );
+            });
+    });
+
+    ui.add_space(4.0);
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Stage 2 Parallel Inharmonic Combs & Post Polish:").strong());
+        egui::Grid::new(("single_cymbal_stage2_grid", role))
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                add_cymbal_slider_row(
+                    ui,
+                    "Fundamental Cluster Freq:",
+                    "Bank A (4 lower-order whole-plate combs) tight cluster center frequency",
+                    &mut c.fundamental_cluster_hz,
+                    def.fundamental_cluster_hz,
+                    120.0..=1400.0,
+                    " Hz",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Shimmer Comb Spread:",
+                    "Bank B (8 higher-order Thiran shimmer combs) non-uniform upper frequency spread",
+                    &mut c.matrix_spread,
+                    def.matrix_spread,
+                    0.25..=3.0,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Inharmonic Shift (Hz):",
+                    "Post-comb Hilbert quadrature frequency shift (-200..+400 Hz) turning integer comb harmonics into bronze partials",
+                    &mut c.inharmonic_shift_hz,
+                    def.inharmonic_shift_hz,
+                    -200.0..=400.0,
+                    " Hz",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Comb Material Damping:",
+                    "Internal 1-pole low-pass material damping inside all 12 Thiran wet-only comb loops",
+                    &mut c.comb_damping_hz,
+                    def.comb_damping_hz,
+                    1500.0..=18000.0,
+                    " Hz",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Bell / Impulse Energy:",
+                    "Excitation energy / bell cup presence feeding Stage 1",
+                    &mut c.bell_level,
+                    def.bell_level,
+                    0.0..=2.0,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Stick Hardness:",
+                    "Excitation brightness / stick tip hardness",
+                    &mut c.stick_hardness,
+                    def.stick_hardness,
+                    0.0..=1.5,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Post Polish Freq:",
+                    "Static post-sum polish comb frequency for metallic sheen",
+                    &mut c.polish_comb_hz,
+                    def.polish_comb_hz,
+                    400.0..=8000.0,
+                    " Hz",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Post Polish Sheen:",
+                    "Wet mix of the static post-sum polish comb filter",
+                    &mut c.polish_comb_mix,
+                    def.polish_comb_mix,
+                    0.0..=0.80,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Post High-Pass Cutoff:",
+                    "Post-comb high-pass filter cutoff frequency",
+                    &mut c.cutoff_hz,
+                    def.cutoff_hz,
+                    500.0..=12000.0,
+                    " Hz",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Mid Scoop Freq:",
+                    "Post-comb peaking EQ center frequency to scoop boxy mid-range harshness",
+                    &mut c.mid_cut_hz,
+                    def.mid_cut_hz,
+                    350.0..=3500.0,
+                    " Hz",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Mid Scoop Gain:",
+                    "Post-comb mid-cut peaking EQ gain in dB",
+                    &mut c.mid_cut_db,
+                    def.mid_cut_db,
+                    -18.0..=6.0,
+                    " dB",
+                    &mut changed,
+                );
 
                 add_hit_variation_slider_row(
                     ui,
@@ -3011,7 +3263,8 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
     let def = RideCymbalParams::default();
 
     ui.group(|ui| {
-        egui::Grid::new("ride_and_bell_params_grid")
+        ui.label(egui::RichText::new("Ride & Bell Output, Decays & Stage 1 Dispersion Loop:").strong());
+        egui::Grid::new("ride_and_bell_stage1_grid")
             .num_columns(2)
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
@@ -3031,92 +3284,241 @@ fn render_ride_and_bell_params_grid(ui: &mut egui::Ui, r: &mut RideCymbalParams)
                     def.bell_volume_db,
                     &mut changed,
                 );
-
-                ui.label("Ride Bow Decay:");
-                let r1 = ui.add(
-                    egui::Slider::new(&mut r.bow_decay_ms, 100.0..=6000.0)
-                        .suffix(" ms")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Ride Bow Decay:",
+                    "Ride Bow (GM 51) wash decay duration",
+                    &mut r.bow_decay_ms,
+                    def.bow_decay_ms,
+                    100.0..=6000.0,
+                    " ms",
+                    &mut changed,
                 );
-                if r1.changed() { changed = true; }
-                if r1.double_clicked() { r.bow_decay_ms = def.bow_decay_ms; changed = true; }
-                ui.end_row();
-
-                ui.label("Ride Bell Decay:");
-                let r2 = ui.add(
-                    egui::Slider::new(&mut r.bell_decay_ms, 80.0..=5000.0)
-                        .suffix(" ms")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Ride Bell Decay:",
+                    "Ride Bell (GM 53) singing cup decay duration",
+                    &mut r.bell_decay_ms,
+                    def.bell_decay_ms,
+                    80.0..=5000.0,
+                    " ms",
+                    &mut changed,
                 );
-                if r2.changed() { changed = true; }
-                if r2.double_clicked() { r.bell_decay_ms = def.bell_decay_ms; changed = true; }
-                ui.end_row();
-
-                ui.label("Bell Cup Presence:")
-                    .on_hover_text("High-Q singing cast-bronze bell cup emphasis (accentuated on GM 53)");
-                let r3 = ui.add(
-                    egui::Slider::new(&mut r.bell_peak_level, 0.0..=2.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Bronze Size / Pitch:",
+                    "Shared ride plate diameter & pitch scaling (affects both Bow 51 and Bell 53)",
+                    &mut r.bronze_size_pitch,
+                    def.bronze_size_pitch,
+                    0.30..=3.0,
+                    "",
+                    &mut changed,
                 );
-                if r3.changed() { changed = true; }
-                if r3.double_clicked() { r.bell_peak_level = def.bell_peak_level; changed = true; }
-                ui.end_row();
-
-                ui.label("Bronze Size / Pitch:")
-                    .on_hover_text("Shared ride plate diameter & modal tuning (affects both bow 51 and bell 53)");
-                let r4 = ui.add(
-                    egui::Slider::new(&mut r.bronze_size_pitch, 0.30..=3.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Dispersion Size (ms):",
+                    "Stage 1 base fractional delay line length (1–25 ms) scaling perceived ride plate size",
+                    &mut r.dispersion_size_ms,
+                    def.dispersion_size_ms,
+                    1.0..=25.0,
+                    " ms",
+                    &mut changed,
                 );
-                if r4.changed() { changed = true; }
-                if r4.double_clicked() { r.bronze_size_pitch = def.bronze_size_pitch; changed = true; }
-                ui.end_row();
-
-                ui.label("Highpass / Brightness Cutoff:");
-                let r5 = ui.add(
-                    egui::Slider::new(&mut r.cutoff_hz, 800.0..=12000.0)
-                        .suffix(" Hz")
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "All-Pass Smear:",
+                    "Stage 1 12-stage staggered all-pass disperser smearing stick click into ride bed",
+                    &mut r.plate_dispersion,
+                    def.plate_dispersion,
+                    0.0..=1.25,
+                    "",
+                    &mut changed,
                 );
-                if r5.changed() { changed = true; }
-                if r5.double_clicked() { r.cutoff_hz = def.cutoff_hz; changed = true; }
-                ui.end_row();
-
-                ui.label("Shimmer Matrix Spread:");
-                let r6 = ui.add(
-                    egui::Slider::new(&mut r.matrix_spread, 0.25..=3.0)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Hammering Vibrato Depth:",
+                    "Stage 1 0–4 ms Hermite fractional delay depth (~0.045 subtle organic sheen on Rides)",
+                    &mut r.vibrato_depth,
+                    def.vibrato_depth,
+                    0.0..=0.50,
+                    "",
+                    &mut changed,
                 );
-                if r6.changed() { changed = true; }
-                if r6.double_clicked() { r.matrix_spread = def.matrix_spread; changed = true; }
-                ui.end_row();
-
-                ui.label("Plate Dispersion (Stick Ping):");
-                let r7 = ui.add(
-                    egui::Slider::new(&mut r.plate_dispersion, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Hammering Vibrato Chaos:",
+                    "Blends smooth random-walk sheen (0.0) into stepped chaotic wash (1.0)",
+                    &mut r.vibrato_chaos,
+                    def.vibrato_chaos,
+                    0.0..=1.0,
+                    "",
+                    &mut changed,
                 );
-                if r7.changed() { changed = true; }
-                if r7.double_clicked() { r.plate_dispersion = def.plate_dispersion; changed = true; }
-                ui.end_row();
-
-                ui.label("Non-Linear Shimmer Wash:");
-                let r8 = ui.add(
-                    egui::Slider::new(&mut r.nonlin_shimmer, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                add_cymbal_slider_row(
+                    ui,
+                    "Bronze Swell (Self-PM Drive):",
+                    "Stage 1 multi-radian Self-Phase-Modulation drive creating warm shimmering bronze swell",
+                    &mut r.nonlin_shimmer,
+                    def.nonlin_shimmer,
+                    0.0..=1.25,
+                    "",
+                    &mut changed,
                 );
-                if r8.changed() { changed = true; }
-                if r8.double_clicked() { r.nonlin_shimmer = def.nonlin_shimmer; changed = true; }
-                ui.end_row();
 
-                ui.label("Stick Hardness:");
-                let r9 = ui.add(
-                    egui::Slider::new(&mut r.stick_hardness, 0.0..=1.5)
-                        .clamping(egui::SliderClamping::Never),
+                let mut pm_tone_f32 = r.pm_tone_hz as f32;
+                add_cymbal_slider_row(
+                    ui,
+                    "Bronze Swell Tone (Hz):",
+                    "One-pole low-pass cutoff shaping the self-phase-modulating loop signal",
+                    &mut pm_tone_f32,
+                    def.pm_tone_hz as f32,
+                    200.0..=8000.0,
+                    " Hz",
+                    &mut changed,
                 );
-                if r9.changed() { changed = true; }
-                if r9.double_clicked() { r.stick_hardness = def.stick_hardness; changed = true; }
-                ui.end_row();
+                r.pm_tone_hz = pm_tone_f32.round().clamp(150.0, 16_000.0) as u16;
+
+                add_cymbal_slider_row(
+                    ui,
+                    "Air Sizzle (6–18 kHz):",
+                    "Optional plate-energy-coupled high-frequency bronze air turbulence blend (0.0 = pure feedback/PM physics)",
+                    &mut r.air_sizzle,
+                    def.air_sizzle,
+                    0.0..=1.0,
+                    "",
+                    &mut changed,
+                );
+            });
+    });
+
+    ui.add_space(4.0);
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Stage 2 Parallel Inharmonic Combs & Post Polish:").strong());
+        egui::Grid::new("ride_and_bell_stage2_grid")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                add_cymbal_slider_row(
+                    ui,
+                    "Fundamental Cluster Freq:",
+                    "Bank A (4 lower-order whole-plate combs) tight cluster center frequency",
+                    &mut r.fundamental_cluster_hz,
+                    def.fundamental_cluster_hz,
+                    120.0..=1400.0,
+                    " Hz",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Shimmer Comb Spread:",
+                    "Bank B (8 higher-order Thiran shimmer combs) non-uniform upper frequency spread",
+                    &mut r.matrix_spread,
+                    def.matrix_spread,
+                    0.25..=3.0,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Inharmonic Shift (Hz):",
+                    "Post-comb Hilbert quadrature frequency shift (-200..+400 Hz) turning integer comb harmonics into bronze partials",
+                    &mut r.inharmonic_shift_hz,
+                    def.inharmonic_shift_hz,
+                    -200.0..=400.0,
+                    " Hz",
+                    &mut changed,
+                );
+
+                let mut comb_damp_f32 = r.comb_damping_hz as f32;
+                add_cymbal_slider_row(
+                    ui,
+                    "Comb Material Damping:",
+                    "Internal 1-pole low-pass material damping inside all 12 Thiran wet-only comb loops",
+                    &mut comb_damp_f32,
+                    def.comb_damping_hz as f32,
+                    1500.0..=18000.0,
+                    " Hz",
+                    &mut changed,
+                );
+                r.comb_damping_hz = comb_damp_f32.round().clamp(1_000.0, 22_000.0) as u16;
+                add_cymbal_slider_row(
+                    ui,
+                    "Bell Cup Presence:",
+                    "Singing FM bell-cup ping level (strongly accentuated on Ride Bell GM 53)",
+                    &mut r.bell_peak_level,
+                    def.bell_peak_level,
+                    0.0..=2.0,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Stick Hardness (Ping):",
+                    "Pitch-enveloped stick click brightness & direct master stick ping level",
+                    &mut r.stick_hardness,
+                    def.stick_hardness,
+                    0.0..=1.5,
+                    "",
+                    &mut changed,
+                );
+
+                let mut polish_hz_f32 = r.polish_comb_hz as f32;
+                add_cymbal_slider_row(
+                    ui,
+                    "Post Polish Freq:",
+                    "Static post-sum polish comb frequency for metallic sheen",
+                    &mut polish_hz_f32,
+                    def.polish_comb_hz as f32,
+                    400.0..=8000.0,
+                    " Hz",
+                    &mut changed,
+                );
+                r.polish_comb_hz = polish_hz_f32.round().clamp(100.0, 16_000.0) as u16;
+
+                add_cymbal_slider_row(
+                    ui,
+                    "Post Polish Sheen:",
+                    "Wet mix of the static post-sum polish comb filter",
+                    &mut r.polish_comb_mix,
+                    def.polish_comb_mix,
+                    0.0..=0.80,
+                    "",
+                    &mut changed,
+                );
+                add_cymbal_slider_row(
+                    ui,
+                    "Post High-Pass Cutoff:",
+                    "Post-comb high-pass filter cutoff frequency",
+                    &mut r.cutoff_hz,
+                    def.cutoff_hz,
+                    500.0..=12000.0,
+                    " Hz",
+                    &mut changed,
+                );
+
+                let mut mid_hz_f32 = r.mid_cut_hz as f32;
+                add_cymbal_slider_row(
+                    ui,
+                    "Mid Scoop Freq:",
+                    "Post-comb peaking EQ center frequency to scoop boxy mid-range harshness",
+                    &mut mid_hz_f32,
+                    def.mid_cut_hz as f32,
+                    350.0..=3500.0,
+                    " Hz",
+                    &mut changed,
+                );
+                r.mid_cut_hz = mid_hz_f32.round().clamp(200.0, 8_000.0) as u16;
+
+                add_cymbal_slider_row(
+                    ui,
+                    "Mid Scoop Gain:",
+                    "Post-comb mid-cut peaking EQ gain in dB",
+                    &mut r.mid_cut_db,
+                    def.mid_cut_db,
+                    -18.0..=6.0,
+                    " dB",
+                    &mut changed,
+                );
 
                 add_hit_variation_slider_row(
                     ui,
